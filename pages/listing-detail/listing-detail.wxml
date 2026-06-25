@@ -1,0 +1,95 @@
+<navigation-bar title="房源详情" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell detail-page">
+    <view class="video-card">
+      <video
+        wx:if="{{listing.videoUrl}}"
+        class="listing-video"
+        src="{{listing.videoUrl}}"
+        controls
+        show-center-play-btn
+        object-fit="cover"
+      ></video>
+      <view wx:else class="video-placeholder">
+        <view class="play">▶</view>
+        <view class="video-title">{{listing.videoLabel}}</view>
+        <view class="video-sub">普通房源只允许视频上传</view>
+      </view>
+    </view>
+
+    <view class="detail-card soft-card">
+      <view class="detail-head">
+        <view>
+          <view class="listing-title">{{listing.title}}</view>
+          <view class="listing-area">{{listing.areaText || listing.area}} · {{listing.status}}</view>
+        </view>
+        <view class="commission {{listing.noCommission ? 'no-commission' : ''}}">{{listing.commissionText || '分佣'}}</view>
+      </view>
+      <view class="source-badges">
+        <text wx:if="{{listing.companyListing}}" class="company-badge">公司房源</text>
+        <text wx:if="{{listing.noCommission}}" class="no-commission-badge">出租不分佣</text>
+      </view>
+      <view wx:if="{{listing.features}}" class="listing-feature-row">
+        <text wx:for="{{listing.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+        <text wx:if="{{listing.maintenanceText}}" class="listing-maintenance-tag">{{listing.maintenanceText}}</text>
+      </view>
+      <view class="facts">
+        <view class="fact"><text>¥{{listing.rent}}/月</text><text>租金</text></view>
+        <view class="fact"><text>{{listing.layout}}</text><text>户型</text></view>
+        <view class="fact"><text>{{listing.uploader}}</text><text>上传人</text></view>
+      </view>
+      <view class="location-grid">
+        <view class="location-item"><text>城市</text><text>{{listing.city || '杭州'}}</text></view>
+        <view class="location-item"><text>区域</text><text>{{listing.district || listing.area}}</text></view>
+        <view class="location-item wide"><text>小区名称</text><text>{{listing.community}}</text></view>
+        <view class="location-item"><text>几栋</text><text>{{listing.building || '-'}}</text></view>
+        <view class="location-item"><text>几单元</text><text>{{listing.unit || '-'}}</text></view>
+        <view class="location-item"><text>房间号</text><text>{{listing.roomNumber || '-'}}</text></view>
+      </view>
+    </view>
+
+    <view class="sensitive-card soft-card">
+      <view class="sensitive-head">
+        <view>
+          <view class="sensitive-title">地址和房东联系方式</view>
+          <view class="sensitive-desc">查看即留痕，同步给上传人和管理员。</view>
+        </view>
+        <view class="verify-tag">{{sensitiveAuthLabel}}</view>
+      </view>
+      <view class="hidden-row">
+        <view class="hidden-label">详细地址</view>
+        <view class="hidden-value">{{sensitiveVisible ? listing.address : '完成确认后可查看'}}</view>
+      </view>
+      <view class="hidden-row">
+        <view class="hidden-label">房东电话</view>
+        <view class="hidden-value">{{sensitiveVisible ? listing.landlordPhone : '完成确认后可查看'}}</view>
+      </view>
+      <button class="primary-button" bindtap="revealSensitive">{{sensitiveVisible ? '已记录足迹' : '查看地址和电话'}}</button>
+      <view class="showing-action-card {{showingSubmitting ? 'is-loading' : ''}}" bindtap="recordShowing">
+        <view class="showing-action-copy">
+          <text class="showing-action-title">{{showingSubmitting ? '提交审核中' : '拍水印照片记录带看'}}</text>
+          <text class="showing-action-sub">现场水印照，审核通过当天生效</text>
+        </view>
+        <view class="showing-quota-badge">
+          <text class="quota-plus">+1</text>
+          <text>查看额度</text>
+        </view>
+      </view>
+      <image wx:if="{{showingPhotoPath}}" class="showing-proof-preview" src="{{showingPhotoPath}}" mode="aspectFill"></image>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">查看足迹</view>
+    </view>
+    <view class="log-list">
+      <view wx:for="{{logs}}" wx:key="time" class="log-card soft-card">
+        <view class="log-user">{{item.user}}</view>
+        <view class="log-action">{{item.action}}</view>
+        <view class="log-time">{{item.time}}</view>
+      </view>
+    </view>
+
+    <button class="deal-button" bindtap="registerDeal">{{listing.noCommission ? '登记成交（不分佣）' : '登记成交并按比例分佣'}}</button>
+  </view>
+</scroll-view>
+<canvas canvas-id="showingWatermarkCanvas" class="showing-watermark-canvas" style="width: {{showingCanvasWidth}}px; height: {{showingCanvasHeight}}px;"></canvas>

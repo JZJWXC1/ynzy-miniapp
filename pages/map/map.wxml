@@ -1,0 +1,87 @@
+<navigation-bar title="地图找房" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell map-page">
+    <view class="map-hero">
+      <view>
+        <view class="map-kicker">地图找房</view>
+        <view class="map-title">默认从东新园地铁口看周边房源</view>
+        <view class="map-desc">以东新园地铁口为中心查看公司内部共享房源。地图只展示模糊点位，查看地址和电话会实名留痕。</view>
+      </view>
+    </view>
+
+    <scroll-view class="area-scroll" scroll-x enable-flex>
+      <view wx:for="{{areaFilters}}" wx:key="*this" class="area-chip {{activeArea === item ? 'active' : ''}}" bindtap="changeArea" data-area="{{item}}">{{item}}</view>
+    </scroll-view>
+
+    <view class="map-summary">
+      <text>{{summaryText}}</text>
+      <button bindtap="openAreaListings">列表筛选</button>
+    </view>
+
+    <view class="real-map-card">
+      <map
+        id="houseMap"
+        class="real-map"
+        latitude="{{mapCenter.latitude}}"
+        longitude="{{mapCenter.longitude}}"
+        scale="{{mapScale}}"
+        markers="{{markers}}"
+        enable-zoom
+        enable-scroll
+        show-compass
+        bindmarkertap="handleMarkerTap"
+        bindcallouttap="handleMarkerTap"
+      >
+        <cover-view class="center-badge">中心 · {{defaultCenterName}}</cover-view>
+        <cover-view class="reset-map" bindtap="resetCenter">回中心</cover-view>
+      </map>
+      <view wx:if="{{!filteredPins.length}}" class="map-empty">暂无该区域房源</view>
+    </view>
+
+    <view wx:if="{{selectedPin}}" class="selected-card soft-card" bindtap="openSelectedListing">
+      <view>
+        <view class="selected-community">{{selectedPin.community || '待补充小区'}}</view>
+        <view class="source-badges">
+          <text wx:if="{{selectedPin.companyListing}}" class="company-badge">公司房源</text>
+          <text wx:if="{{selectedPin.noCommission}}" class="no-commission-badge">不分佣</text>
+        </view>
+        <view class="selected-title">{{selectedPin.title}}</view>
+        <view class="selected-meta">{{selectedPin.area}} · {{selectedPin.block}} · {{selectedPin.layout}}</view>
+        <view wx:if="{{selectedPin.features}}" class="listing-feature-row">
+          <text wx:for="{{selectedPin.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+          <text wx:if="{{selectedPin.maintenanceText}}" class="listing-maintenance-tag">{{selectedPin.maintenanceText}}</text>
+        </view>
+      </view>
+      <view class="selected-price">¥{{selectedPin.price}}</view>
+    </view>
+
+    <view class="map-list">
+      <view wx:for="{{filteredPins}}" wx:key="id" class="map-list-card soft-card {{selectedListingId === item.id ? 'active' : ''}}" bindtap="focusPin" data-id="{{item.id}}">
+        <view class="list-main">
+          <view class="list-community">{{item.community || '待补充小区'}}</view>
+          <view class="list-title">{{item.title}}</view>
+          <view class="list-meta">{{item.area}} · {{item.block}}</view>
+          <view class="list-tags">
+            <text>{{item.layout}}</text>
+            <text>{{item.commissionText || item.commission}}</text>
+            <text>{{item.status}}</text>
+            <text wx:if="{{item.companyListing}}" class="company-inline">公司房源</text>
+          </view>
+          <view wx:if="{{item.features}}" class="listing-feature-row">
+            <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+            <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+          </view>
+        </view>
+        <view class="list-side">
+          <view class="list-price">¥{{item.price}}</view>
+          <button catchtap="openListing" data-id="{{item.id}}">详情</button>
+        </view>
+      </view>
+    </view>
+
+    <view class="map-note soft-card">
+      <view class="note-title">防跳单提醒</view>
+      <view class="note-desc">地图只展示模糊区域。进入详情查看具体地址或房东电话时，系统会实名留痕并同步给上传人和管理员。</view>
+    </view>
+  </view>
+</scroll-view>

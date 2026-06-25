@@ -1,0 +1,39 @@
+<navigation-bar title="分佣记录" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell commission-page">
+    <view class="hero-card">
+      <view>
+        <view class="hero-kicker">合作成交</view>
+        <view class="hero-title">成交按上传人设置比例分佣。</view>
+        <view class="hero-desc">上传人、成交人和管理员都能看到分佣状态。</view>
+      </view>
+      <view class="hero-mark">佣</view>
+    </view>
+
+    <view class="stats-row">
+      <view wx:for="{{stats}}" wx:key="label" class="stat-card">
+        <view class="stat-value">{{item.value}}</view>
+        <view class="stat-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">最近分佣</view>
+      <view class="section-title-action">{{records.length}} 单</view>
+    </view>
+
+    <view class="commission-list">
+      <view wx:for="{{records}}" wx:key="id" class="commission-card soft-card" bindtap="openListing" data-id="{{item.listingId}}">
+        <view class="commission-head">
+          <view class="commission-title">{{item.title}}</view>
+          <view class="commission-rate">{{item.rate}}</view>
+        </view>
+        <view class="commission-meta">{{item.role}} · 上传人 {{item.uploader}} · 成交人 {{item.dealer}}</view>
+        <view class="commission-bottom">
+          <view class="commission-status">{{item.status}}</view>
+          <view class="commission-time">{{item.time}}</view>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

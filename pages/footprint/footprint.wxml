@@ -1,0 +1,69 @@
+<!--footprint.wxml-->
+<navigation-bar title="房源足迹" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell footprint-page">
+    <view class="hero-card">
+      <view>
+        <view class="hero-kicker">防跳单监控</view>
+        <view class="hero-title">地址和电话查看都会留下足迹。</view>
+        <view class="hero-desc">上传人和管理员可追踪敏感信息访问，成交分佣更清楚。</view>
+      </view>
+      <view class="hero-mark">足</view>
+    </view>
+
+    <view class="stats-row">
+      <view wx:for="{{stats}}" wx:key="label" class="stat-card">
+        <view class="stat-value">{{item.value}}</view>
+        <view class="stat-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <scroll-view class="filter-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row">
+        <button
+          wx:for="{{filters}}"
+          wx:key="*this"
+          class="filter-chip {{activeFilter === item ? 'active' : ''}}"
+          data-name="{{item}}"
+          bindtap="switchFilter"
+        >{{item}}</button>
+      </view>
+    </scroll-view>
+
+    <view class="section-title">
+      <view class="section-title-main">最近房源</view>
+      <button class="section-title-action" bindtap="handleTap" data-name="按房源查看">按房源查看</button>
+    </view>
+
+    <view class="record-list">
+      <view wx:for="{{records}}" wx:key="title" class="record-card soft-card">
+        <view class="record-cover">
+          <view class="record-cover-light"></view>
+        </view>
+        <view class="record-body">
+          <view class="record-head">
+            <view class="record-title">{{item.title}}</view>
+            <view class="record-status">{{item.status}}</view>
+          </view>
+          <view class="record-meta">{{item.meta}}</view>
+          <view class="record-customer">{{item.customer}}</view>
+          <view class="record-bottom">
+            <view class="record-price">{{item.price}}</view>
+            <view class="record-time">{{item.time}}</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">跟进提醒</view>
+      <button class="section-title-action" bindtap="handleTap" data-name="新增提醒">新增</button>
+    </view>
+    <view class="task-card soft-card">
+      <view wx:for="{{tasks}}" wx:key="*this" class="task-item">
+        <view class="task-dot"></view>
+        <view class="task-text">{{item}}</view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

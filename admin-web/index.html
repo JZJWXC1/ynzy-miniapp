@@ -1,0 +1,2195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>寓你住一起 · 管理后台</title>
+  <style>
+    :root {
+      --pine: #2f6f60;
+      --deep: #153f36;
+      --mint: #e9f5f0;
+      --line: #dce9e3;
+      --sun: #f6bd36;
+      --sky: #aee5f2;
+      --paper: #fbfaf6;
+      --ink: #17342e;
+      --muted: #6f837c;
+      --danger: #f2765d;
+      --shadow: 0 16px 36px rgba(31, 81, 68, .1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: var(--paper);
+    }
+
+    .login-screen {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+    }
+
+    .brand-side {
+      padding: 72px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--deep), var(--pine));
+    }
+
+    .logo {
+      width: 130px;
+      height: 112px;
+      object-fit: contain;
+      padding: 14px;
+      background: #fff;
+      border-radius: 18px;
+    }
+
+    .brand-side h1 {
+      max-width: 620px;
+      margin: 42px 0 18px;
+      font-size: 48px;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+
+    .brand-side p {
+      max-width: 620px;
+      margin: 0;
+      color: rgba(255, 255, 255, .78);
+      font-size: 17px;
+      line-height: 1.8;
+    }
+
+    .login-panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 48px;
+      background: #fff;
+    }
+
+    .panel-title {
+      margin: 0 0 10px;
+      color: var(--deep);
+      font-size: 30px;
+    }
+
+    .panel-sub {
+      margin: 0 0 28px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    label {
+      display: block;
+      margin: 18px 0 8px;
+      color: var(--deep);
+      font-weight: 800;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 0 14px;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      outline: none;
+      font-size: 15px;
+      background: #f7fbf8;
+    }
+
+    input,
+    select {
+      height: 46px;
+    }
+
+    textarea {
+      min-height: 98px;
+      padding-top: 12px;
+      resize: vertical;
+      line-height: 1.55;
+    }
+
+    button {
+      height: 46px;
+      border: 0;
+      border-radius: 10px;
+      color: #fff;
+      background: var(--pine);
+      font-size: 15px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .login-button {
+      width: 100%;
+      margin-top: 24px;
+    }
+
+    .hint {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .error {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--danger);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .app {
+      display: none;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 252px;
+      padding: 24px 18px;
+      color: #fff;
+      background: var(--deep);
+    }
+
+    .side-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 26px;
+    }
+
+    .side-brand img {
+      width: 54px;
+      height: 54px;
+      object-fit: contain;
+      padding: 8px;
+      background: #fff;
+      border-radius: 14px;
+    }
+
+    .side-brand strong {
+      display: block;
+      font-size: 18px;
+    }
+
+    .side-brand span {
+      display: block;
+      margin-top: 4px;
+      color: rgba(255, 255, 255, .62);
+      font-size: 12px;
+    }
+
+    .menu-title {
+      margin: 18px 10px 10px;
+      color: rgba(255, 255, 255, .48);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .nav-button {
+      width: 100%;
+      justify-content: flex-start;
+      margin-bottom: 8px;
+      padding: 0 14px;
+      color: rgba(255, 255, 255, .76);
+      background: transparent;
+      text-align: left;
+    }
+
+    .nav-button.active {
+      color: var(--deep);
+      background: var(--sun);
+    }
+
+    .main {
+      margin-left: 252px;
+      padding: 30px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      color: var(--deep);
+      font-size: 30px;
+    }
+
+    .admin-tag {
+      padding: 10px 14px;
+      color: var(--pine);
+      background: var(--mint);
+      border-radius: 10px;
+      font-weight: 900;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .stat {
+      min-height: 128px;
+      padding: 20px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .stat strong {
+      display: block;
+      color: var(--deep);
+      font-size: 28px;
+    }
+
+    .stat span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .table-wrap,
+    .info-panel {
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .info-panel {
+      padding: 18px;
+    }
+
+    .info-panel h3 {
+      margin: 0 0 14px;
+      color: var(--deep);
+      font-size: 18px;
+    }
+
+    .area-row {
+      display: grid;
+      grid-template-columns: 88px 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .area-row:last-child {
+      border-bottom: 0;
+    }
+
+    .bar {
+      height: 10px;
+      overflow: hidden;
+      background: #edf5f1;
+      border-radius: 999px;
+    }
+
+    .bar i {
+      display: block;
+      height: 100%;
+      background: var(--pine);
+      border-radius: inherit;
+    }
+
+    .filter-bar {
+      display: grid;
+      grid-template-columns: 160px 160px minmax(220px, 1fr) 92px;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 14px;
+      padding: 16px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .filter-item span {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--deep);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .ghost-button {
+      color: var(--pine);
+      background: var(--mint);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--deep);
+      background: #f7fbf8;
+      font-weight: 900;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      color: var(--pine);
+      background: var(--mint);
+      border-radius: 999px;
+      font-weight: 900;
+    }
+
+    .pill.warn {
+      color: var(--deep);
+      background: #fff3cf;
+    }
+
+    .pill.danger {
+      color: #fff;
+      background: var(--danger);
+    }
+
+    .audit-shot {
+      width: 70px;
+      height: 52px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      color: var(--pine);
+      background: var(--mint);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .audit-shot img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .sub-cell {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .table-action {
+      min-width: 64px;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .table-action.reject {
+      color: var(--danger);
+      background: #fff0ec;
+    }
+
+    .empty {
+      padding: 26px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr);
+      gap: 16px;
+    }
+
+    .config-card {
+      padding: 20px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .config-card h3 {
+      margin: 0 0 14px;
+      color: var(--deep);
+      font-size: 18px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .form-item.full {
+      grid-column: 1 / -1;
+    }
+
+    .form-item span {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--deep);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .inline-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .status-box {
+      padding: 16px;
+      color: var(--muted);
+      background: #f7fbf8;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      line-height: 1.7;
+    }
+
+    .maintenance-card {
+      margin-bottom: 14px;
+    }
+
+    .switch-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--deep);
+      font-weight: 900;
+    }
+
+    .switch-row input {
+      width: 22px;
+      height: 22px;
+      accent-color: var(--pine);
+    }
+
+    .copy-box {
+      margin-top: 14px;
+      padding: 14px;
+      color: var(--deep);
+      background: #f7fbf8;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.7;
+      word-break: break-all;
+    }
+
+    .launch-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .launch-stat {
+      padding: 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .launch-stat strong {
+      display: block;
+      color: var(--deep);
+      font-size: 26px;
+    }
+
+    .launch-stat span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .launch-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .launch-card {
+      padding: 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .launch-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .launch-title {
+      color: var(--deep);
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .launch-detail,
+    .launch-action {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .launch-action {
+      margin-top: 8px;
+      color: var(--pine);
+      font-weight: 800;
+    }
+
+    @media (max-width: 1180px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .login-screen {
+        grid-template-columns: 1fr;
+      }
+
+      .brand-side {
+        padding: 42px;
+      }
+
+      .sidebar {
+        position: static;
+        width: auto;
+      }
+
+      .main {
+        margin-left: 0;
+        padding: 22px;
+      }
+
+      .filter-bar {
+        grid-template-columns: 1fr;
+      }
+
+      .config-grid,
+      .launch-summary,
+      .launch-grid,
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="login-screen" id="loginScreen">
+    <div class="brand-side">
+      <img class="logo" src="../assets/logo.png" alt="寓你住一起">
+      <h1>内部房源协作管理后台</h1>
+      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、分佣记录、群聊上传记录、积分流水和充值账单。</p>
+    </div>
+    <div class="login-panel">
+      <h2 class="panel-title">管理员登录</h2>
+      <p class="panel-sub">管理员账号由后端校验。请使用已配置的正式管理员账号。</p>
+      <label for="account">账号</label>
+      <input id="account" value="19941091943" autocomplete="username">
+      <label for="password">密码</label>
+      <input id="password" value="" type="password" autocomplete="current-password">
+      <button class="login-button" id="loginButton">进入后台</button>
+      <div class="error" id="loginError"></div>
+      <div class="hint">通过后端地址打开时会使用真实登录 token；本地文件打开时仅用于界面预览。</div>
+    </div>
+  </section>
+
+  <section class="app" id="app">
+    <aside class="sidebar">
+      <div class="side-brand">
+        <img src="../assets/logo.png" alt="">
+        <div>
+          <strong>寓你住一起</strong>
+          <span>管理员后台</span>
+        </div>
+      </div>
+      <div class="menu-title">运营看板</div>
+      <button class="nav-button active" data-panel="dashboard">数据总览</button>
+      <button class="nav-button" data-panel="listings">房源管理</button>
+      <button class="nav-button" data-panel="expiredListings">废房源池</button>
+      <button class="nav-button" data-panel="logs">敏感查看足迹</button>
+      <button class="nav-button" data-panel="commissions">分佣记录</button>
+      <div class="menu-title">群聊与积分</div>
+      <button class="nav-button" data-panel="groupUploads">群聊上传</button>
+      <button class="nav-button" data-panel="showingUploads">带看审核</button>
+      <button class="nav-button" data-panel="points">积分流水</button>
+      <button class="nav-button" data-panel="recharges">充值账单</button>
+      <div class="menu-title">系统配置</div>
+      <button class="nav-button" data-panel="feishuSync">飞书同步</button>
+      <button class="nav-button" data-panel="llmConfig">LLM配置</button>
+      <button class="nav-button" data-panel="launchCheck">上线检查</button>
+      <button class="nav-button" data-panel="admins">账号管理</button>
+      <button class="nav-button" data-panel="dataBackup">数据备份</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <h2 id="panelTitle">数据总览</h2>
+        <div class="admin-tag">管理员：admin</div>
+      </div>
+
+      <section class="panel active" id="dashboard">
+        <div class="stats" id="dashboardStats"></div>
+
+        <div class="dashboard-grid">
+          <div class="info-panel">
+            <h3>区域房源数量</h3>
+            <div id="areaStats"></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>风险提醒</th><th>对象</th><th>状态</th><th>时间</th></tr></thead>
+              <tbody id="riskRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="listings">
+        <div class="config-card maintenance-card">
+          <h3>上传房源电话核验规则</h3>
+          <label class="switch-row">
+            <input type="checkbox" id="maintenanceRuleEnabled">
+            <span>固定规则：15 天未维护自动下架；开启后 3 天、5 天提醒上传人核验</span>
+          </label>
+          <div class="status-box" id="maintenanceRuleStatus">正在读取规则状态...</div>
+          <div class="inline-actions">
+            <button id="saveMaintenanceRule">保存规则开关</button>
+          </div>
+        </div>
+        <div class="filter-bar">
+          <label class="filter-item">
+            <span>区域</span>
+            <select id="areaFilter">
+              <option value="">全部区域</option>
+              <option value="滨江">滨江</option>
+              <option value="萧山">萧山</option>
+              <option value="上城">上城</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>板块</span>
+            <select id="blockFilter">
+              <option value="">全部板块</option>
+              <option value="西兴">西兴</option>
+              <option value="长河">长河</option>
+              <option value="浦沿">浦沿</option>
+              <option value="建设路">建设路</option>
+              <option value="钱江新城">钱江新城</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>小区名称</span>
+            <input id="communityFilter" placeholder="输入小区名称筛选">
+          </label>
+          <button class="ghost-button" id="resetListingFilters">重置</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>房源</th><th>区域</th><th>板块</th><th>小区名称</th><th>上传人</th><th>租金</th><th>户型</th><th>分佣</th><th>视频</th><th>状态</th><th>房态</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="listingRows"></tbody>
+          </table>
+          <div class="empty" id="listingEmpty" hidden>没有符合条件的房源</div>
+        </div>
+      </section>
+
+      <section class="panel" id="expiredListings">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>房源</th><th>区域</th><th>板块</th><th>小区名称</th><th>上传人</th><th>租金</th><th>户型</th><th>最后核验</th><th>下架时间</th><th>下架原因</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="expiredListingRows"></tbody>
+          </table>
+          <div class="empty" id="expiredListingEmpty" hidden>暂无废房源</div>
+        </div>
+      </section>
+
+      <section class="panel" id="logs">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>查看人</th><th>房源</th><th>查看内容</th><th>上传人</th><th>同步状态</th><th>时间</th></tr></thead>
+            <tbody id="adminLogRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="commissions">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>成交房源</th><th>上传人</th><th>成交人</th><th>分佣比例</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody id="commissionRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="groupUploads">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>群聊名称</th><th>截图</th><th>区域/板块</th><th>上传人</th><th>核对状态</th><th>积分</th><th>审核状态</th><th>操作</th></tr></thead>
+            <tbody id="groupUploadRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="showingUploads">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>带看人</th><th>房源</th><th>水印照片</th><th>水印信息</th><th>奖励</th><th>审核状态</th><th>操作</th></tr></thead>
+            <tbody id="showingRows"></tbody>
+          </table>
+          <div class="empty" id="showingEmpty" hidden>暂无带看审核记录</div>
+        </div>
+      </section>
+
+      <section class="panel" id="points">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>员工</th><th>类型</th><th>积分变化</th><th>说明</th><th>时间</th></tr></thead>
+            <tbody id="pointRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="recharges">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>订单号</th><th>用户</th><th>充值积分</th><th>金额</th><th>支付方式</th><th>支付状态</th><th>时间</th><th>操作</th></tr></thead>
+            <tbody id="rechargeRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="feishuSync">
+        <div class="config-grid">
+          <div class="config-card">
+            <h3>飞书房源同步</h3>
+            <div class="status-box" id="feishuSyncStatus">正在读取飞书同步状态...</div>
+            <div class="inline-actions">
+              <button id="runFeishuSync">立即同步</button>
+              <button class="ghost-button" id="dryRunFeishuSync">预演同步</button>
+            </div>
+            <div class="hint">同步规则：房源表为最终状态源；素材库命中视频才会上架；飞书下架、缺素材或房源表删除时，小程序公司房源会自动进入废房源池。</div>
+          </div>
+          <div class="config-card">
+            <h3>最近结果</h3>
+            <div class="copy-box" id="feishuSyncResult">暂无同步记录</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>指标</th><th>数量</th><th>说明</th></tr></thead>
+            <tbody id="feishuSyncRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="llmConfig">
+        <div class="config-grid">
+          <div class="config-card">
+            <h3>LLM 接口配置</h3>
+            <div class="form-grid">
+              <label class="form-item">
+                <span>模型供应商</span>
+                <select id="llmProvider">
+                  <option value="local">本地模拟</option>
+                  <option value="openai-compatible">OpenAI 兼容</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="qwen">通义千问</option>
+                  <option value="zhipu">智谱 GLM</option>
+                  <option value="custom">自定义 HTTP</option>
+                </select>
+              </label>
+              <label class="form-item">
+                <span>接口协议</span>
+                <select id="llmProtocol">
+                  <option value="openai-compatible">OpenAI Chat Completions</option>
+                  <option value="responses-compatible">Responses 风格</option>
+                  <option value="custom-json">自定义 JSON</option>
+                </select>
+              </label>
+              <label class="form-item full">
+                <span>API Base URL</span>
+                <input id="llmApiBaseUrl" placeholder="例如：https://api.example.com/v1/chat/completions">
+              </label>
+              <label class="form-item">
+                <span>模型名称</span>
+                <input id="llmModel" placeholder="例如：gpt-4.1-mini / deepseek-chat">
+              </label>
+              <label class="form-item">
+                <span>密钥保存名</span>
+                <input id="llmSecretName" placeholder="例如：LLM_API_KEY">
+              </label>
+              <label class="form-item full">
+                <span>系统提示词</span>
+                <textarea id="llmSystemPrompt" placeholder="描述配房助手如何理解租客需求、匹配内部房源、输出推荐理由"></textarea>
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button id="saveLlmConfig">保存配置</button>
+              <button class="ghost-button" id="testLlmConfig">测试连接</button>
+              <button class="ghost-button" id="resetLlmConfig">恢复默认</button>
+            </div>
+          </div>
+          <div class="config-card">
+            <h3>上线接入说明</h3>
+            <div class="status-box" id="llmConfigStatus">当前使用本地模拟匹配。正式上线时，密钥应保存在服务端环境变量或密钥管理系统中，不要下发到小程序端。</div>
+            <div class="copy-box" id="llmConfigPreview"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="launchCheck">
+        <div class="launch-summary" id="launchSummary"></div>
+        <div class="launch-grid" id="launchRows"></div>
+        <div class="copy-box" id="launchRequiredInputs"></div>
+        <div class="config-card">
+          <h3>缺失环境变量模板</h3>
+          <div class="copy-box" id="launchEnvTemplate"></div>
+          <div class="inline-actions">
+            <button class="ghost-button" id="copyEnvTemplate">复制模板</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="admins">
+        <div class="config-card">
+          <h3>新增后台账号</h3>
+          <div class="form-grid">
+            <label class="form-item">
+              <span>员工</span>
+              <select id="adminUserId"></select>
+            </label>
+            <label class="form-item">
+              <span>账号</span>
+              <input id="adminAccountInput" placeholder="3-24 位字母数字">
+            </label>
+            <label class="form-item">
+              <span>姓名</span>
+              <input id="adminNameInput" placeholder="默认取员工姓名">
+            </label>
+            <label class="form-item">
+              <span>初始密码</span>
+              <input id="adminPasswordInput" type="password" placeholder="至少 8 位">
+            </label>
+            <label class="form-item">
+              <span>权限</span>
+              <select id="adminPermissionInput">
+                <option value="全部后台权限">全部后台权限</option>
+                <option value="区域查看权限">区域查看权限</option>
+                <option value="后台查看权限">后台查看权限</option>
+              </select>
+            </label>
+          </div>
+          <div class="inline-actions">
+            <button id="createAdminAccount">创建管理员账号</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>账号</th><th>姓名</th><th>权限</th><th>今日查看</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="adminRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="dataBackup">
+        <div class="config-card">
+          <h3>数据导出</h3>
+          <div class="status-box">导出当前房源、用户、足迹、分佣、群聊、积分和后台账号数据。建议上线前、批量导入前、每日下班前各备份一次。</div>
+          <div class="inline-actions">
+            <button id="exportDataBackup">导出 JSON 备份</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <script src="../utils/mock-data.js"></script>
+  <script>
+    const adminAccounts = [
+      { id: 'preview-admin', account: 'preview-admin', name: '界面预览管理员', permission: '界面预览', status: '启用' }
+    ];
+
+    const panelTitles = {
+      dashboard: '数据总览',
+      listings: '房源管理',
+      expiredListings: '废房源池',
+      logs: '敏感查看足迹',
+      commissions: '分佣记录',
+      groupUploads: '群聊上传',
+      showingUploads: '带看审核',
+      points: '积分流水',
+      recharges: '充值账单',
+      feishuSync: '飞书同步',
+      llmConfig: 'LLM配置',
+      launchCheck: '上线检查',
+      admins: '账号管理',
+      dataBackup: '数据备份'
+    };
+
+    const llmProviderDefaults = {
+      local: { apiBaseUrl: '', model: 'local-match-v1', protocol: 'openai-compatible' },
+      'openai-compatible': { apiBaseUrl: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4.1-mini', protocol: 'openai-compatible' },
+      deepseek: { apiBaseUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat', protocol: 'openai-compatible' },
+      qwen: { apiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus', protocol: 'openai-compatible' },
+      zhipu: { apiBaseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-4-flash', protocol: 'openai-compatible' },
+      custom: { apiBaseUrl: '', model: '', protocol: 'custom-json' }
+    };
+
+    const defaultLlmConfig = {
+      provider: 'local',
+      protocol: 'openai-compatible',
+      apiBaseUrl: '',
+      model: 'local-match-v1',
+      secretName: 'LLM_API_KEY',
+      systemPrompt: '你是寓你配房小帮手。根据租客预算、区域、户型、入住时间、通勤位置，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
+    };
+
+    const dataCenter = window.MockData;
+    const loginScreen = document.getElementById('loginScreen');
+    const app = document.getElementById('app');
+    const error = document.getElementById('loginError');
+    const title = document.getElementById('panelTitle');
+    const areaFilter = document.getElementById('areaFilter');
+    const blockFilter = document.getElementById('blockFilter');
+    const communityFilter = document.getElementById('communityFilter');
+    const listingRows = document.getElementById('listingRows');
+    const listingEmpty = document.getElementById('listingEmpty');
+    const expiredListingRows = document.getElementById('expiredListingRows');
+    const expiredListingEmpty = document.getElementById('expiredListingEmpty');
+    const maintenanceRuleEnabled = document.getElementById('maintenanceRuleEnabled');
+    const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
+    let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
+    let llmConfigInitialized = false;
+
+    function pillClass(value) {
+      if (value === '需关注' || value === '待确认' || value === '待审核' || value === '待联系核对' || value === '提醒核验' || value === '重点核验' || value === '需核验' || value === '需处理') return 'pill warn';
+      if (value === '争议' || value === '禁止登录' || value === '已驳回' || value === '已失效' || value === '已下架') return 'pill danger';
+      return 'pill';
+    }
+
+    function buildQuery(params) {
+      const query = Object.keys(params || {})
+        .filter((key) => params[key])
+        .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
+        .join('&');
+      return query ? `?${query}` : '';
+    }
+
+    async function getAdminData(path, fallback) {
+      if (!canUseAdminApi()) return fallback();
+      try {
+        return await adminRequest(path);
+      } catch (error) {
+        return fallback();
+      }
+    }
+
+    async function getDashboardData() {
+      return getAdminData('/admin/dashboard', () => dataCenter.getDashboardSummary());
+    }
+
+    async function renderDashboardStats() {
+      const summary = await getDashboardData();
+      const areaText = summary.areaStats.map((item) => `${item.area} ${item.count}`).join(' · ');
+      document.getElementById('dashboardStats').innerHTML = [
+        { value: summary.listingCount, label: `区域房源数量<br>${areaText}` },
+        { value: summary.groupCount, label: `群聊数量<br>已解锁 ${summary.unlockedGroupCount} 个` },
+        { value: summary.userCount, label: `用户数量<br>已实名 ${summary.authedUsers} 人` },
+        { value: summary.staleListingCount || 0, label: `待电话核验<br>废房源池 ${summary.expiredListingCount || 0} 套` }
+      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+
+      document.getElementById('riskRows').innerHTML = [
+        { title: '房态 3/5 天提醒，15 天下架', object: '房源管理', status: summary.staleListingCount > 0 ? '需核验' : '正常', time: '自动统计' },
+        { title: '敏感信息查看记录新增', object: '房源足迹', status: summary.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
+        { title: '成交登记待上传人确认', object: '分佣记录', status: '处理中', time: '今天' },
+        { title: '充值账单同步积分流水', object: '积分充值', status: '正常', time: '今天' }
+      ].map((item) => `
+        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
+      `).join('');
+    }
+
+    async function renderAreaStats() {
+      const summary = await getDashboardData();
+      const areaData = summary.areaStats || dataCenter.getAreaStats();
+      const max = Math.max.apply(null, areaData.map((item) => item.count));
+      document.getElementById('areaStats').innerHTML = areaData.map((item) => `
+        <div class="area-row">
+          <strong>${item.area}</strong>
+          <div class="bar"><i style="width: ${Math.max(18, Math.round(item.count / max * 100))}%"></i></div>
+          <span>${item.count} 套</span>
+        </div>
+      `).join('');
+    }
+
+    async function renderListings() {
+      const area = areaFilter.value;
+      const block = blockFilter.value;
+      const community = communityFilter.value.trim();
+      const listingData = await getAdminData(`/admin/listings${buildQuery({ area, block, community })}`, () => dataCenter.getAdminListings());
+      const rows = listingData.filter((item) => {
+        const matchArea = !area || item.area === area;
+        const matchBlock = !block || item.block === block;
+        const matchCommunity = !community || item.community.includes(community);
+        return matchArea && matchBlock && matchCommunity;
+      });
+
+      listingRows.innerHTML = rows.map((item) => {
+        const sourceText = item.sourceLabel || item.ownerType || item.source || '';
+        const reviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? ` · ${item.reviewStatus}` : '';
+        const manualReviewText = item.manualReviewReason ? ` · ${item.manualReviewReason}` : '';
+        const statusReviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? item.reviewStatus : '';
+        const canReview = item.reviewStatus === '待审核' || item.status === '待审核';
+        return `
+        <tr>
+          <td>${item.title}<span class="sub-cell">${sourceText}${item.noCommission ? ' · 不分佣' : ''}${reviewText}${manualReviewText}</span></td>
+          <td>${item.area}</td>
+          <td>${item.block}</td>
+          <td>${item.community}</td>
+          <td>${item.uploader}</td>
+          <td>${item.rent}</td>
+          <td>${item.layout}</td>
+          <td>${item.commission}</td>
+          <td><span class="pill">${item.video}</span></td>
+          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${statusReviewText}</span></td>
+          <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span></td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action verify-listing-button" data-id="${item.id}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
+              <button class="table-action review-owner-listing-button" data-id="${item.id}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
+              <button class="table-action reject review-owner-listing-button" data-id="${item.id}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
+            </div>
+          </td>
+        </tr>
+      `}).join('');
+      listingEmpty.hidden = rows.length > 0;
+    }
+
+    async function renderMaintenanceRule() {
+      const rule = await getAdminData('/admin/listing-maintenance-rule', () => (
+        dataCenter.getListingMaintenanceRule ? dataCenter.getListingMaintenanceRule() : {
+          enabled: false,
+          remindDays: [3, 5],
+          expireDays: 15,
+          status: '已关闭',
+          tip: '已关闭提醒：15 天未更新仍会固定自动下架并进入后台废房源池。'
+        }
+      ));
+      maintenanceRuleEnabled.checked = Boolean(rule.enabled);
+      maintenanceRuleStatus.textContent = `${rule.status}。${rule.tip || ''}${rule.updatedAt ? ` 最近保存：${rule.updatedAt}` : ''}`;
+    }
+
+    async function saveMaintenanceRule() {
+      const enabled = maintenanceRuleEnabled.checked;
+      if (enabled && !window.confirm('15 天未维护自动下架为固定规则；这里开启的是 3 天、5 天电话核验提醒。确认开启？')) {
+        maintenanceRuleEnabled.checked = false;
+        await renderMaintenanceRule();
+        return;
+      }
+      if (!canUseAdminApi()) {
+        if (dataCenter.updateListingMaintenanceRule) {
+          dataCenter.updateListingMaintenanceRule({ enabled });
+          await renderMaintenanceRule();
+          await renderDashboardStats();
+          await renderListings();
+          await renderExpiredListings();
+        }
+        return;
+      }
+      const saved = await adminRequest('/admin/listing-maintenance-rule', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled })
+      });
+      maintenanceRuleEnabled.checked = Boolean(saved.enabled);
+      maintenanceRuleStatus.textContent = `${saved.status}。${saved.tip || ''}${saved.expiredCount ? ` 本次自动下架 ${saved.expiredCount} 套。` : ''}`;
+      await renderDashboardStats();
+      await renderAreaStats();
+      await renderListings();
+      await renderExpiredListings();
+      await renderAdminLogs();
+    }
+
+    async function renderExpiredListings() {
+      const area = areaFilter.value;
+      const block = blockFilter.value;
+      const community = communityFilter.value.trim();
+      const rows = await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community })}`, () => (
+        dataCenter.getExpiredListings ? dataCenter.getExpiredListings({ area, block, community }) : []
+      ));
+      expiredListingRows.innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.title}</td>
+          <td>${item.area}</td>
+          <td>${item.block}</td>
+          <td>${item.community}</td>
+          <td>${item.uploader}</td>
+          <td>${item.rent}</td>
+          <td>${item.layout}</td>
+          <td>${item.lastVerifiedAt || '未核验'}<span class="sub-cell">${item.verifyTip || ''}</span></td>
+          <td>${item.expiredAt || '-'}</td>
+          <td><span class="${pillClass(item.status)}">${item.status || '已下架'}</span><span class="sub-cell">${item.expiredReason || ''}</span></td>
+          <td><button class="table-action restore-expired-listing-button" data-id="${item.id}">重新上架</button></td>
+        </tr>
+      `).join('');
+      expiredListingEmpty.hidden = rows.length > 0;
+    }
+
+    async function renderAdminLogs() {
+      const rows = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
+      document.getElementById('adminLogRows').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.viewer}</td>
+          <td>${item.listing}</td>
+          <td>${item.action}</td>
+          <td>${item.uploader}</td>
+          <td><span class="${pillClass(item.sync)}">${item.sync}</span></td>
+          <td>${item.time}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function renderCommissions() {
+      const rows = await getAdminData('/admin/commissions', () => dataCenter.getCommissionRows());
+      document.getElementById('commissionRows').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.listing}</td>
+          <td>${item.uploader}</td>
+          <td>${item.dealer}</td>
+          <td>${item.rate}</td>
+          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+          <td>${item.time}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function getGroupUploadData() {
+      if (!canUseAdminApi()) return dataCenter.getGroupUploadRows();
+      try {
+        return await adminRequest('/admin/groups/uploads');
+      } catch (error) {
+        return dataCenter.getGroupUploadRows();
+      }
+    }
+
+    async function renderGroupUploads() {
+      const rows = await getGroupUploadData();
+      document.getElementById('groupUploadRows').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.title}<span class="sub-cell">${item.time || ''}</span></td>
+          <td>
+            ${item.screenshotUrl ? `<a class="audit-shot" href="${item.screenshotUrl}" target="_blank"><img src="${item.screenshotUrl}" alt="群聊截图"></a>` : '<span class="audit-shot">待补图</span>'}
+          </td>
+          <td>${item.area}<span class="sub-cell">${item.block}</span></td>
+          <td>${item.uploader}<span class="sub-cell">${item.uploaderPhone || '无电话'}</span></td>
+          <td><span class="${pillClass(item.contactStatus)}">${item.contactStatus || '待联系核对'}</span><span class="sub-cell">${item.reviewNote || '管理员需联系用户核对截图真实性'}</span></td>
+          <td>${item.point}</td>
+          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action review-button" data-id="${item.id}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
+              <button class="table-action reject review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function getShowingUploadData() {
+      if (!canUseAdminApi()) return dataCenter.getShowingUploadRows();
+      try {
+        return await adminRequest('/admin/showings');
+      } catch (error) {
+        return dataCenter.getShowingUploadRows();
+      }
+    }
+
+    async function renderShowingUploads() {
+      const rows = await getShowingUploadData();
+      const body = document.getElementById('showingRows');
+      const empty = document.getElementById('showingEmpty');
+      body.innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.user}<span class="sub-cell">${item.userPhone || '无电话'} · ${item.time || ''}</span></td>
+          <td>${item.community || item.listing}<span class="sub-cell">${item.room || '-'} · 上传人 ${item.uploader || '-'}</span></td>
+          <td>
+            ${item.photoUrl ? `<a class="audit-shot" href="${item.photoUrl}" target="_blank"><img src="${item.photoUrl}" alt="带看水印照片"></a>` : '<span class="audit-shot">待补图</span>'}
+          </td>
+          <td>${item.locationText || '-'}<span class="sub-cell">${item.watermarkText || '待查看水印信息'}</span></td>
+          <td>${item.reward}</td>
+          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${item.reviewNote || '管理员核验水印照片真实性'}</span></td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action showing-review-button" data-id="${item.id}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
+              <button class="table-action reject showing-review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+      empty.hidden = Boolean(rows.length);
+    }
+
+    async function getPointData() {
+      if (!canUseAdminApi()) return dataCenter.getPointLogs();
+      try {
+        return await adminRequest('/admin/points');
+      } catch (error) {
+        return dataCenter.getPointLogs();
+      }
+    }
+
+    async function renderPoints() {
+      const rows = await getPointData();
+      document.getElementById('pointRows').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.user}</td>
+          <td>${item.type}</td>
+          <td>${item.change}</td>
+          <td>${item.note}</td>
+          <td>${item.time}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function renderRecharges() {
+      const rows = await getAdminData('/admin/recharges', () => dataCenter.getRechargeBills());
+      document.getElementById('rechargeRows').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${item.id}</td>
+          <td>${item.user}</td>
+          <td>${item.points}</td>
+          <td>${item.amount}</td>
+          <td>${item.paymentMethod || '-'}</td>
+          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+          <td>${item.time}</td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action recharge-review-button" data-id="${item.id}" data-action="approve" ${item.status !== '待确认' ? 'disabled' : ''}>确认到账</button>
+              <button class="table-action reject recharge-review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待确认' ? 'disabled' : ''}>驳回</button>
+              <button class="table-action recharge-sync-button" data-id="${item.id}" ${String(item.paymentMethod || '').indexOf('微信') === -1 ? 'disabled' : ''}>同步状态</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function fillAdminUserSelect(users) {
+      const select = document.getElementById('adminUserId');
+      if (!select) return;
+      const current = select.value;
+      select.innerHTML = '<option value="">不绑定员工</option>' + (users || []).map((item) => (
+        `<option value="${item.id}">${item.name || item.id} · ${item.phone || ''}</option>`
+      )).join('');
+      if (current) select.value = current;
+    }
+
+    async function renderAdmins() {
+      const payload = await getAdminData('/admin/users', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
+      const users = Array.isArray(payload) ? payload : payload.users || [];
+      const admins = Array.isArray(payload) ? adminAccounts : payload.admins || adminAccounts;
+      fillAdminUserSelect(users);
+      const staffRows = users.filter((item) => !item.isAdmin).map((item) => ({
+        id: item.id,
+        account: item.id.toLowerCase(),
+        name: item.name,
+        permission: item.role || '无后台权限',
+        todayViews: `业主 ${item.todayOwnerViews || 0}/${item.ownerViewLimit || 3} · 普通 ${item.todayNormalViews || 0}/${item.normalViewLimit || 15}`,
+        status: item.brokerStatus || item.authed || '禁止登录',
+        canEdit: false
+      }));
+      const rows = admins.map((item) => ({
+        id: item.id || item.account,
+        account: item.account,
+        name: item.name,
+        permission: item.permission || '后台权限',
+        todayViews: '-',
+        status: item.status || '启用',
+        canEdit: true
+      })).concat(staffRows);
+
+      document.getElementById('adminRows').innerHTML = rows.map((item) => {
+        return `
+          <tr>
+            <td>${item.account}</td>
+            <td>${item.name}</td>
+            <td>${item.permission}</td>
+            <td>${item.todayViews}</td>
+            <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+            <td>${item.canEdit ? `
+              <div class="row-actions">
+                <button class="table-action password-button" data-id="${item.id}" data-account="${item.account}">修改密码</button>
+                <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${item.id}" data-account="${item.account}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
+              </div>
+            ` : '-'}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function fallbackLaunchCheck() {
+      const items = [
+        { title: 'OSS/RAM 最小权限', status: '待确认', detail: '文件方式预览无法读取服务端 OSS/RAM 环境变量', action: '通过后端地址打开后台后自动检查 RAM 子账号和 OSS Bucket 配置' },
+        { title: '后台 Token 密钥', status: '待确认', detail: '文件方式预览无法读取 ADMIN_TOKEN_SECRET', action: '通过后端地址打开后台后自动检查' },
+        { title: '管理员初始密码', status: '待确认', detail: '文件方式预览无法读取服务端管理员状态', action: '通过后端地址打开后台后自动检查' },
+        { title: 'LLM 配房助手', status: '待确认', detail: '需要通过后端读取 LLM 配置和密钥状态', action: '进入 LLM 配置保存真实供应商和密钥变量名' },
+        { title: '微信合法域名', status: '待确认', detail: '需要在微信小程序后台配置', action: '配置正式 API 域名和 OSS 上传域名' }
+      ];
+      return {
+        summary: {
+          pass: 0,
+          todo: items.filter((item) => item.status === '需处理').length,
+          pending: items.filter((item) => item.status === '待确认').length
+        },
+        items,
+        requiredInputs: items.filter((item) => item.status !== '通过').map((item) => `${item.title}：${item.action}`)
+      };
+    }
+
+    async function renderLaunchCheck() {
+      const data = await getAdminData('/admin/launch-check', fallbackLaunchCheck);
+      const summary = data.summary || { pass: 0, todo: 0, pending: 0 };
+      document.getElementById('launchSummary').innerHTML = [
+        { value: summary.pass || 0, label: '已通过' },
+        { value: summary.todo || 0, label: '需处理' },
+        { value: summary.pending || 0, label: '待人工确认' }
+      ].map((item) => `<div class="launch-stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+
+      document.getElementById('launchRows').innerHTML = (data.items || []).map((item) => `
+        <div class="launch-card">
+          <div class="launch-card-head">
+            <div class="launch-title">${item.title}</div>
+            <span class="${pillClass(item.status)}">${item.status}</span>
+          </div>
+          <div class="launch-detail">${item.detail || ''}</div>
+          <div class="launch-action">${item.action || ''}</div>
+        </div>
+      `).join('');
+
+      document.getElementById('launchRequiredInputs').textContent = (data.requiredInputs || []).length
+        ? `还需要处理：\n${data.requiredInputs.join('\n')}`
+        : '上线检查已通过当前自动检查项。';
+
+      const envTemplate = await getAdminData('/admin/env-template', () => ({ template: '# 通过后端地址打开后台后自动生成缺失环境变量模板' }));
+      document.getElementById('launchEnvTemplate').textContent = envTemplate.template || '';
+    }
+
+    function canUseAdminApi() {
+      return window.location.protocol !== 'file:';
+    }
+
+    async function adminRequest(path, options = {}) {
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+      if (adminToken) headers.Authorization = `Bearer ${adminToken}`;
+      const response = await fetch(path, Object.assign({}, options, { headers }));
+      const body = await response.json();
+      if (!response.ok || (body.code && body.code !== 0)) {
+        throw new Error(body.message || '后台接口请求失败');
+      }
+      return body.data;
+    }
+
+    async function exportDataBackup() {
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再导出数据备份：/admin-web/');
+        return;
+      }
+      const headers = {};
+      if (adminToken) headers.Authorization = `Bearer ${adminToken}`;
+      const response = await fetch('/admin/data/export', { headers });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || '数据导出失败');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ynzy-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function reviewShowingUpload(id, action) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        dataCenter.reviewShowingUpload(id, action);
+        await renderShowingUploads();
+        await renderDashboardStats();
+        return;
+      }
+      const confirmText = action === 'approve'
+        ? '确认水印照片真实有效，并给带看人当天普通房源查看额度 +1？'
+        : '确认驳回该带看水印照片？';
+      if (!window.confirm(confirmText)) return;
+
+      await adminRequest(`/admin/showings/${id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          note: action === 'approve' ? '水印照片核验通过，普通房源额度 +1' : '水印照片未通过核验'
+        })
+      });
+      await renderShowingUploads();
+      await renderAdminLogs();
+      await renderPoints();
+      await renderAdmins();
+      await renderDashboardStats();
+    }
+
+    async function reviewGroupUpload(id, action) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再审核：/admin-web/');
+        return;
+      }
+      const confirmText = action === 'approve'
+        ? '确认已联系上传人核对截图，并审核通过给 1 积分？'
+        : '确认已联系上传人核对，并驳回该群聊上传？';
+      if (!window.confirm(confirmText)) return;
+
+      await adminRequest(`/admin/groups/uploads/${id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          note: action === 'approve' ? '已联系上传人核对，审核通过' : '已联系上传人核对，审核驳回'
+        })
+      });
+      await renderGroupUploads();
+      await renderPoints();
+      await renderDashboardStats();
+    }
+
+    async function reviewOwnerListing(id, action) {
+      if (!id) return;
+      const approved = action === 'approve';
+      const confirmText = approved
+        ? '确认该房源信息已核对，审核通过并上架？'
+        : '确认驳回该房源，暂不上架？';
+      if (!window.confirm(confirmText)) return;
+
+      if (!canUseAdminApi()) {
+        if (dataCenter.reviewOwnerListing) {
+          dataCenter.reviewOwnerListing(id, action);
+          await renderListings();
+          await renderDashboardStats();
+          await renderAreaStats();
+          return;
+        }
+        alert('请通过后端地址打开后台后再审核房源：/admin-web/');
+        return;
+      }
+
+      await adminRequest(`/admin/listings/${id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          note: approved ? '管理员审核通过，房源已上架' : '管理员审核驳回，房源暂不上架'
+        })
+      });
+      await renderListings();
+      await renderDashboardStats();
+      await renderAreaStats();
+    }
+
+    async function reviewRechargeBill(id, action) {
+      if (!id) return;
+      const confirmText = action === 'approve'
+        ? '确认已经收到该笔充值款，并给用户增加对应积分？'
+        : '确认驳回该笔充值申请？';
+      if (!window.confirm(confirmText)) return;
+
+      if (!canUseAdminApi()) {
+        if (dataCenter.reviewRechargeBill) {
+          dataCenter.reviewRechargeBill(id, action);
+          await renderRecharges();
+          await renderPoints();
+          await renderDashboardStats();
+          await renderLaunchCheck();
+          return;
+        }
+        alert('请通过后端地址打开后台后再处理充值：/admin-web/');
+        return;
+      }
+
+      await adminRequest(`/admin/recharges/${id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          note: action === 'approve' ? '管理员确认收款，积分到账' : '管理员驳回充值申请'
+        })
+      });
+      await renderRecharges();
+      await renderPoints();
+      await renderDashboardStats();
+      await renderLaunchCheck();
+    }
+
+    async function syncRechargeBill(id) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再同步充值账单：/admin-web/');
+        return;
+      }
+      if (!window.confirm('确认向微信支付查询并同步该笔账单状态？')) return;
+
+      const result = await adminRequest(`/admin/recharges/${id}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      await renderRecharges();
+      await renderPoints();
+      await renderDashboardStats();
+      await renderLaunchCheck();
+      alert(result.message || '账单状态已同步');
+    }
+
+    async function changeAdminPassword(id, account) {
+      const nextPassword = window.prompt(`请输入 ${account} 的新密码，至少 8 位，不能使用内测默认密码`);
+      if (!nextPassword) return;
+      if (nextPassword.length < 8) {
+        alert('管理员密码至少 8 位');
+        return;
+      }
+      if (['admin123', 'manager123'].includes(nextPassword)) {
+        alert('不能继续使用内测默认密码');
+        return;
+      }
+
+      if (!canUseAdminApi()) {
+        const item = adminAccounts.find((admin) => admin.account === account);
+        if (item) item.password = nextPassword;
+        await renderAdmins();
+        return;
+      }
+
+      await adminRequest(`/admin/accounts/${id}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password: nextPassword })
+      });
+      await renderAdmins();
+      await renderLaunchCheck();
+      alert('密码已更新，请妥善保存。');
+    }
+
+    function readAdminAccountForm() {
+      return {
+        userId: document.getElementById('adminUserId').value,
+        account: document.getElementById('adminAccountInput').value.trim(),
+        name: document.getElementById('adminNameInput').value.trim(),
+        password: document.getElementById('adminPasswordInput').value.trim(),
+        permission: document.getElementById('adminPermissionInput').value
+      };
+    }
+
+    function resetAdminAccountForm() {
+      document.getElementById('adminAccountInput').value = '';
+      document.getElementById('adminNameInput').value = '';
+      document.getElementById('adminPasswordInput').value = '';
+    }
+
+    async function createAdminAccount() {
+      const form = readAdminAccountForm();
+      if (!form.account || form.password.length < 8) {
+        alert('请填写账号，并设置至少 8 位密码。');
+        return;
+      }
+      if (['admin123', 'manager123'].includes(form.password)) {
+        alert('不能使用内测默认密码。');
+        return;
+      }
+
+      if (!canUseAdminApi()) {
+        adminAccounts.unshift({
+          id: `local-${Date.now()}`,
+          account: form.account,
+          password: form.password,
+          name: form.name || form.account,
+          permission: form.permission,
+          status: '启用'
+        });
+        resetAdminAccountForm();
+        await renderAdmins();
+        return;
+      }
+
+      await adminRequest('/admin/accounts', {
+        method: 'POST',
+        body: JSON.stringify(form)
+      });
+      resetAdminAccountForm();
+      await renderAdmins();
+      await renderLaunchCheck();
+      alert('管理员账号已创建。');
+    }
+
+    async function changeAdminStatus(id, account, action) {
+      const status = action === 'disable' ? '禁用' : '启用';
+      if (!window.confirm(`确认${status} ${account}？`)) return;
+      if (!canUseAdminApi()) {
+        const item = adminAccounts.find((admin) => (admin.id || admin.account) === id);
+        if (item) item.status = status;
+        await renderAdmins();
+        return;
+      }
+      await adminRequest(`/admin/accounts/${id}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ action })
+      });
+      await renderAdmins();
+      await renderLaunchCheck();
+    }
+
+    async function verifyAdminListing(id) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        if (dataCenter.verifyAdminListing) {
+          dataCenter.verifyAdminListing(id);
+          await renderListings();
+          await renderDashboardStats();
+          await renderExpiredListings();
+          return;
+        }
+        alert('请通过后端地址打开后台后再核验：/admin-web/');
+        return;
+      }
+      if (!window.confirm('确认已电话联系房东，并确认这套房源仍可出租？确认后会更新房态核验时间。')) return;
+
+      await adminRequest(`/admin/listings/${id}/verify`, {
+        method: 'POST'
+      });
+      await renderListings();
+      await renderDashboardStats();
+      await renderExpiredListings();
+      await renderAdminLogs();
+    }
+
+    async function restoreExpiredListing(id) {
+      if (!id) return;
+      if (!window.confirm('确认已核对房态，并将该房源从废房源池重新上架？')) return;
+      if (!canUseAdminApi()) {
+        if (dataCenter.restoreExpiredListing) {
+          dataCenter.restoreExpiredListing(id);
+          await renderListings();
+          await renderDashboardStats();
+          await renderExpiredListings();
+          await renderAdminLogs();
+          return;
+        }
+        alert('请通过后端地址打开后台后再重新上架：/admin-web/');
+        return;
+      }
+
+      await adminRequest(`/admin/expired-listings/${id}/restore`, {
+        method: 'POST'
+      });
+      await renderListings();
+      await renderDashboardStats();
+      await renderExpiredListings();
+      await renderAdminLogs();
+    }
+
+    function fallbackFeishuSyncStatus() {
+      return {
+        ready: false,
+        mode: '后端未连接',
+        recordsReady: false,
+        materialsReady: false,
+        uploadToOss: true,
+        feishuListingCount: 0,
+        lastLog: null
+      };
+    }
+
+    function renderFeishuSyncPayload(payload) {
+      const status = payload.status || payload || fallbackFeishuSyncStatus();
+      const lastLog = status.lastLog || payload.result || null;
+      document.getElementById('feishuSyncStatus').textContent = status.ready
+        ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；素材${status.materialsReady ? '已配置' : '未配置'}；房源表${status.recordsReady ? '已配置' : '未配置'}。`
+        : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`;
+      document.getElementById('feishuSyncRows').innerHTML = [
+        { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: status.bitableAppToken || '支持飞书多维表或本地导入文件' },
+        { name: '飞书表格', value: status.sheetReady ? '已配置' : '未配置', note: status.sheetToken ? `${status.sheetToken} · ${status.sheetRange || '默认范围'}` : '支持普通飞书表格 Sheets' },
+        { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: status.folderToken || '素材库 Folder Token / 本地素材文件' },
+        { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
+        { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
+        { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' }
+      ].map((item) => `
+        <tr><td>${item.name}</td><td>${item.value}</td><td>${item.note || ''}</td></tr>
+      `).join('');
+      document.getElementById('feishuSyncResult').textContent = lastLog
+        ? JSON.stringify({
+          dryRun: Boolean(lastLog.dryRun),
+          startedAt: lastLog.startedAt,
+          finishedAt: lastLog.finishedAt,
+          sourceRecordCount: lastLog.sourceRecordCount,
+          materialCount: lastLog.materialCount,
+          created: lastLog.created,
+          updated: lastLog.updated,
+          down: lastLog.down,
+          skippedNoMaterial: lastLog.skippedNoMaterial,
+          skippedInvalid: lastLog.skippedInvalid,
+          failed: lastLog.failed,
+          messages: lastLog.messages || []
+        }, null, 2)
+        : '暂无同步记录';
+    }
+
+    async function renderFeishuSync() {
+      const status = await getAdminData('/admin/feishu-sync/status', fallbackFeishuSyncStatus);
+      renderFeishuSyncPayload(status);
+    }
+
+    async function runFeishuSync(dryRun) {
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再执行飞书同步：/admin-web/');
+        return;
+      }
+      if (!dryRun && !window.confirm('确认按飞书房源表和素材库同步小程序公司房源？缺素材、已下架或表中删除的公司房源会进入废房源池。')) return;
+      document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在预演飞书同步...' : '正在执行飞书同步...';
+      const result = await adminRequest('/admin/feishu-sync/run', {
+        method: 'POST',
+        body: JSON.stringify({ dryRun: Boolean(dryRun) })
+      });
+      renderFeishuSyncPayload(result);
+      await renderDashboardStats();
+      await renderAreaStats();
+      await renderListings();
+      await renderExpiredListings();
+      await renderLaunchCheck();
+    }
+
+    function getSavedLlmConfig() {
+      try {
+        const saved = localStorage.getItem('ynzy_llm_config');
+        return saved ? Object.assign({}, defaultLlmConfig, JSON.parse(saved)) : defaultLlmConfig;
+      } catch (error) {
+        return defaultLlmConfig;
+      }
+    }
+
+    async function loadSavedLlmConfig() {
+      if (!canUseAdminApi()) return getSavedLlmConfig();
+      try {
+        const config = await adminRequest('/admin/llm-config');
+        return Object.assign({}, defaultLlmConfig, config || {});
+      } catch (error) {
+        showLlmStatus('后端配置读取失败，当前展示浏览器本地配置。');
+        return getSavedLlmConfig();
+      }
+    }
+
+    function readLlmConfigForm() {
+      return {
+        provider: document.getElementById('llmProvider').value,
+        protocol: document.getElementById('llmProtocol').value,
+        apiBaseUrl: document.getElementById('llmApiBaseUrl').value.trim(),
+        model: document.getElementById('llmModel').value.trim(),
+        secretName: document.getElementById('llmSecretName').value.trim() || 'LLM_API_KEY',
+        systemPrompt: document.getElementById('llmSystemPrompt').value.trim(),
+        enabled: document.getElementById('llmProvider').value !== 'local'
+      };
+    }
+
+    function fillLlmConfigForm(config) {
+      document.getElementById('llmProvider').value = config.provider;
+      document.getElementById('llmProtocol').value = config.protocol;
+      document.getElementById('llmApiBaseUrl').value = config.apiBaseUrl;
+      document.getElementById('llmModel').value = config.model;
+      document.getElementById('llmSecretName').value = config.secretName;
+      document.getElementById('llmSystemPrompt').value = config.systemPrompt;
+      renderLlmConfigPreview(config);
+    }
+
+    function renderLlmConfigPreview(config) {
+      const isLocal = config.provider === 'local';
+      document.getElementById('llmConfigStatus').textContent = isLocal
+        ? '当前使用本地模拟匹配。正式上线时请选择真实供应商，并在服务端保存密钥。'
+        : `当前配置：${config.provider} / ${config.model}。小程序应调用后端 /mini/llm/match，由后端转发到该 LLM 接口。`;
+      document.getElementById('llmConfigPreview').textContent = JSON.stringify({
+        provider: config.provider,
+        protocol: config.protocol,
+        apiBaseUrl: config.apiBaseUrl,
+        model: config.model,
+        secretName: config.secretName,
+        miniProgramEndpoint: '/mini/llm/match'
+      }, null, 2);
+    }
+
+    function showLlmStatus(text) {
+      document.getElementById('llmConfigStatus').textContent = text;
+    }
+
+    function applyProviderDefault() {
+      const provider = document.getElementById('llmProvider').value;
+      const preset = llmProviderDefaults[provider] || llmProviderDefaults.local;
+      document.getElementById('llmProtocol').value = preset.protocol;
+      document.getElementById('llmApiBaseUrl').value = preset.apiBaseUrl;
+      document.getElementById('llmModel').value = preset.model;
+      renderLlmConfigPreview(readLlmConfigForm());
+    }
+
+    async function saveLlmConfig() {
+      const config = readLlmConfigForm();
+      localStorage.setItem('ynzy_llm_config', JSON.stringify(config));
+      try {
+        if (canUseAdminApi()) {
+          const saved = await adminRequest('/admin/llm-config', {
+            method: 'PUT',
+            body: JSON.stringify(config)
+          });
+          fillLlmConfigForm(saved);
+          showLlmStatus('LLM 配置已保存到后端。小程序会通过 /mini/llm/match 使用该配置。');
+          renderLaunchCheck();
+          return;
+        }
+        renderLlmConfigPreview(config);
+        showLlmStatus('LLM 配置已保存到浏览器本地。通过后端地址打开后台后，可保存到服务端。');
+      } catch (error) {
+        renderLlmConfigPreview(config);
+        showLlmStatus(error.message || 'LLM 配置保存失败');
+      }
+    }
+
+    async function testLlmConfig() {
+      const config = readLlmConfigForm();
+      if (config.provider !== 'local' && !config.apiBaseUrl) {
+        showLlmStatus('请先填写 API Base URL。');
+        return;
+      }
+      renderLlmConfigPreview(config);
+      if (!canUseAdminApi()) {
+        showLlmStatus(config.provider === 'local' ? '本地模拟可用。' : '配置格式检查通过。通过后端地址打开后台后，可测试服务端转发。');
+        return;
+      }
+      try {
+        const result = await adminRequest('/admin/llm-config/test', {
+          method: 'POST',
+          body: JSON.stringify(config)
+        });
+        showLlmStatus(`测试完成：${result.mode}${result.warning ? '，已回退本地匹配：' + result.warning : '。'}`);
+      } catch (error) {
+        showLlmStatus(error.message || 'LLM 测试失败');
+      }
+    }
+
+    async function resetLlmConfig() {
+      localStorage.removeItem('ynzy_llm_config');
+      fillLlmConfigForm(defaultLlmConfig);
+      if (canUseAdminApi()) {
+        await adminRequest('/admin/llm-config', {
+          method: 'PUT',
+          body: JSON.stringify(defaultLlmConfig)
+        });
+        renderLaunchCheck();
+      }
+    }
+
+    async function initLlmConfigPanel() {
+      if (llmConfigInitialized) return;
+      llmConfigInitialized = true;
+      fillLlmConfigForm(getSavedLlmConfig());
+      fillLlmConfigForm(await loadSavedLlmConfig());
+      document.getElementById('llmProvider').addEventListener('change', applyProviderDefault);
+      document.getElementById('saveLlmConfig').addEventListener('click', saveLlmConfig);
+      document.getElementById('testLlmConfig').addEventListener('click', testLlmConfig);
+      document.getElementById('resetLlmConfig').addEventListener('click', resetLlmConfig);
+      ['llmProtocol', 'llmApiBaseUrl', 'llmModel', 'llmSecretName', 'llmSystemPrompt'].forEach((id) => {
+        document.getElementById(id).addEventListener('input', () => renderLlmConfigPreview(readLlmConfigForm()));
+      });
+    }
+
+    function renderAll() {
+      renderDashboardStats();
+      renderAreaStats();
+      renderMaintenanceRule();
+      renderListings();
+      renderExpiredListings();
+      renderAdminLogs();
+      renderCommissions();
+      renderGroupUploads();
+      renderShowingUploads();
+      renderPoints();
+      renderRecharges();
+      renderAdmins();
+      renderFeishuSync();
+      renderLaunchCheck();
+      initLlmConfigPanel();
+    }
+
+    async function openAdminApp(admin) {
+      loginScreen.style.display = 'none';
+      app.style.display = 'block';
+      document.querySelector('.admin-tag').textContent = `管理员：${admin.account}`;
+      await renderAll();
+    }
+
+    async function loginByBackend(account, password) {
+      const response = await fetch('/admin/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account, password })
+      });
+      const body = await response.json();
+      if (!response.ok || (body.code && body.code !== 0)) {
+        throw new Error(body.message || '无管理员权限，无法进入后台。');
+      }
+      adminToken = body.data.token;
+      sessionStorage.setItem('ynzy_admin_token', adminToken);
+      return body.data.admin;
+    }
+
+    document.getElementById('loginButton').addEventListener('click', async () => {
+      const account = document.getElementById('account').value.trim();
+      const password = document.getElementById('password').value.trim();
+      error.textContent = '';
+      try {
+        if (canUseAdminApi()) {
+          const admin = await loginByBackend(account, password);
+          await openAdminApp(admin);
+          return;
+        }
+        if (!account || !password) {
+          error.textContent = '请输入账号和密码。';
+          return;
+        }
+        await openAdminApp({ account, name: '界面预览管理员' });
+      } catch (loginError) {
+        error.textContent = loginError.message || '登录失败，请检查账号密码。';
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      const passwordButton = event.target.closest('.password-button');
+      if (passwordButton && !passwordButton.disabled) {
+        changeAdminPassword(passwordButton.dataset.id, passwordButton.dataset.account).catch((error) => {
+          alert(error.message || '修改密码失败');
+        });
+        return;
+      }
+
+      const statusButton = event.target.closest('.status-button');
+      if (statusButton && !statusButton.disabled) {
+        changeAdminStatus(statusButton.dataset.id, statusButton.dataset.account, statusButton.dataset.action).catch((error) => {
+          alert(error.message || '账号状态修改失败');
+        });
+        return;
+      }
+
+      const rechargeReviewButton = event.target.closest('.recharge-review-button');
+      if (rechargeReviewButton && !rechargeReviewButton.disabled) {
+        reviewRechargeBill(rechargeReviewButton.dataset.id, rechargeReviewButton.dataset.action).catch((error) => {
+          alert(error.message || '充值审核失败');
+        });
+        return;
+      }
+      const rechargeSyncButton = event.target.closest('.recharge-sync-button');
+      if (rechargeSyncButton && !rechargeSyncButton.disabled) {
+        syncRechargeBill(rechargeSyncButton.dataset.id).catch((error) => {
+          alert(error.message || '充值同步失败');
+        });
+        return;
+      }
+
+      const showingReviewButton = event.target.closest('.showing-review-button');
+      if (showingReviewButton && !showingReviewButton.disabled) {
+        reviewShowingUpload(showingReviewButton.dataset.id, showingReviewButton.dataset.action).catch((error) => {
+          alert(error.message || '带看审核失败');
+        });
+        return;
+      }
+
+      const reviewButton = event.target.closest('.review-button');
+      if (reviewButton && !reviewButton.disabled) {
+        reviewGroupUpload(reviewButton.dataset.id, reviewButton.dataset.action).catch((error) => {
+          alert(error.message || '审核操作失败');
+        });
+        return;
+      }
+
+      const ownerReviewButton = event.target.closest('.review-owner-listing-button');
+      if (ownerReviewButton && !ownerReviewButton.disabled) {
+        reviewOwnerListing(ownerReviewButton.dataset.id, ownerReviewButton.dataset.action).catch((error) => {
+          alert(error.message || '房源审核失败');
+        });
+        return;
+      }
+
+      const verifyButton = event.target.closest('.verify-listing-button');
+      if (verifyButton && !verifyButton.disabled) {
+        verifyAdminListing(verifyButton.dataset.id).catch((error) => {
+          alert(error.message || '房态核验失败');
+        });
+        return;
+      }
+
+      const restoreButton = event.target.closest('.restore-expired-listing-button');
+      if (restoreButton && !restoreButton.disabled) {
+        restoreExpiredListing(restoreButton.dataset.id).catch((error) => {
+          alert(error.message || '重新上架失败');
+        });
+      }
+    });
+
+    document.querySelectorAll('.nav-button').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.nav-button').forEach((item) => item.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        document.getElementById(button.dataset.panel).classList.add('active');
+        title.textContent = panelTitles[button.dataset.panel] || button.textContent;
+      });
+    });
+
+    [areaFilter, blockFilter, communityFilter].forEach((item) => {
+      item.addEventListener('input', () => {
+        renderListings();
+        renderExpiredListings();
+      });
+      item.addEventListener('change', () => {
+        renderListings();
+        renderExpiredListings();
+      });
+    });
+    document.getElementById('resetListingFilters').addEventListener('click', () => {
+      areaFilter.value = '';
+      blockFilter.value = '';
+      communityFilter.value = '';
+      renderListings();
+      renderExpiredListings();
+    });
+    document.getElementById('saveMaintenanceRule').addEventListener('click', () => {
+      saveMaintenanceRule().catch((error) => {
+        alert(error.message || '规则开关保存失败');
+      });
+    });
+    document.getElementById('createAdminAccount').addEventListener('click', () => {
+      createAdminAccount().catch((error) => {
+        alert(error.message || '创建管理员账号失败');
+      });
+    });
+    document.getElementById('dryRunFeishuSync').addEventListener('click', () => {
+      runFeishuSync(true).catch((error) => {
+        alert(error.message || '飞书同步预演失败');
+        renderFeishuSync();
+      });
+    });
+    document.getElementById('runFeishuSync').addEventListener('click', () => {
+      runFeishuSync(false).catch((error) => {
+        alert(error.message || '飞书同步失败');
+        renderFeishuSync();
+      });
+    });
+    document.getElementById('exportDataBackup').addEventListener('click', () => {
+      exportDataBackup().catch((error) => {
+        alert(error.message || '数据导出失败');
+      });
+    });
+    document.getElementById('copyEnvTemplate').addEventListener('click', () => {
+      const text = document.getElementById('launchEnvTemplate').textContent || '';
+      if (navigator.clipboard && text) {
+        navigator.clipboard.writeText(text).then(() => alert('已复制环境变量模板'));
+        return;
+      }
+      alert('当前浏览器不支持自动复制，请手动选中文本复制。');
+    });
+
+  </script>
+</body>
+</html>

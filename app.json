@@ -1,0 +1,69 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/listings/listings",
+    "pages/match/match",
+    "pages/match-chat/match-chat",
+    "pages/map/map",
+    "pages/auth/auth",
+    "pages/my-listings/my-listings",
+    "pages/upload/upload",
+    "pages/listing-detail/listing-detail",
+    "pages/footprint/footprint",
+    "pages/commissions/commissions",
+    "pages/groups/groups",
+    "pages/profile/profile"
+  ],
+  "window": {
+    "navigationBarTextStyle": "black",
+    "navigationStyle": "custom"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#78918a",
+    "selectedColor": "#2f6f60",
+    "backgroundColor": "#fbfaf6",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/footprint/footprint",
+        "text": "房源足迹"
+      },
+      {
+        "pagePath": "pages/groups/groups",
+        "text": "房源群"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  },
+  "style": "v2",
+  "renderer": "skyline",
+  "rendererOptions": {
+    "skyline": {
+      "defaultDisplayBlock": true,
+      "defaultContentBox": true,
+      "tagNameStyleIsolation": "legacy",
+      "disableABTest": true,
+      "sdkVersionBegin": "3.0.0",
+      "sdkVersionEnd": "15.255.255"
+    }
+  },
+  "componentFramework": "glass-easel",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "permission": {
+    "scope.record": {
+      "desc": "用于语音输入配房需求"
+    },
+    "scope.userLocation": {
+      "desc": "用于带看水印照片记录现场位置"
+    }
+  }
+}

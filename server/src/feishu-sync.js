@@ -1,0 +1,736 @@
+const fs = require('fs')
+const path = require('path')
+const config = require('./config')
+const domain = require('./domain')
+const oss = require('./oss')
+
+const COMPANY_FEATURES = ['免押金', '不分佣']
+const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
+const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
+const UP_STATUS_PATTERN = /上架|在租|待租|空置|可租|有效|up|on|active/i
+const NOT_UP_PATTERN = /未上架|不上架|否|false|no|0/i
+
+function nowText() {
+  return new Date().toLocaleString('zh-CN', { hour12: false })
+}
+
+function id(prefix) {
+  return `${prefix}${Date.now()}${Math.floor(Math.random() * 1000)}`
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function trimSlash(value) {
+  return String(value || '').replace(/\/+$/, '')
+}
+
+function readJson(filePath) {
+  const target = path.isAbsolute(filePath) ? filePath : path.resolve(config.rootDir, '..', filePath)
+  const content = fs.readFileSync(target, 'utf8').replace(/^\uFEFF/, '')
+  const data = JSON.parse(content)
+  return Array.isArray(data) ? data : (data.records || data.rows || data.items || data.candidates || data.materials || data.files || data.successes || [])
+}
+
+function normalizeText(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim()
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalizeText).filter(Boolean).join(' ').trim()
+  }
+  if (typeof value === 'object') {
+    const directKeys = ['text', 'name', 'value', 'phone', 'email', 'url', 'link', 'token']
+    for (const key of directKeys) {
+      if (value[key] !== undefined && value[key] !== null && value[key] !== '') {
+        const text = normalizeText(value[key])
+        if (text) return text
+      }
+    }
+    return Object.keys(value)
+      .map((key) => normalizeText(value[key]))
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+  }
+  return ''
+}
+
+function normalizedKey(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[|\s·,，。；;:：/\\_\-（）()【】\[\]{}#号幢栋单元室房]/g, '')
+}
+
+function firstField(fields, names) {
+  const source = fields || {}
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(source, name)) {
+      const value = normalizeText(source[name])
+      if (value) return value
+    }
+  }
+  const keys = Object.keys(source)
+  for (const name of names) {
+    const targetKey = normalizedKey(name)
+    if (targetKey.length < 2) continue
+    const matched = keys.find((key) => {
+      const currentKey = normalizedKey(key)
+      return currentKey.length >= 2 && currentKey === targetKey
+    })
+    if (matched) {
+      const value = normalizeText(source[matched])
+      if (value) return value
+    }
+  }
+  return ''
+}
+
+function numberFrom(value) {
+  const direct = Number(value)
+  if (Number.isFinite(direct)) return direct
+  const matched = normalizeText(value).match(/(\d+(?:\.\d+)?)/)
+  return matched ? Number(matched[1]) : 0
+}
+
+function unique(values) {
+  const seen = new Set()
+  return (values || []).map(normalizeText).filter(Boolean).filter((item) => {
+    if (seen.has(item)) return false
+    seen.add(item)
+    return true
+  })
+}
+
+function parseRoomParts(fields) {
+  const building = firstField(fields, ['几栋', '楼栋', '栋', '幢', '楼号', 'building', 'buildingNo'])
+  const unit = firstField(fields, ['几单元', '单元', 'unit', 'unitNo'])
+  const roomNumber = firstField(fields, ['房间号', '房号', '门牌号', '室', 'roomNumber', 'roomNo'])
+  if ((building || unit) && roomNumber) {
+    return { building, unit, roomNumber }
+  }
+
+  const rawRoom = roomNumber || firstField(fields, ['房间', '房源房号', '房源编号', '编号', 'room', '房号'])
+  const parts = rawRoom.split(/[-－—]/).map((item) => item.trim()).filter(Boolean)
+  if (parts.length >= 3) {
+    return { building: parts[0], unit: parts[1], roomNumber: parts.slice(2).join('-') }
+  }
+  if (parts.length === 2) {
+    return { building: parts[0], unit: '', roomNumber: parts[1] }
+  }
+  return { building: '', unit: '', roomNumber: rawRoom }
+}
+
+function inferRoom(layoutText) {
+  const text = normalizeText(layoutText)
+  if (/六室|6室/.test(text)) return '六室'
+  if (/五室|5室/.test(text)) return '五室'
+  if (/四室|4室/.test(text)) return '四室'
+  if (/三室|3室/.test(text)) return '三室'
+  if (/两室|二室|2室/.test(text)) return '二室'
+  return '一室'
+}
+
+function inferHall(layoutText) {
+  const text = normalizeText(layoutText)
+  const matched = text.match(/([0-6一二三四五六两])\s*厅/)
+  if (!matched) return '0厅'
+  const map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6 }
+  const value = map[matched[1]] || Number(matched[1]) || 0
+  return `${Math.min(6, value)}厅`
+}
+
+function inferBath(layoutText) {
+  const text = normalizeText(layoutText)
+  if (/公卫/.test(text)) return '公卫'
+  const matched = text.match(/([0-6一二三四五六两])\s*卫/)
+  if (!matched) return '1卫'
+  const map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6 }
+  const value = map[matched[1]] || Number(matched[1]) || 1
+  return `${Math.min(6, value)}卫`
+}
+
+function inferRentMode(fields, layoutText) {
+  const text = [
+    firstField(fields, ['出租方式', '租赁方式', '类型', '整合租', 'type', 'rentMode']),
+    layoutText
+  ].join(' ')
+  if (/合租|单间|独卫|公卫|[A-Z]室/i.test(text)) return '合租'
+  if (/整租|整套/.test(text)) return '整租'
+  return '整租'
+}
+
+function normalizeRecord(rawRecord, index) {
+  const fields = rawRecord.fields || rawRecord
+  const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
+  const roomParts = parseRoomParts(fields)
+  const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
+  const externalId = firstField(fields, ['房源编号', '唯一编号', '编号', 'ID', 'id', 'importKey', 'record_id']) || rawRecord.record_id || fallbackKey
+  const layoutText = firstField(fields, ['户型', '格局', 'layout', 'category']) || firstField(fields, ['备注', 'remark'])
+  const statusText = firstField(fields, ['状态', '房源状态', '出租状态', '上下架', '是否上架', '是否下架', 'status'])
+  const upFlagText = firstField(fields, ['是否上架', '上架'])
+  const downFlagText = firstField(fields, ['是否下架', '下架'])
+  const rentMode = inferRentMode(fields, layoutText)
+  const room = firstField(fields, ['室', '卧室', 'room', 'bedroom']) || inferRoom(layoutText)
+  const hall = firstField(fields, ['厅', 'hall', 'livingRoom']) || inferHall(layoutText)
+  const bath = firstField(fields, ['卫', 'bath', 'bathroom']) || inferBath(layoutText)
+  const featureText = firstField(fields, ['标签', '房源特点', '特点', 'featureTags', 'features'])
+  const video = rawRecord.video || fields.video || fields.视频 || null
+  return {
+    raw: rawRecord,
+    rowNumber: rawRecord.rowNumber || rawRecord.row_number || index + 1,
+    externalId,
+    matchKey: externalId || fallbackKey,
+    city: firstField(fields, ['城市', 'city']) || '杭州',
+    area: firstField(fields, ['区域', '区', 'district', 'area']) || '待分区',
+    block: firstField(fields, ['板块', '商圈', 'block']) || firstField(fields, ['区域', '区', 'district', 'area']) || '待板块',
+    community,
+    building: roomParts.building,
+    unit: roomParts.unit,
+    roomNumber: roomParts.roomNumber,
+    contact: firstField(fields, ['房东联系方式', '联系方式', '房东电话', '电话', '联系人电话', 'contact', 'landlordPhone']),
+    rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
+    layout: [rentMode, room, hall, bath].filter(Boolean).join(''),
+    rentMode,
+    room,
+    hall,
+    bath,
+    statusText,
+    isDown: Boolean(
+      (DOWN_STATUS_PATTERN.test(statusText) && !UP_STATUS_PATTERN.test(statusText)) ||
+      NOT_UP_PATTERN.test(upFlagText) ||
+      (/是|true|yes|1/.test(downFlagText) && !/否|false|no|0/.test(downFlagText))
+    ),
+    tags: unique(featureText.split(/[、,，\s]+/).concat(COMPANY_FEATURES)),
+    video
+  }
+}
+
+function materialFromRaw(raw, parentPath = '') {
+  const name = normalizeText(raw.name || raw.file_name || raw.filename || raw.title || raw.path)
+  const token = normalizeText(raw.token || raw.file_token || raw.sourceVideoToken || raw.obj_token || raw.id)
+  const filePath = normalizeText(raw.localFilePath || raw.filePath || raw.path)
+  const url = normalizeText(raw.videoUrl || raw.url || raw.fileUrl || raw.web_url || raw.downloadUrl)
+  const type = normalizeText(raw.type || raw.file_type || raw.mime_type)
+  const existingSourcePath = normalizeText(raw.sourcePath || raw.source_path || raw.drivePath || raw.folderPath)
+  const sourcePath = existingSourcePath || [parentPath, name].filter(Boolean).join('/')
+  return {
+    raw,
+    name,
+    token,
+    type,
+    url,
+    videoUrl: normalizeText(raw.videoUrl || raw.fileUrl || raw.url),
+    videoKey: normalizeText(raw.videoKey || raw.objectKey || raw.ossKey),
+    localFilePath: filePath && fs.existsSync(filePath) ? filePath : '',
+    sourcePath,
+    key: normalizedKey([sourcePath, name, token, filePath].filter(Boolean).join(' '))
+  }
+}
+
+function findLocalVideoByToken(token) {
+  if (!token) return ''
+  const dir = path.resolve(config.rootDir, '..', '.tmp', 'feishu-import', 'videos')
+  if (!fs.existsSync(dir)) return ''
+  const file = fs.readdirSync(dir).find((name) => name.indexOf(token) !== -1 && VIDEO_EXT_PATTERN.test(name))
+  return file ? path.join(dir, file) : ''
+}
+
+function materialCandidatesFromRecord(row) {
+  if (!row.video) return []
+  const direct = materialFromRaw(row.video)
+  const localFilePath = direct.localFilePath || findLocalVideoByToken(direct.token)
+  return [{ ...direct, localFilePath }]
+}
+
+function createMaterialMatcher(materials) {
+  const normalized = (materials || []).map((item) => (
+    item && item.key && item.sourcePath ? item : materialFromRaw(item)
+  ))
+  const byToken = new Map()
+  normalized.forEach((item) => {
+    if (item.token) byToken.set(item.token, item)
+  })
+  return (row) => {
+    const direct = materialCandidatesFromRecord(row).find((item) => item.videoUrl || item.url || item.localFilePath || item.token)
+    if (direct) return direct
+    const keys = unique([
+      row.matchKey,
+      row.externalId,
+      [row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
+      [row.community, row.roomNumber].filter(Boolean).join('')
+    ]).map(normalizedKey).filter((key) => key.length >= 3)
+    return normalized.find((item) => {
+      if (!VIDEO_EXT_PATTERN.test(item.name || '') && !/^video\//.test(item.type || '')) return false
+      if (item.token && keys.some((key) => byToken.has(key))) return true
+      return keys.some((key) => item.key.indexOf(key) !== -1 || key.indexOf(item.key) !== -1)
+    }) || null
+  }
+}
+
+async function feishuJson(pathname, token, options = {}) {
+  const response = await fetch(`${trimSlash(config.feishu.baseUrl)}${pathname}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok || (body.code !== undefined && body.code !== 0)) {
+    const error = new Error(body.msg || body.message || `飞书接口请求失败：${response.status}`)
+    error.statusCode = response.status || 502
+    throw error
+  }
+  return body.data || body
+}
+
+async function tenantAccessToken() {
+  if (!config.feishu.appId || !config.feishu.appSecret) {
+    const error = new Error('缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET')
+    error.statusCode = 503
+    throw error
+  }
+  const data = await feishuJson('/auth/v3/tenant_access_token/internal', '', {
+    method: 'POST',
+    body: {
+      app_id: config.feishu.appId,
+      app_secret: config.feishu.appSecret
+    }
+  })
+  return data.tenant_access_token
+}
+
+async function loadBitableRecords(token) {
+  const appToken = config.feishu.bitableAppToken
+  const tableId = config.feishu.bitableTableId
+  if (!appToken || !tableId) return []
+  let pageToken = ''
+  const records = []
+  do {
+    const params = new URLSearchParams({ page_size: String(config.feishu.pageSize) })
+    if (pageToken) params.set('page_token', pageToken)
+    const data = await feishuJson(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records?${params.toString()}`, token)
+    records.push(...(data.items || []))
+    pageToken = data.page_token || ''
+    if (!data.has_more) break
+  } while (pageToken)
+  return records
+}
+
+async function loadSheetMeta(token) {
+  const sheetToken = config.feishu.sheetToken
+  if (!sheetToken) return null
+  const data = await feishuJson(`/sheets/v2/spreadsheets/${encodeURIComponent(sheetToken)}/metainfo`, token)
+  const sheets = data.sheets || data.sheet || []
+  return Array.isArray(sheets) && sheets.length ? sheets[0] : null
+}
+
+function isSheetHeaderRow(row = []) {
+  const text = row.map((item) => normalizeText(item)).join('|')
+  return /区域/.test(text) && /小区/.test(text) && /房号|房间号/.test(text)
+}
+
+function sheetContactFromIntro(rows = []) {
+  const text = rows.map((row) => (row || []).map((item) => normalizeText(item)).join(' ')).join(' ')
+  const matched = text.match(/(?:联系方式|电话|联系)[:：]?\s*([0-9/\-\s]{8,})/)
+  return matched ? matched[1].replace(/\s+/g, '') : ''
+}
+
+function sheetRowsToRecords(values = []) {
+  const rows = Array.isArray(values) ? values : []
+  const headerIndex = Math.max(0, rows.findIndex(isSheetHeaderRow))
+  const headers = (rows[headerIndex] || []).map((item) => normalizeText(item))
+  const sharedContact = sheetContactFromIntro(rows.slice(0, headerIndex))
+  const areaHeader = headers.find((item) => item === '区域' || item === '区') || '区域'
+  const communityHeader = headers.find((item) => /小区/.test(item)) || '小区'
+  const records = []
+  let lastArea = ''
+  let lastCommunity = ''
+
+  rows.slice(headerIndex + 1).forEach((cells, index) => {
+    const fields = {}
+    let hasRowValue = false
+    let hasListingValue = false
+    headers.forEach((header, colIndex) => {
+      if (!header) return
+      const value = cells[colIndex]
+      fields[header] = value
+      if (normalizeText(value)) hasRowValue = true
+      if (colIndex > 0 && normalizeText(value)) hasListingValue = true
+    })
+    if (!hasRowValue) return
+
+    const currentArea = normalizeText(fields[areaHeader])
+    const currentCommunity = normalizeText(fields[communityHeader])
+    if (currentArea) lastArea = currentArea
+    if (currentCommunity) lastCommunity = currentCommunity
+    if (!hasListingValue) return
+    if (!currentArea && lastArea) fields[areaHeader] = lastArea
+    if (!currentCommunity && lastCommunity) fields[communityHeader] = lastCommunity
+    if (sharedContact && !firstField(fields, ['房东联系方式', '联系方式', '房东电话', '电话', '联系人电话', 'contact', 'landlordPhone'])) {
+      fields.联系方式 = sharedContact
+    }
+    const explicitRecordId = firstField(fields, ['房源编号', '编号', 'ID', 'id'])
+    records.push({
+      record_id: explicitRecordId,
+      rowNumber: headerIndex + index + 2,
+      fields
+    })
+  })
+  return records
+}
+
+async function loadSheetRecords(token) {
+  const sheetToken = config.feishu.sheetToken
+  if (!sheetToken) return []
+  let sheetId = config.feishu.sheetId
+  if (!sheetId) {
+    const firstSheet = await loadSheetMeta(token)
+    sheetId = firstSheet && (firstSheet.sheetId || firstSheet.sheet_id || firstSheet.id)
+  }
+  if (!sheetId) {
+    const error = new Error('未找到飞书房源表工作表 ID，请配置 FEISHU_SHEET_ID')
+    error.statusCode = 503
+    throw error
+  }
+  const rawRange = config.feishu.sheetRange || 'A1:Z1000'
+  const range = rawRange.indexOf('!') !== -1 ? rawRange : `${sheetId}!${rawRange}`
+  const data = await feishuJson(`/sheets/v2/spreadsheets/${encodeURIComponent(sheetToken)}/values/${encodeURIComponent(range)}`, token)
+  const valueRange = data.valueRange || data.value_range || {}
+  return sheetRowsToRecords(valueRange.values || data.values || [])
+}
+
+async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 0) {
+  if (!folderToken || depth > config.feishu.maxFolderDepth) return []
+  let pageToken = ''
+  const materials = []
+  do {
+    const params = new URLSearchParams({
+      folder_token: folderToken,
+      page_size: String(config.feishu.pageSize)
+    })
+    if (pageToken) params.set('page_token', pageToken)
+    const data = await feishuJson(`/drive/v1/files?${params.toString()}`, token)
+    const files = data.files || data.items || []
+    for (const file of files) {
+      const name = normalizeText(file.name || file.file_name)
+      const type = normalizeText(file.type || file.file_type)
+      if (/folder/i.test(type)) {
+        const childToken = file.token || file.file_token
+        const children = await loadFolderMaterials(token, childToken, [parentPath, name].filter(Boolean).join('/'), depth + 1)
+        materials.push(...children)
+      } else if (VIDEO_EXT_PATTERN.test(name) || /^video\//i.test(type)) {
+        materials.push(materialFromRaw(file, parentPath))
+      }
+    }
+    pageToken = data.page_token || ''
+    if (!data.has_more) break
+  } while (pageToken)
+  return materials
+}
+
+async function downloadFeishuMaterial(token, material) {
+  if (material.localFilePath) {
+    return {
+      buffer: fs.readFileSync(material.localFilePath),
+      contentType: 'video/mp4'
+    }
+  }
+  if (!material.token) {
+    const error = new Error('素材缺少飞书 token，无法下载到 OSS')
+    error.statusCode = 400
+    throw error
+  }
+  const endpoints = [
+    `/drive/v1/medias/${encodeURIComponent(material.token)}/download`,
+    `/drive/v1/files/${encodeURIComponent(material.token)}/download`
+  ]
+  let lastStatus = 0
+  let lastText = ''
+  for (const endpoint of endpoints) {
+    const response = await fetch(`${trimSlash(config.feishu.baseUrl)}${endpoint}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (response.ok) {
+      return {
+        buffer: Buffer.from(await response.arrayBuffer()),
+        contentType: response.headers.get('content-type') || 'video/mp4'
+      }
+    }
+    lastStatus = response.status
+    lastText = await response.text().catch(() => '')
+  }
+  const error = new Error(`飞书素材下载失败：${lastStatus}${lastText ? ` ${lastText.slice(0, 120)}` : ''}`)
+  error.statusCode = lastStatus
+  throw error
+}
+
+async function ensureMaterialVideo(token, material, options = {}) {
+  if (options.dryRun) {
+    return {
+      videoKey: material.videoKey || '',
+      videoUrl: material.videoUrl || material.url || 'dry-run://matched-material',
+      materialUrl: material.videoUrl || material.url || material.sourcePath || material.name || ''
+    }
+  }
+  if (material.videoKey && material.videoUrl) {
+    return { videoKey: material.videoKey, videoUrl: material.videoUrl, materialUrl: material.videoUrl }
+  }
+  if (!config.feishu.uploadToOss && (material.videoUrl || material.url)) {
+    return { videoKey: '', videoUrl: material.videoUrl || material.url, materialUrl: material.videoUrl || material.url }
+  }
+  if (config.feishu.uploadToOss && (material.localFilePath || material.token)) {
+    const policy = oss.createVideoUploadPolicy({ fileName: material.name || 'feishu-video.mp4' })
+    if (policy.uploadMode === 'oss-post') {
+      const downloaded = await downloadFeishuMaterial(token, material)
+      const saved = await oss.putObjectBuffer(policy.objectKey, downloaded.buffer, downloaded.contentType)
+      return { videoKey: saved.objectKey, videoUrl: saved.fileUrl, materialUrl: material.url || '' }
+    }
+    if (material.videoUrl || material.url) {
+      return { videoKey: '', videoUrl: material.videoUrl || material.url, materialUrl: material.videoUrl || material.url }
+    }
+  }
+  const videoUrl = material.videoUrl || material.url || ''
+  if (!videoUrl) {
+    const error = new Error('素材已匹配，但没有可用视频地址；请开启 FEISHU_UPLOAD_TO_OSS 并补齐 OSS/RAM 配置')
+    error.statusCode = 400
+    throw error
+  }
+  return { videoKey: '', videoUrl, materialUrl: videoUrl }
+}
+
+function downListing(db, listing, reason, adminId) {
+  if (!listing || listing.lifecycleStatus === 'expired' || listing.status === '已下架') return false
+  const now = nowText()
+  listing.lifecycleStatus = 'expired'
+  listing.status = '已下架'
+  listing.expiredAt = now
+  listing.expiredBy = adminId || 'feishu-sync'
+  listing.expiredPool = '后台废房源池'
+  listing.expiredReason = reason
+  listing.updatedAt = now
+  db.footprints = db.footprints || []
+  db.footprints.unshift({
+    id: id('F'),
+    listingId: listing.id,
+    viewerId: adminId || 'feishu-sync',
+    action: '飞书同步下架',
+    time: now,
+    sync: reason
+  })
+  return true
+}
+
+function existingByExternalId(db) {
+  const map = new Map()
+  ;(db.listings || []).forEach((listing) => {
+    if (listing.externalSource === 'feishu' && listing.feishuRecordId) {
+      map.set(String(listing.feishuRecordId), listing)
+    }
+  })
+  return map
+}
+
+function buildListingPayload(row, video) {
+  return {
+    city: row.city || '杭州',
+    district: row.area || '待分区',
+    area: row.area || '待分区',
+    block: row.block || row.area || '待板块',
+    communityName: row.community,
+    community: row.community,
+    building: row.building,
+    unit: row.unit,
+    roomNumber: row.roomNumber,
+    contact: row.contact || '公司统一维护',
+    rent: row.rent,
+    layout: row.layout,
+    rentMode: row.rentMode,
+    type: row.rentMode,
+    room: row.room,
+    hall: row.hall,
+    bath: row.bath,
+    commissionRate: 0,
+    features: row.tags,
+    companyListing: true,
+    source: '公司房源',
+    videoUrl: video.videoUrl,
+    videoKey: video.videoKey
+  }
+}
+
+function attachFeishuFields(listing, row, material, video) {
+  listing.externalSource = 'feishu'
+  listing.feishuRecordId = String(row.externalId)
+  listing.feishuMatchKey = row.matchKey
+  listing.feishuRowNumber = row.rowNumber
+  listing.feishuStatusText = row.statusText
+  listing.sourceMaterialToken = material.token || ''
+  listing.sourceMaterialName = material.name || ''
+  listing.sourceMaterialPath = material.sourcePath || ''
+  listing.sourceMaterialUrl = video.materialUrl || material.url || ''
+  listing.syncStatus = '已同步飞书'
+  listing.syncedAt = nowText()
+  listing.status = '在租'
+  listing.lifecycleStatus = 'active'
+  listing.reviewStatus = '无需审核'
+  listing.lastVerifiedAt = listing.syncedAt
+  listing.updatedAt = listing.syncedAt
+  delete listing.expiredAt
+  delete listing.expiredBy
+  delete listing.expiredPool
+  delete listing.expiredReason
+  delete listing.expiredStaleDays
+}
+
+async function applySync(db, rows, materials, adminId, options = {}) {
+  db.listings = db.listings || []
+  db.feishuSyncLogs = db.feishuSyncLogs || []
+  const matcher = createMaterialMatcher(materials)
+  const byExternalId = existingByExternalId(db)
+  const seen = new Set()
+  const result = {
+    dryRun: Boolean(options.dryRun),
+    startedAt: nowText(),
+    finishedAt: '',
+    sourceRecordCount: rows.length,
+    materialCount: materials.length,
+    created: 0,
+    updated: 0,
+    down: 0,
+    skippedNoMaterial: 0,
+    skippedInvalid: 0,
+    failed: 0,
+    messages: []
+  }
+
+  for (const [rowIndex, rawRow] of rows.entries()) {
+    const row = normalizeRecord(rawRow, rowIndex)
+    if (!row.externalId) {
+      result.skippedInvalid += 1
+      result.messages.push(`第 ${row.rowNumber} 行缺少房源编号或小区房号，已跳过`)
+      continue
+    }
+    seen.add(String(row.externalId))
+    const existing = byExternalId.get(String(row.externalId))
+    if (row.isDown) {
+      if (existing && downListing(db, existing, '飞书房源表已下架，自动同步下架', adminId)) result.down += 1
+      continue
+    }
+
+    const material = matcher(row)
+    if (!material) {
+      result.skippedNoMaterial += 1
+      if (result.messages.length < 20) {
+        result.messages.push(`第 ${row.rowNumber} 行未匹配素材：${[row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey}`)
+      }
+      if (existing && downListing(db, existing, '飞书素材库未匹配素材，自动下架', adminId)) result.down += 1
+      continue
+    }
+    if (!row.community || !row.building || !row.roomNumber || !row.rent || !row.layout) {
+      result.skippedInvalid += 1
+      result.messages.push(`第 ${row.rowNumber} 行字段不完整，需小区、几栋、房间号、租金、户型`)
+      continue
+    }
+
+    try {
+      const video = await ensureMaterialVideo(options.feishuToken || '', material, options)
+      const payload = buildListingPayload(row, video)
+      if (existing) {
+        if (existing.lifecycleStatus === 'expired' || existing.status === '已下架') {
+          existing.lifecycleStatus = 'active'
+          existing.status = '在租'
+        }
+        domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true })
+        attachFeishuFields(existing, row, material, video)
+        result.updated += 1
+      } else {
+        const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true })
+        const listing = db.listings.find((item) => item.id === detail.id)
+        attachFeishuFields(listing, row, material, video)
+        result.created += 1
+      }
+    } catch (error) {
+      result.failed += 1
+      result.messages.push(`第 ${row.rowNumber} 行同步失败：${error.message}`)
+    }
+  }
+
+  db.listings.forEach((listing) => {
+    if (listing.externalSource !== 'feishu' || !listing.feishuRecordId) return
+    if (seen.has(String(listing.feishuRecordId))) return
+    if (downListing(db, listing, '飞书房源表未返回该房源，自动同步下架', adminId)) result.down += 1
+  })
+
+  result.finishedAt = nowText()
+  db.feishuSyncLogs.unshift({
+    id: id('FS'),
+    ...result,
+    messages: result.messages.slice(0, 20)
+  })
+  db.feishuSyncLogs = db.feishuSyncLogs.slice(0, 30)
+  return result
+}
+
+async function loadRowsAndMaterials(options = {}) {
+  if (options.rows && options.materials) {
+    return { rows: options.rows, materials: options.materials, feishuToken: '' }
+  }
+  if (config.feishu.recordsFile && config.feishu.materialsFile) {
+    return {
+      rows: readJson(config.feishu.recordsFile),
+      materials: readJson(config.feishu.materialsFile),
+      feishuToken: ''
+    }
+  }
+  const token = await tenantAccessToken()
+  const rows = config.feishu.bitableAppToken && config.feishu.bitableTableId
+    ? await loadBitableRecords(token)
+    : await loadSheetRecords(token)
+  const materials = await loadFolderMaterials(token, config.feishu.folderToken)
+  return { rows, materials, feishuToken: token }
+}
+
+async function sync(db, adminId, options = {}) {
+  const loaded = await loadRowsAndMaterials(options)
+  return applySync(db, loaded.rows, loaded.materials, adminId, {
+    ...options,
+    feishuToken: loaded.feishuToken
+  })
+}
+
+function status(db = {}) {
+  const hasLocalFiles = Boolean(config.feishu.recordsFile && config.feishu.materialsFile)
+  const hasBitable = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.bitableAppToken && config.feishu.bitableTableId)
+  const hasSheet = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.sheetToken)
+  const hasFolder = Boolean(config.feishu.folderToken || config.feishu.materialsFile)
+  const sourceReady = (hasLocalFiles || hasBitable || hasSheet) && hasFolder
+  return {
+    ready: sourceReady,
+    mode: hasLocalFiles ? '本地文件导入' : (hasBitable ? '飞书多维表' : '飞书表格'),
+    recordsReady: hasLocalFiles || hasBitable || hasSheet,
+    sheetReady: hasSheet,
+    materialsReady: hasFolder,
+    uploadToOss: config.feishu.uploadToOss,
+    syncIntervalMinutes: config.feishu.syncIntervalMinutes,
+    folderToken: config.feishu.folderToken ? `${config.feishu.folderToken.slice(0, 6)}...` : '',
+    bitableAppToken: config.feishu.bitableAppToken ? `${config.feishu.bitableAppToken.slice(0, 6)}...` : '',
+    bitableTableId: config.feishu.bitableTableId || '',
+    sheetToken: config.feishu.sheetToken ? `${config.feishu.sheetToken.slice(0, 6)}...` : '',
+    sheetRange: config.feishu.sheetRange,
+    lastLog: (db.feishuSyncLogs || [])[0] || null,
+    feishuListingCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length
+  }
+}
+
+module.exports = {
+  sync,
+  status,
+  normalizeRecord,
+  applySync
+}

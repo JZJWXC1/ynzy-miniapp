@@ -1,0 +1,71 @@
+{
+  "setting": {
+    "es6": true,
+    "urlCheck": false,
+    "postcss": true,
+    "minified": true,
+    "uglifyFileName": false,
+    "enhance": true,
+    "packNpmRelationList": [],
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    },
+    "useCompilerPlugins": false,
+    "minifyWXML": true
+  },
+  "compileType": "miniprogram",
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "folder",
+        "value": ".tmp"
+      },
+      {
+        "type": "folder",
+        "value": ".codegraph"
+      },
+      {
+        "type": "folder",
+        "value": "server"
+      },
+      {
+        "type": "folder",
+        "value": "admin-web"
+      },
+      {
+        "type": "folder",
+        "value": "deploy"
+      },
+      {
+        "type": "folder",
+        "value": "dist"
+      },
+      {
+        "type": "folder",
+        "value": "scripts"
+      },
+      {
+        "type": "folder",
+        "value": "ui-preview"
+      },
+      {
+        "type": "file",
+        "value": "需求.md"
+      },
+      {
+        "type": "file",
+        "value": "接口上线说明.md"
+      },
+      {
+        "type": "file",
+        "value": "内测验收清单.md"
+      }
+    ],
+    "include": []
+  },
+  "appid": "wx847ab9017ea5d3b1",
+  "editorSetting": {}
+}

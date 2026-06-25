@@ -1,0 +1,132 @@
+<navigation-bar title="{{pageTitle}}" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell upload-page">
+    <view class="upload-hero">
+      <view class="upload-title">{{mode === 'edit' ? '修改已上传房源' : (form.companyListing ? '上传公司房源' : form.ownerType)}}</view>
+      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、分佣和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，默认免押金、出租不分佣。' : (form.ownerType === '业主房源' ? '业主房源提交后进入管理员审核，通过后才会在小程序上架。' : '按位置、户型、租金和视频快速录入，成交按你设置的比例分佣。'))}}</view>
+    </view>
+
+    <view class="form-card soft-card">
+      <view class="form-section">
+        <view class="section-label">房源归属</view>
+        <view wx:if="{{isAdmin}}" class="source-row">
+          <view class="source-chip {{!form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="0">
+            <view class="source-title">普通房源</view>
+            <view class="source-desc">成交按比例分佣</view>
+          </view>
+          <view class="source-chip company {{form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="1">
+            <view class="source-title">公司房源</view>
+            <view class="source-desc">免押金 · 不分佣</view>
+          </view>
+        </view>
+        <view wx:else class="source-lock">普通员工只能上传普通房源；公司房源请由管理员上传。</view>
+        <view wx:if="{{!form.companyListing}}" class="owner-source-block">
+          <view class="sub-section-label">普通房源类型</view>
+          <view class="source-row">
+            <view wx:for="{{ownerTypeOptions}}" wx:key="value" class="source-chip {{item.value === form.ownerType ? 'active' : ''}}" bindtap="selectOwnerType" data-value="{{item.value}}">
+              <view class="source-title">{{item.title}}</view>
+              <view class="source-desc">{{item.desc}}</view>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <view class="form-section">
+        <view class="section-label">位置</view>
+        <view class="field two-col">
+          <view>
+            <view class="label">城市</view>
+            <picker mode="selector" range="{{cityOptions}}" data-field="city" data-options="cityOptions" bindchange="updatePicker">
+              <view class="picker-value">{{form.city}}</view>
+            </picker>
+          </view>
+          <view>
+            <view class="label">区域</view>
+            <picker mode="selector" range="{{areaOptions}}" data-field="area" data-options="areaOptions" bindchange="updatePicker">
+              <view class="picker-value">{{form.area}}</view>
+            </picker>
+          </view>
+        </view>
+
+        <view class="field community-field">
+          <view class="label">小区名称</view>
+          <input value="{{form.community}}" bindfocus="showCommunityPanel" bindinput="updateCommunity" placeholder="输入小区名，自动匹配拱墅小区库" />
+          <view wx:if="{{communityPanelVisible}}" class="suggest-list">
+            <view class="suggest-status">{{communityMatchMessage}}</view>
+            <view wx:for="{{communitySuggestions}}" wx:key="*this" class="suggest-item" bindtap="chooseCommunity" data-name="{{item}}">{{item}}</view>
+            <view wx:if="{{form.community}}" class="suggest-direct" bindtap="useTypedCommunity">直接使用「{{form.community}}」</view>
+          </view>
+          <view wx:if="{{communityReviewTip}}" class="hint">{{communityReviewTip}}</view>
+        </view>
+
+        <view class="field three-col">
+          <view>
+            <view class="label">几栋</view>
+            <input value="{{form.building}}" data-field="building" bindinput="updateField" placeholder="如 3" />
+          </view>
+          <view>
+            <view class="label">几单元</view>
+            <input value="{{form.unit}}" data-field="unit" bindinput="updateField" placeholder="如 1" />
+          </view>
+          <view>
+            <view class="label">房间号</view>
+            <input value="{{form.roomNumber}}" data-field="roomNumber" bindinput="updateField" placeholder="如 1602" />
+          </view>
+        </view>
+
+        <view class="preview-line">{{addressPreview || '地址会自动拼接生成'}}</view>
+      </view>
+
+      <view class="form-section">
+        <view class="section-label">户型</view>
+        <view class="chip-row">
+          <view wx:for="{{rentModeOptions}}" wx:key="*this" class="option-chip {{item === form.rentMode ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="rentMode" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view class="chip-row">
+          <view wx:for="{{roomOptions}}" wx:key="*this" class="option-chip {{item === form.room ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="room" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view class="chip-row">
+          <view wx:for="{{hallOptions}}" wx:key="*this" class="option-chip {{item === form.hall ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="hall" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view class="chip-row">
+          <view wx:for="{{bathOptions}}" wx:key="*this" class="option-chip {{item === form.bath ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="bath" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view class="preview-line">当前户型：{{layoutPreview}}</view>
+      </view>
+
+      <view class="form-section">
+        <view class="section-label">房源特点（必选）</view>
+        <view class="feature-grid">
+          <view wx:for="{{featureOptions}}" wx:key="name" class="feature-chip {{item.active ? 'active' : ''}}" bindtap="toggleFeature" data-value="{{item.name}}">{{item.name}}</view>
+        </view>
+        <view class="hint">至少选择一个特点；没有明显特点请选择“无”。分佣填 0 或选择“不分佣”会自动按不分佣展示；公司房源会自动标记“免押金”。</view>
+      </view>
+
+      <view class="field">
+        <view class="label">房东联系方式</view>
+        <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="手机号或微信" />
+      </view>
+
+      <view class="field two-col">
+        <view>
+          <view class="label">租金</view>
+          <input value="{{form.rent}}" data-field="rent" bindinput="updateField" type="number" placeholder="月租" />
+        </view>
+        <view>
+          <view class="label">分佣比例</view>
+          <input value="{{form.commissionRate}}" data-field="commissionRate" bindinput="updateField" type="digit" disabled="{{form.companyListing}}" placeholder="默认20" />
+        </view>
+      </view>
+      <view class="hint">{{form.companyListing ? '公司房源分佣比例固定为 0%，系统会自动标记免押金、不分佣。' : '上传人可设置 0-20%，超过 20% 禁止提交；填 0 会自动标记不分佣。'}}</view>
+
+      <view class="video-upload" bindtap="chooseVideo">
+        <view class="video-icon">▶</view>
+        <view>
+          <view class="video-title">{{videoPath ? '已选择新房源视频' : (existingVideoUrl ? '保留原房源视频' : '上传房源视频')}}</view>
+          <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : '仅允许视频，不支持图片上传。')}}</view>
+        </view>
+      </view>
+      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.ownerType === '业主房源' ? '提交审核' : '提交房源')}}</button>
+    </view>
+  </view>
+</scroll-view>

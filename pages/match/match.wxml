@@ -1,0 +1,136 @@
+<navigation-bar title="配房助手" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell match-page">
+    <view class="assistant-hero">
+      <view class="hero-logo-wrap">
+        <image class="hero-logo" src="/assets/logo.png" mode="aspectFit"></image>
+      </view>
+      <view class="hero-content">
+        <view class="hero-title">寓你配房小帮手</view>
+        <view class="hero-desc">文字、语音转写、表单和特点标签一起算相关性。</view>
+      </view>
+      <view class="hero-mark">AI</view>
+    </view>
+
+    <view class="chat-panel soft-card">
+      <view wx:for="{{messages}}" wx:key="text" class="message-row {{item.role === 'assistant' ? 'assistant' : 'user'}}">
+        <view class="message-bubble">{{item.text}}</view>
+      </view>
+    </view>
+
+    <view class="input-card soft-card">
+      <view class="input-title">租客需求</view>
+      <textarea
+        class="need-textarea"
+        value="{{needText}}"
+        bindinput="updateNeedText"
+        placeholder="例如：客户预算3000，滨江西兴，两室，带阳台和燃气，月底入住，通勤到滨康地铁站"
+        maxlength="220"
+      ></textarea>
+      <view class="voice-row">
+        <button class="voice-button {{isVoiceListening ? 'active' : ''}}" bindtap="toggleVoiceInput">
+          {{isVoiceListening ? '停止识别' : '语音输入'}}
+        </button>
+        <view class="voice-tip">{{voiceText || voiceTip}}</view>
+      </view>
+      <textarea
+        class="voice-textarea"
+        value="{{voiceText}}"
+        bindinput="updateVoiceText"
+        placeholder="语音转文字结果会写入这里，可和文字需求、表单条件一起匹配"
+        maxlength="220"
+      ></textarea>
+      <view class="demo-row">
+        <button class="demo-chip" bindtap="useDemoNeed" data-type="commute">通勤优先</button>
+        <button class="demo-chip" bindtap="useDemoNeed" data-type="apartment">低预算公寓</button>
+      </view>
+    </view>
+
+    <view class="field-grid">
+      <view class="field-card">
+        <view class="field-label">预算</view>
+        <input value="{{form.budget}}" type="number" data-field="budget" bindinput="updateField" placeholder="3000" />
+      </view>
+      <view class="field-card">
+        <view class="field-label">区域</view>
+        <input value="{{form.area}}" data-field="area" bindinput="updateField" placeholder="滨江" />
+      </view>
+      <view class="field-card">
+        <view class="field-label">户型</view>
+        <input value="{{form.layout}}" data-field="layout" bindinput="updateField" placeholder="两室" />
+      </view>
+      <view class="field-card">
+        <view class="field-label">入住</view>
+        <input value="{{form.moveIn}}" data-field="moveIn" bindinput="updateField" placeholder="月底" />
+      </view>
+      <view class="field-card wide">
+        <view class="field-label">通勤位置</view>
+        <input value="{{form.commute}}" data-field="commute" bindinput="updateField" placeholder="滨康地铁站" />
+      </view>
+    </view>
+
+    <view class="feature-panel soft-card">
+      <view class="input-title">特点标签</view>
+      <view class="feature-grid">
+        <view wx:for="{{featureOptions}}" wx:key="name" class="feature-chip {{item.active ? 'active' : ''}}" bindtap="toggleFeature" data-value="{{item.name}}">{{item.name}}</view>
+      </view>
+    </view>
+
+    <view wx:if="{{guideTips.length}}" class="guide-card soft-card">
+      <view class="guide-title">引导配房</view>
+      <view class="guide-chips">
+        <view wx:for="{{guideTips}}" wx:key="*this" class="guide-chip">{{item}}</view>
+      </view>
+    </view>
+
+    <button class="match-button" bindtap="runMatch">开始智能匹配</button>
+
+    <view wx:if="{{hasMatched}}" class="section-title">
+      <view class="section-title-main">解析结果</view>
+    </view>
+    <view wx:if="{{hasMatched}}" class="need-grid">
+      <view wx:for="{{parsedNeed}}" wx:key="label" class="need-card">
+        <view class="need-value">{{item.value}}</view>
+        <view class="need-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view wx:if="{{hasMatched}}" class="section-title">
+      <view class="section-title-main">匹配房源</view>
+      <view class="section-title-action">{{listings.length}} 套 · 已排序</view>
+    </view>
+    <view wx:if="{{hasMatched}}" class="match-list">
+      <view wx:for="{{listings}}" wx:key="id" class="match-card soft-card" bindtap="openListing" data-id="{{item.id}}">
+        <view class="match-card-head">
+          <view class="match-main">
+            <view class="match-title">{{item.title}}</view>
+            <view class="match-meta">{{item.meta}}</view>
+          </view>
+          <view class="match-score">
+            <text>{{item.relevancePercent || item.matchScore}}</text>
+            <text>相关性</text>
+          </view>
+        </view>
+        <view class="match-facts">
+          <text>{{item.community || item.locationSummary || item.area || '待补充小区'}}</text>
+          <text>{{item.area || item.block || '区域待补充'}}</text>
+          <text>{{item.layout || '户型待补充'}}</text>
+          <text>{{item.noCommission ? '不分佣' : (item.commissionText || item.commission || '分佣可见')}}</text>
+          <text>仅视频房源</text>
+        </view>
+        <view class="match-sub">{{item.sub}}</view>
+        <view wx:if="{{item.features}}" class="feature-row">
+          <text wx:for="{{item.features}}" wx:key="*this" class="feature-tag">{{item}}</text>
+          <text wx:if="{{item.maintenanceText}}" class="maintain-tag">{{item.maintenanceText}}</text>
+        </view>
+        <view wx:if="{{item.relevanceReasons}}" class="reason-row">
+          <text wx:for="{{item.relevanceReasons}}" wx:key="*this">{{item}}</text>
+        </view>
+        <view class="match-bottom">
+          <view class="match-price">{{item.price}}</view>
+          <view class="match-tag">{{item.relevanceLabel || item.tag}}</view>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

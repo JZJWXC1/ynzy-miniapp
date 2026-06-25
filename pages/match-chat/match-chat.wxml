@@ -1,0 +1,115 @@
+<navigation-bar title="配房客服" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<view class="chat-page">
+  <scroll-view class="chat-scroll" scroll-y scroll-into-view="{{scrollTarget}}" type="list">
+    <view class="chat-shell">
+      <view class="service-head">
+        <view class="service-logo-wrap">
+          <image class="service-logo" src="/assets/logo.png" mode="aspectFit"></image>
+        </view>
+        <view class="service-copy">
+          <view class="service-title">寓你配房客服</view>
+          <view class="service-subtitle">连续补充要求后，会重新推荐并排序</view>
+        </view>
+      </view>
+
+      <view wx:for="{{messages}}" wx:key="id" id="{{item.id}}" class="message-row {{item.role}}">
+        <view wx:if="{{item.role === 'assistant'}}" class="avatar assistant-avatar">寓</view>
+        <view class="message-main">
+          <view class="message-bubble">
+            <text>{{item.text}}</text>
+          </view>
+
+          <view wx:if="{{item.needTags && item.needTags.length}}" class="need-tags">
+            <text wx:for="{{item.needTags}}" wx:key="*this">{{item}}</text>
+          </view>
+
+          <view wx:if="{{item.guideTips && item.guideTips.length}}" class="guide-tags">
+            <text wx:for="{{item.guideTips}}" wx:key="*this">{{item}}</text>
+          </view>
+
+          <view wx:if="{{item.empty}}" class="empty-match">
+            <view class="empty-title">暂未匹配到房源</view>
+            <view class="empty-desc">可以继续补充或放宽预算、区域、户型、特点。</view>
+          </view>
+
+          <view wx:if="{{item.listings && item.listings.length}}" class="recommend-list">
+            <view
+              wx:for="{{item.listings}}"
+              wx:for-item="listing"
+              wx:key="id"
+              class="recommend-card"
+              bindtap="openListing"
+              data-id="{{listing.id}}"
+            >
+              <view class="card-head">
+                <view class="card-title">{{listing.title}}</view>
+                <view wx:if="{{listing.displayRelevance}}" class="score-chip">
+                  {{listing.displayRelevance}}匹配
+                </view>
+              </view>
+              <view class="card-facts">
+                <text>{{listing.community || listing.locationSummary || listing.area || '待补充小区'}}</text>
+                <text>{{listing.area || listing.block || '区域待补充'}}</text>
+                <text>{{listing.layout || '户型待补充'}}</text>
+                <text>{{listing.noCommission ? '不分佣' : (listing.commissionText || listing.commission || '分佣可见')}}</text>
+                <text>仅视频房源</text>
+              </view>
+              <view class="card-meta">{{listing.meta}}</view>
+              <view class="card-sub">{{listing.sub}}</view>
+              <view wx:if="{{listing.features}}" class="listing-feature-row">
+                <text wx:for="{{listing.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+                <text wx:if="{{listing.maintenanceText}}" class="listing-maintenance-tag">{{listing.maintenanceText}}</text>
+              </view>
+              <view wx:if="{{listing.relevanceReasons && listing.relevanceReasons.length}}" class="reason-row">
+                <text wx:for="{{listing.relevanceReasons}}" wx:key="*this">{{item}}</text>
+              </view>
+              <view class="card-bottom">
+                <view class="card-price">{{listing.price}}</view>
+                <view class="card-action">看详情</view>
+              </view>
+            </view>
+          </view>
+        </view>
+        <view wx:if="{{item.role === 'user'}}" class="avatar user-avatar">我</view>
+      </view>
+
+      <view wx:if="{{loading}}" id="typing-row" class="message-row assistant">
+        <view class="avatar assistant-avatar">寓</view>
+        <view class="message-main">
+          <view class="typing-bubble">
+            <view></view>
+            <view></view>
+            <view></view>
+          </view>
+        </view>
+      </view>
+      <view id="bottom-anchor" class="bottom-anchor"></view>
+    </view>
+  </scroll-view>
+
+  <view class="composer">
+    <view class="composer-panel">
+      <input
+        class="chat-input"
+        value="{{inputText}}"
+        bindinput="handleInput"
+        bindconfirm="sendMessage"
+        confirm-type="send"
+        placeholder="继续补充预算、区域、户型、特点"
+      />
+      <view class="chat-mic-button {{isVoiceListening ? 'active' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
+        <view class="mic-icon">
+          <view class="mic-head"></view>
+          <view class="mic-neck"></view>
+          <view class="mic-base"></view>
+        </view>
+        <view wx:if="{{isVoiceListening}}" class="voice-wave">
+          <view class="wave-bar bar-1"></view>
+          <view class="wave-bar bar-2"></view>
+          <view class="wave-bar bar-3"></view>
+        </view>
+      </view>
+      <view class="send-button" bindtap="sendMessage" aria-role="button">找房</view>
+    </view>
+  </view>
+</view>

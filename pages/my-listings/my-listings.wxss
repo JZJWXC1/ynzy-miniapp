@@ -1,0 +1,141 @@
+page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.my-listings-page {
+  padding-bottom: 64rpx;
+}
+
+.owner-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+  align-items: center;
+  padding: 32rpx;
+  color: #ffffff;
+  background: #2f6f60;
+  border-radius: 40rpx;
+}
+
+.owner-title {
+  font-size: 40rpx;
+  font-weight: 900;
+}
+
+.owner-desc {
+  margin-top: 10rpx;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 24rpx;
+  line-height: 1.45;
+}
+
+.owner-button {
+  min-width: 118rpx;
+  height: 72rpx;
+  color: #153f36;
+  font-size: 26rpx;
+  font-weight: 900;
+  background: #f6bd36;
+  border-radius: 24rpx;
+}
+
+.stat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-top: 22rpx;
+}
+
+.stat-card {
+  flex: 1 1 190rpx;
+  min-width: 0;
+  padding: 22rpx 8rpx;
+  text-align: center;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 26rpx;
+  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+}
+
+.stat-value {
+  color: #153f36;
+  font-size: 33rpx;
+  font-weight: 900;
+}
+
+.stat-label {
+  margin-top: 6rpx;
+  color: #78918a;
+  font-size: 22rpx;
+}
+
+.listing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.owner-listing {
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+  align-items: center;
+  padding: 26rpx;
+}
+
+.listing-title {
+  color: #153f36;
+  font-size: 29rpx;
+  font-weight: 900;
+}
+
+.listing-location,
+.listing-meta,
+.listing-views {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+}
+
+.verify-line {
+  margin-top: 10rpx;
+  color: #2f6f60;
+  font-size: 22rpx;
+  font-weight: 900;
+}
+
+.verify-line.warn {
+  color: #b16a00;
+}
+
+.listing-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.edit-button,
+.verify-button {
+  min-width: 92rpx;
+  height: 56rpx;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 22rpx;
+  font-weight: 900;
+  background: #f6bd36;
+  border-radius: 18rpx;
+}
+
+.edit-button {
+  color: #ffffff;
+  background: #2f6f60;
+}
+
+.arrow {
+  color: #2f6f60;
+  font-size: 52rpx;
+  font-weight: 300;
+}

@@ -1,0 +1,80 @@
+<!--profile.wxml-->
+<navigation-bar title="我的" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell profile-page">
+    <view class="user-card">
+      <view class="avatar-wrap">
+        <image class="avatar-logo" src="/assets/logo.png" mode="aspectFit"></image>
+      </view>
+      <view class="user-info">
+        <view class="user-name">{{user.name}}</view>
+        <view class="user-role">{{user.role}}</view>
+        <view class="auth-tag">{{user.authed}}</view>
+      </view>
+      <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+    </view>
+
+    <view class="source-stats">
+      <view wx:for="{{sourceStats}}" wx:key="label" class="source-stat">
+        <view class="source-value">{{item.value}}</view>
+        <view class="source-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view class="recharge-card">
+      <view class="recharge-head">
+        <view>
+          <view class="recharge-title">积分充值</view>
+          <view class="recharge-rule">20 元/分 · 1 分起充 · 后台确认后到账</view>
+        </view>
+        <view class="price-badge">当前 {{points}} 分</view>
+      </view>
+      <view class="recharge-control">
+        <button class="step-button" bindtap="decreaseRecharge">-</button>
+        <input class="recharge-input" type="number" value="{{rechargeCount}}" bindinput="handleRechargeInput" />
+        <button class="step-button" bindtap="increaseRecharge">+</button>
+        <view class="amount-text">{{rechargeAmount}} 元</view>
+      </view>
+      <button class="recharge-submit" bindtap="submitRecharge">提交充值申请</button>
+      <view class="bill-list">
+        <view wx:for="{{rechargeBills}}" wx:key="id" class="bill-row">
+          <view>
+            <view class="bill-main">{{item.points}} · {{item.amount}}</view>
+            <view class="bill-sub">{{item.id}} · {{item.time}}</view>
+          </view>
+          <view class="bill-status">{{item.status}}</view>
+        </view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">内部工作台</view>
+      <button class="section-title-action" bindtap="handleTap" data-name="WEB管理后台">WEB后台</button>
+    </view>
+
+    <view class="workbench-grid">
+      <button wx:for="{{workbench}}" wx:key="title" class="workbench-card" bindtap="handleTap" data-name="{{item.title}}" data-url="{{item.url}}">
+        <view class="workbench-head">
+          <view class="workbench-title">{{item.title}}</view>
+          <view class="workbench-value">{{item.value}}</view>
+        </view>
+        <view class="workbench-desc">{{item.desc}}</view>
+      </button>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">防跳单与分佣提醒</view>
+      <button class="section-title-action" bindtap="handleTap" data-name="查看全部提醒">全部</button>
+    </view>
+
+    <view class="reminder-list">
+      <view wx:for="{{reminders}}" wx:key="title" class="reminder-card soft-card">
+        <view class="reminder-dot"></view>
+        <view>
+          <view class="reminder-title">{{item.title}}</view>
+          <view class="reminder-value">{{item.value}}</view>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

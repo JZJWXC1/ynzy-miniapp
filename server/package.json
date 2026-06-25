@@ -1,0 +1,14 @@
+{
+  "name": "ynzy-mini-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "寓你住一起内部房源协作小程序后端接口",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js",
+    "smoke": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

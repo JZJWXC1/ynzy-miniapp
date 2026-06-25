@@ -1,0 +1,54 @@
+<navigation-bar title="{{category}}房源" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell listings-page">
+    <view class="category-tabs">
+      <view wx:for="{{categories}}" wx:key="*this" class="category-tab {{category === item ? 'active' : ''}}" data-category="{{item}}" bindtap="switchCategory">{{item}}</view>
+    </view>
+
+    <view class="filter-panel">
+      <view class="filter-grid">
+        <input value="{{filters.area}}" data-field="area" bindinput="updateFilter" placeholder="区域" />
+        <input value="{{filters.block}}" data-field="block" bindinput="updateFilter" placeholder="板块 / 地铁" />
+        <input value="{{filters.community}}" data-field="community" bindinput="updateFilter" placeholder="小区名称" />
+        <input value="{{filters.layout}}" data-field="layout" bindinput="updateFilter" placeholder="户型" />
+        <input value="{{filters.rentMax}}" data-field="rentMax" bindinput="updateFilter" type="number" placeholder="最高租金" />
+      </view>
+      <view class="filter-actions">
+        <button class="filter-button primary" loading="{{loading}}" bindtap="applyFilters">筛选</button>
+        <button class="filter-button ghost" bindtap="resetFilters">重置</button>
+      </view>
+    </view>
+
+    <view class="list-summary">
+      <view>{{category}} · {{listings.length}} 套</view>
+      <view>实名查看留痕 · 视频房源</view>
+    </view>
+
+    <view wx:if="{{listings.length}}" class="listing-list">
+      <view wx:for="{{listings}}" wx:key="id" class="listing-card soft-card" data-id="{{item.id}}" bindtap="openListing">
+        <view class="listing-media">
+          <view class="video-badge">视频</view>
+          <view class="media-window"></view>
+        </view>
+        <view class="listing-body">
+          <view class="listing-title">{{item.title}}</view>
+          <view class="listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
+          <view class="listing-sub">{{item.layout}} · {{item.sourceLabel || item.source}} · {{item.status}}</view>
+          <view wx:if="{{item.features}}" class="listing-feature-row">
+            <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+            <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+          </view>
+          <view class="listing-bottom">
+            <view class="price">{{item.price}}</view>
+            <view class="commission">{{item.tag}}</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view wx:else class="empty-card">
+      <view class="empty-title">{{emptyText}}</view>
+      <view class="empty-desc">可以调整区域、户型或租金条件后重新筛选。</view>
+    </view>
+  </view>
+</scroll-view>

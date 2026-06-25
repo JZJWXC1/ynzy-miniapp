@@ -1,0 +1,95 @@
+<!--groups.wxml-->
+<navigation-bar title="房源群" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell groups-page">
+    <view class="group-hero">
+      <view class="group-hero-main">
+        <view class="group-kicker">积分换群</view>
+        <view class="group-title">群聊上传审核通过后得积分。</view>
+        <view class="group-desc">提交群聊名称和聊天信息截图，管理员联系核对通过后到账 1 积分。</view>
+      </view>
+      <view class="point-box">
+        <view class="point-value">{{points}}</view>
+        <view class="point-label">积分</view>
+      </view>
+    </view>
+
+    <view class="group-actions">
+      <view class="group-form-grid">
+        <input value="{{groupForm.title}}" data-field="title" bindinput="updateGroupField" placeholder="群聊名称，如滨江急租群（必填）" />
+        <input value="{{groupForm.area}}" data-field="area" bindinput="updateGroupField" placeholder="区域，如滨江，可选" />
+        <input value="{{groupForm.block}}" data-field="block" bindinput="updateGroupField" placeholder="板块/说明，可选" />
+      </view>
+      <view class="screenshot-picker" bindtap="chooseGroupScreenshot">
+        <image wx:if="{{screenshotPath}}" class="screenshot-preview" src="{{screenshotPath}}" mode="aspectFill"></image>
+        <view wx:else class="screenshot-empty">
+          <view class="screenshot-plus">+</view>
+          <view>上传群聊聊天信息界面截图</view>
+        </view>
+      </view>
+      <button class="upload-group-button" loading="{{submitting}}" bindtap="uploadGroupListing">提交审核</button>
+      <view class="normal-tip">审核前不会加积分，管理员联系你核对通过后，1 积分自动到账。</view>
+    </view>
+
+    <view wx:if="{{groupUploads.length}}" class="audit-card soft-card">
+      <view class="section-title-main">我的群聊审核</view>
+      <view wx:for="{{groupUploads}}" wx:key="id" class="audit-row">
+        <view>
+          <view class="audit-title">{{item.title}}</view>
+          <view class="audit-time">{{item.time}}</view>
+        </view>
+        <view class="audit-status">
+          <text>{{item.status}}</text>
+          <text>{{item.point}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="group-grid">
+      <view wx:for="{{groups}}" wx:key="name" class="group-card soft-card {{item.unlocked ? 'unlocked' : 'locked'}}" bindtap="unlockGroup" data-id="{{item.id}}">
+        <view class="group-name">{{item.name}}</view>
+        <view class="group-count">{{item.count}}</view>
+        <view class="group-tag">{{item.tag}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">群内新房源</view>
+      <button class="section-title-action" bindtap="handleTap" data-name="筛选房源群">筛选</button>
+    </view>
+
+    <view class="shared-list">
+      <view wx:if="{{!listings.length}}" class="group-empty soft-card">
+        <view class="group-empty-title">暂无群内房源</view>
+        <view class="group-empty-desc">群聊房源审核通过后，会出现在这里。</view>
+      </view>
+      <view wx:for="{{listings}}" wx:for-item="listing" wx:key="title" class="shared-card soft-card">
+        <view class="shared-head">
+          <view>
+            <view class="shared-title">{{listing.title}}</view>
+            <view class="shared-publisher">{{listing.publisher}}</view>
+          </view>
+          <view class="shared-price">{{listing.price}}</view>
+        </view>
+        <view class="shared-info">
+          <view class="shared-rule">{{listing.rule}}</view>
+          <view class="shared-status">{{listing.status}}</view>
+        </view>
+        <view wx:if="{{listing.features}}" class="listing-feature-row">
+          <text wx:for="{{listing.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+          <text wx:if="{{listing.maintenanceText}}" class="listing-maintenance-tag">{{listing.maintenanceText}}</text>
+        </view>
+        <view class="action-row">
+          <view wx:for="{{actions}}" wx:for-item="action" wx:key="*this" class="action-chip" bindtap="handleAction" data-name="{{action}}" data-id="{{listing.id}}">{{action}}</view>
+        </view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">积分流水</view>
+    </view>
+    <view class="point-log soft-card">
+      <view wx:for="{{pointLogs}}" wx:key="*this" class="point-log-item">{{item}}</view>
+    </view>
+  </view>
+</scroll-view>

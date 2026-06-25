@@ -1,0 +1,106 @@
+<!--index.wxml-->
+<navigation-bar title="寓你住一起" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell home-page">
+    <view class="ai-card">
+      <view class="ai-head">
+        <view class="ai-logo-wrap">
+          <image class="ai-logo" src="/assets/logo.png" mode="aspectFit"></image>
+        </view>
+        <view class="ai-head-text">
+          <view class="ai-title">寓你配房小帮手</view>
+          <view class="ai-subtitle">告诉我预算 区域 户型 快速匹配</view>
+        </view>
+      </view>
+      <view class="assistant-input-row">
+        <input
+          class="assistant-input"
+          value="{{assistantText}}"
+          bindinput="handleAssistantInput"
+          bindconfirm="runTextMatch"
+          confirm-type="search"
+          placeholder="输入预算、区域、户型、特点"
+        />
+        <view class="mic-button {{isVoiceListening ? 'active' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
+          <view class="mic-icon">
+            <view class="mic-head"></view>
+            <view class="mic-neck"></view>
+            <view class="mic-base"></view>
+          </view>
+          <view wx:if="{{isVoiceListening}}" class="voice-wave">
+            <view class="wave-bar bar-1"></view>
+            <view class="wave-bar bar-2"></view>
+            <view class="wave-bar bar-3"></view>
+            <view class="wave-bar bar-4"></view>
+          </view>
+        </view>
+        <view class="find-button" bindtap="runTextMatch" aria-role="button">
+          <text class="find-text">找房</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="category-grid">
+      <view wx:for="{{categories}}" wx:key="name" class="category-card tap-target" bindtap="openCategory" data-name="{{item.name}}">
+        <view class="category-icon">{{item.icon}}</view>
+        <view class="category-name">{{item.name}}</view>
+        <view class="category-desc">{{item.desc}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">内部配房工具</view>
+      <view class="section-title-action tap-target" bindtap="openPage" data-url="/pages/upload/upload">上传房源</view>
+    </view>
+    <view class="quick-grid">
+      <button wx:for="{{quickActions}}" wx:key="title" class="quick-card" bindtap="openPage" data-url="{{item.url}}" hover-class="quick-card-active" hover-stay-time="80">
+        <view class="quick-icon">{{item.icon}}</view>
+        <view class="quick-content">
+          <view class="quick-title">{{item.title}}</view>
+          <view class="quick-desc">{{item.desc}}</view>
+        </view>
+      </button>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">推荐房源</view>
+      <view class="section-title-action tap-target" bindtap="openCategory" data-name="全部">查看全部</view>
+    </view>
+    <view class="listing-list">
+      <view wx:if="{{!listings.length}}" class="empty-card soft-card">
+        <view class="empty-title">暂无推荐房源</view>
+        <view class="empty-desc">员工上传真实房源后，这里会自动显示可配房源。</view>
+      </view>
+      <view wx:for="{{listings}}" wx:key="title" class="listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
+        <view class="listing-photo">
+          <view class="video-badge">视频</view>
+          <view class="photo-window"></view>
+        </view>
+        <view class="listing-content">
+          <view class="listing-title">{{item.title}}</view>
+          <view class="listing-meta">{{item.meta}}</view>
+          <view class="listing-sub">{{item.sub}}</view>
+          <view wx:if="{{item.features}}" class="listing-feature-row">
+            <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+            <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+          </view>
+          <view class="listing-bottom">
+            <view class="listing-price">{{item.price}}</view>
+            <view class="listing-tag tap-target" bindtap="handleTap" data-name="{{item.tag}}">{{item.tag}}</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">中介效率工具</view>
+      <view class="section-title-action tap-target" bindtap="handleTap" data-name="我的工作台">进入工作台</view>
+    </view>
+    <view class="workbench-grid">
+      <view wx:for="{{workbench}}" wx:key="title" class="workbench-card">
+        <view class="workbench-title">{{item.title}}</view>
+        <view class="workbench-value">{{item.value}}</view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

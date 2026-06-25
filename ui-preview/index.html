@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>寓你住一起 UI 风格预览</title>
+  <style>
+    :root {
+      --pine: #2f6f60;
+      --pine-deep: #153f36;
+      --mint: #e9f5f0;
+      --mint-strong: #cfe8dc;
+      --sky: #aee5f2;
+      --sky-soft: #e8f7fb;
+      --sun: #f6bd36;
+      --sun-soft: #fff3cf;
+      --coral: #f2765d;
+      --ink: #17342e;
+      --muted: #6f837c;
+      --line: #dce9e3;
+      --paper: #fbfaf6;
+      --white: #ffffff;
+      --shadow: 0 18px 44px rgba(28, 75, 64, .14);
+      --soft-shadow: 0 10px 26px rgba(28, 75, 64, .08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        linear-gradient(90deg, rgba(47, 111, 96, .055) 1px, transparent 1px) 0 0 / 34px 34px,
+        linear-gradient(0deg, rgba(47, 111, 96, .04) 1px, transparent 1px) 0 0 / 34px 34px,
+        var(--paper);
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 38px 0 42px;
+      display: grid;
+      grid-template-columns: 1fr 430px;
+      gap: 34px;
+      align-items: start;
+    }
+
+    .brand-panel,
+    .phone-shell {
+      background: rgba(255, 255, 255, .9);
+      border: 1px solid rgba(47, 111, 96, .14);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand-panel {
+      min-height: 760px;
+      padding: 34px;
+      border-radius: 26px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .brand-panel::before {
+      content: "";
+      position: absolute;
+      left: -80px;
+      right: 120px;
+      top: -80px;
+      height: 180px;
+      border-bottom: 18px solid rgba(47, 111, 96, .1);
+      border-radius: 0 0 50% 50%;
+      transform: rotate(-4deg);
+    }
+
+    .brand-top {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: center;
+      margin-bottom: 36px;
+    }
+
+    .logo-card {
+      width: 184px;
+      padding: 18px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--soft-shadow);
+    }
+
+    .logo-card img {
+      width: 100%;
+      display: block;
+    }
+
+    .title-block {
+      flex: 1;
+    }
+
+    .eyebrow {
+      color: var(--pine);
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 38px;
+      line-height: 1.18;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      margin: 16px 0 0;
+      max-width: 540px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.8;
+    }
+
+    .section {
+      position: relative;
+      margin-top: 28px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .section-title::before {
+      content: "";
+      width: 10px;
+      height: 22px;
+      border-radius: 8px;
+      background: var(--sun);
+    }
+
+    .palette {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .swatch {
+      min-height: 108px;
+      padding: 12px;
+      border-radius: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      color: var(--white);
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: var(--soft-shadow);
+    }
+
+    .swatch span {
+      opacity: .84;
+      font-weight: 700;
+      margin-top: 3px;
+    }
+
+    .swatch.light {
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+
+    .component-grid {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 14px;
+    }
+
+    .component {
+      min-height: 138px;
+      padding: 18px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--soft-shadow);
+    }
+
+    .component strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 15px;
+    }
+
+    .demo-search {
+      height: 46px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      background: #f5fbf8;
+      border: 1px solid var(--mint-strong);
+      border-radius: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .demo-button {
+      display: inline-flex;
+      height: 44px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 18px;
+      margin-right: 8px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--pine);
+      color: var(--white);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .demo-button.secondary {
+      background: var(--sun);
+      color: var(--pine-deep);
+    }
+
+    .tone-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 10px;
+    }
+
+    .tone-list li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .tone-list b {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--pine);
+      flex: 0 0 auto;
+    }
+
+    .phone-shell {
+      width: 430px;
+      padding: 14px;
+      border-radius: 40px;
+      position: sticky;
+      top: 26px;
+    }
+
+    .phone {
+      min-height: 860px;
+      overflow: hidden;
+      border-radius: 30px;
+      background: #f7fbf8;
+      border: 1px solid rgba(21, 63, 54, .12);
+      position: relative;
+    }
+
+    .phone-top {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px;
+      color: var(--pine-deep);
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(255, 255, 255, .76);
+    }
+
+    .home {
+      padding: 14px 18px 96px;
+    }
+
+    .nav-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .city {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--pine-deep);
+      font-size: 15px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .search {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      color: var(--muted);
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      font-size: 13px;
+      box-shadow: 0 8px 20px rgba(31, 81, 68, .06);
+    }
+
+    .bell {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: var(--sun-soft);
+      color: var(--pine-deep);
+      font-weight: 900;
+    }
+
+    .assistant-card {
+      padding: 18px;
+      border-radius: 24px;
+      background:
+        linear-gradient(135deg, rgba(174, 229, 242, .9), rgba(255, 255, 255, .98) 46%),
+        var(--white);
+      border: 1px solid rgba(47, 111, 96, .16);
+      box-shadow: var(--soft-shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .assistant-card::after {
+      content: "+";
+      position: absolute;
+      top: 10px;
+      right: 18px;
+      color: var(--sun);
+      font-size: 44px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .assistant-head {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .mini-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: var(--white);
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .mini-logo img {
+      width: 34px;
+    }
+
+    .assistant-name {
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .assistant-sub {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .chat-bubble {
+      width: calc(100% - 20px);
+      padding: 14px;
+      border-radius: 8px 18px 18px 18px;
+      background: var(--white);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.7;
+      box-shadow: 0 10px 18px rgba(31, 81, 68, .08);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .72);
+      border: 1px solid rgba(47, 111, 96, .14);
+      color: var(--pine);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .entry-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin: 18px 0;
+    }
+
+    .entry {
+      min-height: 86px;
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 8px 18px rgba(31, 81, 68, .055);
+      color: var(--pine-deep);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .entry-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: var(--mint);
+      color: var(--pine);
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .entry:nth-child(2) .entry-icon {
+      background: var(--sky-soft);
+      color: #26738a;
+    }
+
+    .entry:nth-child(3) .entry-icon {
+      background: var(--sun-soft);
+      color: #a16f00;
+    }
+
+    .entry:nth-child(4) .entry-icon {
+      background: #fbe8e3;
+      color: var(--coral);
+    }
+
+    .block-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      margin: 18px 0 10px;
+    }
+
+    .block-title h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .block-title span {
+      color: var(--pine);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .need-card {
+      padding: 15px;
+      border-radius: 22px;
+      background: var(--pine);
+      color: var(--white);
+      box-shadow: var(--soft-shadow);
+    }
+
+    .need-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .need-top strong {
+      font-size: 15px;
+    }
+
+    .score {
+      padding: 5px 8px;
+      border-radius: 10px;
+      background: var(--sun);
+      color: var(--pine-deep);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .need-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .need-item {
+      padding: 10px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .12);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .need-item b {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+
+    .listing {
+      display: grid;
+      grid-template-columns: 116px 1fr;
+      gap: 12px;
+      padding: 12px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--soft-shadow);
+      margin-top: 12px;
+    }
+
+    .photo {
+      min-height: 112px;
+      border-radius: 17px;
+      overflow: hidden;
+      background:
+        linear-gradient(140deg, rgba(21, 63, 54, .08), rgba(246, 189, 54, .18)),
+        linear-gradient(90deg, #dde8e1 0 24%, #f9f4e9 24% 56%, #b9dbe4 56% 100%);
+      position: relative;
+    }
+
+    .photo::before {
+      content: "";
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: 18px;
+      height: 32px;
+      border-radius: 16px 16px 8px 8px;
+      background: rgba(255, 255, 255, .72);
+      box-shadow: 0 -22px 0 rgba(47, 111, 96, .16);
+    }
+
+    .listing-info h3 {
+      margin: 2px 0 8px;
+      font-size: 15px;
+      line-height: 1.35;
+      font-weight: 900;
+    }
+
+    .listing-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .price-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+      gap: 8px;
+    }
+
+    .price {
+      color: var(--coral);
+      font-size: 17px;
+      font-weight: 900;
+    }
+
+    .tag {
+      padding: 5px 7px;
+      border-radius: 9px;
+      background: var(--mint);
+      color: var(--pine);
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .bottom-tabs {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      height: 68px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      align-items: center;
+      background: rgba(255, 255, 255, .94);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 16px 28px rgba(31, 81, 68, .12);
+    }
+
+    .tab {
+      text-align: center;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .tab b {
+      width: 25px;
+      height: 25px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 5px;
+      border-radius: 10px;
+      color: inherit;
+      font-size: 14px;
+    }
+
+    .tab.active {
+      color: var(--pine);
+    }
+
+    .tab.active b {
+      background: var(--mint);
+    }
+
+    .fab {
+      position: absolute;
+      right: 24px;
+      bottom: 92px;
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      border-radius: 19px;
+      background: var(--sun);
+      color: var(--pine-deep);
+      font-size: 32px;
+      font-weight: 900;
+      box-shadow: 0 16px 24px rgba(246, 189, 54, .35);
+    }
+
+    @media (max-width: 980px) {
+      .page {
+        grid-template-columns: 1fr;
+      }
+
+      .phone-shell {
+        position: static;
+        width: min(430px, 100%);
+        margin: 0 auto;
+      }
+
+      .palette {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .component-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="brand-panel">
+      <div class="brand-top">
+        <div class="logo-card">
+          <img src="./logo.png" alt="寓你住一起 LOGO">
+        </div>
+        <div class="title-block">
+          <div class="eyebrow">品牌 UI 方向</div>
+          <h1>可信房源陪伴感，叠加中介高效工作台。</h1>
+          <p class="summary">整体沿用 LOGO 的屋檐绿、温暖黄和浅蓝。界面不做强销售广告感，而是像一个可靠的找房助手：先听懂租客需求，再帮助中介快速匹配、报备、带看和成交。</p>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">品牌色板</div>
+        <div class="palette">
+          <div class="swatch" style="background:#2f6f60">屋檐绿<span>#2F6F60</span></div>
+          <div class="swatch" style="background:#153f36">深墨绿<span>#153F36</span></div>
+          <div class="swatch light" style="background:#f6bd36">陪伴黄<span>#F6BD36</span></div>
+          <div class="swatch light" style="background:#aee5f2">通勤蓝<span>#AEE5F2</span></div>
+          <div class="swatch light" style="background:#fbfaf6">纸感白<span>#FBFAF6</span></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">组件语言</div>
+        <div class="component-grid">
+          <div class="component">
+            <strong>搜索和筛选</strong>
+            <div class="demo-search">⌕ 小区 / 商圈 / 地铁 / 客户需求</div>
+          </div>
+          <div class="component">
+            <strong>关键操作</strong>
+            <button class="demo-button">AI 匹配</button>
+            <button class="demo-button secondary">发布房源</button>
+          </div>
+          <div class="component">
+            <strong>功能气质</strong>
+            <ul class="tone-list">
+              <li><b></b>AI 对话优先，像微信客服一样自然。</li>
+              <li><b></b>房源卡片信息密度高，适合中介高频筛选。</li>
+              <li><b></b>黄色只用于发布、提醒、急租等强行动。</li>
+            </ul>
+          </div>
+          <div class="component">
+            <strong>适合落地的页面</strong>
+            <ul class="tone-list">
+              <li><b></b>首页</li>
+              <li><b></b>房源足迹</li>
+              <li><b></b>房源群</li>
+              <li><b></b>我的工作台</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="phone-shell">
+      <div class="phone">
+        <div class="phone-top">
+          <span>18:36</span>
+          <span>5G  92%</span>
+        </div>
+        <div class="home">
+          <div class="nav-row">
+            <div class="city">杭州⌄</div>
+            <div class="search">⌕ 小区 / 商圈 / 地铁</div>
+            <div class="bell">!</div>
+          </div>
+
+          <section class="assistant-card">
+            <div class="assistant-head">
+              <div class="mini-logo"><img src="./logo.png" alt=""></div>
+              <div>
+                <div class="assistant-name">寓你 AI 找房助手</div>
+                <div class="assistant-sub">需求解析 · 房源匹配 · 带看建议</div>
+              </div>
+            </div>
+            <div class="chat-bubble">可以直接把租客预算、区域、户型、入住时间、通勤位置发给我，我来给你找。</div>
+            <div class="chips">
+              <span class="chip">预算</span>
+              <span class="chip">区域</span>
+              <span class="chip">户型</span>
+              <span class="chip">入住时间</span>
+              <span class="chip">通勤地址</span>
+            </div>
+          </section>
+
+          <section class="entry-grid">
+            <div class="entry"><div class="entry-icon">整</div><span>整租</span></div>
+            <div class="entry"><div class="entry-icon">合</div><span>合租</span></div>
+            <div class="entry"><div class="entry-icon">业</div><span>业主房源</span></div>
+            <div class="entry"><div class="entry-icon">寓</div><span>公寓</span></div>
+          </section>
+
+          <div class="block-title">
+            <h2>AI 为你匹配</h2>
+            <span>保存到客源库</span>
+          </div>
+          <section class="need-card">
+            <div class="need-top">
+              <strong>客户需求卡</strong>
+              <span class="score">匹配度 92%</span>
+            </div>
+            <div class="need-grid">
+              <div class="need-item"><b>3000 左右</b>预算</div>
+              <div class="need-item"><b>滨江 · 西兴</b>区域</div>
+              <div class="need-item"><b>两室整租</b>户型</div>
+              <div class="need-item"><b>月底入住</b>时间</div>
+            </div>
+          </section>
+
+          <div class="block-title">
+            <h2>推荐房源</h2>
+            <span>查看全部</span>
+          </div>
+          <article class="listing">
+            <div class="listing-info">
+              <h3>暂无推荐房源</h3>
+              <div class="listing-meta">员工上传真实房源后，这里会自动显示可配房源。</div>
+            </div>
+          </article>
+        </div>
+
+        <div class="fab">+</div>
+        <nav class="bottom-tabs">
+          <div class="tab active"><b>⌂</b>首页</div>
+          <div class="tab"><b>◷</b>房源足迹</div>
+          <div class="tab"><b>▣</b>房源群</div>
+          <div class="tab"><b>☻</b>我的</div>
+        </nav>
+      </div>
+    </aside>
+  </main>
+</body>
+</html>

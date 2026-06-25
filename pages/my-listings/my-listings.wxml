@@ -1,0 +1,43 @@
+<navigation-bar title="我的房源" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell my-listings-page">
+    <view class="owner-card">
+      <view>
+        <view class="owner-title">我的上传房源</view>
+        <view class="owner-desc">普通上传不增加积分，群聊上传审核通过后才到账积分。</view>
+      </view>
+      <button class="owner-button" bindtap="upload">上传</button>
+    </view>
+
+    <view class="stat-grid">
+      <view wx:for="{{stats}}" wx:key="label" class="stat-card">
+        <view class="stat-value">{{item.value}}</view>
+        <view class="stat-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">房源列表</view>
+    </view>
+    <view class="listing-list">
+      <view wx:for="{{listings}}" wx:key="id" class="owner-listing soft-card" bindtap="openListing" data-id="{{item.id}}">
+        <view>
+          <view class="listing-title">{{item.title}}</view>
+          <view class="listing-location">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
+          <view class="listing-meta">¥{{item.rent}}/月 · {{item.commissionText || item.commissionRate}}</view>
+          <view wx:if="{{item.features}}" class="listing-feature-row">
+            <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+            <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+          </view>
+          <view class="listing-views">{{item.views}}</view>
+          <view class="verify-line {{item.verifyStatus !== '正常' ? 'warn' : ''}}">{{item.verifyStatus}} · {{item.verifyTip}}</view>
+        </view>
+        <view class="listing-actions">
+          <button class="edit-button" catchtap="editListing" data-id="{{item.id}}">编辑</button>
+          <button class="verify-button" catchtap="verifyListing" data-id="{{item.id}}">电话确认</button>
+          <view class="arrow">›</view>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

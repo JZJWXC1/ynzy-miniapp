@@ -1,0 +1,14 @@
+[Unit]
+Description=Ynzy Miniapp Backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ynzy-miniapp/server
+ExecStart=/usr/bin/env node src/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
