@@ -13,7 +13,6 @@
     "pages/commissions/commissions",
     "pages/client-reports/client-reports",
     "pages/deal-records/deal-records",
-    "pages/groups/groups",
     "pages/profile/profile"
   ],
   "window": {

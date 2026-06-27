@@ -87,6 +87,8 @@ function profileEntrySurface() {
 
 function checkLegacyVisibleEntryKeywords() {
   const app = readJson('app.json')
+  const pages = Array.isArray(app.pages) ? app.pages : []
+  assertOk(!pages.includes('pages/groups/groups'), '第一版 app.json pages 不能注册房源群页面直达路径')
   const surfaces = [
     {
       name: 'app.json tabBar',

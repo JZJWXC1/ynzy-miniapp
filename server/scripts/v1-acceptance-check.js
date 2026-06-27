@@ -162,6 +162,7 @@ check('底部导航固定为找房/房源/地图/我的', () => {
   const appJson = JSON.parse(readFile('app.json'))
   assert.deepStrictEqual(appJson.tabBar.list.map((item) => item.text), EXPECTED_TABS.map((item) => item.text))
   assert.deepStrictEqual(appJson.tabBar.list.map((item) => item.pagePath), EXPECTED_TABS.map((item) => item.pagePath))
+  assert.ok(!(appJson.pages || []).includes('pages/groups/groups'), '第一版 app.json pages 不能注册房源群页面直达路径')
   assertNoHiddenKeyword(JSON.stringify(appJson.tabBar.list), 'app.json tabBar')
 
   const customTab = readFile('custom-tab-bar/index.js')
