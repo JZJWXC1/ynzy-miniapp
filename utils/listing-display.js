@@ -7,7 +7,7 @@ const {
 
 const COMPANY_SOURCE = '公司房源'
 const V1_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算'
-const VERIFY_STALE_DAYS = 15
+const VERIFY_STALE_DAYS = 7
 
 const FEATURE_RULES = [
   { name: '带阳台', pattern: /阳台/ },

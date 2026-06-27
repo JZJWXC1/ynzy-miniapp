@@ -326,6 +326,8 @@ check('敏感信息脱敏和提示词约束存在', () => {
 })
 
 check('3/5/7 天房态规则保持固定', () => {
+  assertIncludes(readFile('utils/listing-display.js'), 'VERIFY_STALE_DAYS = 7', '前端展示工具必须固定第 7 天自动失效')
+  assertIncludes(readFile('utils/mock-data.js'), 'VERIFY_STALE_DAYS = 7', 'Mock 数据必须固定第 7 天自动失效')
   const db = createDb()
   const rule = domain.listingMaintenanceRule(db)
   assert.deepStrictEqual(rule.remindDays, [3, 5], '房态提醒必须是第 3 天和第 5 天')

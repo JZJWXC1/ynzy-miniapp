@@ -134,6 +134,19 @@ function checkCriticalScriptsExist() {
   return criticalScripts.join('、')
 }
 
+function checkFrontendVerifyRule() {
+  const files = [
+    'utils/listing-display.js',
+    'utils/mock-data.js'
+  ]
+  files.forEach((file) => {
+    const text = readText(file)
+    assertOk(/VERIFY_STALE_DAYS\s*=\s*7\b/.test(text), `${file} 必须使用 7 天自动失效规则`)
+    assertOk(!/VERIFY_STALE_DAYS\s*=\s*15\b/.test(text), `${file} 不能残留 15 天房态规则`)
+  })
+  return '前端与 Mock 房态自动失效均为 7 天'
+}
+
 function checkAdminReportDealContract() {
   const indexSource = readText('server/src/index.js')
   const domainSource = readText('server/src/domain.js')
@@ -171,6 +184,7 @@ const checks = [
   ['server/scripts/smoke-test.js 未被修改', checkSmokeTestUnchanged],
   ['关键 V1 脚本存在', checkCriticalScriptsExist],
   ['第一版可见入口不暴露历史关键词', checkLegacyVisibleEntryKeywords],
+  ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
