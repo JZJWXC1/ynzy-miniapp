@@ -697,7 +697,7 @@
     <div class="brand-side">
       <img class="logo" src="../assets/logo.png" alt="寓你住一起">
       <h1>内部房源协作管理后台</h1>
-      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、分佣记录、群聊上传记录、积分流水和充值账单。</p>
+      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、报备记录、签单审核和分佣记录。</p>
     </div>
     <div class="login-panel">
       <h2 class="panel-title">管理员登录</h2>
@@ -731,11 +731,7 @@
       <button class="nav-button" data-panel="commissions">分佣记录</button>
       <div class="menu-title">风控记录</div>
       <button class="nav-button" data-panel="logs">敏感查看足迹</button>
-      <div class="menu-title">群聊与积分</div>
-      <button class="nav-button" data-panel="groupUploads">群聊上传</button>
       <button class="nav-button" data-panel="showingUploads">带看审核</button>
-      <button class="nav-button" data-panel="points">积分流水</button>
-      <button class="nav-button" data-panel="recharges">充值账单</button>
       <div class="menu-title">系统配置</div>
       <button class="nav-button" data-panel="feishuSync">飞书同步</button>
       <button class="nav-button" data-panel="llmConfig">LLM配置</button>
@@ -772,7 +768,7 @@
           <h3>上传房源电话核验规则</h3>
           <label class="switch-row">
             <input type="checkbox" id="maintenanceRuleEnabled">
-            <span>固定规则：15 天未维护自动下架；开启后 3 天、5 天提醒上传人核验</span>
+            <span>固定规则：第3天提醒上传人核验，第5天再次提醒，第7天未更新自动失效并进入后台资产池</span>
           </label>
           <div class="status-box" id="maintenanceRuleStatus">正在读取规则状态...</div>
           <div class="inline-actions">
@@ -874,15 +870,6 @@
         </div>
       </section>
 
-      <section class="panel" id="groupUploads">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>群聊名称</th><th>截图</th><th>区域/板块</th><th>上传人</th><th>核对状态</th><th>积分</th><th>审核状态</th><th>操作</th></tr></thead>
-            <tbody id="groupUploadRows"></tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="panel" id="showingUploads">
         <div class="table-wrap">
           <table>
@@ -890,24 +877,6 @@
             <tbody id="showingRows"></tbody>
           </table>
           <div class="empty" id="showingEmpty" hidden>暂无带看审核记录</div>
-        </div>
-      </section>
-
-      <section class="panel" id="points">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>员工</th><th>类型</th><th>积分变化</th><th>说明</th><th>时间</th></tr></thead>
-            <tbody id="pointRows"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel" id="recharges">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>订单号</th><th>用户</th><th>充值积分</th><th>金额</th><th>支付方式</th><th>支付状态</th><th>时间</th><th>操作</th></tr></thead>
-            <tbody id="rechargeRows"></tbody>
-          </table>
         </div>
       </section>
 
@@ -1047,7 +1016,7 @@
       <section class="panel" id="dataBackup">
         <div class="config-card">
           <h3>数据导出</h3>
-          <div class="status-box">导出当前房源、用户、足迹、分佣、群聊、积分和后台账号数据。建议上线前、批量导入前、每日下班前各备份一次。</div>
+          <div class="status-box">导出当前房源、用户、足迹、报备、签单、分佣和后台账号数据。建议上线前、批量导入前、每日下班前各备份一次。</div>
           <div class="inline-actions">
             <button id="exportDataBackup">导出 JSON 备份</button>
           </div>
@@ -1070,10 +1039,7 @@
       deals: '签单审核',
       logs: '敏感查看足迹',
       commissions: '分佣记录',
-      groupUploads: '群聊上传',
       showingUploads: '带看审核',
-      points: '积分流水',
-      recharges: '充值账单',
       feishuSync: '飞书同步',
       llmConfig: 'LLM配置',
       launchCheck: '上线检查',
@@ -1188,16 +1154,15 @@
       const areaText = summary.areaStats.map((item) => `${item.area} ${item.count}`).join(' · ');
       document.getElementById('dashboardStats').innerHTML = [
         { value: summary.listingCount, label: `区域房源数量<br>${areaText}` },
-        { value: summary.groupCount, label: `群聊数量<br>已解锁 ${summary.unlockedGroupCount} 个` },
-        { value: summary.userCount, label: `用户数量<br>已实名 ${summary.authedUsers} 人` },
-        { value: summary.staleListingCount || 0, label: `待电话核验<br>废房源池 ${summary.expiredListingCount || 0} 套` }
+        { value: summary.userCount, label: `中介账号<br>已实名 ${summary.authedUsers} 人` },
+        { value: summary.staleListingCount || 0, label: `待电话核验<br>废房源池 ${summary.expiredListingCount || 0} 套` },
+        { value: summary.todaySensitiveViews || 0, label: `今日敏感查看<br>需复盘 ${summary.todaySensitiveViews || 0} 次` }
       ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
 
       document.getElementById('riskRows').innerHTML = [
-        { title: '房态 3/5 天提醒，15 天下架', object: '房源管理', status: summary.staleListingCount > 0 ? '需核验' : '正常', time: '自动统计' },
+        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '房源管理', status: summary.staleListingCount > 0 ? '需核验' : '正常', time: '自动统计' },
         { title: '敏感信息查看记录新增', object: '房源足迹', status: summary.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-        { title: '签单审核待管理员确认', object: '签单审核', status: '处理中', time: '今天' },
-        { title: '充值账单同步积分流水', object: '积分充值', status: '正常', time: '今天' }
+        { title: '签单审核待管理员确认', object: '签单审核', status: '处理中', time: '今天' }
       ].map((item) => `
         <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
       `).join('');
@@ -1259,23 +1224,32 @@
       listingEmpty.hidden = rows.length > 0;
     }
 
+    function maintenanceRuleDisplayText(rule, extraText = '') {
+      const enabled = Boolean(rule && rule.enabled);
+      const status = rule && rule.status ? rule.status : (enabled ? '已开启' : '已关闭');
+      const tip = enabled
+        ? '第3天提醒上传人核验，第5天再次提醒，第7天未更新自动失效并进入后台资产池。'
+        : '提醒开关已关闭；第7天未更新自动失效并进入后台资产池为固定规则。';
+      return `${status}。${tip}${extraText}`;
+    }
+
     async function renderMaintenanceRule() {
       const rule = await getAdminData('/admin/listing-maintenance-rule', () => (
         dataCenter.getListingMaintenanceRule ? dataCenter.getListingMaintenanceRule() : {
           enabled: false,
           remindDays: [3, 5],
-          expireDays: 15,
+          expireDays: 7,
           status: '已关闭',
-          tip: '已关闭提醒：15 天未更新仍会固定自动下架并进入后台废房源池。'
+          tip: '提醒开关已关闭；第7天未更新自动失效并进入后台资产池为固定规则。'
         }
       ));
       maintenanceRuleEnabled.checked = Boolean(rule.enabled);
-      maintenanceRuleStatus.textContent = `${rule.status}。${rule.tip || ''}${rule.updatedAt ? ` 最近保存：${rule.updatedAt}` : ''}`;
+      maintenanceRuleStatus.textContent = maintenanceRuleDisplayText(rule, rule.updatedAt ? ` 最近保存：${rule.updatedAt}` : '');
     }
 
     async function saveMaintenanceRule() {
       const enabled = maintenanceRuleEnabled.checked;
-      if (enabled && !window.confirm('15 天未维护自动下架为固定规则；这里开启的是 3 天、5 天电话核验提醒。确认开启？')) {
+      if (enabled && !window.confirm('第7天未更新自动失效为固定规则；这里开启第3天、第5天电话核验提醒。确认开启？')) {
         maintenanceRuleEnabled.checked = false;
         await renderMaintenanceRule();
         return;
@@ -1295,7 +1269,7 @@
         body: JSON.stringify({ enabled })
       });
       maintenanceRuleEnabled.checked = Boolean(saved.enabled);
-      maintenanceRuleStatus.textContent = `${saved.status}。${saved.tip || ''}${saved.expiredCount ? ` 本次自动下架 ${saved.expiredCount} 套。` : ''}`;
+      maintenanceRuleStatus.textContent = maintenanceRuleDisplayText(saved, saved.expiredCount ? ` 本次自动失效 ${saved.expiredCount} 套。` : '');
       await renderDashboardStats();
       await renderAreaStats();
       await renderListings();
@@ -1457,38 +1431,6 @@
       `).join('');
     }
 
-    async function getGroupUploadData() {
-      if (!canUseAdminApi()) return dataCenter.getGroupUploadRows();
-      try {
-        return await adminRequest('/admin/groups/uploads');
-      } catch (error) {
-        return dataCenter.getGroupUploadRows();
-      }
-    }
-
-    async function renderGroupUploads() {
-      const rows = await getGroupUploadData();
-      document.getElementById('groupUploadRows').innerHTML = rows.map((item) => `
-        <tr>
-          <td>${item.title}<span class="sub-cell">${item.time || ''}</span></td>
-          <td>
-            ${item.screenshotUrl ? `<a class="audit-shot" href="${item.screenshotUrl}" target="_blank"><img src="${item.screenshotUrl}" alt="群聊截图"></a>` : '<span class="audit-shot">待补图</span>'}
-          </td>
-          <td>${item.area}<span class="sub-cell">${item.block}</span></td>
-          <td>${item.uploader}<span class="sub-cell">${item.uploaderPhone || '无电话'}</span></td>
-          <td><span class="${pillClass(item.contactStatus)}">${item.contactStatus || '待联系核对'}</span><span class="sub-cell">${item.reviewNote || '管理员需联系用户核对截图真实性'}</span></td>
-          <td>${item.point}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
-          <td>
-            <div class="row-actions">
-              <button class="table-action review-button" data-id="${item.id}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
-              <button class="table-action reject review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
-            </div>
-          </td>
-        </tr>
-      `).join('');
-    }
-
     async function getShowingUploadData() {
       if (!canUseAdminApi()) return dataCenter.getShowingUploadRows();
       try {
@@ -1521,50 +1463,6 @@
         </tr>
       `).join('');
       empty.hidden = Boolean(rows.length);
-    }
-
-    async function getPointData() {
-      if (!canUseAdminApi()) return dataCenter.getPointLogs();
-      try {
-        return await adminRequest('/admin/points');
-      } catch (error) {
-        return dataCenter.getPointLogs();
-      }
-    }
-
-    async function renderPoints() {
-      const rows = await getPointData();
-      document.getElementById('pointRows').innerHTML = rows.map((item) => `
-        <tr>
-          <td>${item.user}</td>
-          <td>${item.type}</td>
-          <td>${item.change}</td>
-          <td>${item.note}</td>
-          <td>${item.time}</td>
-        </tr>
-      `).join('');
-    }
-
-    async function renderRecharges() {
-      const rows = await getAdminData('/admin/recharges', () => dataCenter.getRechargeBills());
-      document.getElementById('rechargeRows').innerHTML = rows.map((item) => `
-        <tr>
-          <td>${item.id}</td>
-          <td>${item.user}</td>
-          <td>${item.points}</td>
-          <td>${item.amount}</td>
-          <td>${item.paymentMethod || '-'}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
-          <td>${item.time}</td>
-          <td>
-            <div class="row-actions">
-              <button class="table-action recharge-review-button" data-id="${item.id}" data-action="approve" ${item.status !== '待确认' ? 'disabled' : ''}>确认到账</button>
-              <button class="table-action reject recharge-review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待确认' ? 'disabled' : ''}>驳回</button>
-              <button class="table-action recharge-sync-button" data-id="${item.id}" ${String(item.paymentMethod || '').indexOf('微信') === -1 ? 'disabled' : ''}>同步状态</button>
-            </div>
-          </td>
-        </tr>
-      `).join('');
     }
 
     function fillAdminUserSelect(users) {
@@ -1727,31 +1625,7 @@
       });
       await renderShowingUploads();
       await renderAdminLogs();
-      await renderPoints();
       await renderAdmins();
-      await renderDashboardStats();
-    }
-
-    async function reviewGroupUpload(id, action) {
-      if (!id) return;
-      if (!canUseAdminApi()) {
-        alert('请通过后端地址打开后台后再审核：/admin-web/');
-        return;
-      }
-      const confirmText = action === 'approve'
-        ? '确认已联系上传人核对截图，并审核通过给 1 积分？'
-        : '确认已联系上传人核对，并驳回该群聊上传？';
-      if (!window.confirm(confirmText)) return;
-
-      await adminRequest(`/admin/groups/uploads/${id}/review`, {
-        method: 'POST',
-        body: JSON.stringify({
-          action,
-          note: action === 'approve' ? '已联系上传人核对，审核通过' : '已联系上传人核对，审核驳回'
-        })
-      });
-      await renderGroupUploads();
-      await renderPoints();
       await renderDashboardStats();
     }
 
@@ -1785,58 +1659,6 @@
       await renderListings();
       await renderDashboardStats();
       await renderAreaStats();
-    }
-
-    async function reviewRechargeBill(id, action) {
-      if (!id) return;
-      const confirmText = action === 'approve'
-        ? '确认已经收到该笔充值款，并给用户增加对应积分？'
-        : '确认驳回该笔充值申请？';
-      if (!window.confirm(confirmText)) return;
-
-      if (!canUseAdminApi()) {
-        if (dataCenter.reviewRechargeBill) {
-          dataCenter.reviewRechargeBill(id, action);
-          await renderRecharges();
-          await renderPoints();
-          await renderDashboardStats();
-          await renderLaunchCheck();
-          return;
-        }
-        alert('请通过后端地址打开后台后再处理充值：/admin-web/');
-        return;
-      }
-
-      await adminRequest(`/admin/recharges/${id}/review`, {
-        method: 'POST',
-        body: JSON.stringify({
-          action,
-          note: action === 'approve' ? '管理员确认收款，积分到账' : '管理员驳回充值申请'
-        })
-      });
-      await renderRecharges();
-      await renderPoints();
-      await renderDashboardStats();
-      await renderLaunchCheck();
-    }
-
-    async function syncRechargeBill(id) {
-      if (!id) return;
-      if (!canUseAdminApi()) {
-        alert('请通过后端地址打开后台后再同步充值账单：/admin-web/');
-        return;
-      }
-      if (!window.confirm('确认向微信支付查询并同步该笔账单状态？')) return;
-
-      const result = await adminRequest(`/admin/recharges/${id}/sync`, {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      await renderRecharges();
-      await renderPoints();
-      await renderDashboardStats();
-      await renderLaunchCheck();
-      alert(result.message || '账单状态已同步');
     }
 
     async function changeAdminPassword(id, account) {
@@ -2227,10 +2049,7 @@
       renderReports();
       renderDeals();
       renderCommissions();
-      renderGroupUploads();
       renderShowingUploads();
-      renderPoints();
-      renderRecharges();
       renderAdmins();
       renderFeishuSync();
       renderLaunchCheck();
@@ -2296,21 +2115,6 @@
         return;
       }
 
-      const rechargeReviewButton = event.target.closest('.recharge-review-button');
-      if (rechargeReviewButton && !rechargeReviewButton.disabled) {
-        reviewRechargeBill(rechargeReviewButton.dataset.id, rechargeReviewButton.dataset.action).catch((error) => {
-          alert(error.message || '充值审核失败');
-        });
-        return;
-      }
-      const rechargeSyncButton = event.target.closest('.recharge-sync-button');
-      if (rechargeSyncButton && !rechargeSyncButton.disabled) {
-        syncRechargeBill(rechargeSyncButton.dataset.id).catch((error) => {
-          alert(error.message || '充值同步失败');
-        });
-        return;
-      }
-
       const confirmDealButton = event.target.closest('.confirm-deal-button');
       if (confirmDealButton && !confirmDealButton.disabled) {
         confirmAdminDeal(confirmDealButton.dataset.id).catch((error) => {
@@ -2323,14 +2127,6 @@
       if (showingReviewButton && !showingReviewButton.disabled) {
         reviewShowingUpload(showingReviewButton.dataset.id, showingReviewButton.dataset.action).catch((error) => {
           alert(error.message || '带看审核失败');
-        });
-        return;
-      }
-
-      const reviewButton = event.target.closest('.review-button');
-      if (reviewButton && !reviewButton.disabled) {
-        reviewGroupUpload(reviewButton.dataset.id, reviewButton.dataset.action).catch((error) => {
-          alert(error.message || '审核操作失败');
         });
         return;
       }
