@@ -445,6 +445,34 @@
       gap: 8px;
     }
 
+    .audit-note {
+      margin-bottom: 14px;
+    }
+
+    .deal-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .deal-summary .status-box {
+      min-height: 92px;
+    }
+
+    .deal-summary strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--deep);
+      font-size: 24px;
+    }
+
+    .money-strong {
+      display: block;
+      color: var(--deep);
+      font-weight: 900;
+    }
+
     .table-action {
       min-width: 64px;
       height: 32px;
@@ -653,6 +681,7 @@
       .config-grid,
       .launch-summary,
       .launch-grid,
+      .deal-summary,
       .form-grid {
         grid-template-columns: 1fr;
       }
@@ -696,8 +725,12 @@
       <button class="nav-button active" data-panel="dashboard">数据总览</button>
       <button class="nav-button" data-panel="listings">房源管理</button>
       <button class="nav-button" data-panel="expiredListings">废房源池</button>
-      <button class="nav-button" data-panel="logs">敏感查看足迹</button>
+      <div class="menu-title">成交闭环</div>
+      <button class="nav-button" data-panel="reports">报备记录</button>
+      <button class="nav-button" data-panel="deals">签单审核</button>
       <button class="nav-button" data-panel="commissions">分佣记录</button>
+      <div class="menu-title">风控记录</div>
+      <button class="nav-button" data-panel="logs">敏感查看足迹</button>
       <div class="menu-title">群聊与积分</div>
       <button class="nav-button" data-panel="groupUploads">群聊上传</button>
       <button class="nav-button" data-panel="showingUploads">带看审核</button>
@@ -809,10 +842,33 @@
         </div>
       </section>
 
+      <section class="panel" id="reports">
+        <div class="status-box audit-note">报备客户称呼可选，客户手机号必填；后台只展示脱敏手机号，签单必须从报备记录发起。</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>报备房源</th><th>报备中介</th><th>客户</th><th>报备状态</th><th>签单记录</th><th>时间</th></tr></thead>
+            <tbody id="reportRows"></tbody>
+          </table>
+          <div class="empty" id="reportEmpty" hidden>暂无报备记录</div>
+        </div>
+      </section>
+
+      <section class="panel" id="deals">
+        <div class="deal-summary" id="dealSummary"></div>
+        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。上传人分佣由后端固定按房东实付佣金的 20% 计算，后台不可修改上传人或分佣比例。</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>成交房源</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
+            <tbody id="dealRows"></tbody>
+          </table>
+          <div class="empty" id="dealEmpty" hidden>暂无签单审核记录</div>
+        </div>
+      </section>
+
       <section class="panel" id="commissions">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>成交房源</th><th>上传人</th><th>成交人</th><th>分佣比例</th><th>状态</th><th>时间</th></tr></thead>
+            <thead><tr><th>成交房源</th><th>上传人</th><th>成交人</th><th>分佣比例</th><th>房东实付佣金</th><th>上传人分佣</th><th>状态</th><th>时间</th></tr></thead>
             <tbody id="commissionRows"></tbody>
           </table>
         </div>
@@ -1010,6 +1066,8 @@
       dashboard: '数据总览',
       listings: '房源管理',
       expiredListings: '废房源池',
+      reports: '报备记录',
+      deals: '签单审核',
       logs: '敏感查看足迹',
       commissions: '分佣记录',
       groupUploads: '群聊上传',
@@ -1057,6 +1115,7 @@
     const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
     let llmConfigInitialized = false;
+    const localConfirmedDeals = {};
 
     function pillClass(value) {
       if (value === '需关注' || value === '待确认' || value === '待审核' || value === '待联系核对' || value === '提醒核验' || value === '重点核验' || value === '需核验' || value === '需处理') return 'pill warn';
@@ -1070,6 +1129,45 @@
         .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
         .join('&');
       return query ? `?${query}` : '';
+    }
+
+    function safeText(value, fallback = '-') {
+      const text = String(value === undefined || value === null ? '' : value).trim();
+      const finalText = text || fallback;
+      return String(finalText).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char]));
+    }
+
+    function safeAttr(value) {
+      return safeText(value, '');
+    }
+
+    function maskPhone(value) {
+      const text = String(value || '').trim();
+      return text.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
+    }
+
+    function maskedCustomerPhone(item) {
+      return maskPhone(item.customerPhoneMasked || item.customerPhone || item.phone || '');
+    }
+
+    function moneyText(text, fen, showZero = false) {
+      const readyText = String(text === undefined || text === null ? '' : text).trim();
+      if (readyText === '-') return '-';
+      if (readyText) return /元$/.test(readyText) ? readyText : `${readyText} 元`;
+      const number = Number(fen || 0);
+      return number > 0 || showZero ? `${(number / 100).toFixed(2)} 元` : '-';
+    }
+
+    function expectedUploaderCommissionFen(item) {
+      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
+      if (saved > 0) return saved;
+      return Math.round(Number(item.landlordCommissionFen || 0) * 20 / 100);
     }
 
     async function getAdminData(path, fallback) {
@@ -1098,7 +1196,7 @@
       document.getElementById('riskRows').innerHTML = [
         { title: '房态 3/5 天提醒，15 天下架', object: '房源管理', status: summary.staleListingCount > 0 ? '需核验' : '正常', time: '自动统计' },
         { title: '敏感信息查看记录新增', object: '房源足迹', status: summary.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-        { title: '成交登记待上传人确认', object: '分佣记录', status: '处理中', time: '今天' },
+        { title: '签单审核待管理员确认', object: '签单审核', status: '处理中', time: '今天' },
         { title: '充值账单同步积分流水', object: '积分充值', status: '正常', time: '今天' }
       ].map((item) => `
         <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
@@ -1244,6 +1342,105 @@
       `).join('');
     }
 
+    function getLocalReportRows() {
+      if (!dataCenter.getClientReports) return [];
+      return dataCenter.getClientReports().map((item) => Object.assign({
+        broker: '当前中介',
+        time: item.createdAt || item.time || ''
+      }, item, {
+        customerPhoneMasked: maskedCustomerPhone(item),
+        status: item.status || '已报备'
+      }));
+    }
+
+    function getLocalDealRows() {
+      if (!dataCenter.getDealRecords) return [];
+      return dataCenter.getDealRecords().map((item) => {
+        const confirmed = Boolean(localConfirmedDeals[item.id]);
+        const expectedFen = expectedUploaderCommissionFen(item);
+        return Object.assign({
+          broker: '当前中介',
+          uploader: item.uploader || item.uploaderId || '上传人',
+          customerName: '',
+          customerPhoneMasked: '',
+          expectedUploaderCommissionFen: expectedFen,
+          expectedUploaderCommission: (expectedFen / 100).toFixed(2),
+          uploaderCommissionRate: 20
+        }, item, confirmed ? {
+          status: '已确认',
+          uploaderCommissionFen: expectedFen,
+          uploaderCommission: (expectedFen / 100).toFixed(2),
+          confirmedAt: localConfirmedDeals[item.id]
+        } : {});
+      });
+    }
+
+    async function renderReports() {
+      const rows = await getAdminData('/admin/reports', getLocalReportRows);
+      const body = document.getElementById('reportRows');
+      const empty = document.getElementById('reportEmpty');
+      body.innerHTML = rows.map((item) => {
+        const dealText = item.dealId ? `已发起：${safeText(item.dealId)}` : '未发起';
+        return `
+          <tr>
+            <td>${safeText(item.listingTitle || item.listing || item.community)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
+            <td>${safeText(item.broker)}</td>
+            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '已报备')}</span></td>
+            <td>${dealText}</td>
+            <td>${safeText(item.time || item.createdAt)}</td>
+          </tr>
+        `;
+      }).join('');
+      empty.hidden = rows.length > 0;
+    }
+
+    function renderDealSummary(rows) {
+      const pending = rows.filter((item) => item.status !== '已确认').length;
+      const confirmed = rows.filter((item) => item.status === '已确认').length;
+      const pendingCommissionFen = rows
+        .filter((item) => item.status !== '已确认')
+        .reduce((sum, item) => sum + expectedUploaderCommissionFen(item), 0);
+      document.getElementById('dealSummary').innerHTML = [
+        { value: pending, label: '待管理员确认' },
+        { value: confirmed, label: '已确认签单' },
+        { value: moneyText('', pendingCommissionFen, true), label: '待确认预计上传人分佣' }
+      ].map((item) => `<div class="status-box"><strong>${safeText(item.value)}</strong>${safeText(item.label)}</div>`).join('');
+    }
+
+    async function renderDeals() {
+      const rows = await getAdminData('/admin/deals', getLocalDealRows);
+      const body = document.getElementById('dealRows');
+      const empty = document.getElementById('dealEmpty');
+      renderDealSummary(rows);
+      body.innerHTML = rows.map((item) => {
+        const confirmed = item.status === '已确认';
+        const commissionFen = confirmed ? Number(item.uploaderCommissionFen || 0) : expectedUploaderCommissionFen(item);
+        const commissionText = confirmed
+          ? moneyText(item.uploaderCommission, commissionFen)
+          : moneyText(item.expectedUploaderCommission, commissionFen);
+        return `
+          <tr>
+            <td>${safeText(item.listingTitle || item.listing)}<span class="sub-cell">报备 ${safeText(item.reportId, '-')}</span></td>
+            <td>${safeText(item.broker)}</td>
+            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
+            <td>
+              <span class="money-strong">月租 ${safeText(moneyText(item.dealMonthlyRent, item.dealMonthlyRentFen))}</span>
+              <span class="sub-cell">房东实付佣金 ${safeText(moneyText(item.landlordCommission, item.landlordCommissionFen))}</span>
+            </td>
+            <td>
+              <span class="money-strong">${safeText(commissionText)}</span>
+              <span class="sub-cell">上传人 ${safeText(item.uploader)} · 固定 ${safeText(item.uploaderCommissionRate || 20)}%</span>
+            </td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '待管理员确认')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
+            <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
+            <td><button class="table-action confirm-deal-button" data-id="${safeAttr(item.id)}" ${confirmed ? 'disabled' : ''}>确认签单</button></td>
+          </tr>
+        `;
+      }).join('');
+      empty.hidden = rows.length > 0;
+    }
+
     async function renderCommissions() {
       const rows = await getAdminData('/admin/commissions', () => dataCenter.getCommissionRows());
       document.getElementById('commissionRows').innerHTML = rows.map((item) => `
@@ -1252,6 +1449,8 @@
           <td>${item.uploader}</td>
           <td>${item.dealer}</td>
           <td>${item.rate}</td>
+          <td>${moneyText(item.landlordCommission, item.landlordCommissionFen)}</td>
+          <td>${moneyText(item.uploaderCommission, item.uploaderCommissionFen)}</td>
           <td><span class="${pillClass(item.status)}">${item.status}</span></td>
           <td>${item.time}</td>
         </tr>
@@ -1785,6 +1984,29 @@
       await renderAdminLogs();
     }
 
+    async function confirmAdminDeal(id) {
+      if (!id) return;
+      if (!window.confirm('确认该签单真实有效，并由后端按固定 20% 生成上传人正式分佣记录？')) return;
+
+      if (!canUseAdminApi()) {
+        localConfirmedDeals[id] = new Date().toLocaleString('zh-CN', { hour12: false });
+        await renderDeals();
+        alert('本地预览已标记为已确认；正式环境会调用后端生成分佣记录。');
+        return;
+      }
+
+      const result = await adminRequest(`/admin/deals/${encodeURIComponent(id)}/confirm`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      await renderReports();
+      await renderDeals();
+      await renderCommissions();
+      await renderListings();
+      await renderDashboardStats();
+      alert((result && result.message) || '签单已确认，正式分佣记录已生成。');
+    }
+
     function fallbackFeishuSyncStatus() {
       return {
         ready: false,
@@ -2002,6 +2224,8 @@
       renderListings();
       renderExpiredListings();
       renderAdminLogs();
+      renderReports();
+      renderDeals();
       renderCommissions();
       renderGroupUploads();
       renderShowingUploads();
@@ -2083,6 +2307,14 @@
       if (rechargeSyncButton && !rechargeSyncButton.disabled) {
         syncRechargeBill(rechargeSyncButton.dataset.id).catch((error) => {
           alert(error.message || '充值同步失败');
+        });
+        return;
+      }
+
+      const confirmDealButton = event.target.closest('.confirm-deal-button');
+      if (confirmDealButton && !confirmDealButton.disabled) {
+        confirmAdminDeal(confirmDealButton.dataset.id).catch((error) => {
+          alert(error.message || '确认签单失败');
         });
         return;
       }
