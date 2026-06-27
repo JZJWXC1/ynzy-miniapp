@@ -7,9 +7,9 @@
 - 用户数据：`server/data/db.json` 的 `users`
 - 普通房源：`server/data/db.json` 的 `listings`
 - 敏感查看足迹：`server/data/db.json` 的 `footprints`
-- 积分流水：`server/data/db.json` 的 `pointLogs`
-- 充值账单：`server/data/db.json` 的 `rechargeBills`
-- 群聊上传记录：`server/data/db.json` 的 `groupUploads`
+- 历史积分流水：`server/data/db.json` 的 `pointLogs`，第一版入口隐藏
+- 历史充值账单：`server/data/db.json` 的 `rechargeBills`，第一版入口隐藏
+- 历史群聊上传记录：`server/data/db.json` 的 `groupUploads`，第一版入口隐藏
 - 管理员账号：`server/data/db.json` 的 `adminAccounts`
 - LLM 配置：`server/data/db.json` 的 `llmConfig`
 - 视频上传记录：`server/data/db.json` 的 `uploadRecords`
@@ -81,7 +81,7 @@ ALI_OSS_PUBLIC_BASE_URL=
 ADMIN_TOKEN_SECRET=
 ```
 
-这些 `ALI_OSS_ACCESS_KEY_*` 建议使用 RAM 子账号，不要使用主账号 AccessKey。RAM Policy 第一版只需要允许访问 `ynzy-house-videos-bj` 下的 `house-videos/*` 和 `group-screenshots/*`，用于普通房源视频和群聊截图上传；小程序端不保存 AccessKey，只从后端获取上传策略和短期读取签名。
+这些 `ALI_OSS_ACCESS_KEY_*` 建议使用 RAM 子账号，不要使用主账号 AccessKey。RAM Policy 第一版可见上传链路只需要允许访问 `ynzy-house-videos-bj` 下的 `house-videos/*`，用于房源视频上传；`group-screenshots/*` 仅用于历史群聊截图能力保留，第一版不作为可见入口。小程序端不保存 AccessKey，只从后端获取上传策略和短期读取签名。
 
 上线建议：
 
@@ -89,13 +89,13 @@ ADMIN_TOKEN_SECRET=
 - 后端生成 OSS POST Policy
 - 小程序用 `wx.uploadFile` 直传 OSS
 - 上传成功后，把 `videoUrl`、`videoKey` 随普通房源提交到 `/mini/listings`
-- 普通房源提交和编辑必须带 `features` 数组；固定值包括 `带阳台、干湿分离、燃气、阁楼、露台、花园、近地铁、朝南、独卫、电梯、整租、合租、免押金、不分佣、无`，选择 `无` 时不能和其他标签混用；公司房源会自动补 `免押金` 和 `不分佣`。
+- 普通房源提交和编辑必须带房源视频；无视频房源不能进入前台有效房源、匹配或地图。
+- 普通房源提交和编辑必须带 `features` 数组；第一版可见标签以居住特征为主，例如 `带阳台、干湿分离、燃气、阁楼、露台、花园、近地铁、朝南、独卫、电梯、整租、合租、无`，选择 `无` 时不能和其他标签混用；`免押金`、`不分佣` 仅作为旧数据或内部同步兼容标签，不作为中介上传时的分佣开关。
+- 中介上传时不能提交或调整分佣比例；签单经管理员确认后，后端固定按房东实际支付佣金的 20% 计算上传人分佣。
 - 数据库只保存视频地址和对象 Key，不保存视频文件本身
 - Bucket 建议保持私有。房源详情接口会根据 `videoKey` 生成短期签名播放地址，默认有效期为 `ALI_OSS_READ_URL_EXPIRE_SECONDS=900` 秒。
-- 群聊上传先请求 `/mini/uploads/group-screenshot-policy` 上传聊天信息截图，再提交 `/mini/groups/listings` 进入待审核。
-- 群聊上传不会立即加积分，管理员联系上传人核对后调用 `/admin/groups/uploads/:id/review`，审核通过才写入 +1 积分流水。
-- 积分充值当前调用 `/mini/points/recharge` 创建后台人工确认账单，管理员通过 `/admin/recharges/:id/review` 确认到账后写入积分流水。
-- 微信支付接口已预留，后续有正式 HTTPS 回调域名后再切换启用。
+- 地图只展示真实且经过确认的小区坐标；无可靠坐标的房源可以进入普通列表，但不能进入地图。
+- `/mini/uploads/group-screenshot-policy`、`/mini/groups/listings`、`/admin/groups/uploads/:id/review`、`/mini/points/recharge`、`/admin/recharges/:id/review` 和微信支付接口均为历史或后续预留能力，第一版不开放房源群、积分、充值、换群、微信支付入口。
 
 ## 管理后台鉴权和房态核验
 
@@ -108,7 +108,7 @@ ADMIN_TOKEN_SECRET=
 - 上线检查接口：`GET /admin/launch-check`，用于检查 OSS、后台密钥、默认管理员密码、LLM 和微信域名待办。
 - 部署探活：`GET /healthz`；上线就绪检查：`GET /readyz`。
 - 普通员工账号无法进入后台，只有 `adminAccounts` 里的启用账号可登录。
-- 房源超过 15 天未核验会自动下架，进入后台废房源池。
+- 房态规则固定为第 3 天提醒、第 5 天再次提醒、第 7 天未更新自动失效，失效房源进入后台资产池。
 - 上传人可调用 `POST /mini/my/listings/:id/verify` 核验自己的房源。
 - 管理员可在后台调用 `POST /admin/listings/:id/verify` 核验任意房源，并同步写入足迹。
 - 管理员可调用 `POST /admin/expired-listings/:id/restore` 将废房源池里的房源重新上架。
@@ -151,6 +151,8 @@ GET /admin/feishu-sync/status
 POST /admin/feishu-sync/run
 ```
 
+该同步属于内部房源数据维护能力，不新增房东端、租客端或其他角色入口，也不作为中介上传时的分佣设置入口。第一版中介上传和签单分佣仍按后端固定 20% 规则执行。
+
 同步规则：
 - 房源表中仍为在租/上架，且素材库匹配到视频素材：同步到小程序公司房源，自动标记公司房源、免押金、不分佣。
 - 房源表新增但素材库没有匹配素材：不在小程序上架。
@@ -176,15 +178,15 @@ FEISHU_SYNC_INTERVAL_MINUTES=480
 
 当前默认房源表为 `https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl`，`FEISHU_SYNC_INTERVAL_MINUTES=480` 表示每天自动同步 3 次。`FEISHU_UPLOAD_TO_OSS=true` 时，服务端会把飞书素材视频保存到 OSS 后再写入房源；小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。没有正式接飞书开放平台前，也可以用 `FEISHU_RECORDS_FILE` 和 `FEISHU_MATERIALS_FILE` 指向导出的 JSON 文件先预演同步。
 
-## 积分充值
+## 历史保留：积分充值与微信支付
 
-当前第一版暂时跳过微信支付，默认使用后台人工确认：
+第一版不开放积分、充值、换群或微信支付入口。以下配置和接口仅用于历史代码保留或后续版本预留，不能作为第一版验收入口。历史人工确认模式配置为：
 
 ```env
 RECHARGE_PAYMENT_MODE=manual
 ```
 
-员工在小程序提交积分充值申请后，管理员在 Web 后台“充值账单”里确认到账，系统再写入积分流水。
+历史充值链路中，员工在小程序提交积分充值申请后，管理员在 Web 后台“充值账单”里确认到账，系统再写入积分流水。第一版应隐藏该入口。
 
 后续有正式 HTTPS 域名并准备启用微信支付时，再切换为：
 
@@ -201,7 +203,7 @@ WECHAT_PAY_PLATFORM_CERT_SERIAL_NO=
 WECHAT_PAY_NOTIFY_URL=
 ```
 
-微信支付模式下，小程序调用 `/mini/points/recharge` 后会拿到 `wx.requestPayment` 参数；微信支付回调 `/wechat/pay/notify` 确认成功后，系统写入积分流水。回调处理会先校验微信支付通知签名，再解密通知资源；签名不通过不会加积分。
+微信支付模式下，小程序调用 `/mini/points/recharge` 后会拿到 `wx.requestPayment` 参数；微信支付回调 `/wechat/pay/notify` 确认成功后，系统写入积分流水。回调处理会先校验微信支付通知签名，再解密通知资源；签名不通过不会加积分。第一版不启用该链路。
 
 ## 第一版上线自检
 
@@ -231,7 +233,7 @@ node scripts/set-miniapp-api.js --internal-http http://114.55.168.97
 npm run smoke
 ```
 
-该命令会临时备份 `server/data/db.json`，自动验证探活、后台登录、首页/列表/地图、登录注册、防跳单、房源上传校验、OSS 上传策略、群聊审核加分、换群扣积分、充值人工审核和成交分佣，结束后恢复原数据。
+该命令会临时备份 `server/data/db.json`，自动验证探活、后台登录、首页/列表/地图、登录注册、防跳单、房源上传校验、OSS 上传策略和成交分佣，结束后恢复原数据。脚本中如仍覆盖群聊审核、换群扣积分、充值人工审核等历史保留链路，不代表这些入口进入第一版验收范围。
 
 上线前还需要确认：
 
@@ -239,4 +241,4 @@ npm run smoke
 - 微信小程序后台需要配置 request 合法域名为后端 API 域名。
 - 微信小程序后台需要配置 uploadFile/downloadFile 合法域名为 OSS 域名。
 - Web 后台请通过 `https://你的API域名/admin-web/` 访问。
-- 正式启用微信支付时，支付回调地址为 `https://你的API域名/wechat/pay/notify`。
+- 后续版本正式启用微信支付时，支付回调地址为 `https://你的API域名/wechat/pay/notify`。
