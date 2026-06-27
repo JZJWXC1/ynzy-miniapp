@@ -180,6 +180,7 @@ check('第一版隐藏入口不在可见工作台', () => {
   assertIncludes(profile, 'filterVisibleReminders', '我的页提醒需要过滤第一版隐藏入口')
   const visibleUrls = extractSingleQuotedValues(profile, 'url')
   assert.ok(!visibleUrls.includes('/pages/groups/groups'), '我的页工作台不能露出房源群入口')
+  assertNoHiddenKeyword(readFile('pages/my-listings/my-listings.wxml'), '我的房源页')
 })
 
 check('上传房源必须走视频选择和视频上传策略', () => {

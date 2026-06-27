@@ -4,7 +4,7 @@
     <view class="owner-card">
       <view>
         <view class="owner-title">我的上传房源</view>
-        <view class="owner-desc">普通上传不增加积分，群聊上传审核通过后才到账积分。</view>
+        <view class="owner-desc">上传真实可租房源，视频必填；第 3/5/7 天按规则核验房态。</view>
       </view>
       <button class="owner-button" bindtap="upload">上传</button>
     </view>

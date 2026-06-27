@@ -99,6 +99,10 @@ function checkLegacyVisibleEntryKeywords() {
     {
       name: 'pages/profile/profile.js 可见工作台',
       text: profileEntrySurface()
+    },
+    {
+      name: 'pages/my-listings/my-listings.wxml',
+      text: readText('pages/my-listings/my-listings.wxml')
     }
   ]
 
