@@ -243,6 +243,28 @@ async function main() {
   assert((result.preferences.features || []).indexOf('带阳台') !== -1, '确认字段偏好标签未完整进入偏好')
   assert.strictEqual(result.followUpQuestion, '', '确认字段完整时不应继续追问')
 
+  result = matchService.buildLocalMatch(clone(db), {
+    text: '滨江四千以内两室，必须有阳台',
+    stage: 'match',
+    confirmed: true,
+    form: {
+      budget: '',
+      area: '',
+      community: '',
+      rentMode: '',
+      layout: '',
+      moveIn: '',
+      commuteLocation: '',
+      maxCommuteMinutes: '',
+      features: ''
+    }
+  })
+  assert.strictEqual(result.need.maxBudget, '', '确认表单清空预算后不应从原文带回最高预算')
+  assert.strictEqual(result.need.area, '', '确认表单清空区域后不应从原文带回区域')
+  assert.strictEqual(result.need.layout, '', '确认表单清空户型后不应从原文带回户型')
+  assert.strictEqual((result.need.features || []).indexOf('带阳台'), -1, '确认表单清空标签后不应从原文带回阳台标签')
+  assert.strictEqual((result.hardConstraints.features || []).indexOf('带阳台'), -1, '确认表单清空标签后不应从原文带回阳台硬条件')
+
   result = matchService.recognizeNeed(clone(db), {
     text: '客户13812345678想住滨江春波南苑1栋2单元301室，四千两室'
   })

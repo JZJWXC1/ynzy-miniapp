@@ -162,6 +162,10 @@ function numberFrom(value) {
   return matched ? Number(matched[1]) : 0
 }
 
+function shouldUseConfirmedFormOnly(payload = {}) {
+  return payload.confirmed === true && payload.form && typeof payload.form === 'object'
+}
+
 function budgetFromForm(formNeed = {}, textNeed = {}) {
   const parsedFormBudget = parseBudget([formNeed.budget, formNeed.budgetText].filter(Boolean).join('，'))
   const minBudget = numberFrom(formNeed.minBudget) || parsedFormBudget.minBudget || textNeed.minBudget || ''
@@ -198,12 +202,33 @@ function mergeNeed(textNeed, formNeed = {}) {
 }
 
 function needFromPayload(payload = {}) {
-  const textNeed = parseNeedText([payload.text, payload.voiceText].filter(Boolean).join('，'))
+  const textNeed = shouldUseConfirmedFormOnly(payload)
+    ? {}
+    : parseNeedText([payload.text, payload.voiceText].filter(Boolean).join('，'))
   return mergeNeed(textNeed, payload.form || {})
 }
 
-function mergeServerNeed(clientNeed, serverNeed) {
+function mergeServerNeed(clientNeed, serverNeed, options = {}) {
   const server = serverNeed || {}
+  if (options.formOnly) {
+    return {
+      ...server,
+      budget: clientNeed.budget || '',
+      budgetText: clientNeed.budgetText || '',
+      minBudget: clientNeed.minBudget || '',
+      maxBudget: clientNeed.maxBudget || '',
+      area: clientNeed.area || '',
+      community: clientNeed.community || '',
+      rentMode: clientNeed.rentMode || '',
+      layout: clientNeed.layout || '',
+      moveIn: clientNeed.moveIn || '',
+      commuteLocation: clientNeed.commuteLocation || '',
+      maxCommuteMinutes: clientNeed.maxCommuteMinutes || '',
+      features: clientNeed.features || [],
+      hardConstraints: hardConstraintsFromNeed(clientNeed),
+      preferences: { features: clientNeed.features || [] }
+    }
+  }
   return {
     ...server,
     budget: server.budget || clientNeed.budget || '',
@@ -351,17 +376,24 @@ function buildLocalRecognition(payload) {
 function normalizeServerResult(serverResult, requestPayload) {
   const result = serverResult || {}
   const clientNeed = needFromPayload(requestPayload)
-  const need = mergeServerNeed(clientNeed, result.need || {})
+  const useConfirmedFormOnly = shouldUseConfirmedFormOnly(requestPayload)
+  const need = mergeServerNeed(clientNeed, result.need || {}, { formOnly: useConfirmedFormOnly })
   const exactListings = normalizeListings(result.exactListings || [], 'exact')
   const nearbyListings = normalizeListings(result.nearbyListings || [], 'nearby')
   const listings = normalizeListings(result.listings && result.listings.length
     ? result.listings
     : exactListings.concat(nearbyListings), '')
+  const hardConstraints = useConfirmedFormOnly
+    ? hardConstraintsFromNeed(need)
+    : (result.hardConstraints || need.hardConstraints || hardConstraintsFromNeed(need))
+  const preferences = useConfirmedFormOnly
+    ? { features: need.features || [] }
+    : (result.preferences || need.preferences || { features: need.features || [] })
   return {
     ...result,
     need,
-    hardConstraints: result.hardConstraints || need.hardConstraints || hardConstraintsFromNeed(need),
-    preferences: result.preferences || need.preferences || { features: need.features || [] },
+    hardConstraints,
+    preferences,
     exactListings,
     nearbyListings,
     followUpQuestion: result.followUpQuestion || '',
@@ -374,14 +406,21 @@ function normalizeServerResult(serverResult, requestPayload) {
 function normalizeRecognitionResult(serverResult, requestPayload) {
   const result = serverResult || {}
   const clientNeed = needFromPayload(requestPayload)
-  const need = mergeServerNeed(clientNeed, result.need || {})
+  const useConfirmedFormOnly = shouldUseConfirmedFormOnly(requestPayload)
+  const need = mergeServerNeed(clientNeed, result.need || {}, { formOnly: useConfirmedFormOnly })
   const followUpQuestion = result.followUpQuestion || followUpForNeed(need)
+  const hardConstraints = useConfirmedFormOnly
+    ? hardConstraintsFromNeed(need)
+    : (result.hardConstraints || hardConstraintsFromNeed(need))
+  const preferences = useConfirmedFormOnly
+    ? { features: need.features || [] }
+    : (result.preferences || { features: need.features || [] })
   return {
     ...result,
     stage: 'recognize',
     need,
-    hardConstraints: result.hardConstraints || hardConstraintsFromNeed(need),
-    preferences: result.preferences || { features: need.features || [] },
+    hardConstraints,
+    preferences,
     confirmationFields: result.confirmationFields || buildConfirmationFields(need),
     readyToConfirm: result.readyToConfirm !== undefined ? Boolean(result.readyToConfirm) : !followUpQuestion,
     followUpQuestion,

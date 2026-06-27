@@ -207,6 +207,10 @@ function sourceTextFromPayload(payload = {}) {
   ].filter(Boolean).join('，'))
 }
 
+function shouldUseConfirmedFormOnly(payload = {}) {
+  return payload.confirmed === true && payload.form && typeof payload.form === 'object'
+}
+
 function normalizeCommunity(value) {
   return String(value || '')
     .trim()
@@ -400,7 +404,8 @@ function cleanConstraintObject(data) {
 }
 
 function parseNeed(payload = {}, candidates = []) {
-  const source = sourceTextFromPayload(payload)
+  const useConfirmedFormOnly = shouldUseConfirmedFormOnly(payload)
+  const source = useConfirmedFormOnly ? '' : sourceTextFromPayload(payload)
   const form = payload.form || {}
   const budget = parseBudget([form.budget, form.budgetText, source].filter(Boolean).join('，'))
   const formMinBudget = numberFrom(form.minBudget)
