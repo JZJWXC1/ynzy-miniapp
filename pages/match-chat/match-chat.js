@@ -1,6 +1,10 @@
 const llmService = require('../../utils/llm-service')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
+const {
+  NO_FEATURE,
+  parseFeatureInput
+} = require('../../utils/listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
 const CONFIRMATION_FIELD_CONFIG = [
@@ -136,10 +140,23 @@ function buildNeedFields(need, providedFields) {
   })
 }
 
-function needToForm(need) {
+function trimValue(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
+}
+
+function featuresTextFromNeed(need) {
+  return (need && need.features && need.features.length) ? need.features.join('、') : ''
+}
+
+function parseFeaturesText(value) {
+  return parseFeatureInput(value)
+    .filter((item) => item && item !== NO_FEATURE)
+}
+
+function needToConfirmForm(need) {
   const data = need || {}
   return {
-    budget: data.maxBudget || data.budget || '',
+    budget: data.budgetText || data.maxBudget || data.budget || '',
     minBudget: data.minBudget || '',
     maxBudget: data.maxBudget || '',
     area: data.area || '',
@@ -149,8 +166,74 @@ function needToForm(need) {
     moveIn: data.moveIn || '',
     commuteLocation: data.commuteLocation || '',
     maxCommuteMinutes: data.maxCommuteMinutes || '',
-    features: data.features || []
+    featuresText: featuresTextFromNeed(data)
   }
+}
+
+function confirmFormToPayload(form) {
+  const data = form || {}
+  return {
+    budget: trimValue(data.budget),
+    minBudget: '',
+    maxBudget: '',
+    area: trimValue(data.area),
+    community: trimValue(data.community),
+    rentMode: trimValue(data.rentMode),
+    layout: trimValue(data.layout),
+    moveIn: trimValue(data.moveIn),
+    commuteLocation: trimValue(data.commuteLocation),
+    maxCommuteMinutes: trimValue(data.maxCommuteMinutes),
+    features: parseFeaturesText(data.featuresText)
+  }
+}
+
+function confirmFormToNeed(form, baseNeed) {
+  const data = confirmFormToPayload(form)
+  return Object.assign({}, baseNeed || {}, {
+    budget: data.budget,
+    budgetText: data.budget,
+    minBudget: data.minBudget,
+    maxBudget: data.maxBudget || numberFrom(data.budget) || '',
+    area: data.area,
+    community: data.community,
+    rentMode: data.rentMode,
+    layout: data.layout,
+    moveIn: data.moveIn,
+    commuteLocation: data.commuteLocation,
+    maxCommuteMinutes: data.maxCommuteMinutes,
+    features: data.features
+  })
+}
+
+function buildNeedFieldsFromConfirmForm(form, baseNeed) {
+  return buildNeedFields(confirmFormToNeed(form, baseNeed), null)
+}
+
+function canConfirmForm(form) {
+  const data = form || {}
+  const coreCount = [
+    Boolean(trimValue(data.budget) || trimValue(data.maxBudget) || trimValue(data.minBudget)),
+    Boolean(trimValue(data.area) || trimValue(data.community)),
+    Boolean(trimValue(data.layout) || trimValue(data.rentMode))
+  ].filter(Boolean).length
+  return coreCount >= 2
+}
+
+function sourceLabelFromPayload(payload) {
+  if (payload && payload.voiceText) return '已转写文本'
+  return '输入文本'
+}
+
+function sourceTextFromPayload(payload) {
+  const text = trimValue(payload && payload.text)
+  const voiceText = trimValue(payload && payload.voiceText)
+  if (text) return text
+  return voiceText
+}
+
+function buildConfirmHint(canConfirm) {
+  if (canConfirm) return '可以先修正字段，确认后才开始匹配房源。'
+  return '至少确认预算、区域/小区、户型/租法中的两项，或直接回复追问。'
 }
 
 function clampAssistantText(text) {
@@ -219,7 +302,8 @@ Page({
       this.setData({ voiceText })
     }
     if (firstNeed) {
-      this.submitNeed(firstNeed, voiceText ? 'voice' : 'text')
+      const source = voiceText && (!text || text === voiceText) ? 'voice' : 'text'
+      this.submitNeed(firstNeed, source)
     }
   },
 
@@ -301,7 +385,7 @@ Page({
     const combinedText = needHistory.join('，补充：')
     const payload = {
       text: combinedText,
-      voiceText: source === 'voice' ? text : this.data.voiceText,
+      voiceText: source === 'voice' ? (this.data.voiceText || text) : '',
       form: {}
     }
 
@@ -319,6 +403,7 @@ Page({
   executeRecognize(payload) {
     const requestId = createMessageId('recognize')
     this.activeRequestId = requestId
+    this.activeRecognizePayload = payload
     llmService.recognizeRentalNeed(payload).then((result) => {
       if (this.activeRequestId !== requestId) return
       this.appendRecognitionResult(result || {})
@@ -352,14 +437,21 @@ Page({
   },
 
   appendRecognitionResult(result) {
-    const canConfirm = Boolean(result.readyToConfirm && !result.followUpQuestion)
+    const sourcePayload = this.activeRecognizePayload || this.lastRecognizePayload || {}
+    const confirmForm = needToConfirmForm(result.need)
+    const canConfirm = canConfirmForm(confirmForm)
     const assistantMessage = {
       id: createMessageId('assistant'),
       role: 'assistant',
       text: buildRecognitionText(result),
       need: result.need || {},
-      needFields: buildNeedFields(result.need, result.confirmationFields),
+      needFields: buildNeedFieldsFromConfirmForm(confirmForm, result.need),
+      confirmForm,
+      confirmText: sourceTextFromPayload(sourcePayload),
+      sourceLabel: sourceLabelFromPayload(sourcePayload),
+      canEditConfirmation: true,
       canConfirm,
+      confirmHint: buildConfirmHint(canConfirm),
       followUpQuestion: result.followUpQuestion || '',
       retryable: Boolean(result.networkFailed),
       retryAction: 'recognize',
@@ -420,6 +512,76 @@ Page({
     return (this.data.messages || []).find((message) => message.id === messageId)
   },
 
+  updateMessage(messageId, updater) {
+    const messages = (this.data.messages || []).map((message) => {
+      if (message.id !== messageId) return message
+      return updater(Object.assign({}, message))
+    })
+    this.setData({ messages })
+  },
+
+  handleConfirmFieldInput(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    const field = event.currentTarget.dataset.field
+    if (!messageId || !field) return
+    const value = event.detail.value
+    this.updateMessage(messageId, (message) => {
+      const confirmForm = Object.assign({}, message.confirmForm || {}, {
+        [field]: value
+      })
+      if (field === 'budget') {
+        confirmForm.minBudget = ''
+        confirmForm.maxBudget = ''
+      }
+      const canConfirm = canConfirmForm(confirmForm)
+      message.confirmForm = confirmForm
+      message.need = confirmFormToNeed(confirmForm, message.need)
+      message.needFields = buildNeedFieldsFromConfirmForm(confirmForm, message.need)
+      message.canConfirm = canConfirm
+      message.confirmHint = buildConfirmHint(canConfirm)
+      return message
+    })
+  },
+
+  handleConfirmTextInput(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    if (!messageId) return
+    const value = event.detail.value
+    this.updateMessage(messageId, (message) => {
+      message.confirmText = value
+      return message
+    })
+  },
+
+  recognizeEditedTextFromMessage(event) {
+    if (this.data.loading) return
+    const messageId = event.currentTarget.dataset.messageId
+    const message = this.findMessage(messageId) || {}
+    const text = trimValue(message.confirmText)
+    if (!text) {
+      wx.showToast({ title: '请先填写修正后的需求', icon: 'none' })
+      return
+    }
+    const payload = {
+      text,
+      voiceText: '',
+      form: {}
+    }
+    const userMessage = {
+      id: createMessageId('user'),
+      role: 'user',
+      text: `按修正文本重新识别：${text}`
+    }
+    this.lastRecognizePayload = payload
+    this.setData({
+      messages: this.data.messages.concat(userMessage),
+      needHistory: [text],
+      loading: true,
+      scrollTarget: 'typing-row'
+    })
+    this.executeRecognize(payload)
+  },
+
   openListing(event) {
     const id = event.currentTarget.dataset.id
     if (!id) return
@@ -433,11 +595,11 @@ Page({
     const messageId = event.currentTarget.dataset.messageId
     const message = this.findMessage(messageId) || {}
     if (!message.canConfirm) return
-    const text = (this.data.needHistory || []).join('，补充：')
+    const text = trimValue(message.confirmText) || (this.data.needHistory || []).join('，补充：')
     const payload = {
       text,
-      voiceText: this.data.voiceText,
-      form: needToForm(message.need),
+      voiceText: '',
+      form: confirmFormToPayload(message.confirmForm),
       stage: 'match',
       confirmed: true
     }

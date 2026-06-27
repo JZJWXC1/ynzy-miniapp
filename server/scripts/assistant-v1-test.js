@@ -184,15 +184,86 @@ async function main() {
   assertConfirmationFields(result)
   assert((result.confirmationFields || []).some((field) => field.key === 'budget' && field.filled), '预算确认字段未填充')
 
+  result = matchService.recognizeNeed(clone(db), { voiceText: '西湖合租单间，预算2500，最好独卫' })
+  assert.strictEqual(result.readyToConfirm, true, 'voiceText 已转写文本应进入字段确认')
+  assert.strictEqual(result.need.area, '西湖', 'voiceText 区域解析失败')
+  assert.strictEqual(result.need.rentMode, '合租', 'voiceText 租法解析失败')
+  assert.strictEqual(result.need.layout, '单间', 'voiceText 户型解析失败')
+  assertNoListings(result)
+  assertConfirmationFields(result)
+
   result = matchService.recognizeNeed(clone(db), { text: '必须有阳台' })
   assert.strictEqual(result.readyToConfirm, false, '核心信息不足时不应允许确认')
   assert(result.followUpQuestion, '识别阶段缺少追问')
   assert((result.followUpQuestion.match(/[？?]/g) || []).length <= 1, '识别阶段追问超过一个问题')
   assertNoListings(result)
 
+  result = matchService.recognizeNeed(clone(db), {
+    text: '必须有阳台',
+    form: {
+      budget: '3000以内',
+      area: '拱墅'
+    }
+  })
+  assert.strictEqual(result.readyToConfirm, true, '字段补全核心条件后应关闭追问')
+  assert.strictEqual(result.followUpQuestion, '', '字段补全后不应继续追问')
+  assert.strictEqual(result.need.maxBudget, 3000, '确认字段预算未进入识别结果')
+  assert.strictEqual(result.need.area, '拱墅', '确认字段区域未进入识别结果')
+  assertNoListings(result)
+
   result = matchService.recognizeNeed(clone(db), { text: '必须有阳台，补充：预算三千，拱墅一室' })
   assert.strictEqual(result.readyToConfirm, true, '后续补充后应允许确认')
   assert((result.hardConstraints.features || []).indexOf('带阳台') !== -1, '后续补充时必须类偏好丢失')
+
+  result = matchService.buildLocalMatch(clone(db), {
+    text: '滨江四千以内两室',
+    stage: 'match',
+    confirmed: true,
+    form: {
+      budget: '3500以内',
+      area: '拱墅',
+      community: '东新园',
+      rentMode: '整租',
+      layout: '一室',
+      moveIn: '下周入住',
+      commuteLocation: '武林广场',
+      maxCommuteMinutes: '30',
+      features: '近地铁、带阳台'
+    }
+  })
+  assert.strictEqual(result.need.maxBudget, 3500, '确认字段预算应覆盖原文预算')
+  assert.strictEqual(result.need.area, '拱墅', '确认字段区域应覆盖原文区域')
+  assert.strictEqual(result.need.community, '东新园', '确认字段小区/板块应进入匹配')
+  assert.strictEqual(result.need.rentMode, '整租', '确认字段租法应进入匹配')
+  assert.strictEqual(result.need.layout, '一室', '确认字段户型应覆盖原文户型')
+  assert.strictEqual(result.need.moveIn, '下周入住', '确认字段入住时间应进入匹配')
+  assert.strictEqual(result.need.commuteLocation, '武林广场', '确认字段通勤地点应进入匹配')
+  assert.strictEqual(result.need.maxCommuteMinutes, 30, '确认字段通勤时间应进入匹配')
+  assert((result.preferences.features || []).indexOf('近地铁') !== -1, '确认字段偏好标签未进入偏好')
+  assert((result.preferences.features || []).indexOf('带阳台') !== -1, '确认字段偏好标签未完整进入偏好')
+  assert.strictEqual(result.followUpQuestion, '', '确认字段完整时不应继续追问')
+
+  result = matchService.buildLocalMatch(clone(db), {
+    text: '滨江四千以内两室，必须有阳台',
+    stage: 'match',
+    confirmed: true,
+    form: {
+      budget: '',
+      area: '',
+      community: '',
+      rentMode: '',
+      layout: '',
+      moveIn: '',
+      commuteLocation: '',
+      maxCommuteMinutes: '',
+      features: ''
+    }
+  })
+  assert.strictEqual(result.need.maxBudget, '', '确认表单清空预算后不应从原文带回最高预算')
+  assert.strictEqual(result.need.area, '', '确认表单清空区域后不应从原文带回区域')
+  assert.strictEqual(result.need.layout, '', '确认表单清空户型后不应从原文带回户型')
+  assert.strictEqual((result.need.features || []).indexOf('带阳台'), -1, '确认表单清空标签后不应从原文带回阳台标签')
+  assert.strictEqual((result.hardConstraints.features || []).indexOf('带阳台'), -1, '确认表单清空标签后不应从原文带回阳台硬条件')
 
   result = matchService.recognizeNeed(clone(db), {
     text: '客户13812345678想住滨江春波南苑1栋2单元301室，四千两室'

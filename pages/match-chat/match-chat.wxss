@@ -202,6 +202,7 @@ page {
 }
 
 .retry-panel button::after,
+.refresh-recognize-button::after,
 .confirm-match-button::after,
 .card-actions button::after {
   border: 0;
@@ -223,11 +224,83 @@ page {
   line-height: 1.3;
 }
 
+.confirm-card-desc,
+.confirm-source-label {
+  margin-top: 8rpx;
+  color: #6f837c;
+  font-size: 21rpx;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.confirm-source-label {
+  margin-top: 16rpx;
+  color: #2f6f60;
+}
+
+.confirm-source-textarea {
+  width: 100%;
+  min-height: 118rpx;
+  margin-top: 8rpx;
+  padding: 16rpx;
+  box-sizing: border-box;
+  color: #153f36;
+  font-size: 23rpx;
+  line-height: 1.45;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+}
+
+.refresh-recognize-button {
+  height: 54rpx;
+  margin: 12rpx 0 0;
+  padding: 0 20rpx;
+  color: #2f6f60;
+  font-size: 22rpx;
+  font-weight: 900;
+  line-height: 54rpx;
+  background: #e9f5f0;
+  border-radius: 16rpx;
+}
+
+.editable-field-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.editable-field {
+  min-width: 0;
+  padding: 14rpx;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 16rpx;
+}
+
+.editable-field.wide {
+  grid-column: 1 / -1;
+}
+
+.editable-field input {
+  width: 100%;
+  height: 54rpx;
+  margin-top: 6rpx;
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
 .confirm-field-list {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12rpx;
   margin-top: 14rpx;
+}
+
+.confirm-field-list.compact {
+  grid-template-columns: 1fr;
 }
 
 .confirm-field {
@@ -279,6 +352,10 @@ page {
   line-height: 58rpx;
   background: #2f6f60;
   border-radius: 18rpx;
+}
+
+.confirm-match-button[disabled] {
+  opacity: 0.55;
 }
 
 .confirm-card-hint {

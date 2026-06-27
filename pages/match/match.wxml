@@ -7,7 +7,7 @@
       </view>
       <view class="hero-content">
         <view class="hero-title">寓你配房小帮手</view>
-        <view class="hero-desc">文字、语音转写、表单和特点标签一起算相关性。</view>
+      <view class="hero-desc">文字或语音转写先整理字段，确认后再匹配房源。</view>
       </view>
       <view class="hero-mark">AI</view>
     </view>
@@ -37,7 +37,7 @@
         class="voice-textarea"
         value="{{voiceText}}"
         bindinput="updateVoiceText"
-        placeholder="语音转文字结果会写入这里，可和文字需求、表单条件一起匹配"
+        placeholder="已转写文本会写入这里，也可以手动修正后重新识别"
         maxlength="220"
       ></textarea>
       <view class="demo-row">
@@ -56,6 +56,14 @@
         <input value="{{form.area}}" data-field="area" bindinput="updateField" placeholder="滨江" />
       </view>
       <view class="field-card">
+        <view class="field-label">小区/板块</view>
+        <input value="{{form.community}}" data-field="community" bindinput="updateField" placeholder="东新园" />
+      </view>
+      <view class="field-card">
+        <view class="field-label">租法</view>
+        <input value="{{form.rentMode}}" data-field="rentMode" bindinput="updateField" placeholder="整租/合租" />
+      </view>
+      <view class="field-card">
         <view class="field-label">户型</view>
         <input value="{{form.layout}}" data-field="layout" bindinput="updateField" placeholder="两室" />
       </view>
@@ -63,9 +71,13 @@
         <view class="field-label">入住</view>
         <input value="{{form.moveIn}}" data-field="moveIn" bindinput="updateField" placeholder="月底" />
       </view>
-      <view class="field-card wide">
+      <view class="field-card">
         <view class="field-label">通勤位置</view>
-        <input value="{{form.commute}}" data-field="commute" bindinput="updateField" placeholder="滨康地铁站" />
+        <input value="{{form.commuteLocation}}" data-field="commuteLocation" bindinput="updateField" placeholder="滨康地铁站" />
+      </view>
+      <view class="field-card">
+        <view class="field-label">最长通勤</view>
+        <input value="{{form.maxCommuteMinutes}}" type="number" data-field="maxCommuteMinutes" bindinput="updateField" placeholder="30 分钟" />
       </view>
     </view>
 
@@ -83,12 +95,18 @@
       </view>
     </view>
 
-    <button class="match-button" bindtap="runMatch">开始智能匹配</button>
+    <button class="match-button" bindtap="runMatch">识别并整理字段</button>
 
-    <view wx:if="{{hasMatched}}" class="section-title">
+    <view wx:if="{{hasRecognized}}" class="confirm-panel soft-card">
+      <view class="input-title">字段确认</view>
+      <view class="confirm-desc">{{followUpQuestion || '确认上方字段无误后，再开始匹配真实可租房源。'}}</view>
+      <button class="confirm-button" disabled="{{!canConfirm}}" bindtap="confirmAndMatch">确认并匹配</button>
+    </view>
+
+    <view wx:if="{{hasRecognized}}" class="section-title">
       <view class="section-title-main">解析结果</view>
     </view>
-    <view wx:if="{{hasMatched}}" class="need-grid">
+    <view wx:if="{{hasRecognized}}" class="need-grid">
       <view wx:for="{{parsedNeed}}" wx:key="label" class="need-card">
         <view class="need-value">{{item.value}}</view>
         <view class="need-label">{{item.label}}</view>

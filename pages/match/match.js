@@ -3,7 +3,8 @@ const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 const {
   NO_FEATURE,
-  LISTING_FEATURE_OPTIONS
+  LISTING_FEATURE_OPTIONS,
+  parseFeatureInput
 } = require('../../utils/listing-features')
 
 function buildFeatureOptions(selected) {
@@ -14,12 +15,57 @@ function buildFeatureOptions(selected) {
   }))
 }
 
+function trimValue(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
+}
+
+function canConfirmForm(form) {
+  const data = form || {}
+  const coreCount = [
+    Boolean(trimValue(data.budget) || trimValue(data.maxBudget) || trimValue(data.minBudget)),
+    Boolean(trimValue(data.area) || trimValue(data.community)),
+    Boolean(trimValue(data.layout) || trimValue(data.rentMode))
+  ].filter(Boolean).length
+  return coreCount >= 2
+}
+
+function formFromNeed(need, currentForm) {
+  const data = need || {}
+  const current = currentForm || {}
+  return Object.assign({}, current, {
+    budget: data.budgetText || data.maxBudget || data.budget || current.budget || '',
+    area: data.area || current.area || '',
+    community: data.community || current.community || '',
+    rentMode: data.rentMode || current.rentMode || '',
+    layout: data.layout || current.layout || '',
+    moveIn: data.moveIn || current.moveIn || '',
+    commuteLocation: data.commuteLocation || current.commuteLocation || current.commute || '',
+    maxCommuteMinutes: data.maxCommuteMinutes || current.maxCommuteMinutes || '',
+    features: data.features && data.features.length ? data.features : (current.features || [])
+  })
+}
+
+function payloadForm(form) {
+  const data = form || {}
+  return {
+    budget: trimValue(data.budget),
+    area: trimValue(data.area),
+    community: trimValue(data.community),
+    rentMode: trimValue(data.rentMode),
+    layout: trimValue(data.layout),
+    moveIn: trimValue(data.moveIn),
+    commuteLocation: trimValue(data.commuteLocation || data.commute),
+    maxCommuteMinutes: trimValue(data.maxCommuteMinutes),
+    features: parseFeatureInput(data.features).filter((item) => item !== NO_FEATURE)
+  }
+}
+
 function buildGuideTips(form, needText, voiceText) {
   const tips = []
   const text = [needText, voiceText].filter(Boolean).join('，')
   if (!form.budget && text.indexOf('预算') === -1) tips.push('补充预算后排序更准')
-  if (!form.area && !/(滨江|萧山|上城|拱墅|西湖|余杭|临平|钱塘|区域|小区|商圈)/.test(text)) tips.push('补充区域或小区')
-  if (!form.layout && !/(一室|两室|二室|三室|整租|合租|公寓|户型)/.test(text)) tips.push('补充户型或租住方式')
+  if (!form.area && !form.community && !/(滨江|萧山|上城|拱墅|西湖|余杭|临平|钱塘|区域|小区|商圈)/.test(text)) tips.push('补充区域或小区')
+  if (!form.layout && !form.rentMode && !/(一室|两室|二室|三室|整租|合租|公寓|户型)/.test(text)) tips.push('补充户型或租住方式')
   if (!form.features || !form.features.length) tips.push('选择阳台、燃气、近地铁等特点')
   return tips
 }
@@ -30,9 +76,12 @@ Page({
     form: {
       budget: '',
       area: '',
+      community: '',
+      rentMode: '',
       layout: '',
       moveIn: '',
-      commute: '',
+      commuteLocation: '',
+      maxCommuteMinutes: '',
       features: []
     },
     featureOptions: buildFeatureOptions([]),
@@ -40,15 +89,18 @@ Page({
     messages: [
       {
         role: 'assistant',
-        text: '把租客预算、区域、户型、特点和通勤位置发给我，我会按相关性评分排序推荐房源。'
+        text: '把租客预算、区域、户型、特点和通勤位置发给我，我会先整理字段，确认后再匹配房源。'
       }
     ],
     parsedNeed: [],
     listings: [],
+    hasRecognized: false,
     hasMatched: false,
+    canConfirm: false,
+    followUpQuestion: '',
     isVoiceListening: false,
     voiceText: '',
-    voiceTip: '说出租客预算、区域、户型、特点或通勤位置'
+    voiceTip: '可使用语音转写，也可手动输入修正文本'
   },
 
   onLoad(options) {
@@ -138,13 +190,14 @@ Page({
     if (need.area) nextForm.area = need.area
     if (need.layout) nextForm.layout = need.layout
     if (need.moveIn) nextForm.moveIn = need.moveIn
-    if (need.commute) nextForm.commute = need.commute
+    if (need.commute) nextForm.commuteLocation = need.commute
     this.setData({
       needText: text,
       voiceText: text,
-      voiceTip: '已识别，可继续修改或重新匹配',
+      voiceTip: '已得到转写文本，可继续修改后重新识别',
       form: nextForm,
-      guideTips: buildGuideTips(nextForm, text, text)
+      guideTips: buildGuideTips(nextForm, text, text),
+      canConfirm: canConfirmForm(nextForm)
     }, () => {
       if (shouldMatch) this.runMatch()
     })
@@ -165,7 +218,7 @@ Page({
     const form = Object.assign({}, this.data.form, {
       [field]: event.detail.value
     })
-    this.setData({ form }, () => this.refreshGuideTips(form))
+    this.setData({ form, canConfirm: canConfirmForm(form) }, () => this.refreshGuideTips(form))
   },
 
   toggleFeature(event) {
@@ -184,7 +237,8 @@ Page({
     })
     this.setData({
       form,
-      featureOptions: buildFeatureOptions(next)
+      featureOptions: buildFeatureOptions(next),
+      canConfirm: canConfirmForm(form)
     }, () => this.refreshGuideTips(form))
   },
 
@@ -193,24 +247,81 @@ Page({
     return [
       { label: '预算', value: need.budget ? `${need.budget} 元` : '未填写' },
       { label: '区域', value: need.area || '不限' },
+      { label: '小区/板块', value: need.community || '不限' },
+      { label: '租法', value: need.rentMode || '不限' },
       { label: '户型', value: need.layout || '不限' },
       { label: '特点', value: features },
       { label: '入住', value: need.moveIn || '待确认' },
-      { label: '通勤', value: need.commute || '待确认' }
+      { label: '通勤', value: need.commuteLocation || need.commute || '待确认' }
     ]
   },
 
   runMatch() {
+    const text = String(this.data.needText || '').trim()
+    const voiceText = String(this.data.voiceText || '').trim()
+    const payloadVoiceText = voiceText && (!text || text === voiceText) ? voiceText : ''
+    const form = payloadForm(this.data.form)
+    if (!text && !voiceText && !canConfirmForm(form)) {
+      wx.showToast({ title: '请先填写找房需求', icon: 'none' })
+      return
+    }
+    wx.showLoading({ title: '识别中' })
+    llmService.recognizeRentalNeed({
+      text,
+      voiceText: payloadVoiceText,
+      form
+    }).then((result) => {
+      const nextForm = formFromNeed(result.need || {}, this.data.form)
+      const messages = [
+        {
+          role: 'user',
+          text: text || payloadVoiceText || '使用表单条件识别需求'
+        },
+        {
+          role: 'assistant',
+          text: result.reply
+        }
+      ]
+      this.setData({
+        messages,
+        parsedNeed: this.formatNeed(result.need || {}),
+        form: nextForm,
+        featureOptions: buildFeatureOptions(nextForm.features || []),
+        hasRecognized: true,
+        hasMatched: false,
+        listings: [],
+        canConfirm: canConfirmForm(nextForm),
+        followUpQuestion: result.followUpQuestion || '',
+        guideTips: buildGuideTips(nextForm, text, payloadVoiceText)
+      })
+      wx.hideLoading()
+    }).catch(() => {
+      wx.hideLoading()
+      wx.showToast({ title: '需求识别失败', icon: 'none' })
+    })
+  },
+
+  confirmAndMatch() {
+    const form = payloadForm(this.data.form)
+    if (!canConfirmForm(form)) {
+      wx.showToast({ title: '请先确认预算、位置、户型中的两项', icon: 'none' })
+      return
+    }
     wx.showLoading({ title: '匹配中' })
+    const text = String(this.data.needText || '').trim()
+    const voiceText = String(this.data.voiceText || '').trim()
+    const payloadVoiceText = voiceText && (!text || text === voiceText) ? voiceText : ''
     llmService.matchRentalNeed({
-      text: this.data.needText,
-      voiceText: this.data.voiceText,
-      form: this.data.form
+      text,
+      voiceText: payloadVoiceText,
+      form,
+      stage: 'match',
+      confirmed: true
     }).then((result) => {
       const messages = [
         {
           role: 'user',
-          text: this.data.needText || this.data.voiceText || '使用表单条件匹配房源'
+          text: text || payloadVoiceText || '使用表单条件匹配房源'
         },
         {
           role: 'assistant',
@@ -221,6 +332,7 @@ Page({
         messages,
         parsedNeed: this.formatNeed(result.need || {}),
         listings: listingDisplay.normalizeListings(result.listings || []),
+        hasRecognized: true,
         hasMatched: true
       })
       wx.hideLoading()

@@ -23,9 +23,65 @@
             <button loading="{{loading}}" bindtap="retryLastNeed">{{message.retryText || '重试'}}</button>
           </view>
 
-          <view wx:if="{{message.needFields && message.needFields.length}}" class="need-confirm-card">
-            <view class="confirm-card-title">结构化需求</view>
-            <view class="confirm-field-list">
+          <view wx:if="{{message.canEditConfirmation}}" class="need-confirm-card">
+            <view class="confirm-card-title">确认找房字段</view>
+            <view class="confirm-card-desc">{{message.confirmHint}}</view>
+            <view class="confirm-source-label">{{message.sourceLabel || '输入文本'}}</view>
+            <textarea
+              class="confirm-source-textarea"
+              value="{{message.confirmText}}"
+              bindinput="handleConfirmTextInput"
+              data-message-id="{{message.id}}"
+              maxlength="260"
+              placeholder="可修正已转写或重写后的需求文本"
+            ></textarea>
+            <button
+              class="refresh-recognize-button"
+              loading="{{loading}}"
+              bindtap="recognizeEditedTextFromMessage"
+              data-message-id="{{message.id}}"
+            >
+              按修正文本重新识别
+            </button>
+            <view class="editable-field-list">
+              <view class="editable-field">
+                <text class="confirm-field-label">预算</text>
+                <input value="{{message.confirmForm.budget}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="budget" placeholder="如 3000 或 3000-4000" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">区域</text>
+                <input value="{{message.confirmForm.area}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="area" placeholder="如 滨江" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">小区/板块</text>
+                <input value="{{message.confirmForm.community}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="community" placeholder="如 东新园" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">租法</text>
+                <input value="{{message.confirmForm.rentMode}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="rentMode" placeholder="整租/合租" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">户型</text>
+                <input value="{{message.confirmForm.layout}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="layout" placeholder="如 两室/单间" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">入住时间</text>
+                <input value="{{message.confirmForm.moveIn}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="moveIn" placeholder="如 下周/月底" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">通勤地点</text>
+                <input value="{{message.confirmForm.commuteLocation}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="commuteLocation" placeholder="如 武林广场" />
+              </view>
+              <view class="editable-field">
+                <text class="confirm-field-label">最长通勤</text>
+                <input value="{{message.confirmForm.maxCommuteMinutes}}" type="number" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="maxCommuteMinutes" placeholder="分钟" />
+              </view>
+              <view class="editable-field wide">
+                <text class="confirm-field-label">标签/偏好</text>
+                <input value="{{message.confirmForm.featuresText}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="featuresText" placeholder="近地铁、燃气、带阳台" />
+              </view>
+            </view>
+            <view wx:if="{{message.needFields && message.needFields.length}}" class="confirm-field-list compact">
               <view
                 wx:for="{{message.needFields}}"
                 wx:for-item="field"
@@ -37,15 +93,15 @@
               </view>
             </view>
             <button
-              wx:if="{{message.canConfirm}}"
               class="confirm-match-button"
+              disabled="{{!message.canConfirm || loading}}"
               loading="{{loading}}"
               bindtap="confirmNeedFromMessage"
               data-message-id="{{message.id}}"
             >
               确认并匹配
             </button>
-            <view wx:else class="confirm-card-hint">补充后我会重新整理这些字段</view>
+            <view wx:if="{{!message.canConfirm}}" class="confirm-card-hint">字段不足时，我会继续追问一个关键问题。</view>
           </view>
 
           <view wx:if="{{message.needTags && message.needTags.length}}" class="need-tags">
