@@ -2,7 +2,15 @@ const llmService = require('../../utils/llm-service')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 
-const MAX_RECOMMEND_COUNT = 6
+const MAX_RECOMMEND_COUNT = 5
+const CONFIRMATION_FIELD_CONFIG = [
+  { key: 'budget', label: '预算', emptyText: '待补充' },
+  { key: 'location', label: '区域/小区', emptyText: '待补充' },
+  { key: 'layout', label: '户型/租法', emptyText: '待补充' },
+  { key: 'moveIn', label: '入住时间', emptyText: '可后补' },
+  { key: 'commute', label: '通勤', emptyText: '可后补' },
+  { key: 'features', label: '标签/偏好', emptyText: '不限' }
+]
 
 function decodeOption(value) {
   if (!value) return ''
@@ -17,6 +25,14 @@ function createMessageId(role) {
   return `${role}-${Date.now()}-${Math.floor(Math.random() * 10000)}`
 }
 
+function numberFrom(value) {
+  if (value === undefined || value === null || value === '') return 0
+  const direct = Number(value)
+  if (Number.isFinite(direct)) return direct
+  const matched = String(value).match(/(\d+(?:\.\d+)?)/)
+  return matched ? Number(matched[1]) : 0
+}
+
 function formatScore(listing) {
   const raw = listing.relevancePercent || listing.matchScore || listing.relevanceScore
   if (raw === undefined || raw === null || raw === '') return ''
@@ -26,45 +42,155 @@ function formatScore(listing) {
   return `${Math.round(number <= 1 ? number * 100 : number)}%`
 }
 
-function normalizeListings(listings) {
+function safeCardTitle(listing) {
+  if (listing.cardTitle) return listing.cardTitle
+  if (listing.community && listing.layout) return `${listing.community} · ${listing.layout}`
+  if (listing.community) return listing.community
+  if (listing.area && listing.layout) return `${listing.area} · ${listing.layout}`
+  return '可租房源'
+}
+
+function normalizeListings(listings, group) {
   return listingDisplay.normalizeListings(listings || [])
     .slice(0, MAX_RECOMMEND_COUNT)
     .map((listing) => {
+      const rent = numberFrom(listing.rent || listing.price)
       return Object.assign({}, listing, {
-      displayRelevance: formatScore(listing)
+        cardTitle: safeCardTitle(listing),
+        rent,
+        price: rent ? `¥${rent}/月` : (listing.price || ''),
+        matchGroup: listing.matchGroup || group || 'exact',
+        matchGroupText: listing.matchGroupText || (group === 'nearby' ? '接近要求' : '符合要求'),
+        matchReason: listing.matchReason || (listing.relevanceReasons && listing.relevanceReasons.join('、')) || '基础条件相近',
+        differenceText: listing.differenceText || '',
+        displayRelevance: formatScore(listing)
+      })
     })
-    })
+}
+
+function buildListingSections(result) {
+  const data = result || {}
+  let exactListings = normalizeListings(data.exactListings || [], 'exact')
+  let nearbyListings = normalizeListings(data.nearbyListings || [], 'nearby')
+
+  if (!exactListings.length && !nearbyListings.length && data.listings && data.listings.length) {
+    const normalized = normalizeListings(data.listings, '')
+    exactListings = normalized.filter((listing) => listing.matchGroup !== 'nearby')
+    nearbyListings = normalized.filter((listing) => listing.matchGroup === 'nearby')
+    if (!exactListings.length && !nearbyListings.length) exactListings = normalized
+  }
+
+  const sections = []
+  const exactLimited = exactListings.slice(0, MAX_RECOMMEND_COUNT)
+  const nearbyLimited = nearbyListings.slice(0, Math.max(0, MAX_RECOMMEND_COUNT - exactLimited.length))
+  if (exactLimited.length) sections.push({ title: '符合要求', listings: exactLimited })
+  if (nearbyLimited.length) sections.push({ title: '接近要求', listings: nearbyLimited })
+  return sections
+}
+
+function flattenSections(sections) {
+  return (sections || []).reduce((list, section) => list.concat(section.listings || []), [])
 }
 
 function buildNeedTags(need) {
   const tags = []
   const data = need || {}
-  if (data.budget) tags.push(`预算 ${data.budget}`)
+  const budget = data.budget || data.maxBudget || data.budgetText
+  if (budget) tags.push(`预算 ${budget}`)
   if (data.area) tags.push(`区域 ${data.area}`)
+  if (data.community) tags.push(`小区 ${data.community}`)
+  if (data.rentMode) tags.push(data.rentMode)
   if (data.layout) tags.push(`户型 ${data.layout}`)
   if (data.moveIn) tags.push(data.moveIn)
-  if (data.commute) tags.push(`通勤 ${data.commute}`)
+  if (data.commuteLocation) tags.push(`通勤 ${data.commuteLocation}`)
   if (data.features && data.features.length) tags.push(data.features.join('、'))
   return tags
 }
 
-function buildGuideTips(need) {
+function fieldValue(need, key) {
   const data = need || {}
-  const tips = []
-  if (!data.budget) tips.push('补充预算')
-  if (!data.area) tips.push('补充区域/小区')
-  if (!data.layout) tips.push('补充户型/整租合租')
-  if (!data.features || !data.features.length) tips.push('补充阳台、燃气、独卫等特点')
-  return tips
+  if (key === 'budget') return data.budgetText || (data.maxBudget ? `${data.maxBudget}以内` : (data.budget || ''))
+  if (key === 'location') return [data.area, data.community].filter(Boolean).join(' · ')
+  if (key === 'layout') return [data.rentMode, data.layout].filter(Boolean).join(' · ')
+  if (key === 'moveIn') return data.moveIn || ''
+  if (key === 'commute') {
+    return [
+      data.commuteLocation,
+      data.maxCommuteMinutes ? `${data.maxCommuteMinutes}分钟内` : ''
+    ].filter(Boolean).join(' · ')
+  }
+  if (key === 'features') return (data.features || []).join('、')
+  return ''
+}
+
+function buildNeedFields(need, providedFields) {
+  if (providedFields && providedFields.length) return providedFields
+  return CONFIRMATION_FIELD_CONFIG.map((field) => {
+    const value = fieldValue(need, field.key)
+    return {
+      key: field.key,
+      label: field.label,
+      value: value || field.emptyText,
+      filled: Boolean(value)
+    }
+  })
+}
+
+function needToForm(need) {
+  const data = need || {}
+  return {
+    budget: data.maxBudget || data.budget || '',
+    minBudget: data.minBudget || '',
+    maxBudget: data.maxBudget || '',
+    area: data.area || '',
+    community: data.community || '',
+    rentMode: data.rentMode || '',
+    layout: data.layout || '',
+    moveIn: data.moveIn || '',
+    commuteLocation: data.commuteLocation || '',
+    maxCommuteMinutes: data.maxCommuteMinutes || '',
+    features: data.features || []
+  }
+}
+
+function clampAssistantText(text) {
+  const value = String(text || '').trim()
+  return value.length > 100 ? `${value.slice(0, 97)}...` : value
 }
 
 function buildAssistantText(result, listings) {
-  if (!listings.length) {
-    return '按目前要求暂时没有找到合适房源，你可以继续补充或放宽预算、区域、户型、特点。'
+  const data = result || {}
+  if (data.networkFailed) {
+    return clampAssistantText(listings.length ? '网络连接失败，可重试；先给你本地匹配结果。' : '网络连接失败，请点下方按钮重试。')
   }
-  if (result && result.reply) return result.reply
-  const top = listings[0]
-  return `已按相关性重新排序，先看这 ${listings.length} 套；当前最匹配的是 ${top.title}。`
+  if (data.followUpQuestion) return data.followUpQuestion
+  if (data.reply) return clampAssistantText(data.reply)
+  if (!listings.length) return '暂未找到合适房源，建议放宽预算、区域或户型。'
+  return `先看这${listings.length}套真实房源，已按预算、位置和偏好排序。`
+}
+
+function buildRecognitionText(result) {
+  const data = result || {}
+  if (data.networkFailed) {
+    return '网络连接失败，已先按本地规则整理需求。'
+  }
+  if (data.followUpQuestion) {
+    return `我先整理了已识别条件，还差一个关键问题：${data.followUpQuestion}`
+  }
+  if (data.reply) return clampAssistantText(data.reply)
+  return '请确认这些找房条件，确认后我再匹配本地房源。'
+}
+
+function buildMapFilters(need, listings) {
+  const data = need || {}
+  return {
+    budget: data.maxBudget || data.budget || '',
+    area: data.area || data.community || '',
+    community: data.community || '',
+    layout: data.layout || '',
+    rentMode: data.rentMode || '',
+    listingIds: (listings || []).map((listing) => listing.id).filter(Boolean)
+  }
 }
 
 Page({
@@ -73,7 +199,7 @@ Page({
       {
         id: 'welcome',
         role: 'assistant',
-        text: '你好，我是寓你配房客服。把租客预算、区域、户型、特点发给我，我会直接推荐可匹配房源。'
+        text: '告诉我预算、区域/小区和户型，我会先整理成字段，确认后再匹配真实可租房源。'
       }
     ],
     inputText: '',
@@ -109,7 +235,7 @@ Page({
         this.setData({ isVoiceListening: true })
       },
       onRecognize: (text) => {
-        if (text) this.setData({ inputText: text })
+        if (text && !this.data.loading) this.setData({ inputText: text })
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
@@ -130,6 +256,7 @@ Page({
   },
 
   toggleVoiceInput() {
+    if (this.data.loading) return
     if (!this.voiceController) {
       wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' })
       return
@@ -152,6 +279,7 @@ Page({
 
   sendMessage() {
     const content = String(this.data.inputText || '').trim()
+    if (this.data.loading) return
     if (!content) {
       wx.showToast({ title: '请输入租客需求', icon: 'none' })
       return
@@ -171,7 +299,13 @@ Page({
     const needHistory = this.data.needHistory.concat(text)
     const messages = this.data.messages.concat(userMessage)
     const combinedText = needHistory.join('，补充：')
+    const payload = {
+      text: combinedText,
+      voiceText: source === 'voice' ? text : this.data.voiceText,
+      form: {}
+    }
 
+    this.lastRecognizePayload = payload
     this.setData({
       messages,
       needHistory,
@@ -179,41 +313,111 @@ Page({
       loading: true,
       scrollTarget: 'typing-row'
     })
+    this.executeRecognize(payload)
+  },
 
-    llmService.matchRentalNeed({
-      text: combinedText,
-      voiceText: source === 'voice' ? text : this.data.voiceText,
-      form: {}
-    }).then((result) => {
-      const matchResult = result || {}
-      const listings = normalizeListings(matchResult.listings)
-      const assistantMessage = {
-        id: createMessageId('assistant'),
-        role: 'assistant',
-        text: buildAssistantText(matchResult, listings),
-        needTags: buildNeedTags(matchResult.need),
-        guideTips: buildGuideTips(matchResult.need),
-        listings,
-        empty: !listings.length
-      }
-      this.setData({
-        messages: this.data.messages.concat(assistantMessage),
-        loading: false,
-        scrollTarget: assistantMessage.id
-      })
-    }).catch(() => {
-      const errorMessage = {
-        id: createMessageId('assistant'),
-        role: 'assistant',
-        text: '这次匹配失败了，请稍后再试，或者把需求拆成预算、区域、户型再发一次。',
-        empty: true
-      }
-      this.setData({
-        messages: this.data.messages.concat(errorMessage),
-        loading: false,
-        scrollTarget: errorMessage.id
+  executeRecognize(payload) {
+    const requestId = createMessageId('recognize')
+    this.activeRequestId = requestId
+    llmService.recognizeRentalNeed(payload).then((result) => {
+      if (this.activeRequestId !== requestId) return
+      this.appendRecognitionResult(result || {})
+    }).catch((error) => {
+      if (this.activeRequestId !== requestId) return
+      this.appendRecognitionResult({
+        reply: '网络连接失败，请补充条件后重试。',
+        warning: error.message || '网络连接失败',
+        networkFailed: true,
+        need: {},
+        listings: []
       })
     })
+  },
+
+  executeMatch(payload) {
+    const requestId = createMessageId('request')
+    this.activeRequestId = requestId
+    llmService.matchRentalNeed(payload).then((result) => {
+      if (this.activeRequestId !== requestId) return
+      this.appendAssistantResult(result || {})
+    }).catch((error) => {
+      if (this.activeRequestId !== requestId) return
+      this.appendAssistantResult({
+        reply: '网络连接失败，请点下方按钮重试。',
+        warning: error.message || '网络连接失败',
+        networkFailed: true,
+        listings: []
+      })
+    })
+  },
+
+  appendRecognitionResult(result) {
+    const canConfirm = Boolean(result.readyToConfirm && !result.followUpQuestion)
+    const assistantMessage = {
+      id: createMessageId('assistant'),
+      role: 'assistant',
+      text: buildRecognitionText(result),
+      need: result.need || {},
+      needFields: buildNeedFields(result.need, result.confirmationFields),
+      canConfirm,
+      followUpQuestion: result.followUpQuestion || '',
+      retryable: Boolean(result.networkFailed),
+      retryAction: 'recognize',
+      retryText: '重试识别',
+      empty: false
+    }
+    this.pendingNeed = result.need || {}
+    this.setData({
+      messages: this.data.messages.concat(assistantMessage),
+      loading: false,
+      scrollTarget: assistantMessage.id
+    })
+  },
+
+  appendAssistantResult(matchResult) {
+    const listingSections = buildListingSections(matchResult)
+    const listings = flattenSections(listingSections)
+    const assistantMessage = {
+      id: createMessageId('assistant'),
+      role: 'assistant',
+      text: buildAssistantText(matchResult, listings),
+      needTags: buildNeedTags(matchResult.need),
+      listingSections,
+      listings,
+      mapFilters: buildMapFilters(matchResult.need, listings),
+      retryable: Boolean(matchResult.networkFailed),
+      retryAction: 'match',
+      retryText: '重试匹配',
+      empty: !listings.length && !matchResult.followUpQuestion
+    }
+    this.setData({
+      messages: this.data.messages.concat(assistantMessage),
+      loading: false,
+      scrollTarget: assistantMessage.id
+    })
+  },
+
+  retryLastNeed() {
+    if (this.data.loading) return
+    const lastMessage = (this.data.messages || []).slice().reverse().find((message) => message.retryable)
+    const retryAction = lastMessage && lastMessage.retryAction
+    this.setData({
+      loading: true,
+      scrollTarget: 'typing-row'
+    })
+    if (retryAction === 'recognize' && this.lastRecognizePayload) {
+      this.executeRecognize(this.lastRecognizePayload)
+      return
+    }
+    if (this.lastRequestPayload) {
+      this.executeMatch(this.lastRequestPayload)
+      return
+    }
+    this.setData({ loading: false })
+  },
+
+  findMessage(messageId) {
+    return (this.data.messages || []).find((message) => message.id === messageId)
   },
 
   openListing(event) {
@@ -222,5 +426,45 @@ Page({
     wx.navigateTo({
       url: `/pages/listing-detail/listing-detail?id=${id}`
     })
+  },
+
+  confirmNeedFromMessage(event) {
+    if (this.data.loading) return
+    const messageId = event.currentTarget.dataset.messageId
+    const message = this.findMessage(messageId) || {}
+    if (!message.canConfirm) return
+    const text = (this.data.needHistory || []).join('，补充：')
+    const payload = {
+      text,
+      voiceText: this.data.voiceText,
+      form: needToForm(message.need),
+      stage: 'match',
+      confirmed: true
+    }
+    const userMessage = {
+      id: createMessageId('user'),
+      role: 'user',
+      text: '确认这些条件，开始匹配。'
+    }
+    this.lastRequestPayload = payload
+    this.setData({
+      messages: this.data.messages.concat(userMessage),
+      loading: true,
+      scrollTarget: 'typing-row'
+    })
+    this.executeMatch(payload)
+  },
+
+  openMapForListing(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    const message = this.findMessage(messageId) || {}
+    const filters = Object.assign({}, message.mapFilters || {})
+    filters.listingIds = (message.listings || []).map((listing) => listing.id).filter(Boolean)
+    if (!filters.listingIds.length) {
+      const id = event.currentTarget.dataset.id
+      if (id) filters.listingIds = [id]
+    }
+    wx.setStorageSync('ynzy_pending_map_filters', filters)
+    wx.switchTab({ url: '/pages/map/map' })
   }
 })

@@ -2,6 +2,15 @@
 const apiService = require('../../utils/api-service')
 const voiceInput = require('../../utils/voice-input')
 
+const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
+const listingTabUrl = '/pages/listings/listings'
+const tabBarPages = [
+  '/pages/index/index',
+  listingTabUrl,
+  '/pages/map/map',
+  '/pages/profile/profile'
+]
+
 Page({
   data: {
     assistantText: '',
@@ -31,9 +40,9 @@ Page({
     listings: [],
     workbench: [
       { title: '实名查看留痕', value: '地址和电话查看同步上传人和管理员' },
-      { title: '分佣比例', value: '上传人自设，默认20%，最高20%' },
+      { title: '分佣规则', value: '签单后按平台规则计算' },
       { title: '视频房源', value: '普通房源上传只允许视频' },
-      { title: '群聊积分', value: '群聊截图审核通过后得1积分，可换群一次' }
+      { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新失效' }
     ]
   },
 
@@ -146,7 +155,7 @@ Page({
     }
     wx.showModal({
       title: name,
-      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕，分佣按上传人设置比例执行。',
+      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕，签单后按平台规则计算。',
       showCancel: false
     });
   },
@@ -154,6 +163,15 @@ Page({
   openPage(event) {
     const url = event.currentTarget.dataset.url;
     if (!url) return;
+    if (tabBarPages.includes(url)) {
+      wx.switchTab({
+        url,
+        fail: () => {
+          wx.showToast({ title: '页面打开失败', icon: 'none' });
+        }
+      });
+      return;
+    }
     wx.navigateTo({
       url,
       fail: () => {
@@ -164,8 +182,28 @@ Page({
 
   openCategory(event) {
     const name = event.currentTarget.dataset.name || '全部';
-    wx.navigateTo({
-      url: `/pages/listings/listings?category=${encodeURIComponent(name)}`
+    const category = name === '全部' ? '全部' : name;
+    const filters = {
+      category,
+      filters: {
+        area: '',
+        block: '',
+        community: '',
+        layout: '',
+        rentMax: ''
+      }
+    };
+    try {
+      wx.setStorageSync(pendingListingFiltersKey, filters);
+    } catch (error) {
+      wx.showToast({ title: '筛选条件保存失败', icon: 'none' });
+      return;
+    }
+    wx.switchTab({
+      url: listingTabUrl,
+      fail: () => {
+        wx.showToast({ title: '房源页打开失败', icon: 'none' });
+      }
     });
   },
 

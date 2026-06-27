@@ -11,6 +11,7 @@
   var NO_COMMISSION_FEATURE = '不分佣';
   var DEPOSIT_FREE_FEATURE = '免押金';
   var COMPANY_SOURCE = '公司房源';
+  var V1_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算';
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var BROKER_ROLE = '中介';
@@ -594,8 +595,8 @@
       communityMatched: data.communityMatched !== undefined ? truthyFlag(data.communityMatched) : data.communityMatchStatus !== '未匹配',
       communityMatchStatus: data.communityMatchStatus || (data.communityMatched === false ? '未匹配' : '已匹配'),
       sourceLabel: sourceLabel,
-      commissionText: noCommission ? '不分佣' : ('分佣 ' + Number(data.commissionRate || 0) + '%'),
-      commissionBadge: noCommission ? '不分佣' : (Number(data.commissionRate || 0) + '%')
+      commissionText: V1_COMMISSION_TEXT,
+      commissionBadge: V1_COMMISSION_TEXT
     };
   }
 
@@ -655,7 +656,9 @@
     if (isCompanyListing(listing) && features.indexOf(COMPANY_SOURCE) === -1) {
       features.unshift(COMPANY_SOURCE);
     }
-    features = uniqueTextList(features);
+    features = uniqueTextList(features).filter(function (item) {
+      return item !== NO_COMMISSION_FEATURE;
+    });
     if (!features.length) features = [NO_FEATURE];
     return {
       features: features,
@@ -732,9 +735,9 @@
       id: listing.id,
       title: publicTitle,
       meta: (location.locationSummary || location.area) + ' · ' + listing.layout + ' · 仅视频',
-      sub: display.noCommission ? (display.sourceLabel + ' · 不分佣') : ('分佣 ' + listing.commissionRate + '% · 上传人' + uploader.name),
+      sub: V1_COMMISSION_TEXT + ' · 上传人' + uploader.name,
       price: '¥' + listing.rent + '/月',
-      tag: display.noCommission ? '不分佣' : (listing.commissionRate >= 20 ? '分佣20%' : '防跳单'),
+      tag: '签单后20%结算',
       videoUrl: listing.videoUrl || '',
       city: location.city,
       district: location.district,
@@ -871,7 +874,7 @@
       uploader: uploader.name,
       rent: listing.rent + '/月',
       layout: listing.layout.replace('整租', ''),
-      commission: display.noCommission ? '不分佣' : (listing.commissionRate + '%'),
+      commission: V1_COMMISSION_TEXT,
       source: listing.source || display.sourceLabel,
       video: '已传',
       status: listing.status,
@@ -960,7 +963,7 @@
         locationSummary: location.locationSummary,
         roomAddress: location.roomAddress,
         rent: String(listing.rent),
-        commissionRate: listingDisplayFields(listing).noCommission ? '不分佣' : (listing.commissionRate + '%'),
+        commissionRate: listing.commissionRate,
         commissionText: listingDisplayFields(listing).commissionText,
         noCommission: listingDisplayFields(listing).noCommission,
         companyListing: listingDisplayFields(listing).companyListing,
@@ -1032,7 +1035,7 @@
           id: listing.id,
           title: listing.block + ' · ' + listing.layout,
           price: '¥' + listing.rent + '/月',
-          rule: '分佣 ' + listing.commissionRate + '%',
+          rule: V1_COMMISSION_TEXT,
           publisher: uploader.name + ' · 已认证',
           status: listing.source === '群聊上传' ? '群聊上传房源' : '电话地址需实名查看'
         }, listingDisplayFields(listing));
@@ -1154,7 +1157,7 @@
         type: listing.type || '',
         status: listing.status || '',
         price: String(listing.rent),
-        commission: listingDisplayFields(listing).noCommission ? '不分佣' : (listing.commissionRate + '%'),
+        commission: V1_COMMISSION_TEXT,
         source: listing.source || '',
         companyListing: listingDisplayFields(listing).companyListing,
         noCommission: listingDisplayFields(listing).noCommission,
@@ -1192,7 +1195,7 @@
         listing: listing.shortTitle,
         uploader: (getUser(item.uploaderId) || {}).name,
         dealer: (getUser(item.dealUserId) || {}).name,
-        rate: item.rate + '%',
+        rate: V1_COMMISSION_TEXT,
         status: item.status,
         time: item.time
       };
@@ -1239,7 +1242,7 @@
         screenshotUrl: item.screenshotUrl || '',
         contactStatus: item.contactStatus || '待联系核对',
         reviewNote: item.reviewNote || '',
-        commission: item.commissionRate ? item.commissionRate + '%' : '-',
+        commission: V1_COMMISSION_TEXT,
         point: item.pointGranted ? '+1 已到账' : '审核通过后 +1',
         status: item.status || '待审核',
         time: item.time
@@ -1402,6 +1405,99 @@
       logs: getListingLogs(listingId),
       quota: brokerSensitiveUsage(state.currentUserId),
       message: '带看水印照片已提交后台审核，审核通过后当天普通房源查看额度 +1'
+    };
+  }
+
+  function maskedPhone(phone) {
+    var text = String(phone || '');
+    return text.length >= 11 ? text.slice(0, 3) + '****' + text.slice(-4) : text;
+  }
+
+  function getClientReports() {
+    return (state.clientReports || []).filter(function (report) {
+      return report.brokerId === state.currentUserId;
+    }).map(function (report) {
+      return Object.assign({}, report, {
+        customerPhoneMasked: maskedPhone(report.customerPhone)
+      });
+    });
+  }
+
+  function createClientReport(listingId, payload) {
+    var data = payload || {};
+    var listing = getListing(listingId);
+    if (!listing) throw new Error('未找到该房源');
+    var phone = String(data.customerPhone || '').trim();
+    if (!/^1[3-9]\d{9}$/.test(phone)) {
+      throw new Error('客户手机号必填');
+    }
+    state.clientReports = state.clientReports || [];
+    var report = {
+      id: 'CR' + Date.now(),
+      listingId: listingId,
+      listingTitle: listing.title || listing.shortTitle || '',
+      community: listing.community || '',
+      brokerId: state.currentUserId,
+      customerName: String(data.customerName || '').trim(),
+      customerPhone: phone,
+      customerPhoneMasked: maskedPhone(phone),
+      status: '已报备',
+      dealId: '',
+      createdAt: new Date().toLocaleString('zh-CN', { hour12: false })
+    };
+    state.clientReports.unshift(report);
+    return {
+      message: '报备已创建',
+      report: Object.assign({}, report)
+    };
+  }
+
+  function getDealRecords() {
+    return (state.dealRecords || []).filter(function (deal) {
+      return deal.brokerId === state.currentUserId;
+    }).map(clone);
+  }
+
+  function yuanToFen(value) {
+    var number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return 0;
+    return Math.round(number * 100);
+  }
+
+  function createDealFromReport(reportId, payload) {
+    var data = payload || {};
+    var report = (state.clientReports || []).find(function (item) { return item.id === reportId; });
+    if (!report) throw new Error('未找到报备记录');
+    if (report.brokerId !== state.currentUserId) throw new Error('只能从自己的报备记录发起签单');
+    if (report.dealId) throw new Error('该报备已发起签单');
+    var listing = getListing(report.listingId);
+    if (!listing) throw new Error('未找到该房源');
+    var monthlyRentFen = yuanToFen(data.monthlyRent || data.dealMonthlyRent);
+    var landlordCommissionFen = yuanToFen(data.landlordCommission || data.landlordPaidCommission);
+    if (!monthlyRentFen || !landlordCommissionFen) {
+      throw new Error('成交月租和房东实际支付佣金必填');
+    }
+    state.dealRecords = state.dealRecords || [];
+    var deal = {
+      id: 'D' + Date.now(),
+      reportId: reportId,
+      listingId: report.listingId,
+      listingTitle: report.listingTitle,
+      community: report.community,
+      brokerId: state.currentUserId,
+      uploaderId: listing.uploaderId,
+      dealMonthlyRentFen: monthlyRentFen,
+      landlordCommissionFen: landlordCommissionFen,
+      remark: String(data.remark || '').trim(),
+      status: '待管理员确认',
+      createdAt: new Date().toLocaleString('zh-CN', { hour12: false })
+    };
+    state.dealRecords.unshift(deal);
+    report.dealId = deal.id;
+    report.status = '已提交签单';
+    return {
+      message: '签单已提交，待管理员确认后生成分佣',
+      deal: Object.assign({}, deal)
     };
   }
 
@@ -1622,7 +1718,7 @@
       throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
     }
     if (!Number.isFinite(rate) || rate < 0 || rate > 20) {
-      throw new Error('分佣比例必须在 0-20%');
+      throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
       throw new Error('只有管理员可以上传或标记公司房源');
@@ -1753,7 +1849,7 @@
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
     if (!Number.isFinite(rate) || rate < 0 || rate > 20) {
-      throw new Error('分佣比例必须在 0-20%');
+      throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
       throw new Error('只有管理员可以上传或标记公司房源');
@@ -1951,6 +2047,10 @@
     updateNormalListing: updateNormalListing,
     getProfileState: getProfileState,
     getGroupState: getGroupState,
+    getClientReports: getClientReports,
+    createClientReport: createClientReport,
+    getDealRecords: getDealRecords,
+    createDealFromReport: createDealFromReport,
     getMapPins: getMapPins,
     getDashboardSummary: getDashboardSummary,
     getAreaStats: getAreaStats,

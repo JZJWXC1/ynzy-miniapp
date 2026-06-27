@@ -1,4 +1,4 @@
-<navigation-bar title="配房客服" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="找房助手" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <view class="chat-page">
   <scroll-view class="chat-scroll" scroll-y scroll-into-view="{{scrollTarget}}" type="list">
     <view class="chat-shell">
@@ -7,70 +7,100 @@
           <image class="service-logo" src="/assets/logo.png" mode="aspectFit"></image>
         </view>
         <view class="service-copy">
-          <view class="service-title">寓你配房客服</view>
-          <view class="service-subtitle">连续补充要求后，会重新推荐并排序</view>
+          <view class="service-title">智能找房助手</view>
+          <view class="service-subtitle">一句话匹配真实可租房源</view>
         </view>
       </view>
 
-      <view wx:for="{{messages}}" wx:key="id" id="{{item.id}}" class="message-row {{item.role}}">
-        <view wx:if="{{item.role === 'assistant'}}" class="avatar assistant-avatar">寓</view>
+      <view wx:for="{{messages}}" wx:for-item="message" wx:key="id" id="{{message.id}}" class="message-row {{message.role}}">
+        <view wx:if="{{message.role === 'assistant'}}" class="avatar assistant-avatar">寓</view>
         <view class="message-main">
           <view class="message-bubble">
-            <text>{{item.text}}</text>
+            <text>{{message.text}}</text>
           </view>
 
-          <view wx:if="{{item.needTags && item.needTags.length}}" class="need-tags">
-            <text wx:for="{{item.needTags}}" wx:key="*this">{{item}}</text>
+          <view wx:if="{{message.retryable}}" class="retry-panel">
+            <button loading="{{loading}}" bindtap="retryLastNeed">{{message.retryText || '重试'}}</button>
           </view>
 
-          <view wx:if="{{item.guideTips && item.guideTips.length}}" class="guide-tags">
-            <text wx:for="{{item.guideTips}}" wx:key="*this">{{item}}</text>
-          </view>
-
-          <view wx:if="{{item.empty}}" class="empty-match">
-            <view class="empty-title">暂未匹配到房源</view>
-            <view class="empty-desc">可以继续补充或放宽预算、区域、户型、特点。</view>
-          </view>
-
-          <view wx:if="{{item.listings && item.listings.length}}" class="recommend-list">
-            <view
-              wx:for="{{item.listings}}"
-              wx:for-item="listing"
-              wx:key="id"
-              class="recommend-card"
-              bindtap="openListing"
-              data-id="{{listing.id}}"
+          <view wx:if="{{message.needFields && message.needFields.length}}" class="need-confirm-card">
+            <view class="confirm-card-title">结构化需求</view>
+            <view class="confirm-field-list">
+              <view
+                wx:for="{{message.needFields}}"
+                wx:for-item="field"
+                wx:key="key"
+                class="confirm-field {{field.filled ? '' : 'missing'}}"
+              >
+                <text class="confirm-field-label">{{field.label}}</text>
+                <text class="confirm-field-value">{{field.value}}</text>
+              </view>
+            </view>
+            <button
+              wx:if="{{message.canConfirm}}"
+              class="confirm-match-button"
+              loading="{{loading}}"
+              bindtap="confirmNeedFromMessage"
+              data-message-id="{{message.id}}"
             >
-              <view class="card-head">
-                <view class="card-title">{{listing.title}}</view>
-                <view wx:if="{{listing.displayRelevance}}" class="score-chip">
-                  {{listing.displayRelevance}}匹配
+              确认并匹配
+            </button>
+            <view wx:else class="confirm-card-hint">补充后我会重新整理这些字段</view>
+          </view>
+
+          <view wx:if="{{message.needTags && message.needTags.length}}" class="need-tags">
+            <text wx:for="{{message.needTags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
+          </view>
+
+          <view wx:if="{{message.empty}}" class="empty-match">
+            <view class="empty-title">暂无合适房源</view>
+            <view class="empty-desc">可以放宽预算、区域或户型后再试。</view>
+          </view>
+
+          <view wx:if="{{message.listingSections && message.listingSections.length}}" class="recommend-list">
+            <view wx:for="{{message.listingSections}}" wx:for-item="section" wx:key="title" class="recommend-section">
+              <view class="section-title">{{section.title}}</view>
+              <view
+                wx:for="{{section.listings}}"
+                wx:for-item="listing"
+                wx:key="id"
+                class="recommend-card {{listing.matchGroup === 'nearby' ? 'nearby' : ''}}"
+              >
+                <view class="card-head">
+                  <view class="card-title">{{listing.cardTitle}}</view>
+                  <view wx:if="{{listing.displayRelevance}}" class="score-chip">
+                    {{listing.displayRelevance}}
+                  </view>
                 </view>
-              </view>
-              <view class="card-facts">
-                <text>{{listing.community || listing.locationSummary || listing.area || '待补充小区'}}</text>
-                <text>{{listing.area || listing.block || '区域待补充'}}</text>
-                <text>{{listing.layout || '户型待补充'}}</text>
-                <text>{{listing.noCommission ? '不分佣' : (listing.commissionText || listing.commission || '分佣可见')}}</text>
-                <text>仅视频房源</text>
-              </view>
-              <view class="card-meta">{{listing.meta}}</view>
-              <view class="card-sub">{{listing.sub}}</view>
-              <view wx:if="{{listing.features}}" class="listing-feature-row">
-                <text wx:for="{{listing.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
-                <text wx:if="{{listing.maintenanceText}}" class="listing-maintenance-tag">{{listing.maintenanceText}}</text>
-              </view>
-              <view wx:if="{{listing.relevanceReasons && listing.relevanceReasons.length}}" class="reason-row">
-                <text wx:for="{{listing.relevanceReasons}}" wx:key="*this">{{item}}</text>
-              </view>
-              <view class="card-bottom">
-                <view class="card-price">{{listing.price}}</view>
-                <view class="card-action">看详情</view>
+                <view class="card-facts">
+                  <text>{{listing.price || '租金待补充'}}</text>
+                  <text>{{listing.community || '小区待补充'}}</text>
+                  <text>{{listing.layout || '户型待补充'}}</text>
+                  <text wx:if="{{listing.maintenanceText}}">{{listing.maintenanceText}}</text>
+                </view>
+                <view wx:if="{{listing.matchReason}}" class="match-line">
+                  <text>理由</text>
+                  <view>{{listing.matchReason}}</view>
+                </view>
+                <view wx:if="{{listing.differenceText}}" class="diff-line">
+                  <text>差异</text>
+                  <view>{{listing.differenceText}}</view>
+                </view>
+                <view wx:if="{{listing.features && listing.features.length}}" class="listing-feature-row">
+                  <text wx:for="{{listing.features}}" wx:for-item="feature" wx:key="*this" class="listing-feature-tag">{{feature}}</text>
+                </view>
+                <view class="card-bottom">
+                  <view class="card-price">{{listing.price}}</view>
+                  <view class="card-actions">
+                    <button catchtap="openListing" data-id="{{listing.id}}">看详情</button>
+                    <button catchtap="openMapForListing" data-id="{{listing.id}}" data-message-id="{{message.id}}">地图查看</button>
+                  </view>
+                </view>
               </view>
             </view>
           </view>
         </view>
-        <view wx:if="{{item.role === 'user'}}" class="avatar user-avatar">我</view>
+        <view wx:if="{{message.role === 'user'}}" class="avatar user-avatar">我</view>
       </view>
 
       <view wx:if="{{loading}}" id="typing-row" class="message-row assistant">
@@ -95,9 +125,10 @@
         bindinput="handleInput"
         bindconfirm="sendMessage"
         confirm-type="send"
-        placeholder="继续补充预算、区域、户型、特点"
+        disabled="{{loading}}"
+        placeholder="说一句客户预算、区域和户型"
       />
-      <view class="chat-mic-button {{isVoiceListening ? 'active' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
+      <view class="chat-mic-button {{isVoiceListening ? 'active' : ''}} {{loading ? 'disabled' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
         <view class="mic-icon">
           <view class="mic-head"></view>
           <view class="mic-neck"></view>
@@ -109,7 +140,7 @@
           <view class="wave-bar bar-3"></view>
         </view>
       </view>
-      <view class="send-button" bindtap="sendMessage" aria-role="button">找房</view>
+      <view class="send-button {{loading ? 'disabled' : ''}}" bindtap="sendMessage" aria-role="button">{{loading ? '匹配中' : '找房'}}</view>
     </view>
   </view>
 </view>

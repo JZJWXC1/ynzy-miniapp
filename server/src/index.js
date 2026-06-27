@@ -87,6 +87,30 @@ function parseBody(req) {
   })
 }
 
+function searchParamValues(searchParams, names) {
+  const values = names.flatMap((name) => searchParams.getAll(name))
+  searchParams.forEach((value, key) => {
+    if (/^listingIds\[\d+\]$/.test(key)) values.push(value)
+  })
+  return values.filter((item) => item !== null && item !== undefined && item !== '')
+}
+
+function mapQueryFilter(searchParams) {
+  return {
+    north: searchParams.get('north') || '',
+    south: searchParams.get('south') || '',
+    east: searchParams.get('east') || '',
+    west: searchParams.get('west') || '',
+    rentMin: searchParams.get('rentMin') || '',
+    rentMax: searchParams.get('rentMax') || '',
+    layout: searchParams.get('layout') || '',
+    rentMode: searchParams.get('rentMode') || '',
+    sourceType: searchParams.get('sourceType') || '',
+    area: searchParams.get('area') || searchParams.get('region') || '',
+    listingIds: searchParamValues(searchParams, ['listingIds', 'listingIds[]'])
+  }
+}
+
 function parseRawBody(req) {
   return new Promise((resolve, reject) => {
     let raw = ''
@@ -527,8 +551,12 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, await llm.matchRentalNeed(db, await parseBody(req)))
   }
 
+  if (method === 'GET' && pathname === '/mini/map/communities') {
+    return sendJson(res, domain.mapCommunities(db, mapQueryFilter(searchParams)))
+  }
+
   if (method === 'GET' && pathname === '/mini/map/pins') {
-    return sendJson(res, domain.mapPins(db))
+    return sendJson(res, domain.mapPins(db, mapQueryFilter(searchParams)))
   }
 
   if (method === 'GET' && pathname === '/mini/footprints') {
@@ -563,6 +591,14 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'GET' && pathname === '/mini/commissions') {
     return sendJson(res, domain.userCommissionRows(db, userId))
+  }
+
+  if (method === 'GET' && pathname === '/mini/reports') {
+    return sendJson(res, domain.userReportRows(db, userId))
+  }
+
+  if (method === 'GET' && pathname === '/mini/deals') {
+    return sendJson(res, domain.userDealRows(db, userId))
   }
 
   if (method === 'POST' && pathname === '/mini/points/recharge') {
@@ -660,6 +696,18 @@ async function handleMini(req, res, pathname, searchParams) {
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
   if (method === 'GET' && listingLogsMatch) {
     return sendJson(res, domain.listingLogs(db, listingLogsMatch[1]))
+  }
+
+  const reportMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/reports$/)
+  if (method === 'POST' && reportMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.createClientReport(nextDb, userId, reportMatch[1], body)))
+  }
+
+  const reportDealMatch = pathname.match(/^\/mini\/reports\/([^/]+)\/deals$/)
+  if (method === 'POST' && reportDealMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.createDealFromReport(nextDb, userId, reportDealMatch[1], body)))
   }
 
   const showingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/showings$/)
@@ -814,6 +862,18 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'GET' && pathname === '/admin/commissions') {
     return sendJson(res, domain.commissionRows(db))
+  }
+  if (method === 'GET' && pathname === '/admin/reports') {
+    return sendJson(res, domain.adminReportRows(db))
+  }
+  if (method === 'GET' && pathname === '/admin/deals') {
+    return sendJson(res, domain.adminDealRows(db))
+  }
+  const adminDealConfirmMatch = pathname.match(/^\/admin\/deals\/([^/]+)\/confirm$/)
+  if (method === 'POST' && adminDealConfirmMatch) {
+    return sendJson(res, dbStore.updateDb((nextDb) => (
+      domain.confirmDeal(nextDb, adminAccount.userId || adminAccount.id, adminDealConfirmMatch[1])
+    )))
   }
   if (method === 'GET' && pathname === '/admin/groups/uploads') {
     return sendJson(res, withSignedScreenshotUrls(domain.groupUploadRows(db)))

@@ -108,11 +108,13 @@ page {
 }
 
 .commission-rate {
-  flex: 0 0 auto;
+  flex: 0 1 360rpx;
   padding: 8rpx 14rpx;
   color: #a16f00;
   font-size: 23rpx;
   font-weight: 900;
+  line-height: 1.35;
+  text-align: center;
   background: #fff3cf;
   border-radius: 16rpx;
 }

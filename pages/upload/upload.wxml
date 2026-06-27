@@ -3,7 +3,7 @@
   <view class="page-shell upload-page">
     <view class="upload-hero">
       <view class="upload-title">{{mode === 'edit' ? '修改已上传房源' : (form.companyListing ? '上传公司房源' : form.ownerType)}}</view>
-      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、分佣和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，默认免押金、出租不分佣。' : (form.ownerType === '业主房源' ? '业主房源提交后进入管理员审核，通过后才会在小程序上架。' : '按位置、户型、租金和视频快速录入，成交按你设置的比例分佣。'))}}</view>
+      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、标签和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，由管理员维护。' : (form.ownerType === '业主房源' ? '业主房源提交后进入管理员审核，通过后才会在小程序上架。' : '按位置、户型、租金、标签和视频快速录入，签单后按平台规则计算。'))}}</view>
     </view>
 
     <view class="form-card soft-card">
@@ -12,11 +12,11 @@
         <view wx:if="{{isAdmin}}" class="source-row">
           <view class="source-chip {{!form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="0">
             <view class="source-title">普通房源</view>
-            <view class="source-desc">成交按比例分佣</view>
+            <view class="source-desc">签单后按平台规则计算</view>
           </view>
           <view class="source-chip company {{form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="1">
             <view class="source-title">公司房源</view>
-            <view class="source-desc">免押金 · 不分佣</view>
+            <view class="source-desc">管理员维护</view>
           </view>
         </view>
         <view wx:else class="source-lock">普通员工只能上传普通房源；公司房源请由管理员上传。</view>
@@ -99,7 +99,7 @@
         <view class="feature-grid">
           <view wx:for="{{featureOptions}}" wx:key="name" class="feature-chip {{item.active ? 'active' : ''}}" bindtap="toggleFeature" data-value="{{item.name}}">{{item.name}}</view>
         </view>
-        <view class="hint">至少选择一个特点；没有明显特点请选择“无”。分佣填 0 或选择“不分佣”会自动按不分佣展示；公司房源会自动标记“免押金”。</view>
+        <view class="hint">至少选择一个特点；没有明显特点请选择“无”。</view>
       </view>
 
       <view class="field">
@@ -107,17 +107,15 @@
         <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="手机号或微信" />
       </view>
 
-      <view class="field two-col">
-        <view>
-          <view class="label">租金</view>
-          <input value="{{form.rent}}" data-field="rent" bindinput="updateField" type="number" placeholder="月租" />
-        </view>
-        <view>
-          <view class="label">分佣比例</view>
-          <input value="{{form.commissionRate}}" data-field="commissionRate" bindinput="updateField" type="digit" disabled="{{form.companyListing}}" placeholder="默认20" />
-        </view>
+      <view class="field">
+        <view class="label">租金</view>
+        <input value="{{form.rent}}" data-field="rent" bindinput="updateField" type="number" placeholder="月租" />
       </view>
-      <view class="hint">{{form.companyListing ? '公司房源分佣比例固定为 0%，系统会自动标记免押金、不分佣。' : '上传人可设置 0-20%，超过 20% 禁止提交；填 0 会自动标记不分佣。'}}</view>
+
+      <view class="field">
+        <view class="label">分佣规则</view>
+        <view class="preview-line">签单后按平台规则计算</view>
+      </view>
 
       <view class="video-upload" bindtap="chooseVideo">
         <view class="video-icon">▶</view>

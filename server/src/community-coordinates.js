@@ -130,21 +130,30 @@ function communityCoordinateEntry(name) {
   return matchedKey ? { key: matchedKey, coordinate: communityCoordinates[matchedKey] } : null
 }
 
+function isReliableCoordinateSource(source) {
+  const text = String(source || '').trim().toLowerCase()
+  if (!text) return false
+  return !/estimated|estimate|hash|random|default|offset|scatter|legacy|area|pending/.test(text)
+}
+
 function coordinateByCommunity(name) {
   const entry = communityCoordinateEntry(name)
   if (!entry) return null
   const coordinate = entry.coordinate
   if (!coordinate) return null
+  if (!isReliableCoordinateSource(coordinate.source)) return null
   return {
     latitude: coordinate.latitude,
     longitude: coordinate.longitude,
     source: coordinate.source,
-    community: entry.key
+    community: entry.key,
+    coordinateVerified: true
   }
 }
 
 module.exports = {
   communityCoordinates,
   normalizeCommunityName,
+  isReliableCoordinateSource,
   coordinateByCommunity
 }

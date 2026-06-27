@@ -115,7 +115,7 @@
           <text>{{item.community || item.locationSummary || item.area || '待补充小区'}}</text>
           <text>{{item.area || item.block || '区域待补充'}}</text>
           <text>{{item.layout || '户型待补充'}}</text>
-          <text>{{item.noCommission ? '不分佣' : (item.commissionText || item.commission || '分佣可见')}}</text>
+          <text>{{item.commissionText || '管理员确认签单后按 20% 结算'}}</text>
           <text>仅视频房源</text>
         </view>
         <view class="match-sub">{{item.sub}}</view>

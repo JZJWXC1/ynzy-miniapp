@@ -280,6 +280,47 @@ page {
   line-height: 1.45;
 }
 
+.deal-grid {
+  display: flex;
+  gap: 18rpx;
+}
+
+.deal-card {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 24rpx;
+  text-align: left;
+  background: #f7fbf8;
+  border: 1rpx dashed #b9cdc5;
+  border-radius: 26rpx;
+}
+
+.deal-title {
+  color: #153f36;
+  font-size: 27rpx;
+  font-weight: 900;
+}
+
+.deal-desc {
+  margin-top: 12rpx;
+  color: #78918a;
+  font-size: 22rpx;
+  line-height: 1.45;
+}
+
+.deal-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42rpx;
+  margin-top: 18rpx;
+  padding: 0 14rpx;
+  color: #2f6f60;
+  font-size: 21rpx;
+  font-weight: 900;
+  background: #e9f5f0;
+  border-radius: 14rpx;
+}
+
 .reminder-list {
   display: flex;
   flex-direction: column;

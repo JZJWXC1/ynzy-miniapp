@@ -23,11 +23,10 @@
           <view class="listing-title">{{listing.title}}</view>
           <view class="listing-area">{{listing.areaText || listing.area}} · {{listing.status}}</view>
         </view>
-        <view class="commission {{listing.noCommission ? 'no-commission' : ''}}">{{listing.commissionText || '分佣'}}</view>
+        <view class="commission">{{listing.commissionText || '管理员确认签单后，上传人按房东实付佣金的 20% 结算'}}</view>
       </view>
       <view class="source-badges">
         <text wx:if="{{listing.companyListing}}" class="company-badge">公司房源</text>
-        <text wx:if="{{listing.noCommission}}" class="no-commission-badge">出租不分佣</text>
       </view>
       <view wx:if="{{listing.features}}" class="listing-feature-row">
         <text wx:for="{{listing.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
@@ -89,7 +88,46 @@
       </view>
     </view>
 
-    <button class="deal-button" bindtap="registerDeal">{{listing.noCommission ? '登记成交（不分佣）' : '登记成交并按比例分佣'}}</button>
+    <button class="deal-button" bindtap="startReportDeal">先报备客户，再从报备发起签单</button>
   </view>
 </scroll-view>
+<view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal">
+  <view class="v1-modal" catchtap="noop">
+    <view class="v1-modal-title">客户报备</view>
+    <view class="v1-field">
+      <text>客户称呼</text>
+      <input value="{{reportForm.customerName}}" data-field="customerName" bindinput="updateReportField" placeholder="可选" />
+    </view>
+    <view class="v1-field">
+      <text>客户手机号</text>
+      <input value="{{reportForm.customerPhone}}" data-field="customerPhone" bindinput="updateReportField" type="number" maxlength="11" placeholder="必填" />
+    </view>
+    <view class="v1-modal-actions">
+      <button class="ghost-button" bindtap="closeReportModal">取消</button>
+      <button class="primary-button" loading="{{reportSubmitting}}" bindtap="submitClientReport">提交报备</button>
+    </view>
+  </view>
+</view>
+
+<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal">
+  <view class="v1-modal" catchtap="noop">
+    <view class="v1-modal-title">提交签单</view>
+    <view class="v1-field">
+      <text>成交月租</text>
+      <input value="{{dealForm.monthlyRent}}" data-field="monthlyRent" bindinput="updateDealField" type="digit" placeholder="必填" />
+    </view>
+    <view class="v1-field">
+      <text>房东实付佣金</text>
+      <input value="{{dealForm.landlordCommission}}" data-field="landlordCommission" bindinput="updateDealField" type="digit" placeholder="必填" />
+    </view>
+    <view class="v1-field">
+      <text>备注</text>
+      <textarea value="{{dealForm.remark}}" data-field="remark" bindinput="updateDealField" maxlength="120" placeholder="可选" />
+    </view>
+    <view class="v1-modal-actions">
+      <button class="ghost-button" bindtap="closeDealModal">取消</button>
+      <button class="primary-button" loading="{{dealSubmitting}}" bindtap="submitDealFromReport">提交签单</button>
+    </view>
+  </view>
+</view>
 <canvas canvas-id="showingWatermarkCanvas" class="showing-watermark-canvas" style="width: {{showingCanvasWidth}}px; height: {{showingCanvasHeight}}px;"></canvas>

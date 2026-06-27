@@ -7,7 +7,7 @@ Page({
     groups: [],
     listings: [],
     allListings: [],
-    actions: ['查看详情', '记录带看', '登记成交', '联系上传人'],
+    actions: ['查看详情', '记录带看', '报备后签单', '联系上传人'],
     pointLogs: [],
     groupUploads: [],
     screenshotPath: '',
@@ -109,20 +109,12 @@ Page({
       wx.showToast({ title: '请在详情页拍水印照片', icon: 'none' });
       return;
     }
-    if (name === '登记成交' && id) {
+    if (name === '报备后签单' && id) {
       wx.showModal({
-        title: '登记成交',
-        content: '成交记录会同步到管理员后台，并按上传人设置比例分佣。',
-        confirmText: '登记',
-        success: (res) => {
-          if (!res.confirm) return;
-          apiService.registerDeal(id).then((result) => {
-            wx.showToast({ title: result.message || '成交已登记', icon: 'none' });
-            this.refresh();
-          }).catch(() => {
-            wx.showToast({ title: '成交登记失败', icon: 'none' })
-          });
-        }
+        title: '先报备客户',
+        content: '第一版签单必须从报备记录发起。报备时客户称呼可选，客户手机号必填；管理员确认签单后，上传人按房东实付佣金的 20% 结算。',
+        confirmText: '知道了',
+        showCancel: false
       });
       return;
     }
@@ -140,7 +132,7 @@ Page({
     }
     wx.showModal({
       title: name,
-      content: '该操作已接入内部协作记录，查看详情、带看、成交和联系上传人会同步到对应房源流程。',
+      content: '该操作已接入内部协作记录，查看详情、带看、报备后签单和联系上传人会同步到对应房源流程。',
       showCancel: false
     });
   },

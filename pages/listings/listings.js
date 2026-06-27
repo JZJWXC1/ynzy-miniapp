@@ -1,6 +1,49 @@
 const apiService = require('../../utils/api-service')
 
+const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const categories = ['全部', '整租', '合租', '业主房源', '公寓']
+const emptyFilters = {
+  area: '',
+  block: '',
+  community: '',
+  layout: '',
+  rentMax: ''
+}
+
+function cleanFilterValue(value) {
+  if (value === undefined || value === null) return ''
+  return String(value)
+}
+
+function normalizeListingState(input = {}) {
+  const sourceFilters = input.filters && typeof input.filters === 'object' ? input.filters : input
+  const rawCategory = input.category || sourceFilters.category || '全部'
+  const category = categories.includes(rawCategory) ? rawCategory : '全部'
+
+  return {
+    category,
+    filters: {
+      area: cleanFilterValue(sourceFilters.area),
+      block: cleanFilterValue(sourceFilters.block),
+      community: cleanFilterValue(sourceFilters.community),
+      layout: cleanFilterValue(sourceFilters.layout),
+      rentMax: cleanFilterValue(sourceFilters.rentMax)
+    }
+  }
+}
+
+function normalizeOptions(options = {}) {
+  return normalizeListingState({
+    category: options.category ? decodeURIComponent(options.category) : '全部',
+    filters: {
+      area: options.area ? decodeURIComponent(options.area) : '',
+      block: options.block ? decodeURIComponent(options.block) : '',
+      community: options.community ? decodeURIComponent(options.community) : '',
+      layout: options.layout ? decodeURIComponent(options.layout) : '',
+      rentMax: options.rentMax || ''
+    }
+  })
+}
 
 Page({
   data: {
@@ -19,18 +62,42 @@ Page({
   },
 
   onLoad(options) {
-    const category = options.category ? decodeURIComponent(options.category) : '全部'
-    this.setData({
-      category,
-      filters: {
-        area: options.area ? decodeURIComponent(options.area) : '',
-        block: options.block ? decodeURIComponent(options.block) : '',
-        community: options.community ? decodeURIComponent(options.community) : '',
-        layout: options.layout ? decodeURIComponent(options.layout) : '',
-        rentMax: options.rentMax || ''
-      }
-    })
+    this.setListingState(normalizeOptions(options))
+  },
+
+  onShow() {
+    if (typeof this.getTabBar === 'function' && this.getTabBar()) {
+      this.getTabBar().setData({ selected: 1 })
+    }
+    if (this.applyPendingListingFilters()) return
     this.loadListings()
+  },
+
+  setListingState(nextState, callback) {
+    this.setData({
+      category: nextState.category,
+      filters: Object.assign({}, emptyFilters, nextState.filters)
+    }, callback)
+  },
+
+  applyPendingListingFilters() {
+    let pendingFilters = null
+    try {
+      pendingFilters = wx.getStorageSync(pendingListingFiltersKey)
+    } catch (error) {
+      pendingFilters = null
+    }
+    if (!pendingFilters || typeof pendingFilters !== 'object') return false
+
+    this.setListingState(normalizeListingState(pendingFilters), () => {
+      try {
+        wx.removeStorageSync(pendingListingFiltersKey)
+      } catch (error) {
+        // 存储清理失败不阻断房源筛选展示。
+      }
+      this.loadListings()
+    })
+    return true
   },
 
   updateFilter(event) {

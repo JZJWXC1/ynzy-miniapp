@@ -90,11 +90,13 @@ page {
 
 .commission,
 .verify-tag {
-  flex: 0 0 auto;
+  flex: 0 1 340rpx;
   padding: 10rpx 14rpx;
   color: #153f36;
   font-size: 23rpx;
   font-weight: 900;
+  line-height: 1.35;
+  text-align: center;
   background: #f6bd36;
   border-radius: 18rpx;
 }
@@ -353,4 +355,77 @@ page {
 .quota-plus {
   font-size: 25rpx;
   line-height: 1;
+}
+
+.v1-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 28rpx;
+  background: rgba(21, 63, 54, 0.42);
+  box-sizing: border-box;
+}
+
+.v1-modal {
+  width: 100%;
+  max-height: 82vh;
+  padding: 30rpx;
+  background: #ffffff;
+  border-radius: 24rpx;
+  box-shadow: 0 -16rpx 42rpx rgba(21, 63, 54, 0.18);
+  box-sizing: border-box;
+}
+
+.v1-modal-title {
+  color: #153f36;
+  font-size: 34rpx;
+  font-weight: 900;
+}
+
+.v1-field {
+  margin-top: 20rpx;
+}
+
+.v1-field text {
+  display: block;
+  color: #78918a;
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.v1-field input,
+.v1-field textarea {
+  width: 100%;
+  min-height: 78rpx;
+  margin-top: 10rpx;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 28rpx;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.v1-field textarea {
+  min-height: 132rpx;
+  padding-top: 18rpx;
+  line-height: 1.45;
+}
+
+.v1-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+.v1-modal-actions .ghost-button,
+.v1-modal-actions .primary-button {
+  height: 80rpx;
+  margin-top: 0;
+  border-radius: 20rpx;
 }

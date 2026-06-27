@@ -84,7 +84,21 @@ Page({
     showingSubmitting: false,
     showingPhotoPath: '',
     showingCanvasWidth: SHOWING_CANVAS_WIDTH,
-    showingCanvasHeight: SHOWING_CANVAS_HEIGHT
+    showingCanvasHeight: SHOWING_CANVAS_HEIGHT,
+    reportModalVisible: false,
+    dealModalVisible: false,
+    reportSubmitting: false,
+    dealSubmitting: false,
+    reportForm: {
+      customerName: '',
+      customerPhone: ''
+    },
+    dealForm: {
+      monthlyRent: '',
+      landlordCommission: '',
+      remark: ''
+    },
+    currentReportId: ''
   },
 
   onLoad(options) {
@@ -120,6 +134,8 @@ Page({
       wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
     });
   },
+
+  noop() {},
 
   revealSensitive() {
     if (this.data.sensitiveVisible) {
@@ -332,26 +348,116 @@ Page({
     return { tempFilePath, watermarkText }
   },
 
-  registerDeal() {
+  startReportDeal() {
     const listing = this.data.listing || {}
-    wx.showModal({
-      title: '确认登记成交',
-      content: listing.noCommission
-        ? '该房源为不分佣房源，登记后只同步成交状态，不生成分佣记录。'
-        : `登记后将按上传人设置的 ${listing.commissionRate}% 分佣，状态同步到管理员后台。`,
-      confirmText: '登记成交',
-      success: (res) => {
-        if (!res.confirm) return;
-        apiService.registerDeal(this.data.listing.id).then((result) => {
-          wx.showToast({
-            title: result.message || '成交已登记',
-            icon: 'none'
-          });
-          this.loadListing(this.data.listing.id);
-        }).catch(() => {
-          wx.showToast({ title: '成交登记失败', icon: 'none' })
-        });
-      }
-    });
+    this.setData({
+      reportModalVisible: true,
+      dealModalVisible: false,
+      currentReportId: '',
+      'dealForm.monthlyRent': listing.rent || '',
+      'dealForm.landlordCommission': '',
+      'dealForm.remark': ''
+    })
+  },
+
+  closeReportModal() {
+    if (this.data.reportSubmitting) return
+    this.setData({ reportModalVisible: false })
+  },
+
+  closeDealModal() {
+    if (this.data.dealSubmitting) return
+    this.setData({ dealModalVisible: false })
+  },
+
+  updateReportField(event) {
+    const field = event.currentTarget.dataset.field
+    if (!field) return
+    this.setData({ [`reportForm.${field}`]: event.detail.value })
+  },
+
+  updateDealField(event) {
+    const field = event.currentTarget.dataset.field
+    if (!field) return
+    this.setData({ [`dealForm.${field}`]: event.detail.value })
+  },
+
+  submitClientReport() {
+    const listing = this.data.listing || {}
+    const form = this.data.reportForm || {}
+    const customerPhone = safeText(form.customerPhone)
+    if (!/^1[3-9]\d{9}$/.test(customerPhone)) {
+      wx.showToast({ title: '请填写客户手机号', icon: 'none' })
+      return
+    }
+    if (!listing.id || this.data.reportSubmitting) return
+    this.setData({ reportSubmitting: true })
+    apiService.createClientReport(listing.id, {
+      customerName: safeText(form.customerName),
+      customerPhone
+    }).then((result) => {
+      const report = result && result.report ? result.report : result
+      this.setData({
+        reportSubmitting: false,
+        reportModalVisible: false,
+        dealModalVisible: true,
+        currentReportId: report.id || '',
+        'dealForm.monthlyRent': listing.rent || '',
+        'dealForm.landlordCommission': '',
+        'dealForm.remark': ''
+      })
+      wx.showToast({ title: '报备已创建', icon: 'none' })
+    }).catch((error) => {
+      this.setData({ reportSubmitting: false })
+      wx.showModal({
+        title: '报备失败',
+        content: error && error.message ? error.message : '请稍后重试',
+        showCancel: false
+      })
+    })
+  },
+
+  submitDealFromReport() {
+    const reportId = this.data.currentReportId
+    const form = this.data.dealForm || {}
+    const monthlyRent = Number(form.monthlyRent)
+    const landlordCommission = Number(form.landlordCommission)
+    if (!reportId) {
+      wx.showToast({ title: '请先完成报备', icon: 'none' })
+      return
+    }
+    if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) {
+      wx.showToast({ title: '请填写成交月租', icon: 'none' })
+      return
+    }
+    if (!Number.isFinite(landlordCommission) || landlordCommission <= 0) {
+      wx.showToast({ title: '请填写房东实付佣金', icon: 'none' })
+      return
+    }
+    if (this.data.dealSubmitting) return
+    this.setData({ dealSubmitting: true })
+    apiService.createDealFromReport(reportId, {
+      monthlyRent,
+      landlordCommission,
+      remark: safeText(form.remark)
+    }).then((result) => {
+      this.setData({
+        dealSubmitting: false,
+        dealModalVisible: false,
+        currentReportId: ''
+      })
+      wx.showModal({
+        title: '签单已提交',
+        content: (result && result.message) || '待管理员确认后生成正式分佣记录。',
+        showCancel: false
+      })
+    }).catch((error) => {
+      this.setData({ dealSubmitting: false })
+      wx.showModal({
+        title: '签单失败',
+        content: error && error.message ? error.message : '请稍后重试',
+        showCancel: false
+      })
+    })
   }
 })

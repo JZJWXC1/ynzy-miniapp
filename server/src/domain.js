@@ -11,7 +11,11 @@ const {
 } = require('./listing-features')
 
 const VERIFY_REMINDER_DAYS = [3, 5]
-const VERIFY_STALE_DAYS = 15
+const VERIFY_STALE_DAYS = 7
+const V1_MAP_STALE_DAYS = VERIFY_STALE_DAYS
+const FIXED_LISTING_COMMISSION_RATE = 20
+const UPLOADER_COMMISSION_RATE = 20
+const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算'
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
 const SECOND_LANDLORD_SOURCE = '二房东房源'
@@ -67,6 +71,27 @@ function listingById(db, listingId) {
   return (db.listings || []).find((listing) => listing.id === listingId)
 }
 
+function reportById(db, reportId) {
+  return (db.clientReports || []).find((report) => report.id === reportId)
+}
+
+function dealById(db, dealId) {
+  return (db.dealRecords || []).find((deal) => deal.id === dealId)
+}
+
+function hasListingVideo(listing = {}) {
+  return Boolean(String(listing.videoUrl || '').trim() || String(listing.videoKey || '').trim())
+}
+
+function isSoldListing(listing = {}) {
+  const status = String(listing.status || '')
+  return listing.lifecycleStatus === 'sold' || /\u6210\u4ea4|\u7b7e\u5355/.test(status)
+}
+
+function isFrontendEffectiveListing(listing = {}) {
+  return !isExpiredListing(listing) && !isSoldListing(listing) && hasListingVideo(listing) && !isPendingOwnerReview(listing)
+}
+
 function normalizeOwnerType(value, fallback = SECOND_LANDLORD_SOURCE) {
   const text = String(value || '').trim()
   if (/业主/.test(text)) return OWNER_SOURCE
@@ -111,7 +136,7 @@ function isExpiredListing(listing = {}) {
 }
 
 function rawActiveListings(db) {
-  return (db.listings || []).filter((listing) => !isExpiredListing(listing))
+  return (db.listings || []).filter((listing) => !isExpiredListing(listing) && !isSoldListing(listing))
 }
 
 function activeListings(db) {
@@ -120,14 +145,33 @@ function activeListings(db) {
 }
 
 function publicListings(db) {
-  return activeListings(db).filter((listing) => !isPendingOwnerReview(listing))
+  return activeListings(db).filter(isFrontendEffectiveListing)
 }
 
 function assertListingActive(listing) {
   if (!isExpiredListing(listing)) return
-  const error = new Error('该房源已下架，已进入后台废房源池')
+  const error = new Error('该房源已下架，已进入后台资产池')
   error.statusCode = 410
   throw error
+}
+
+function assertFrontendListingAvailable(listing) {
+  assertListingActive(listing)
+  if (isSoldListing(listing)) {
+    const error = new Error('该房源已签单或成交，不能继续在前台发起业务')
+    error.statusCode = 410
+    throw error
+  }
+  if (isPendingOwnerReview(listing)) {
+    const error = new Error('该房源正在等待管理员审核，审核通过后才会上架')
+    error.statusCode = 404
+    throw error
+  }
+  if (!hasListingVideo(listing)) {
+    const error = new Error('该房源缺少真实视频，暂不能在前台展示或发起业务')
+    error.statusCode = 404
+    throw error
+  }
 }
 
 function dateValue(text) {
@@ -294,7 +338,6 @@ function featuresWithCompanyDefaults(value, listing = {}) {
 
 function listingSourceFields(listing = {}) {
   const companyListing = isCompanyListing(listing)
-  const noCommission = isNoCommissionListing(listing)
   const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
@@ -308,10 +351,10 @@ function listingSourceFields(listing = {}) {
     manualReviewReason: listing.manualReviewReason || '',
     communityMatched: listing.communityMatched !== undefined ? truthyFlag(listing.communityMatched) : listing.communityMatchStatus !== '未匹配',
     communityMatchStatus: listing.communityMatchStatus || (listing.communityMatched === false ? '未匹配' : '已匹配'),
-    noCommission,
+    noCommission: false,
     sourceLabel,
-    commissionText: noCommission ? '不分佣' : `分佣 ${Number(listing.commissionRate || 0)}%`,
-    commissionBadge: noCommission ? '不分佣' : `${Number(listing.commissionRate || 0)}%`
+    commissionText: PUBLIC_COMMISSION_TEXT,
+    commissionBadge: '固定20%'
   }
 }
 
@@ -409,8 +452,8 @@ function listingMaintenanceRule(db) {
     ...rule,
     status: rule.enabled ? '已开启' : '已关闭',
     tip: rule.enabled
-      ? `已开启：3 天、5 天提醒上传人电话联系房东；${VERIFY_STALE_DAYS} 天未更新固定自动下架并进入后台废房源池。`
-      : `已关闭提醒：${VERIFY_STALE_DAYS} 天未更新仍会固定自动下架并进入后台废房源池。`
+      ? `已开启：3 天、5 天提醒上传人电话联系房东；${VERIFY_STALE_DAYS} 天未更新固定自动下架并进入后台资产池。`
+      : `已关闭提醒：${VERIFY_STALE_DAYS} 天未更新仍会固定自动下架并进入后台资产池。`
   }
 }
 
@@ -422,7 +465,7 @@ function expireListing(db, listing, reason) {
   listing.status = '已下架'
   listing.expiredAt = now
   listing.expiredBy = 'system'
-  listing.expiredPool = '后台废房源池'
+  listing.expiredPool = '后台资产池'
   listing.expiredReason = reason || `超过 ${VERIFY_STALE_DAYS} 天未电话联系房东确认房态`
   listing.expiredStaleDays = freshness.staleDays
   listing.updatedAt = now
@@ -683,16 +726,16 @@ function adminUsers(db) {
 
 function formatHomeListing(db, listing) {
   const uploader = userById(db, listing.uploaderId) || {}
-  const location = listingLocationFields(listing)
+  const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing)
-  const publicTitle = listing.shortTitle || location.community || listing.community || `${location.area || '房源'}${listing.layout ? ` · ${listing.layout}` : ''}`
+  const publicTitle = publicListingTitle(listing, location)
   return {
     id: listing.id,
     title: publicTitle,
     meta: `${location.locationSummary || location.area} · ${listing.layout} · 仅视频`,
-    sub: display.noCommission ? `${display.sourceLabel} · 不分佣` : `分佣 ${listing.commissionRate}% · 上传人 ${uploader.name || '未知'}`,
+    sub: `${display.sourceLabel} · ${PUBLIC_COMMISSION_TEXT} · 上传人 ${uploader.name || '未知'}`,
     price: `¥${listing.rent}/月`,
-    tag: display.noCommission ? '不分佣' : (Number(listing.commissionRate) >= 20 ? '分佣20%' : '实名留痕'),
+    tag: '固定20%',
     videoUrl: listing.videoUrl || '',
     ...display,
     ...location
@@ -714,7 +757,7 @@ function matchesCategory(listing, category) {
 function filterListings(db, filter = {}) {
   return publicListings(db)
     .filter((listing) => {
-      const locationText = `${listing.city || ''}${listing.district || ''}${listing.area || ''}${listing.block || ''}${listing.community || ''}${listing.building || ''}${listing.unit || ''}${listing.roomNumber || ''}${listing.address || ''}`
+      const locationText = publicLocationSearchText(listing)
       if (!matchesCategory(listing, filter.category)) return false
       if (filter.area && locationText.indexOf(filter.area) === -1) return false
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
@@ -737,9 +780,9 @@ function filterListings(db, filter = {}) {
         source: listing.source || '',
         status: listing.status || '',
         companyListing: row.companyListing,
-        noCommission: row.noCommission,
+        noCommission: false,
         sourceLabel: row.sourceLabel,
-        commissionText: row.commissionText
+        commissionText: PUBLIC_COMMISSION_TEXT
       }
     })
 }
@@ -767,7 +810,7 @@ function matchListings(db, condition = {}) {
     }
     if (
       area &&
-      `${listing.city || ''}${listing.district || ''}${listing.area || ''}${listing.block || ''}${listing.community || ''}${listing.building || ''}${listing.unit || ''}${listing.roomNumber || ''}${listing.address || ''}`.indexOf(area) !== -1
+      publicLocationSearchText(listing).indexOf(area) !== -1
     ) {
       score += 24
       reasons.push('区域匹配')
@@ -827,25 +870,23 @@ function listingDetail(db, listingId) {
   autoExpireOverdueListings(db)
   const listing = listingById(db, listingId)
   if (!listing) return null
-  if (isExpiredListing(listing) || isPendingOwnerReview(listing)) return null
+  if (!isFrontendEffectiveListing(listing)) return null
   const uploader = userById(db, listing.uploaderId) || {}
-  const location = listingLocationFields(listing)
+  const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing)
   return {
     id: listing.id,
-    title: listing.title,
+    title: publicListingTitle(listing, location),
     uploader: uploader.name || '未知',
-    uploaderPhone: uploader.phone || '',
     rent: String(listing.rent),
     layout: listing.layout,
     ...location,
     areaText: `${location.city} · ${location.area}`,
     address: '确认留痕后可查看',
-    landlordPhone: '确认留痕后可查看',
     sensitiveLocked: true,
-    commissionRate: listing.commissionRate,
-    commissionText: display.commissionText,
-    noCommission: display.noCommission,
+    commissionRate: UPLOADER_COMMISSION_RATE,
+    commissionText: PUBLIC_COMMISSION_TEXT,
+    noCommission: false,
     companyListing: display.companyListing,
     sourceLabel: display.sourceLabel,
     videoLabel: listing.videoLabel || '房源实拍视频',
@@ -884,10 +925,11 @@ function footprintRecords(db, userId) {
       const listing = listingById(db, record.listingId) || {}
       const viewer = userById(db, record.viewerId) || {}
       const uploader = userById(db, listing.uploaderId) || {}
+      const location = publicListingLocationFields(listing)
       const isMine = record.viewerId === userId
       return {
         id: record.id,
-        title: listing.title || '未知房源',
+        title: publicListingTitle(listing, location) || '未知房源',
         status: record.action,
         customer: `查看人：${viewer.name || '未知'} · ${viewer.authed || '未实名'}`,
         time: record.time,
@@ -903,16 +945,16 @@ function ownedListings(db, userId) {
   return activeListings(db)
     .filter((listing) => listing.uploaderId === userId)
     .map((listing) => {
-      const location = listingLocationFields(listing)
+      const location = publicListingLocationFields(listing)
       const display = listingDisplayFields(listing)
       return {
         id: listing.id,
-        title: listing.title,
+        title: publicListingTitle(listing, location),
         ...location,
         rent: String(listing.rent),
-        commissionRate: display.noCommission ? '不分佣' : `${listing.commissionRate}%`,
-        commissionText: display.commissionText,
-        noCommission: display.noCommission,
+        commissionRate: '固定20%',
+        commissionText: PUBLIC_COMMISSION_TEXT,
+        noCommission: false,
         companyListing: display.companyListing,
         sourceLabel: display.sourceLabel,
         views: `${listing.sensitiveViews || 0} 次查看敏感信息`,
@@ -984,7 +1026,7 @@ function groupState(db, userId) {
           id: listing.id,
           title: `${listing.block || '待板块'} · ${listing.layout}`,
           price: `¥${listing.rent}/月`,
-          rule: `分佣 ${listing.commissionRate}%`,
+          rule: PUBLIC_COMMISSION_TEXT,
           publisher: `${uploader.name || '未知'} · 已认证`,
           status: listing.source === '群聊上传' ? '群聊上传房源' : '电话地址需实名查看',
           ...display
@@ -1013,81 +1055,74 @@ const defaultMapCenter = {
   longitude: 120.1694
 }
 
-const districtMapCenters = {
-  '拱墅': { latitude: 30.3192, longitude: 120.1694 },
-  '拱墅区': { latitude: 30.3192, longitude: 120.1694 },
-  '上城区': { latitude: 30.2962, longitude: 120.2076 },
-  '西湖区': { latitude: 30.2877, longitude: 120.1264 }
-}
-
-function stableHash(text = '') {
-  let hash = 2166136261
-  const source = String(text)
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
-}
-
 function isDefaultMapCoordinate(latitude, longitude) {
   return Math.abs(latitude - defaultMapCenter.latitude) < 0.000001 &&
     Math.abs(longitude - defaultMapCenter.longitude) < 0.000001
 }
 
-function baseMapCenterFromListing(listing = {}) {
-  const locationText = `${listing.area || ''}${listing.district || ''}${listing.block || ''}`
-  const matched = Object.keys(districtMapCenters).find((name) => locationText.indexOf(name) !== -1)
-  return matched ? districtMapCenters[matched] : defaultMapCenter
+function numericCoordinate(value) {
+  if (value === undefined || value === null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
 }
 
-function scatteredCoordinateFromListing(listing = {}) {
-  const base = baseMapCenterFromListing(listing)
-  const seed = stableHash([
-    listing.area,
-    listing.district,
-    listing.block,
-    listing.community
-  ].filter(Boolean).join('|'))
-  const angle = ((seed % 360) * Math.PI) / 180
-  const radiusStep = ((seed >>> 9) % 7) + 1
-  const radius = 0.004 + radiusStep * 0.0024
-  const latitude = base.latitude + Math.sin(angle) * radius
-  const longitude = base.longitude + Math.cos(angle) * radius * 1.18
+function hasValidCoordinatePair(latitude, longitude) {
+  return Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180 &&
+    !isDefaultMapCoordinate(latitude, longitude)
+}
+
+function isReliableListingCoordinateSource(source) {
+  const text = String(source || '').trim()
+  if (!text) return false
+  if (/^estimated-|^legacy-|default-center|listing-coordinate|area|hash|random|pending/i.test(text)) return false
+  return /lianjia|amap|community-coordinate|admin-verified-coordinate/i.test(text)
+}
+
+function isUnsafeCoordinateSource(source) {
+  return !isReliableListingCoordinateSource(source)
+}
+
+function pendingMapCoordinateFields() {
   return {
-    latitude: Number(latitude.toFixed(6)),
-    longitude: Number(longitude.toFixed(6))
+    mapLatitude: '',
+    mapLongitude: '',
+    coordinateSource: 'pending-map-coordinate',
+    coordinateVerified: false,
+    coordinateStatus: '地图坐标待补充'
   }
 }
 
 function mapCoordinateFromListing(listing = {}) {
   const communityCoordinate = coordinateByCommunity(listing.community)
-  if (communityCoordinate) return communityCoordinate
-
-  const latitude = Number(listing.mapLatitude || listing.latitude)
-  const longitude = Number(listing.mapLongitude || listing.longitude)
-  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-    if (isDefaultMapCoordinate(latitude, longitude)) {
-      return {
-        ...scatteredCoordinateFromListing(listing),
-        source: 'estimated-by-area'
-      }
-    }
-    return { latitude, longitude, source: 'listing-coordinate' }
-  }
-
-  const left = Number.isFinite(Number(listing.mapLeft)) ? Number(listing.mapLeft) : 50
-  const top = Number.isFinite(Number(listing.mapTop)) ? Number(listing.mapTop) : 50
-  if (left === 50 && top === 50) {
+  if (communityCoordinate) {
     return {
-      ...scatteredCoordinateFromListing(listing),
-      source: 'estimated-by-area'
+      latitude: communityCoordinate.latitude,
+      longitude: communityCoordinate.longitude,
+      source: communityCoordinate.source || 'community-coordinate',
+      community: communityCoordinate.community || listing.community,
+      coordinateVerified: true
     }
   }
+
+  const latitude = numericCoordinate(firstOwnValue(listing, ['mapLatitude', 'latitude']))
+  const longitude = numericCoordinate(firstOwnValue(listing, ['mapLongitude', 'longitude']))
+  const source = listing.coordinateSource || 'admin-verified-coordinate'
+  if (!hasValidCoordinatePair(latitude, longitude)) return null
+  if (!truthyFlag(listing.coordinateVerified)) return null
+  if (isUnsafeCoordinateSource(source)) return null
+  const community = String(listing.community || '').trim()
+  if (!community || community === '待补充') return null
   return {
-    latitude: Number((defaultMapCenter.latitude + ((50 - top) / 50) * 0.035).toFixed(6)),
-    longitude: Number((defaultMapCenter.longitude + ((left - 50) / 50) * 0.045).toFixed(6)),
-    source: 'legacy-map-offset'
+    latitude,
+    longitude,
+    source,
+    community,
+    coordinateVerified: true
   }
 }
 
@@ -1100,81 +1135,211 @@ function explicitCoordinateFromSource(source = {}) {
   return {
     latitude,
     longitude,
-    source: source.coordinateSource || 'listing-coordinate'
+    source: source.coordinateSource || ''
   }
 }
 
-function listingMapCoordinateFields(fields = {}, form = {}, current = {}) {
+function listingMapCoordinateFields(fields = {}, form = {}, current = {}, options = {}) {
   const communityCoordinate = coordinateByCommunity(fields.community || form.community || current.community)
   if (communityCoordinate) {
     return {
       mapLatitude: communityCoordinate.latitude,
       mapLongitude: communityCoordinate.longitude,
-      coordinateSource: communityCoordinate.source || 'community-coordinate'
+      coordinateSource: communityCoordinate.source || 'community-coordinate',
+      coordinateVerified: true,
+      coordinateStatus: '已确认小区坐标'
     }
   }
 
   const formCoordinate = explicitCoordinateFromSource(form)
-  if (formCoordinate) {
+  const formSource = formCoordinate ? (formCoordinate.source || 'admin-verified-coordinate') : ''
+  if (
+    formCoordinate &&
+    options.admin &&
+    truthyFlag(form.coordinateVerified) &&
+    hasValidCoordinatePair(formCoordinate.latitude, formCoordinate.longitude) &&
+    !isUnsafeCoordinateSource(formSource)
+  ) {
     return {
       mapLatitude: formCoordinate.latitude,
       mapLongitude: formCoordinate.longitude,
-      coordinateSource: formCoordinate.source
+      coordinateSource: formSource,
+      coordinateVerified: true,
+      coordinateStatus: '管理员已确认坐标'
     }
   }
 
   const currentCoordinate = explicitCoordinateFromSource(current)
-  if (currentCoordinate && !isDefaultMapCoordinate(currentCoordinate.latitude, currentCoordinate.longitude)) {
+  const currentSource = currentCoordinate ? (currentCoordinate.source || 'admin-verified-coordinate') : ''
+  if (
+    currentCoordinate &&
+    truthyFlag(current.coordinateVerified) &&
+    hasValidCoordinatePair(currentCoordinate.latitude, currentCoordinate.longitude) &&
+    !isUnsafeCoordinateSource(currentSource)
+  ) {
     return {
       mapLatitude: currentCoordinate.latitude,
       mapLongitude: currentCoordinate.longitude,
-      coordinateSource: currentCoordinate.source
+      coordinateSource: currentSource,
+      coordinateVerified: true,
+      coordinateStatus: current.coordinateStatus || '管理员已确认坐标'
     }
   }
 
-  return {
-    mapLatitude: defaultMapCenter.latitude,
-    mapLongitude: defaultMapCenter.longitude,
-    coordinateSource: 'default-center'
-  }
+  return pendingMapCoordinateFields()
 }
 
 function applyCommunityMapCoordinate(listing = {}) {
   const coordinate = coordinateByCommunity(listing.community)
-  if (!coordinate) return null
+  if (!coordinate || !isReliableListingCoordinateSource(coordinate.source)) return null
   listing.mapLatitude = coordinate.latitude
   listing.mapLongitude = coordinate.longitude
   listing.coordinateSource = coordinate.source || 'community-coordinate'
+  listing.coordinateVerified = true
+  listing.coordinateStatus = '已确认小区坐标'
   return coordinate
 }
 
-function mapPins(db) {
-  return publicListings(db).map((listing) => {
+function mapFilterList(value) {
+  const values = Array.isArray(value) ? value : [value]
+  return values
+    .flatMap((item) => String(item || '').split(/[,，]/))
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeMapFilter(filter = {}) {
+  const north = numericCoordinate(filter.north)
+  const south = numericCoordinate(filter.south)
+  const east = numericCoordinate(filter.east)
+  const west = numericCoordinate(filter.west)
+  const hasBounds = [north, south, east, west].every((item) => item !== null)
+  return {
+    north,
+    south,
+    east,
+    west,
+    hasBounds,
+    rentMin: numericCoordinate(filter.rentMin),
+    rentMax: numericCoordinate(filter.rentMax),
+    layout: String(filter.layout || '').trim(),
+    rentMode: String(filter.rentMode || '').trim(),
+    sourceType: String(filter.sourceType || '').trim(),
+    area: String(filter.area || filter.region || '').trim(),
+    listingIds: new Set(mapFilterList(filter.listingIds))
+  }
+}
+
+function coordinateInBounds(coordinate, filter) {
+  if (!filter.hasBounds) return true
+  return coordinate.latitude <= filter.north &&
+    coordinate.latitude >= filter.south &&
+    coordinate.longitude <= filter.east &&
+    coordinate.longitude >= filter.west
+}
+
+function sourceTextForListing(listing = {}, display = {}) {
+  return [
+    listing.source,
+    listing.sourceType,
+    listing.listingType,
+    listing.inventoryType,
+    listing.category,
+    listing.ownerType,
+    listing.houseSourceType,
+    display.ownerType,
+    display.sourceLabel
+  ].map((item) => String(item || '')).join(' ')
+}
+
+function listingMatchesMapFilter(listing = {}, filter, display = {}) {
+  if (filter.listingIds.size && !filter.listingIds.has(String(listing.id || ''))) return false
+  const rent = Number(listing.rent || 0)
+  if (filter.rentMin !== null && rent < filter.rentMin) return false
+  if (filter.rentMax !== null && rent > filter.rentMax) return false
+  if (filter.layout && String(listing.layout || '').indexOf(filter.layout) === -1) return false
+  if (filter.rentMode && String(listing.rentMode || listing.type || listing.layout || '').indexOf(filter.rentMode) === -1) return false
+  if (filter.sourceType && sourceTextForListing(listing, display).indexOf(filter.sourceType) === -1) return false
+  if (filter.area) {
+    const locationText = [
+      listing.city,
+      listing.district,
+      listing.area,
+      listing.block,
+      listing.community
+    ].map((item) => String(item || '')).join('')
+    if (locationText.indexOf(filter.area) === -1) return false
+  }
+  return true
+}
+
+function safeMapListingSummary(listing = {}, display = {}) {
+  return {
+    id: listing.id,
+    rent: Number(listing.rent || 0),
+    layout: listing.layout || '',
+    rentMode: listing.rentMode || listing.type || '',
+    sourceType: display.sourceLabel || listing.source || '',
+    lastVerifiedAt: display.lastVerifiedAt || listing.lastVerifiedAt || '',
+    maintenanceText: display.maintenanceText || '',
+    hasVideo: Boolean(listing.videoUrl || listing.videoKey),
+    video: listing.videoUrl || listing.videoKey ? '已传视频' : ''
+  }
+}
+
+function isV1MapActiveListing(listing = {}) {
+  if (isExpiredListing(listing)) return false
+  const freshness = listingFreshness(listing)
+  return freshness.staleDays < V1_MAP_STALE_DAYS
+}
+
+function mapCommunities(db, filter = {}) {
+  const normalizedFilter = normalizeMapFilter(filter)
+  const groups = new Map()
+  publicListings(db).forEach((listing) => {
+    if (!isV1MapActiveListing(listing)) return
     const coordinate = mapCoordinateFromListing(listing)
-    const location = listingLocationFields(listing)
+    if (!coordinate) return
+    if (!coordinateInBounds(coordinate, normalizedFilter)) return
     const display = listingDisplayFields(listing)
-    return {
-      id: listing.id,
-      title: listing.shortTitle || listing.title,
-      ...location,
-      layout: listing.layout || '',
-      type: listing.type || '',
-      status: listing.status || '',
-      price: String(listing.rent),
-      commission: display.noCommission ? '不分佣' : `${listing.commissionRate}%`,
-      source: listing.source || '',
-      companyListing: display.companyListing,
-      noCommission: display.noCommission,
-      sourceLabel: display.sourceLabel,
-      commissionText: display.commissionText,
-      latitude: coordinate.latitude,
-      longitude: coordinate.longitude,
-      coordinateSource: coordinate.source || '',
-      left: listing.mapLeft || 50,
-      top: listing.mapTop || 50,
-      ...display
+    if (!listingMatchesMapFilter(listing, normalizedFilter, display)) return
+    const community = coordinate.community || listing.community
+    const key = String(community || '').trim()
+    if (!key) return
+    if (!groups.has(key)) {
+      groups.set(key, {
+        community: key,
+        latitude: coordinate.latitude,
+        longitude: coordinate.longitude,
+        coordinateSource: coordinate.source || '',
+        coordinateVerified: true,
+        listingCount: 0,
+        minRent: 0,
+        maxRent: 0,
+        activeListingIds: [],
+        layouts: [],
+        sourceTypes: [],
+        listings: []
+      })
     }
+    const group = groups.get(key)
+    const rent = Number(listing.rent || 0)
+    group.listingCount += 1
+    group.minRent = group.minRent ? Math.min(group.minRent, rent) : rent
+    group.maxRent = Math.max(group.maxRent, rent)
+    group.activeListingIds.push(listing.id)
+    group.layouts = uniqueTextList(group.layouts.concat(listing.layout || ''))
+    group.sourceTypes = uniqueTextList(group.sourceTypes.concat(display.sourceLabel || listing.source || ''))
+    group.listings.push(safeMapListingSummary(listing, display))
   })
+  return Array.from(groups.values()).sort((left, right) => {
+    if (left.minRent !== right.minRent) return left.minRent - right.minRent
+    return left.community.localeCompare(right.community, 'zh-CN')
+  })
+}
+
+function mapPins(db, filter = {}) {
+  return mapCommunities(db, filter)
 }
 
 function adminListings(db, filter = {}) {
@@ -1198,7 +1363,7 @@ function adminListings(db, filter = {}) {
         uploader: uploader.name,
         rent: `${listing.rent}/月`,
         layout: String(listing.layout || '').replace('整租', ''),
-        commission: display.noCommission ? '不分佣' : `${listing.commissionRate}%`,
+        commission: PUBLIC_COMMISSION_TEXT,
         source: listing.source || display.sourceLabel,
         video: listing.videoUrl ? '已传' : '未传',
         status: listing.status,
@@ -1235,7 +1400,7 @@ function expiredListings(db, filter = {}) {
         uploaderPhone: uploader.phone || '',
         rent: `${listing.rent}/月`,
         layout: String(listing.layout || '').replace('整租', ''),
-        commission: display.noCommission ? '不分佣' : `${listing.commissionRate}%`,
+        commission: PUBLIC_COMMISSION_TEXT,
         source: listing.source || display.sourceLabel,
         video: listing.videoUrl ? '已传' : '未传',
         status: listing.status || '已下架',
@@ -1245,7 +1410,7 @@ function expiredListings(db, filter = {}) {
         staleDays: freshness.staleDays,
         expiredAt: listing.expiredAt || '',
         expiredReason: listing.expiredReason || `超过 ${VERIFY_STALE_DAYS} 天未电话联系房东确认房态`,
-        expiredPool: listing.expiredPool || '后台废房源池'
+        expiredPool: listing.expiredPool || '后台资产池'
       }
     })
 }
@@ -1258,7 +1423,7 @@ function restoreExpiredListing(db, adminId, listingId) {
     throw error
   }
   if (!isExpiredListing(listing)) {
-    const error = new Error('该房源不在废房源池')
+    const error = new Error('该房源不在后台资产池')
     error.statusCode = 400
     throw error
   }
@@ -1283,7 +1448,7 @@ function restoreExpiredListing(db, adminId, listingId) {
     viewerId: adminId || 'system',
     action: '重新上架',
     time: now,
-    sync: '管理员已从后台废房源池重新上架'
+    sync: '管理员已从后台资产池重新上架'
   })
   return editableListingDetail(db, adminId, listingId, { admin: true })
 }
@@ -1308,10 +1473,20 @@ function commissionRows(db) {
   return (db.commissionRecords || []).map((item) => {
     const listing = listingById(db, item.listingId) || {}
     return {
+      id: item.id,
+      dealId: item.dealId || '',
+      reportId: item.reportId || '',
+      listingId: item.listingId,
       listing: listing.shortTitle,
       uploader: (userById(db, item.uploaderId) || {}).name,
       dealer: (userById(db, item.dealUserId) || {}).name,
-      rate: `${item.rate}%`,
+      rate: `${item.rate || UPLOADER_COMMISSION_RATE}%`,
+      dealMonthlyRentFen: item.dealMonthlyRentFen || 0,
+      landlordCommissionFen: item.landlordCommissionFen || 0,
+      uploaderCommissionFen: item.uploaderCommissionFen || 0,
+      dealMonthlyRent: item.dealMonthlyRentFen ? fenToYuanText(item.dealMonthlyRentFen) : '',
+      landlordCommission: item.landlordCommissionFen ? fenToYuanText(item.landlordCommissionFen) : '',
+      uploaderCommission: item.uploaderCommissionFen ? fenToYuanText(item.uploaderCommissionFen) : '',
       status: item.status,
       time: item.time
     }
@@ -1323,16 +1498,23 @@ function userCommissionRows(db, userId) {
     .filter((item) => item.uploaderId === userId || item.dealUserId === userId)
     .map((item) => {
       const listing = listingById(db, item.listingId) || {}
+      const location = publicListingLocationFields(listing)
       const uploader = userById(db, item.uploaderId) || {}
       const dealer = userById(db, item.dealUserId) || {}
       return {
         id: item.id,
         listingId: item.listingId,
-        title: listing.shortTitle || listing.title || '未知房源',
+        title: publicListingTitle(listing, location) || '未知房源',
         role: item.uploaderId === userId ? '我是上传人' : '我是成交人',
         uploader: uploader.name || '未知',
         dealer: dealer.name || '未知',
-        rate: `${item.rate}%`,
+        rate: `${item.rate || UPLOADER_COMMISSION_RATE}%`,
+        dealMonthlyRentFen: item.dealMonthlyRentFen || 0,
+        landlordCommissionFen: item.landlordCommissionFen || 0,
+        uploaderCommissionFen: item.uploaderCommissionFen || 0,
+        dealMonthlyRent: item.dealMonthlyRentFen ? fenToYuanText(item.dealMonthlyRentFen) : '',
+        landlordCommission: item.landlordCommissionFen ? fenToYuanText(item.landlordCommissionFen) : '',
+        uploaderCommission: item.uploaderCommissionFen ? fenToYuanText(item.uploaderCommissionFen) : '',
         status: item.status,
         time: item.time
       }
@@ -1426,12 +1608,7 @@ function addSensitiveFootprint(db, userId, listingId, action) {
     error.statusCode = 404
     throw error
   }
-  assertListingActive(listing)
-  if (isPendingOwnerReview(listing)) {
-    const error = new Error('该房源正在等待管理员审核，审核通过后才会上架')
-    error.statusCode = 404
-    throw error
-  }
+  assertFrontendListingAvailable(listing)
   const access = assertSensitiveViewAllowed(db, userId, listing)
 
   db.footprints = db.footprints || []
@@ -1468,12 +1645,7 @@ function recordShowing(db, userId, listingId, payload = {}) {
     error.statusCode = 404
     throw error
   }
-  assertListingActive(listing)
-  if (isPendingOwnerReview(listing)) {
-    const error = new Error('该房源正在等待管理员审核，审核通过后才会上架')
-    error.statusCode = 404
-    throw error
-  }
+  assertFrontendListingAvailable(listing)
   if (!payload.photoUrl && !payload.photoKey) {
     const error = new Error('记录带看必须上传带时间地点水印的现场照片')
     error.statusCode = 400
@@ -1481,11 +1653,12 @@ function recordShowing(db, userId, listingId, payload = {}) {
   }
 
   db.showingUploads = db.showingUploads || []
+  const location = publicListingLocationFields(listing)
   const showing = {
     id: id('SH'),
     listingId,
     userId,
-    listingTitle: listing.title || listing.shortTitle || '',
+    listingTitle: publicListingTitle(listing, location),
     community: listing.community || '',
     photoUrl: payload.photoUrl || '',
     photoKey: payload.photoKey || '',
@@ -1571,46 +1744,294 @@ function reviewShowingUpload(db, adminId, showingId, payload = {}) {
   return showingUploadRows(db)
 }
 
-function registerDeal(db, userId, listingId) {
+function maskPhone(phone) {
+  const text = String(phone || '').trim()
+  if (text.length < 7) return text
+  return `${text.slice(0, 3)}****${text.slice(-4)}`
+}
+
+function fenToYuanText(fen) {
+  return (Number(fen || 0) / 100).toFixed(2)
+}
+
+function normalizeMoneyToFen(value, fieldName, alreadyFen = false) {
+  const raw = String(value === undefined || value === null ? '' : value).trim()
+  const numeric = Number(raw.replace(/[^\d.-]/g, ''))
+  if (!raw || !Number.isFinite(numeric) || numeric <= 0) {
+    const error = new Error(`${fieldName}必须是大于 0 的金额`)
+    error.statusCode = 400
+    throw error
+  }
+  return Math.round(alreadyFen ? numeric : numeric * 100)
+}
+
+function amountFenFromPayload(payload = {}, yuanFields = [], fenFields = [], fieldName = '金额') {
+  const fenField = fenFields.find((field) => Object.prototype.hasOwnProperty.call(payload, field))
+  if (fenField) return normalizeMoneyToFen(payload[fenField], fieldName, true)
+  const yuanField = yuanFields.find((field) => Object.prototype.hasOwnProperty.call(payload, field))
+  if (yuanField) return normalizeMoneyToFen(payload[yuanField], fieldName, false)
+  const error = new Error(`${fieldName}必填`)
+  error.statusCode = 400
+  throw error
+}
+
+function formatClientReport(db, report = {}) {
+  const listing = listingById(db, report.listingId) || {}
+  const location = publicListingLocationFields(listing)
+  const broker = userById(db, report.brokerId) || {}
+  return {
+    id: report.id,
+    listingId: report.listingId,
+    listingTitle: publicListingTitle(listing, location) || '未知房源',
+    broker: broker.name || '未知',
+    customerName: report.customerName || '',
+    customerPhoneMasked: maskPhone(report.customerPhone),
+    status: report.status,
+    dealId: report.dealId || '',
+    time: report.createdAt || report.time || ''
+  }
+}
+
+function userReportRows(db, userId) {
+  return (db.clientReports || [])
+    .filter((report) => report.brokerId === userId)
+    .map((report) => formatClientReport(db, report))
+}
+
+function adminReportRows(db) {
+  return (db.clientReports || []).map((report) => formatClientReport(db, report))
+}
+
+function createClientReport(db, userId, listingId, payload = {}) {
   const listing = listingById(db, listingId)
   if (!listing) {
     const error = new Error('未找到该房源')
     error.statusCode = 404
     throw error
   }
-  assertListingActive(listing)
-  if (isPendingOwnerReview(listing)) {
-    const error = new Error('该房源正在等待管理员审核，审核通过后才会上架')
+  assertFrontendListingAvailable(listing)
+
+  const customerPhone = String(payload.customerPhone || payload.phone || payload.mobile || '').trim()
+  if (!customerPhone) {
+    const error = new Error('客户手机号必填')
+    error.statusCode = 400
+    throw error
+  }
+  if (!/^1\d{10}$/.test(customerPhone)) {
+    const error = new Error('请输入 11 位客户手机号')
+    error.statusCode = 400
+    throw error
+  }
+
+  const now = nowText()
+  const report = {
+    id: id('R'),
+    listingId,
+    brokerId: userId,
+    customerName: String(payload.customerName || payload.customer || payload.name || '').trim(),
+    customerPhone,
+    status: '已报备',
+    createdAt: now,
+    updatedAt: now,
+    dateKey: todayKey()
+  }
+  db.clientReports = db.clientReports || []
+  db.clientReports.unshift(report)
+  return {
+    message: '报备已创建',
+    report: formatClientReport(db, report)
+  }
+}
+
+function formatDealRecord(db, deal = {}) {
+  const listing = listingById(db, deal.listingId) || {}
+  const location = publicListingLocationFields(listing)
+  const report = reportById(db, deal.reportId) || {}
+  const broker = userById(db, deal.brokerId) || {}
+  const uploader = userById(db, deal.uploaderId) || {}
+  const expectedUploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * UPLOADER_COMMISSION_RATE / 100)
+  return {
+    id: deal.id,
+    reportId: deal.reportId,
+    listingId: deal.listingId,
+    listingTitle: publicListingTitle(listing, location) || '未知房源',
+    broker: broker.name || '未知',
+    uploader: uploader.name || '未知',
+    customerName: report.customerName || '',
+    customerPhoneMasked: maskPhone(report.customerPhone),
+    dealMonthlyRentFen: deal.dealMonthlyRentFen,
+    dealMonthlyRent: fenToYuanText(deal.dealMonthlyRentFen),
+    landlordCommissionFen: deal.landlordCommissionFen,
+    landlordCommission: fenToYuanText(deal.landlordCommissionFen),
+    uploaderCommissionRate: UPLOADER_COMMISSION_RATE,
+    expectedUploaderCommissionFen,
+    expectedUploaderCommission: fenToYuanText(expectedUploaderCommissionFen),
+    uploaderCommissionFen: deal.uploaderCommissionFen || 0,
+    uploaderCommission: fenToYuanText(deal.uploaderCommissionFen || 0),
+    commissionRecordId: deal.commissionRecordId || '',
+    status: deal.status,
+    remark: deal.remark || '',
+    time: deal.createdAt || deal.time || '',
+    confirmedAt: deal.confirmedAt || ''
+  }
+}
+
+function userDealRows(db, userId) {
+  return (db.dealRecords || [])
+    .filter((deal) => deal.brokerId === userId || deal.uploaderId === userId)
+    .map((deal) => formatDealRecord(db, deal))
+}
+
+function adminDealRows(db) {
+  return (db.dealRecords || []).map((deal) => formatDealRecord(db, deal))
+}
+
+function createDealFromReport(db, userId, reportId, payload = {}) {
+  const report = reportById(db, reportId)
+  if (!report) {
+    const error = new Error('未找到报备记录')
+    error.statusCode = 404
+    throw error
+  }
+  if (report.brokerId !== userId) {
+    const error = new Error('只能从自己的报备记录发起签单')
+    error.statusCode = 403
+    throw error
+  }
+  if (report.dealId) {
+    const error = new Error('该报备已发起签单，不能重复提交')
+    error.statusCode = 400
+    throw error
+  }
+
+  const listing = listingById(db, report.listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  assertFrontendListingAvailable(listing)
+
+  const dealMonthlyRentFen = amountFenFromPayload(
+    payload,
+    ['dealMonthlyRent', 'monthlyRent', 'rent'],
+    ['dealMonthlyRentFen', 'monthlyRentFen', 'rentFen'],
+    '成交月租'
+  )
+  const landlordCommissionFen = amountFenFromPayload(
+    payload,
+    ['landlordCommission', 'landlordPaidCommission', 'landlordActualCommission', 'ownerCommission', 'commissionAmount'],
+    ['landlordCommissionFen', 'landlordPaidCommissionFen', 'landlordActualCommissionFen', 'ownerCommissionFen', 'commissionAmountFen'],
+    '房东实际支付佣金'
+  )
+
+  const now = nowText()
+  const deal = {
+    id: id('D'),
+    reportId,
+    listingId: report.listingId,
+    brokerId: report.brokerId,
+    uploaderId: listing.uploaderId,
+    dealMonthlyRentFen,
+    landlordCommissionFen,
+    remark: String(payload.remark || payload.note || '').trim(),
+    status: '待管理员确认',
+    createdAt: now,
+    updatedAt: now
+  }
+  db.dealRecords = db.dealRecords || []
+  db.dealRecords.unshift(deal)
+
+  report.dealId = deal.id
+  report.status = '待确认签单'
+  report.updatedAt = now
+  listing.status = '已签单待确认'
+  listing.updatedAt = now
+
+  return {
+    message: '签单已提交，等待管理员确认',
+    deal: formatDealRecord(db, deal)
+  }
+}
+
+function confirmDeal(db, adminId, dealId) {
+  const deal = dealById(db, dealId)
+  if (!deal) {
+    const error = new Error('未找到签单记录')
     error.statusCode = 404
     throw error
   }
 
-  if (isNoCommissionListing(listing)) {
-    listing.status = '已成交'
-    listing.updatedAt = nowText()
+  const existingRecord = (db.commissionRecords || []).find((record) => record.dealId === deal.id)
+  if (deal.status === '已确认' && existingRecord) {
     return {
-      message: '成交已登记，该房源不分佣',
-      record: null,
-      noCommission: true
+      message: '签单已确认',
+      deal: formatDealRecord(db, deal),
+      commissionRecord: clone(existingRecord)
     }
   }
 
-  db.commissionRecords = db.commissionRecords || []
+  const listing = listingById(db, deal.listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+
+  const now = nowText()
+  const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * UPLOADER_COMMISSION_RATE / 100)
   const record = {
     id: id('C'),
-    listingId,
+    dealId: deal.id,
+    reportId: deal.reportId,
+    listingId: deal.listingId,
     uploaderId: listing.uploaderId,
-    dealUserId: userId,
-    rate: Number(listing.commissionRate || 0),
-    status: '待确认',
-    time: '刚刚'
+    dealUserId: deal.brokerId,
+    rate: UPLOADER_COMMISSION_RATE,
+    dealMonthlyRentFen: deal.dealMonthlyRentFen,
+    landlordCommissionFen: deal.landlordCommissionFen,
+    uploaderCommissionFen,
+    status: '已确认',
+    confirmedBy: adminId || 'admin',
+    confirmedAt: now,
+    time: now
   }
+  db.commissionRecords = db.commissionRecords || []
   db.commissionRecords.unshift(record)
-  listing.status = '已成交待确认'
-  return {
-    message: `成交已登记，待确认分佣 ${record.rate}%`,
-    record: clone(record)
+
+  deal.status = '已确认'
+  deal.confirmedAt = now
+  deal.confirmedBy = adminId || 'admin'
+  deal.uploaderCommissionFen = uploaderCommissionFen
+  deal.commissionRecordId = record.id
+  deal.updatedAt = now
+
+  const report = reportById(db, deal.reportId)
+  if (report) {
+    report.status = '已签单'
+    report.commissionRecordId = record.id
+    report.updatedAt = now
   }
+
+  listing.status = '已成交'
+  listing.lifecycleStatus = 'sold'
+  listing.updatedAt = now
+
+  return {
+    message: '签单已确认，正式分佣记录已生成',
+    deal: formatDealRecord(db, deal),
+    commissionRecord: clone(record)
+  }
+}
+
+function registerDeal(db, userId, listingId) {
+  const error = new Error('签单只能从报备记录发起，请先创建报备后从报备记录提交签单')
+  error.statusCode = 400
+  throw error
+}
+
+function registerLegacyDeal(db, userId, listingId) {
+  return registerDeal(db, userId, listingId)
 }
 
 function rechargePoints(db, userId, points) {
@@ -1791,7 +2212,7 @@ function uploadGroupListing(db, userId, payload = {}) {
     block: payload.block || '',
     screenshotUrl: payload.screenshotUrl || '',
     screenshotKey: payload.screenshotKey || '',
-    commissionRate: payload.commissionRate || '',
+    commissionRate: FIXED_LISTING_COMMISSION_RATE,
     points: 1,
     pointGranted: false,
     status: '待审核',
@@ -1953,6 +2374,35 @@ function listingLocationFields(listing = {}) {
   }
 }
 
+function publicListingLocationFields(listing = {}) {
+  const city = listing.city || '杭州'
+  const area = normalizeDistrict(listing.district || listing.area || '待分区')
+  return {
+    city,
+    district: area,
+    area,
+    block: listing.block || area || '待板块',
+    community: listing.community || '',
+    locationSummary: structuredLocation({ ...listing, city, area })
+  }
+}
+
+function publicListingTitle(listing = {}, location = publicListingLocationFields(listing)) {
+  const community = location.community || listing.community || ''
+  if (community) return community
+  return `${location.area || '房源'}${listing.layout ? ` · ${listing.layout}` : ''}`
+}
+
+function publicLocationSearchText(listing = {}) {
+  return [
+    listing.city,
+    listing.district,
+    listing.area,
+    listing.block,
+    listing.community
+  ].map((item) => String(item || '')).join('')
+}
+
 function hasAnyOwn(source = {}, fields = []) {
   return fields.some((field) => Object.prototype.hasOwnProperty.call(source, field))
 }
@@ -2015,10 +2465,6 @@ function normalizeListingForm(form = {}, current = {}) {
   const rent = firstText(form.rent, current.rent)
   const videoUrl = firstText(form.videoUrl, current.videoUrl)
   const videoKey = firstText(form.videoKey, current.videoKey)
-  const rateText = Object.prototype.hasOwnProperty.call(form, 'commissionRate')
-    ? form.commissionRate
-    : current.commissionRate
-  const rate = rateText === '' || rateText === undefined ? 20 : Number(rateText)
   const companyFlagInput = firstOwnValue(form, ['companyListing', 'isCompanyListing', 'companyOwned'])
   const ownerTypeInput = firstText(form.ownerType, form.houseSourceType, form.landlordType, current.ownerType, current.houseSourceType)
   const ownerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
@@ -2031,9 +2477,15 @@ function normalizeListingForm(form = {}, current = {}) {
   const formFeatureInput = firstOwnValue(form, featureFields)
   const currentFeatureInput = firstOwnValue(current, featureFields)
   const featureInput = formFeatureInput !== undefined ? formFeatureInput : currentFeatureInput
-  const featureInputCount = parseFeatureInput(featureInput).length
+  const featureInputCount = parseFeatureInput(featureInput).filter((item) => item !== NO_COMMISSION_FEATURE).length
   const invalidFeatures = invalidListingFeatures(featureInput)
-  const noCommission = companyListing || rate === 0 || parseFeatureInput(featureInput).indexOf(NO_COMMISSION_FEATURE) !== -1
+  const noCommission = companyListing || isNoCommissionListing(current)
+  const rate = noCommission ? 0 : FIXED_LISTING_COMMISSION_RATE
+  const features = featuresWithCompanyDefaults(featureInput, {
+    commissionRate: rate,
+    companyListing,
+    noCommission
+  }).filter((item) => noCommission || item !== NO_COMMISSION_FEATURE)
   const communityMatchedInput = firstOwnValue(form, ['communityMatched', 'isCommunityMatched'])
   const manualReviewInput = firstOwnValue(form, ['requiresManualReview', 'manualReviewRequired'])
   const communityMatchStatusInput = firstText(form.communityMatchStatus, current.communityMatchStatus)
@@ -2070,12 +2522,8 @@ function normalizeListingForm(form = {}, current = {}) {
     rent: Number(rent),
     videoUrl,
     videoKey,
-    commissionRate: noCommission ? 0 : rate,
-    features: featuresWithCompanyDefaults(featureInput, {
-      commissionRate: noCommission ? 0 : rate,
-      companyListing,
-      noCommission
-    }),
+    commissionRate: rate,
+    features,
     hasFeatureInput: featureInputCount > 0 || noCommission,
     invalidFeatures,
     companyListing,
@@ -2095,7 +2543,7 @@ function validateListingFields(fields, user = {}, options = {}) {
     !fields.contact ||
     !fields.rent ||
     !fields.layout ||
-    !fields.videoUrl ||
+    !hasListingVideo(fields) ||
     !fields.rawCommunity ||
     !fields.building ||
     !fields.roomNumber
@@ -2110,7 +2558,7 @@ function validateListingFields(fields, user = {}, options = {}) {
     throw error
   }
   if (!Number.isFinite(fields.commissionRate) || fields.commissionRate < 0 || fields.commissionRate > 20) {
-    const error = new Error('分佣比例必须在 0-20%')
+    const error = new Error('分佣规则由后端固定，上传人按房东实付佣金的 20% 结算')
     error.statusCode = 400
     throw error
   }
@@ -2138,7 +2586,7 @@ function addNormalListing(db, userId, form = {}, options = {}) {
 
   const listingId = id('L')
   const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
-  const mapCoordinate = listingMapCoordinateFields(fields, form)
+  const mapCoordinate = listingMapCoordinateFields(fields, form, {}, options)
   const listing = {
     id: listingId,
     title: `${fields.address} · ${fields.layout}`,
@@ -2185,6 +2633,8 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     mapLatitude: mapCoordinate.mapLatitude,
     mapLongitude: mapCoordinate.mapLongitude,
     coordinateSource: mapCoordinate.coordinateSource,
+    coordinateVerified: mapCoordinate.coordinateVerified,
+    coordinateStatus: mapCoordinate.coordinateStatus,
     createdAt: nowText(),
     lastVerifiedAt: nowText()
   }
@@ -2266,7 +2716,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
 
   const fields = normalizeListingForm(form, listing)
   validateListingFields(fields, user, options)
-  const mapCoordinate = listingMapCoordinateFields(fields, form, listing)
+  const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
 
   listing.title = `${fields.address} · ${fields.layout}`
   listing.shortTitle = fields.community || fields.address
@@ -2304,6 +2754,8 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.mapLatitude = mapCoordinate.mapLatitude
   listing.mapLongitude = mapCoordinate.mapLongitude
   listing.coordinateSource = mapCoordinate.coordinateSource
+  listing.coordinateVerified = mapCoordinate.coordinateVerified
+  listing.coordinateStatus = mapCoordinate.coordinateStatus
   const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
   if (needsReview) {
     listing.reviewStatus = listing.reviewStatus === '已通过' && options.admin && !fields.requiresManualReview ? '已通过' : '待审核'
@@ -2391,12 +2843,20 @@ module.exports = {
   ownedListings,
   profileState,
   groupState,
+  mapCommunities,
   mapPins,
   adminListings,
   adminUsers,
   expiredListings,
   restoreExpiredListing,
   adminLogs,
+  userReportRows,
+  adminReportRows,
+  createClientReport,
+  userDealRows,
+  adminDealRows,
+  createDealFromReport,
+  confirmDeal,
   commissionRows,
   userCommissionRows,
   pointLogs,

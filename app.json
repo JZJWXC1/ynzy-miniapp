@@ -27,15 +27,15 @@
     "list": [
       {
         "pagePath": "pages/index/index",
-        "text": "首页"
+        "text": "找房"
       },
       {
-        "pagePath": "pages/footprint/footprint",
-        "text": "房源足迹"
+        "pagePath": "pages/listings/listings",
+        "text": "房源"
       },
       {
-        "pagePath": "pages/groups/groups",
-        "text": "房源群"
+        "pagePath": "pages/map/map",
+        "text": "地图"
       },
       {
         "pagePath": "pages/profile/profile",

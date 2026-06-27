@@ -24,7 +24,7 @@
         <view>
           <view class="listing-title">{{item.title}}</view>
           <view class="listing-location">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
-          <view class="listing-meta">¥{{item.rent}}/月 · {{item.commissionText || item.commissionRate}}</view>
+          <view class="listing-meta">¥{{item.rent}}/月 · {{item.commissionText || '管理员确认签单后按 20% 结算'}}</view>
           <view wx:if="{{item.features}}" class="listing-feature-row">
             <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
             <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
