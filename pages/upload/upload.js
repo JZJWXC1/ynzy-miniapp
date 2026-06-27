@@ -8,7 +8,8 @@ const {
   normalizeListingFeatures
 } = require('../../utils/listing-features')
 
-const UPLOAD_FEATURE_HIDDEN_OPTIONS = ['整租', '合租']
+const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
+const PLATFORM_COMMISSION_TEXT = '签单后按平台规则计算'
 
 const defaultForm = {
   city: '杭州',
@@ -24,7 +25,6 @@ const defaultForm = {
   hall: '0厅',
   bath: '公卫',
   features: [],
-  commissionRate: '20',
   companyListing: false,
   ownerType: '二房东房源'
 }
@@ -60,14 +60,10 @@ function isBlank(value) {
   return String(value === undefined || value === null ? '' : value).trim() === ''
 }
 
-function normalizeFeaturesForCommission(features, commissionRate, companyListing) {
-  let next = normalizeListingFeatures(features)
-  const noCommission = companyListing || Number(commissionRate) === 0 || next.indexOf(NO_COMMISSION_FEATURE) !== -1
-  if (!noCommission) return next
-  next = next.filter((item) => item !== NO_FEATURE)
-  if (companyListing && next.indexOf(DEPOSIT_FREE_FEATURE) === -1) next.push(DEPOSIT_FREE_FEATURE)
-  if (next.indexOf(NO_COMMISSION_FEATURE) === -1) next.push(NO_COMMISSION_FEATURE)
-  return next.length ? next : [NO_COMMISSION_FEATURE]
+function normalizeUploadFeatures(features) {
+  const next = normalizeListingFeatures(features)
+    .filter((item) => item !== NO_COMMISSION_FEATURE && item !== DEPOSIT_FREE_FEATURE)
+  return next.length ? next : [NO_FEATURE]
 }
 
 function normalizeCommunityText(value) {
@@ -176,14 +172,6 @@ Page({
     const nextData = {
       [`form.${field}`]: value
     }
-    if (field === 'commissionRate') {
-      const rawFeatures = Number(value) === 0 || this.data.form.companyListing
-        ? this.data.form.features
-        : (this.data.form.features || []).filter((item) => item !== NO_COMMISSION_FEATURE)
-      const features = normalizeFeaturesForCommission(rawFeatures, value, this.data.form.companyListing)
-      nextData['form.features'] = features
-      nextData.featureOptions = buildFeatureOptions(features)
-    }
     this.setData(nextData, () => this.refreshPreview())
   },
 
@@ -257,10 +245,6 @@ Page({
     const value = event.currentTarget.dataset.value
     if (!value) return
     const current = this.data.form.features || []
-    if (this.data.form.companyListing && value === DEPOSIT_FREE_FEATURE && current.indexOf(DEPOSIT_FREE_FEATURE) !== -1) {
-      wx.showToast({ title: '公司房源默认免押金', icon: 'none' })
-      return
-    }
     let next = current.slice()
     if (value === NO_FEATURE) {
       next = current.indexOf(NO_FEATURE) === -1 ? [NO_FEATURE] : []
@@ -272,16 +256,10 @@ Page({
         next = next.filter((item) => item !== value)
       }
     }
-    const removingNoCommission = value === NO_COMMISSION_FEATURE && current.indexOf(NO_COMMISSION_FEATURE) !== -1
-    const addingNoCommission = value === NO_COMMISSION_FEATURE && current.indexOf(NO_COMMISSION_FEATURE) === -1
-    const commissionRate = addingNoCommission || this.data.form.companyListing
-      ? '0'
-      : (removingNoCommission ? '20' : this.data.form.commissionRate)
-    next = normalizeFeaturesForCommission(next, commissionRate, this.data.form.companyListing)
+    const normalizedFeatures = next.length ? normalizeUploadFeatures(next) : []
     this.setData({
-      'form.commissionRate': commissionRate,
-      'form.features': next,
-      featureOptions: buildFeatureOptions(next)
+      'form.features': normalizedFeatures,
+      featureOptions: buildFeatureOptions(normalizedFeatures)
     })
   },
 
@@ -291,11 +269,9 @@ Page({
       wx.showToast({ title: '只有管理员可以上传公司房源', icon: 'none' })
       return
     }
-    const commissionRate = companyListing ? '0' : (this.data.form.commissionRate === '0' ? '20' : this.data.form.commissionRate)
-    const features = normalizeFeaturesForCommission(this.data.form.features, commissionRate, companyListing)
+    const features = normalizeUploadFeatures(this.data.form.features)
     this.setData({
       'form.companyListing': companyListing,
-      'form.commissionRate': commissionRate,
       'form.features': features,
       featureOptions: buildFeatureOptions(features)
     })
@@ -349,8 +325,7 @@ Page({
         room: listing.room || '一室',
         hall: listing.hall || '0厅',
         bath: listing.bath || '公卫',
-        features: normalizeFeaturesForCommission(listing.features, listing.commissionRate, listing.companyListing),
-        commissionRate: listing.commissionRate === undefined ? '20' : String(listing.commissionRate),
+        features: normalizeUploadFeatures(listing.features),
         companyListing: Boolean(listing.companyListing),
         ownerType: listing.ownerType || listing.houseSourceType || '二房东房源'
       }
@@ -380,14 +355,15 @@ Page({
 
   validateForm() {
     const form = this.data.form
-    const { community, building, unit, roomNumber, contact, rent, commissionRate } = form
-    const rate = commissionRate === '' ? 20 : Number(commissionRate)
+    const { community, building, unit, roomNumber, contact, rent } = form
     const address = buildAddress(form)
     const layout = buildLayout(form)
     const communityMatched = isCommunityMatched(community)
     const needsManualReview = Boolean(community) && !communityMatched
 
-    const hasVideo = this.data.videoPath || this.data.existingVideoUrl
+    const hasNewVideo = Boolean(this.data.videoPath && this.data.videoFile)
+    const hasExistingVideo = this.data.mode === 'edit' && Boolean(this.data.existingVideoUrl)
+    const hasVideo = hasNewVideo || hasExistingVideo
     const missingFields = []
     if (isBlank(community)) missingFields.push('小区名称')
     if (isBlank(building)) missingFields.push('几栋')
@@ -395,18 +371,11 @@ Page({
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(contact)) missingFields.push('房东联系方式')
     if (isBlank(rent)) missingFields.push('租金')
-    if (!hasVideo) missingFields.push('房源视频')
+    if (!hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
     if (missingFields.length) {
       return {
         ok: false,
         message: `请补充：${missingFields.join('、')}`
-      }
-    }
-
-    if (Number.isNaN(rate) || rate < 0 || rate > 20) {
-      return {
-        ok: false,
-        message: '分佣比例需在 0-20%'
       }
     }
 
@@ -426,7 +395,6 @@ Page({
 
     return {
       ok: true,
-      rate: form.companyListing ? 0 : rate,
       address,
       layout,
       communityMatched,
@@ -464,13 +432,11 @@ Page({
       hall: form.hall,
       bathroom: form.bath,
       bath: form.bath,
-      commissionRate: validation.rate,
-      features: normalizeFeaturesForCommission(form.features, validation.rate, form.companyListing),
+      features: normalizeUploadFeatures(form.features),
       companyListing: Boolean(form.companyListing),
       ownerType: form.ownerType || '二房东房源',
       houseSourceType: form.ownerType || '二房东房源',
       source: form.companyListing ? '公司房源' : (form.ownerType || '二房东房源'),
-      noCommission: form.companyListing || Number(validation.rate) === 0,
       communityMatched: validation.communityMatched,
       communityMatchStatus: validation.communityMatchStatus,
       requiresManualReview: validation.needsManualReview,
@@ -556,12 +522,12 @@ Page({
     }
     const normalTip = this.data.mode === 'edit' ? '保存后将更新该房源展示信息。' : '提交后进入普通房源库。'
     const listingTip = this.data.form.companyListing
-      ? '公司房源仅管理员维护，免押金且成交不分佣。'
+      ? '公司房源仅管理员维护。'
       : `${this.data.form.ownerType || '二房东房源'}，${reviewReasons.length ? `${reviewReasons.join('；')}。` : normalTip}`
 
     wx.showModal({
       title: this.data.mode === 'edit' ? '确认修改房源' : '确认上传房源',
-      content: `${validation.address}，${validation.layout}，${validation.rate === 0 ? '不分佣' : `分佣比例 ${validation.rate}%`}。${listingTip}`,
+      content: `${validation.address}，${validation.layout}，${PLATFORM_COMMISSION_TEXT}。${listingTip}`,
       confirmText: this.data.mode === 'edit' ? '保存修改' : '确认上传',
       success: (res) => {
         if (!res.confirm) return

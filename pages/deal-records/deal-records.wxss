@@ -4,7 +4,7 @@ page {
   flex-direction: column;
 }
 
-.commission-page {
+.deal-page {
   padding-bottom: 80rpx;
 }
 
@@ -82,53 +82,116 @@ page {
   font-size: 22rpx;
 }
 
-.commission-list {
+.empty-card {
+  padding: 30rpx;
+}
+
+.empty-title {
+  color: #153f36;
+  font-size: 31rpx;
+  font-weight: 900;
+}
+
+.empty-desc {
+  margin-top: 10rpx;
+  color: #78918a;
+  font-size: 24rpx;
+  line-height: 1.45;
+}
+
+.primary-button {
+  width: 100%;
+  height: 80rpx;
+  margin-top: 22rpx;
+  color: #ffffff;
+  font-size: 26rpx;
+  font-weight: 900;
+  background: #2f6f60;
+  border-radius: 22rpx;
+}
+
+.deal-list {
   display: flex;
   flex-direction: column;
   gap: 18rpx;
 }
 
-.commission-card {
+.deal-card {
   padding: 24rpx;
 }
 
-.commission-head,
-.commission-bottom {
+.deal-head {
   display: flex;
   justify-content: space-between;
   gap: 18rpx;
-  align-items: center;
+  align-items: flex-start;
 }
 
-.commission-title {
+.deal-title {
   color: #153f36;
   font-size: 30rpx;
   font-weight: 900;
   line-height: 1.35;
 }
 
-.commission-rate {
-  flex: 0 1 360rpx;
-  padding: 8rpx 14rpx;
-  color: #a16f00;
+.deal-meta {
+  margin-top: 8rpx;
+  color: #78918a;
   font-size: 23rpx;
-  font-weight: 900;
   line-height: 1.35;
-  text-align: center;
-  background: #fff3cf;
+}
+
+.status-badge {
+  flex: 0 0 auto;
+  padding: 8rpx 14rpx;
+  color: #153f36;
+  font-size: 22rpx;
+  font-weight: 900;
+  background: #f6bd36;
   border-radius: 16rpx;
 }
 
-.commission-meta,
-.commission-time {
-  margin-top: 12rpx;
+.money-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14rpx;
+  margin-top: 20rpx;
+}
+
+.money-grid > view {
+  min-width: 0;
+  padding: 18rpx;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 20rpx;
+}
+
+.money-label {
+  color: #78918a;
+  font-size: 21rpx;
+}
+
+.money-value {
+  margin-top: 8rpx;
+  color: #153f36;
+  font-size: 28rpx;
+  font-weight: 900;
+}
+
+.remark-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+  margin-top: 18rpx;
   color: #78918a;
   font-size: 23rpx;
   line-height: 1.45;
 }
 
-.commission-status {
-  color: #2f6f60;
-  font-size: 24rpx;
-  font-weight: 900;
+.remark-row text:last-child {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: #153f36;
+  text-align: right;
+  word-break: break-all;
 }

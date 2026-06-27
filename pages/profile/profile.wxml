@@ -21,35 +21,8 @@
       </view>
     </view>
 
-    <view class="recharge-card">
-      <view class="recharge-head">
-        <view>
-          <view class="recharge-title">积分充值</view>
-          <view class="recharge-rule">20 元/分 · 1 分起充 · 后台确认后到账</view>
-        </view>
-        <view class="price-badge">当前 {{points}} 分</view>
-      </view>
-      <view class="recharge-control">
-        <button class="step-button" bindtap="decreaseRecharge">-</button>
-        <input class="recharge-input" type="number" value="{{rechargeCount}}" bindinput="handleRechargeInput" />
-        <button class="step-button" bindtap="increaseRecharge">+</button>
-        <view class="amount-text">{{rechargeAmount}} 元</view>
-      </view>
-      <button class="recharge-submit" bindtap="submitRecharge">提交充值申请</button>
-      <view class="bill-list">
-        <view wx:for="{{rechargeBills}}" wx:key="id" class="bill-row">
-          <view>
-            <view class="bill-main">{{item.points}} · {{item.amount}}</view>
-            <view class="bill-sub">{{item.id}} · {{item.time}}</view>
-          </view>
-          <view class="bill-status">{{item.status}}</view>
-        </view>
-      </view>
-    </view>
-
     <view class="section-title">
       <view class="section-title-main">内部工作台</view>
-      <button class="section-title-action" bindtap="handleTap" data-name="WEB管理后台">WEB后台</button>
     </view>
 
     <view class="workbench-grid">
@@ -59,6 +32,18 @@
           <view class="workbench-value">{{item.value}}</view>
         </view>
         <view class="workbench-desc">{{item.desc}}</view>
+      </button>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">报备签单</view>
+    </view>
+
+    <view class="deal-grid">
+      <button wx:for="{{dealWorkbench}}" wx:key="title" class="deal-card" bindtap="handleTap" data-name="{{item.title}}" data-url="{{item.url}}">
+        <view class="deal-title">{{item.title}}</view>
+        <view class="deal-desc">{{item.desc}}</view>
+        <view class="deal-status">{{item.status}}</view>
       </button>
     </view>
 

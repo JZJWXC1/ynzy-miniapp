@@ -6,7 +6,8 @@ const {
 } = require('./listing-features')
 
 const COMPANY_SOURCE = '公司房源'
-const VERIFY_STALE_DAYS = 15
+const V1_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算'
+const VERIFY_STALE_DAYS = 7
 
 const FEATURE_RULES = [
   { name: '带阳台', pattern: /阳台/ },
@@ -108,7 +109,7 @@ function inferFeatures(listing, options) {
   const noCommission = isNoCommission(data, companyListing)
   const rawFeatures = parseFeatureInput(data.features)
   const explicitNoFeature = rawFeatures.indexOf(NO_FEATURE) !== -1
-  const explicit = rawFeatures.filter((item) => item && item !== NO_FEATURE)
+  const explicit = rawFeatures.filter((item) => item && item !== NO_FEATURE && item !== NO_COMMISSION_FEATURE)
   const inferred = explicitNoFeature
     ? []
     : FEATURE_RULES
@@ -121,7 +122,6 @@ function inferFeatures(listing, options) {
     inferred.unshift(COMPANY_SOURCE)
     inferred.push(DEPOSIT_FREE_FEATURE)
   }
-  if (noCommission) inferred.push(NO_COMMISSION_FEATURE)
   const result = unique(explicit.concat(inferred))
   return result.length ? result : [NO_FEATURE]
 }
@@ -190,9 +190,7 @@ function normalizeListing(listing, options) {
   const tagText = String(data.tag || '')
   const relevanceSource = data.relevancePercent || data.matchScore || data.relevanceScore || (/匹配|相关性/.test(tagText) ? tagText : '')
   const relevance = formatRelevance(relevanceSource)
-  const commissionText = noCommission
-    ? '不分佣'
-    : extractCommissionText(data)
+  const commissionText = V1_COMMISSION_TEXT
   return {
     ...data,
     features,
@@ -202,7 +200,7 @@ function normalizeListing(listing, options) {
     noCommission,
     sourceLabel: companyListing ? COMPANY_SOURCE : (data.sourceLabel || data.source || ''),
     commissionText,
-    commission: noCommission ? '不分佣' : (data.commission || data.commissionText || ''),
+    commission: V1_COMMISSION_TEXT,
     displayRelevance: relevance,
     relevancePercent: data.relevancePercent || relevance,
     matchScore: data.matchScore || relevance,
@@ -226,6 +224,7 @@ function normalizeGroupState(state) {
 
 module.exports = {
   COMPANY_SOURCE,
+  V1_COMMISSION_TEXT,
   normalizeListing,
   normalizeListings,
   normalizeGroupState,

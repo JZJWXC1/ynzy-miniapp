@@ -1,5 +1,7 @@
 const apiService = require('../../utils/api-service')
 
+const V1_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算'
+
 Page({
   data: {
     records: [],
@@ -12,11 +14,14 @@ Page({
 
   refresh() {
     apiService.getCommissionRecords().then((records) => {
-      const uploadCount = records.filter((item) => item.role === '我是上传人').length
-      const dealCount = records.filter((item) => item.role === '我是成交人').length
-      const pendingCount = records.filter((item) => item.status !== '已确认').length
+      const displayRecords = (records || []).map((item) => Object.assign({}, item, {
+        settlementRule: V1_COMMISSION_TEXT
+      }))
+      const uploadCount = displayRecords.filter((item) => item.role === '我是上传人').length
+      const dealCount = displayRecords.filter((item) => item.role === '我是成交人').length
+      const pendingCount = displayRecords.filter((item) => item.status !== '已确认').length
       this.setData({
-        records,
+        records: displayRecords,
         stats: [
           { label: '我上传', value: String(uploadCount) },
           { label: '我成交', value: String(dealCount) },
