@@ -147,6 +147,25 @@ function checkFrontendVerifyRule() {
   return '前端与 Mock 房态自动失效均为 7 天'
 }
 
+function checkV1DocsMaintenanceRule() {
+  const files = [
+    '需求.md',
+    '接口上线说明.md',
+    'docs/V1_SCOPE.md',
+    'docs/V1_WECHAT_DEVTOOLS_ACCEPTANCE.md',
+    'server/README.md'
+  ].filter((file) => fs.existsSync(repoPath(file)))
+  const hits = []
+  files.forEach((file) => {
+    const text = readText(file)
+    if (/15\s*天|15天|十五天/.test(text)) {
+      hits.push(file)
+    }
+  })
+  assertOk(!hits.length, `第一版文档不能残留 15 天房态规则：${hits.join('、')}`)
+  return '第一版文档均为 3/5/7 房态规则'
+}
+
 function checkAdminReportDealContract() {
   const indexSource = readText('server/src/index.js')
   const domainSource = readText('server/src/domain.js')
@@ -185,6 +204,7 @@ const checks = [
   ['关键 V1 脚本存在', checkCriticalScriptsExist],
   ['第一版可见入口不暴露历史关键词', checkLegacyVisibleEntryKeywords],
   ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
+  ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
