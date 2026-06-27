@@ -289,6 +289,39 @@ page {
   border-radius: 26rpx;
 }
 
+.confirm-panel {
+  margin-top: 20rpx;
+  padding: 24rpx;
+}
+
+.confirm-desc {
+  margin-top: 10rpx;
+  color: #6f837c;
+  font-size: 23rpx;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.confirm-button {
+  width: 100%;
+  height: 72rpx;
+  margin-top: 18rpx;
+  color: #ffffff;
+  font-size: 26rpx;
+  font-weight: 900;
+  line-height: 72rpx;
+  background: #2f6f60;
+  border-radius: 22rpx;
+}
+
+.confirm-button[disabled] {
+  opacity: 0.5;
+}
+
+.confirm-button::after {
+  border: 0;
+}
+
 .need-grid {
   display: flex;
   flex-wrap: wrap;

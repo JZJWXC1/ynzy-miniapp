@@ -162,13 +162,30 @@ function numberFrom(value) {
   return matched ? Number(matched[1]) : 0
 }
 
+function budgetFromForm(formNeed = {}, textNeed = {}) {
+  const parsedFormBudget = parseBudget([formNeed.budget, formNeed.budgetText].filter(Boolean).join('，'))
+  const minBudget = numberFrom(formNeed.minBudget) || parsedFormBudget.minBudget || textNeed.minBudget || ''
+  const maxBudget = numberFrom(formNeed.maxBudget) ||
+    parsedFormBudget.maxBudget ||
+    numberFrom(formNeed.budget) ||
+    textNeed.maxBudget ||
+    textNeed.budget ||
+    ''
+  return {
+    budget: formNeed.budget || parsedFormBudget.budget || textNeed.budget || '',
+    minBudget,
+    maxBudget
+  }
+}
+
 function mergeNeed(textNeed, formNeed = {}) {
   const rawFormFeatures = parseFeatureInput(formNeed.features)
   const formFeatures = rawFormFeatures.filter((item) => item !== NO_FEATURE)
+  const budget = budgetFromForm(formNeed, textNeed)
   return {
-    budget: formNeed.budget || textNeed.budget || '',
-    minBudget: numberFrom(formNeed.minBudget || textNeed.minBudget) || '',
-    maxBudget: numberFrom(formNeed.maxBudget || formNeed.budget || textNeed.maxBudget || textNeed.budget) || '',
+    budget: budget.budget,
+    minBudget: budget.minBudget,
+    maxBudget: budget.maxBudget,
     area: formNeed.area || textNeed.area || '',
     community: formNeed.community || textNeed.community || '',
     rentMode: formNeed.rentMode || textNeed.rentMode || '',
