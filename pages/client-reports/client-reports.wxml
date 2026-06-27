@@ -1,0 +1,80 @@
+<navigation-bar title="我的报备" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell report-page">
+    <view class="hero-card">
+      <view>
+        <view class="hero-kicker">客户跟进</view>
+        <view class="hero-title">报备客户后，从记录发起签单。</view>
+        <view class="hero-desc">客户手机号仅脱敏展示，签单只记录成交月租、房东实付佣金和备注。</view>
+      </view>
+      <view class="hero-mark">报</view>
+    </view>
+
+    <view class="stats-row">
+      <view wx:for="{{stats}}" wx:key="label" class="stat-card">
+        <view class="stat-value">{{item.value}}</view>
+        <view class="stat-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">报备记录</view>
+      <button class="section-title-action" bindtap="goDealRecords">看签单</button>
+    </view>
+
+    <view wx:if="{{!reports.length && !loading}}" class="empty-card soft-card">
+      <view class="empty-title">暂无报备</view>
+      <view class="empty-desc">先进入房源详情，报备客户后这里会自动沉淀记录。</view>
+      <button class="primary-button" bindtap="goFindListings">去找房</button>
+    </view>
+
+    <view class="report-list">
+      <view wx:for="{{reports}}" wx:key="id" class="report-card soft-card">
+        <view class="report-head">
+          <view>
+            <view class="report-title">{{item.listingTitle}}</view>
+            <view class="report-meta">{{item.community}} · {{item.createdAtDisplay}}</view>
+          </view>
+          <view class="status-badge {{item.canCreateDeal ? 'is-active' : 'is-submitted'}}">{{item.status}}</view>
+        </view>
+        <view class="customer-row">
+          <view>
+            <view class="customer-label">客户称呼</view>
+            <view class="customer-value">{{item.customerNameDisplay}}</view>
+          </view>
+          <view>
+            <view class="customer-label">客户手机号</view>
+            <view class="customer-value">{{item.customerPhoneMasked}}</view>
+          </view>
+        </view>
+        <view class="card-actions">
+          <button class="ghost-button" bindtap="openListing" data-id="{{item.listingId}}">查看房源</button>
+          <button class="primary-button" disabled="{{!item.canCreateDeal}}" bindtap="openDealModal" data-id="{{item.id}}">{{item.canCreateDeal ? '发起签单' : '已提交签单'}}</button>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>
+
+<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal">
+  <view class="v1-modal" catchtap="noop">
+    <view class="v1-modal-title">提交签单</view>
+    <view class="modal-sub">{{currentReport.listingTitle}}</view>
+    <view class="v1-field">
+      <text>成交月租</text>
+      <input value="{{dealForm.monthlyRent}}" data-field="monthlyRent" bindinput="updateDealField" type="digit" placeholder="必填" />
+    </view>
+    <view class="v1-field">
+      <text>房东实付佣金</text>
+      <input value="{{dealForm.landlordCommission}}" data-field="landlordCommission" bindinput="updateDealField" type="digit" placeholder="必填" />
+    </view>
+    <view class="v1-field">
+      <text>备注</text>
+      <textarea value="{{dealForm.remark}}" data-field="remark" bindinput="updateDealField" maxlength="120" placeholder="可选" />
+    </view>
+    <view class="v1-modal-actions">
+      <button class="ghost-button" bindtap="closeDealModal">取消</button>
+      <button class="primary-button" loading="{{dealSubmitting}}" bindtap="submitDealFromReport">提交签单</button>
+    </view>
+  </view>
+</view>

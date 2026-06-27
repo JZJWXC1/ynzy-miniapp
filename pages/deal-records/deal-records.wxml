@@ -1,0 +1,57 @@
+<navigation-bar title="我的签单" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell deal-page">
+    <view class="hero-card">
+      <view>
+        <view class="hero-kicker">成交跟进</view>
+        <view class="hero-title">每一笔签单都从报备记录发起。</view>
+        <view class="hero-desc">管理员确认后生成正式分佣记录，金额按分保存。</view>
+      </view>
+      <view class="hero-mark">签</view>
+    </view>
+
+    <view class="stats-row">
+      <view wx:for="{{stats}}" wx:key="label" class="stat-card">
+        <view class="stat-value">{{item.value}}</view>
+        <view class="stat-label">{{item.label}}</view>
+      </view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">签单记录</view>
+      <button class="section-title-action" bindtap="goReports">看报备</button>
+    </view>
+
+    <view wx:if="{{!deals.length && !loading}}" class="empty-card soft-card">
+      <view class="empty-title">暂无签单</view>
+      <view class="empty-desc">从我的报备里发起签单后，这里会显示确认状态。</view>
+      <button class="primary-button" bindtap="goReports">去报备记录</button>
+    </view>
+
+    <view class="deal-list">
+      <view wx:for="{{deals}}" wx:key="id" class="deal-card soft-card" bindtap="openListing" data-id="{{item.listingId}}">
+        <view class="deal-head">
+          <view>
+            <view class="deal-title">{{item.listingTitle}}</view>
+            <view class="deal-meta">{{item.community}} · {{item.createdAtDisplay}}</view>
+          </view>
+          <view class="status-badge">{{item.status}}</view>
+        </view>
+        <view class="money-grid">
+          <view>
+            <view class="money-label">成交月租</view>
+            <view class="money-value">{{item.monthlyRentText}}</view>
+          </view>
+          <view>
+            <view class="money-label">房东实付佣金</view>
+            <view class="money-value">{{item.landlordCommissionText}}</view>
+          </view>
+        </view>
+        <view class="remark-row">
+          <text>备注</text>
+          <text>{{item.remarkDisplay}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

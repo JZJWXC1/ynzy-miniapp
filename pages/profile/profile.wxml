@@ -40,7 +40,7 @@
     </view>
 
     <view class="deal-grid">
-      <button wx:for="{{dealWorkbench}}" wx:key="title" class="deal-card" bindtap="handleTap" data-name="{{item.title}}">
+      <button wx:for="{{dealWorkbench}}" wx:key="title" class="deal-card" bindtap="handleTap" data-name="{{item.title}}" data-url="{{item.url}}">
         <view class="deal-title">{{item.title}}</view>
         <view class="deal-desc">{{item.desc}}</view>
         <view class="deal-status">{{item.status}}</view>
