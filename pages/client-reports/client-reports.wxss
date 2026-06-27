@@ -1,0 +1,273 @@
+page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.report-page {
+  padding-bottom: 80rpx;
+}
+
+.hero-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 32rpx;
+  color: #ffffff;
+  background: #2f6f60;
+  border-radius: 40rpx;
+  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.18);
+}
+
+.hero-kicker {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 24rpx;
+  font-weight: 800;
+}
+
+.hero-title {
+  margin-top: 10rpx;
+  font-size: 40rpx;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.hero-desc {
+  margin-top: 14rpx;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 25rpx;
+  line-height: 1.55;
+}
+
+.hero-mark {
+  width: 88rpx;
+  height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #153f36;
+  font-size: 42rpx;
+  font-weight: 900;
+  background: #f6bd36;
+  border-radius: 30rpx;
+}
+
+.stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-top: 22rpx;
+}
+
+.stat-card {
+  flex: 1 1 190rpx;
+  min-width: 0;
+  padding: 22rpx 8rpx;
+  text-align: center;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 26rpx;
+}
+
+.stat-value {
+  color: #153f36;
+  font-size: 34rpx;
+  font-weight: 900;
+}
+
+.stat-label {
+  margin-top: 6rpx;
+  color: #78918a;
+  font-size: 22rpx;
+}
+
+.empty-card {
+  padding: 30rpx;
+}
+
+.empty-title {
+  color: #153f36;
+  font-size: 31rpx;
+  font-weight: 900;
+}
+
+.empty-desc {
+  margin-top: 10rpx;
+  color: #78918a;
+  font-size: 24rpx;
+  line-height: 1.45;
+}
+
+.report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+}
+
+.report-card {
+  padding: 24rpx;
+}
+
+.report-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18rpx;
+  align-items: flex-start;
+}
+
+.report-title {
+  color: #153f36;
+  font-size: 30rpx;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.report-meta {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+  line-height: 1.35;
+}
+
+.status-badge {
+  flex: 0 0 auto;
+  padding: 8rpx 14rpx;
+  color: #153f36;
+  font-size: 22rpx;
+  font-weight: 900;
+  background: #f6bd36;
+  border-radius: 16rpx;
+}
+
+.status-badge.is-submitted {
+  color: #2f6f60;
+  background: #e9f5f0;
+}
+
+.customer-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14rpx;
+  margin-top: 20rpx;
+}
+
+.customer-row > view {
+  min-width: 0;
+  padding: 18rpx;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 20rpx;
+}
+
+.customer-label {
+  color: #78918a;
+  font-size: 21rpx;
+}
+
+.customer-value {
+  margin-top: 8rpx;
+  color: #153f36;
+  font-size: 26rpx;
+  font-weight: 900;
+  word-break: break-all;
+}
+
+.card-actions,
+.v1-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+  margin-top: 22rpx;
+}
+
+.primary-button,
+.ghost-button {
+  width: 100%;
+  height: 80rpx;
+  margin-top: 0;
+  font-size: 26rpx;
+  font-weight: 900;
+  border-radius: 22rpx;
+}
+
+.primary-button {
+  color: #ffffff;
+  background: #2f6f60;
+}
+
+.primary-button[disabled] {
+  color: #78918a;
+  background: #e9f5f0;
+}
+
+.ghost-button {
+  color: #2f6f60;
+  background: #e9f5f0;
+}
+
+.v1-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 28rpx;
+  background: rgba(21, 63, 54, 0.42);
+  box-sizing: border-box;
+}
+
+.v1-modal {
+  width: 100%;
+  max-height: 82vh;
+  padding: 30rpx;
+  background: #ffffff;
+  border-radius: 24rpx;
+  box-shadow: 0 -16rpx 42rpx rgba(21, 63, 54, 0.18);
+  box-sizing: border-box;
+}
+
+.v1-modal-title {
+  color: #153f36;
+  font-size: 34rpx;
+  font-weight: 900;
+}
+
+.modal-sub {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+  line-height: 1.4;
+}
+
+.v1-field {
+  margin-top: 20rpx;
+}
+
+.v1-field text {
+  display: block;
+  color: #78918a;
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.v1-field input,
+.v1-field textarea {
+  width: 100%;
+  min-height: 78rpx;
+  margin-top: 10rpx;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 28rpx;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.v1-field textarea {
+  min-height: 132rpx;
+  padding-top: 18rpx;
+  line-height: 1.45;
+}

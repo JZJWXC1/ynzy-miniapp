@@ -24,14 +24,28 @@ function findStatValue(stats = [], keywords = [], fallback = 0) {
   return item ? item.value : fallback
 }
 
+function buildDealWorkbench(reportCount = 0, dealCount = 0) {
+  return [
+    {
+      title: '我的报备',
+      desc: '客户称呼可选，客户手机号必填',
+      status: `${reportCount} 条`,
+      url: '/pages/client-reports/client-reports'
+    },
+    {
+      title: '我的签单',
+      desc: '从报备记录发起签单，跟进管理员确认状态',
+      status: `${dealCount} 单`,
+      url: '/pages/deal-records/deal-records'
+    }
+  ]
+}
+
 Page({
   data: {
     user: {},
     workbench: [],
-    dealWorkbench: [
-      { title: '我的报备', desc: '客户称呼可选，客户手机号必填', status: '报备记录' },
-      { title: '我的签单', desc: '从报备记录发起签单，签单后按平台规则计算', status: '签单入口' }
-    ],
+    dealWorkbench: buildDealWorkbench(),
     reminders: [
       { title: '敏感信息查看', value: '今天有人查看了你上传房源的电话' },
       { title: '待确认分佣', value: '有成交单待确认，签单后按平台规则计算' },
@@ -65,14 +79,17 @@ Page({
   refreshProfile() {
     Promise.all([
       apiService.getProfileState(),
-      apiService.getFootprintRecords()
-    ]).then(([profile, footprints]) => {
+      apiService.getFootprintRecords(),
+      apiService.getClientReports(),
+      apiService.getDealRecords()
+    ]).then(([profile, footprints, reports, deals]) => {
       this.setData({
         user: profile.user,
         sourceStats: filterVisibleStats(profile.sourceStats || []),
         footprintCount: footprints.length,
         reminders: filterVisibleReminders(profile.reminders || this.data.reminders),
-        workbench: this.buildWorkbench(profile, footprints.length)
+        workbench: this.buildWorkbench(profile, footprints.length),
+        dealWorkbench: buildDealWorkbench((reports || []).length, (deals || []).length)
       });
     }).catch(() => {
       wx.showToast({ title: '我的信息加载失败', icon: 'none' })
@@ -88,22 +105,6 @@ Page({
     }
     if (name === '查看全部提醒') {
       wx.navigateTo({ url: '/pages/footprint/footprint' });
-      return;
-    }
-    if (name === '我的报备') {
-      wx.showModal({
-        title: '我的报备',
-        content: '第一版报备保持轻量：客户称呼可选，客户手机号必填，用于沉淀中介客户跟进记录。',
-        showCancel: false
-      });
-      return;
-    }
-    if (name === '我的签单') {
-      wx.showModal({
-        title: '我的签单',
-        content: '签单从报备记录发起，只记录成交月租、房东实际支付佣金和可选备注，签单后按平台规则计算。',
-        showCancel: false
-      });
       return;
     }
     wx.showModal({
