@@ -195,13 +195,16 @@ check('上传房源必须走视频选择和视频上传策略', () => {
 check('找房助手先识别确认，再匹配和跳转地图', () => {
   const matchChat = readFile('pages/match-chat/match-chat.js')
   const llmService = readFile('utils/llm-service.js')
+  const matchServiceSource = readFile('server/src/match-service.js')
   assertIncludes(matchChat, 'recognizeRentalNeed', '找房对话必须先进入识别阶段')
-  assertIncludes(matchChat, 'readyToConfirm', '找房对话必须支持确认状态')
-  assertIncludes(matchChat, 'confirmationFields', '找房对话必须展示确认字段')
+  assertIncludes(matchChat, 'canConfirm', '找房对话必须支持可编辑确认状态')
+  assertIncludes(matchChat, 'canEditConfirmation', '找房对话必须在匹配前展示可编辑确认卡片')
+  assertIncludes(matchChat, 'confirmForm', '找房对话必须展示可修正的结构化字段')
   assertIncludes(matchChat, 'followUpQuestion', '找房对话必须支持追问')
   assertIncludes(matchChat, 'ynzy_pending_map_filters', '找房结果进入地图时必须携带筛选条件')
   assertIncludes(matchChat, "wx.switchTab({ url: '/pages/map/map' })", '找房结果应通过底部导航进入地图')
   assertIncludes(llmService, "stage: 'recognize'", 'LLM 服务必须支持识别阶段')
+  assertIncludes(matchServiceSource, 'readyToConfirm', '服务端识别结果必须保留确认状态')
 
   const incomplete = matchService.recognizeNeed(makeMatchDb(), { text: '必须有阳台' })
   assert.strictEqual(incomplete.stage, 'recognize')
