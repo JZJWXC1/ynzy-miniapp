@@ -11,8 +11,10 @@ function maskPhone(phone) {
 
 function normalizeReport(item = {}) {
   const dealId = safeText(item.dealId)
+  const needId = safeText(item.needId || item.rentalNeedId)
   const status = safeText(item.status) || (dealId ? '已提交签单' : '已报备')
   return Object.assign({}, item, {
+    needId,
     customerNameDisplay: safeText(item.customerName) || '未填写称呼',
     customerPhoneMasked: safeText(item.customerPhoneMasked) || maskPhone(item.customerPhone),
     createdAtDisplay: safeText(item.createdAt || item.time) || '-',
@@ -65,8 +67,10 @@ Page({
 
   openListing(event) {
     const id = event.currentTarget.dataset.id
+    const needId = event.currentTarget.dataset.needId || ''
     if (!id) return
-    wx.navigateTo({ url: `/pages/listing-detail/listing-detail?id=${id}` })
+    const query = needId ? `&needId=${encodeURIComponent(needId)}&source=report` : ''
+    wx.navigateTo({ url: `/pages/listing-detail/listing-detail?id=${id}${query}` })
   },
 
   goFindListings() {
@@ -127,6 +131,7 @@ Page({
     apiService.createDealFromReport(report.id, {
       monthlyRent,
       landlordCommission,
+      needId: report.needId || '',
       remark: safeText(form.remark)
     }).then((result) => {
       this.setData({

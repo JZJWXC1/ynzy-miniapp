@@ -328,6 +328,7 @@ function buildLaunchCheck(db) {
   if (!config.oss.publicBaseUrl) ossMissing.push('ALI_OSS_PUBLIC_BASE_URL')
   const wxPayMissing = config.wechatPay.enabled ? wxpay.requiredMissing() : []
   const feishuStatus = feishuSync.status(db)
+  const miniProgram = config.miniProgram || {}
   const userCount = (db.users || []).length
   const listingCount = (db.listings || []).length
   const groupCount = (db.groups || []).length
@@ -338,7 +339,7 @@ function buildLaunchCheck(db) {
       'OSS/RAM 最小权限',
       ossMissing.length ? '需处理' : '通过',
       ossMissing.length ? `缺少 ${ossMissing.join('、')}` : `Bucket ${config.oss.bucket} 已配置，服务端使用 RAM 子账号生成 OSS 直传和短期读取签名`,
-      ossMissing.length ? '在 server/.env 补齐 OSS/RAM 子账号参数，Bucket 建议保持私有读' : '上线前确认 RAM Policy 仅允许 house-videos/* 和 group-screenshots/*'
+      ossMissing.length ? '在 server/.env 补齐 OSS/RAM 子账号参数，Bucket 建议保持私有读' : '上线前确认 RAM Policy 仅允许 house-videos/*、group-screenshots/*、showing-photos/*'
     ),
     launchCheckItem(
       '后台 Token 密钥',
@@ -363,33 +364,29 @@ function buildLaunchCheck(db) {
     launchCheckItem(
       '基础数据',
       baseStatus,
-      `用户 ${userCount} 个，房源 ${listingCount} 套，群聊 ${groupCount} 个`,
+      `用户 ${userCount} 个，房源 ${listingCount} 套，历史群素材 ${groupCount} 个`,
       listingCount ? '上线后持续核验房源状态' : '当前没有真实房源时小程序展示空状态，员工上传后会自动显示'
     ),
     launchCheckItem(
       '微信合法域名',
       '待确认',
-      '需要在微信小程序后台配置 request 合法域名和 uploadFile 合法域名',
-      '把正式 HTTPS API 域名、OSS Bucket 外网 Endpoint 加入微信小程序后台'
+      `request ${miniProgram.requestDomain || '未配置'}；uploadFile ${miniProgram.uploadDomain || '未配置'}；downloadFile ${miniProgram.downloadDomain || '未配置'}`,
+      '在微信小程序后台核对 request、uploadFile、downloadFile 合法域名与这里一致'
     ),
     launchCheckItem(
-      '积分充值收款',
-      config.wechatPay.enabled ? (wxPayMissing.length ? '需处理' : '通过') : '待确认',
-      config.wechatPay.enabled
-        ? (wxPayMissing.length ? `微信支付已启用，缺少 ${wxPayMissing.join('、')}` : '积分充值已切换为微信支付 JSAPI，下单和回调到账流程已接入')
-        : '当前暂时跳过微信支付，积分充值走后台人工确认到账',
-      config.wechatPay.enabled && wxPayMissing.length
-        ? '在 server/.env 补齐微信支付商户号、API v3 密钥、证书序列号、商户私钥路径和支付回调域名'
-        : (config.wechatPay.enabled ? '上线前在微信商户平台确认 JSAPI 支付权限和回调地址可访问' : '管理员在充值账单里确认收款后给用户增加积分')
+      '第一版隐藏功能',
+      '通过',
+      '房源群、积分、充值、换群、微信支付作为历史能力保留，第一版前台不作为验收入口',
+      '保持入口隐藏，后端历史代码仅用于后续版本灰度'
     ),
     launchCheckItem(
       '飞书房源同步',
       feishuStatus.ready ? '通过' : '需处理',
       feishuStatus.ready
-        ? `${feishuStatus.mode} 已配置，当前同步公司房源 ${feishuStatus.feishuListingCount} 套`
+        ? `${feishuStatus.mode} 已配置，当前同步公司房源 ${feishuStatus.feishuListingCount} 套，自动同步周期 ${feishuStatus.syncIntervalMinutes} 分钟`
         : '缺少飞书应用、房源表或素材库配置，暂不能自动同步公司房源',
       feishuStatus.ready
-        ? '后台可在“飞书同步”里手动执行；上线后建议用服务器定时任务每天同步'
+        ? '后台可在“飞书同步”里手动执行；服务启动后会按配置周期自动刷新房态'
         : '补齐 FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_BITABLE_APP_TOKEN、FEISHU_BITABLE_TABLE_ID 和素材库 Folder Token'
     )
   ]
@@ -563,6 +560,15 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.footprintRecords(db, userId))
   }
 
+  if (method === 'GET' && pathname === '/mini/rental-needs') {
+    return sendJson(res, domain.userRentalNeeds(db, userId))
+  }
+
+  if (method === 'POST' && pathname === '/mini/rental-needs') {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.createRentalNeed(nextDb, userId, body)))
+  }
+
   if (method === 'GET' && pathname === '/mini/my/listings') {
     return sendJson(res, domain.ownedListings(db, userId))
   }
@@ -587,6 +593,10 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'GET' && pathname === '/mini/profile') {
     return sendJson(res, domain.profileState(db, userId))
+  }
+
+  if (method === 'GET' && pathname === '/mini/today-tasks') {
+    return sendJson(res, domain.todayTasks(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/commissions') {
@@ -695,7 +705,7 @@ async function handleMini(req, res, pathname, searchParams) {
 
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
   if (method === 'GET' && listingLogsMatch) {
-    return sendJson(res, domain.listingLogs(db, listingLogsMatch[1]))
+    return sendJson(res, domain.listingLogs(db, listingLogsMatch[1], userId))
   }
 
   const reportMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/reports$/)
@@ -724,7 +734,15 @@ async function handleMini(req, res, pathname, searchParams) {
   const sensitiveMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/sensitive-view$/)
   if (method === 'POST' && sensitiveMatch) {
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.addSensitiveFootprint(nextDb, userId, sensitiveMatch[1], body.action)))
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.addSensitiveFootprint(nextDb, userId, sensitiveMatch[1], {
+      action: body.action,
+      needId: body.needId,
+      rentalNeedId: body.rentalNeedId,
+      clientNeedId: body.clientNeedId,
+      purpose: body.purpose,
+      scene: body.scene,
+      reason: body.reason
+    })))
   }
 
   const error = new Error(`接口不存在：${method} ${pathname}`)

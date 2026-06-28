@@ -3,6 +3,7 @@ const apiService = require('../../utils/api-service')
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const categories = ['全部', '整租', '合租', '业主房源', '公寓']
 const emptyFilters = {
+  needId: '',
   area: '',
   block: '',
   community: '',
@@ -27,7 +28,8 @@ function normalizeListingState(input = {}) {
       block: cleanFilterValue(sourceFilters.block),
       community: cleanFilterValue(sourceFilters.community),
       layout: cleanFilterValue(sourceFilters.layout),
-      rentMax: cleanFilterValue(sourceFilters.rentMax)
+      rentMax: cleanFilterValue(sourceFilters.rentMax),
+      needId: cleanFilterValue(sourceFilters.needId || sourceFilters.rentalNeedId || sourceFilters.clientNeedId)
     }
   }
 }
@@ -40,7 +42,8 @@ function normalizeOptions(options = {}) {
       block: options.block ? decodeURIComponent(options.block) : '',
       community: options.community ? decodeURIComponent(options.community) : '',
       layout: options.layout ? decodeURIComponent(options.layout) : '',
-      rentMax: options.rentMax || ''
+      rentMax: options.rentMax || '',
+      needId: options.needId ? decodeURIComponent(options.needId) : ''
     }
   })
 }
@@ -50,6 +53,7 @@ Page({
     categories,
     category: '全部',
     filters: {
+      needId: '',
       area: '',
       block: '',
       community: '',
@@ -119,6 +123,7 @@ Page({
   resetFilters() {
     this.setData({
       filters: {
+        needId: this.data.filters.needId || '',
         area: '',
         block: '',
         community: '',
@@ -149,8 +154,10 @@ Page({
   openListing(event) {
     const id = event.currentTarget.dataset.id
     if (!id) return
+    const needId = this.data.filters && this.data.filters.needId ? this.data.filters.needId : ''
+    const query = needId ? `&needId=${encodeURIComponent(needId)}&source=listings` : ''
     wx.navigateTo({
-      url: `/pages/listing-detail/listing-detail?id=${id}`
+      url: `/pages/listing-detail/listing-detail?id=${id}${query}`
     })
   }
 })

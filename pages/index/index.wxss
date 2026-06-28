@@ -258,6 +258,141 @@ page {
   margin-top: 24rpx;
 }
 
+.task-summary-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  margin-top: 22rpx;
+  padding: 24rpx 28rpx;
+  color: #ffffff;
+  background: #153f36;
+  border-radius: 28rpx;
+  box-shadow: 0 14rpx 32rpx rgba(21, 63, 54, 0.14);
+}
+
+.task-summary-label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 22rpx;
+  font-weight: 800;
+}
+
+.task-summary-value {
+  margin-top: 4rpx;
+  font-size: 48rpx;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.task-summary-copy {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 23rpx;
+  font-weight: 800;
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.task-fold {
+  min-height: 72rpx;
+  justify-content: space-between;
+  padding: 0 22rpx;
+  color: #2f6f60;
+  background: #f7fbf8;
+  border: 1rpx dashed #b8d7cd;
+  border-radius: 22rpx;
+}
+
+.task-fold-text {
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.task-fold-meta {
+  color: #78918a;
+  font-size: 22rpx;
+  font-weight: 800;
+}
+
+.task-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18rpx;
+  min-height: 120rpx;
+  padding: 22rpx;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 24rpx;
+  box-shadow: 0 10rpx 24rpx rgba(31, 81, 68, 0.06);
+}
+
+.task-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.task-title {
+  color: #153f36;
+  font-size: 28rpx;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.task-desc {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 22rpx;
+  line-height: 1.4;
+}
+
+.task-count {
+  flex: 0 0 116rpx;
+  min-height: 76rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #153f36;
+  background: #e9f5f0;
+  border-radius: 20rpx;
+}
+
+.task-count text:first-child {
+  font-size: 32rpx;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.task-count text:last-child {
+  margin-top: 4rpx;
+  font-size: 18rpx;
+  font-weight: 900;
+}
+
+.tone-orange .task-count {
+  background: #fff3cf;
+}
+
+.tone-blue .task-count {
+  background: #e8f7fb;
+}
+
+.tone-red .task-count {
+  background: #fbe8e3;
+}
+
+.tone-yellow .task-count {
+  background: #fff35a;
+}
+
+.tone-gray .task-count {
+  background: #eef2f0;
+}
+
 .category-card {
   flex: 1 1 0;
   width: 0;

@@ -152,6 +152,18 @@ page {
   border-radius: 14rpx;
 }
 
+.need-notice {
+  margin-top: 12rpx;
+  padding: 14rpx 16rpx;
+  color: #8a5b00;
+  font-size: 21rpx;
+  font-weight: 800;
+  line-height: 1.4;
+  background: #fff8e6;
+  border: 1rpx solid #f5df9c;
+  border-radius: 18rpx;
+}
+
 .guide-tags {
   display: flex;
   flex-wrap: wrap;

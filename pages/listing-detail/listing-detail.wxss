@@ -215,6 +215,33 @@ page {
   line-height: 1.4;
 }
 
+.need-bind-row {
+  margin-top: 18rpx;
+  padding: 18rpx;
+  background: #fff8e6;
+  border: 1rpx solid #f5df9c;
+  border-radius: 20rpx;
+}
+
+.need-bind-row.bound {
+  background: #e9f5f0;
+  border-color: #dce9e3;
+}
+
+.need-bind-title {
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.need-bind-desc {
+  margin-top: 6rpx;
+  color: #78918a;
+  font-size: 21rpx;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
 .primary-button,
 .deal-button {
   width: 100%;
@@ -383,6 +410,49 @@ page {
   color: #153f36;
   font-size: 34rpx;
   font-weight: 900;
+}
+
+.modal-sub {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+  line-height: 1.4;
+}
+
+.purpose-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+.purpose-option {
+  flex: 1 1 190rpx;
+  height: 68rpx;
+  margin: 0;
+  color: #2f6f60;
+  font-size: 24rpx;
+  font-weight: 900;
+  line-height: 68rpx;
+  background: #e9f5f0;
+  border-radius: 18rpx;
+}
+
+.purpose-option.active {
+  color: #ffffff;
+  background: #2f6f60;
+}
+
+.purpose-option::after {
+  border: 0;
+}
+
+.need-modal-note {
+  margin-top: 16rpx;
+  color: #8a5b00;
+  font-size: 22rpx;
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .v1-field {

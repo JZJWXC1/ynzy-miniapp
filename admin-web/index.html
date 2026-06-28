@@ -168,6 +168,8 @@
       padding: 24px 18px;
       color: #fff;
       background: var(--deep);
+      overflow-y: auto;
+      scrollbar-width: thin;
     }
 
     .side-brand {
@@ -832,7 +834,7 @@
       <section class="panel" id="logs">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>查看人</th><th>房源</th><th>查看内容</th><th>上传人</th><th>同步状态</th><th>时间</th></tr></thead>
+	            <thead><tr><th>查看人</th><th>房源</th><th>查看内容</th><th>需求/用途</th><th>上传人</th><th>同步状态</th><th>时间</th></tr></thead>
             <tbody id="adminLogRows"></tbody>
           </table>
         </div>
@@ -842,7 +844,7 @@
         <div class="status-box audit-note">报备客户称呼可选，客户手机号必填；后台只展示脱敏手机号，签单必须从报备记录发起。</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>报备房源</th><th>报备中介</th><th>客户</th><th>报备状态</th><th>签单记录</th><th>时间</th></tr></thead>
+	            <thead><tr><th>报备房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>报备状态</th><th>签单记录</th><th>时间</th></tr></thead>
             <tbody id="reportRows"></tbody>
           </table>
           <div class="empty" id="reportEmpty" hidden>暂无报备记录</div>
@@ -854,7 +856,7 @@
         <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。上传人分佣由后端固定按房东实付佣金的 20% 计算，后台不可修改上传人或分佣比例。</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>成交房源</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
+	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
             <tbody id="dealRows"></tbody>
           </table>
           <div class="empty" id="dealEmpty" hidden>暂无签单审核记录</div>
@@ -1118,23 +1120,109 @@
       return text.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
     }
 
-    function maskedCustomerPhone(item) {
-      return maskPhone(item.customerPhoneMasked || item.customerPhone || item.phone || '');
-    }
+	    function maskedCustomerPhone(item) {
+	      return maskPhone(item.customerPhoneMasked || item.customerPhone || item.phone || '');
+	    }
 
-    function moneyText(text, fen, showZero = false) {
-      const readyText = String(text === undefined || text === null ? '' : text).trim();
-      if (readyText === '-') return '-';
-      if (readyText) return /元$/.test(readyText) ? readyText : `${readyText} 元`;
+	    function numberValue() {
+	      for (let index = 0; index < arguments.length; index += 1) {
+	        const value = arguments[index];
+	        if (value === undefined || value === null || value === '') continue;
+	        const number = Number(value);
+	        if (Number.isFinite(number)) return number;
+	      }
+	      return 0;
+	    }
+
+	    function arrayValue(value) {
+	      return Array.isArray(value) ? value : [];
+	    }
+
+	    function pickText() {
+	      for (let index = 0; index < arguments.length; index += 1) {
+	        const value = arguments[index];
+	        if (value === undefined || value === null) continue;
+	        const text = String(value).trim();
+	        if (text) return text;
+	      }
+	      return '';
+	    }
+
+	    function objectValue() {
+	      for (let index = 0; index < arguments.length; index += 1) {
+	        const value = arguments[index];
+	        if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+	      }
+	      return {};
+	    }
+
+	    function moneyText(text, fen, showZero = false) {
+	      const readyText = String(text === undefined || text === null ? '' : text).trim();
+	      if (readyText === '-') return '-';
+	      if (readyText) return /元$/.test(readyText) ? readyText : `${readyText} 元`;
       const number = Number(fen || 0);
       return number > 0 || showZero ? `${(number / 100).toFixed(2)} 元` : '-';
     }
 
-    function expectedUploaderCommissionFen(item) {
-      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
-      if (saved > 0) return saved;
-      return Math.round(Number(item.landlordCommissionFen || 0) * 20 / 100);
-    }
+	    function expectedUploaderCommissionFen(item) {
+	      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
+	      if (saved > 0) return saved;
+	      return Math.round(Number(item.landlordCommissionFen || 0) * 20 / 100);
+	    }
+
+	    function needIdText(item) {
+	      const need = objectValue(item.need, item.rentalNeed, item.needSnapshot);
+	      return pickText(item.needId, need.id, need.needId, '-');
+	    }
+
+	    function footprintPurposeText(item) {
+	      return pickText(item.purpose, item.viewPurpose, item.reason, item.scene, '-');
+	    }
+
+	    function snapshotObject(item) {
+	      return objectValue(item.snapshot, item.dealSnapshot, item.reportSnapshot, item.listingSnapshot, item.listingSnapshotSummary);
+	    }
+
+	    function snapshotSummaryText(item, roleFallback) {
+	      if (item.snapshotSummary) return item.snapshotSummary;
+	      if (item.listingSnapshotSummary) return item.listingSnapshotSummary;
+	      const snapshot = snapshotObject(item);
+	      const uploader = pickText(
+	        item.uploader,
+	        item.uploaderName,
+	        snapshot.uploader,
+	        snapshot.uploaderName,
+	        snapshot.uploaderId
+	      ) || '-';
+	      const dealer = pickText(
+	        item.dealer,
+	        item.dealUser,
+	        item.dealUserName,
+	        item.broker,
+	        item.brokerName,
+	        snapshot.dealer,
+	        snapshot.dealUser,
+	        snapshot.broker,
+	        roleFallback
+	      ) || '-';
+	      const rate = pickText(
+	        item.uploaderCommissionRate,
+	        item.commissionRate,
+	        snapshot.uploaderCommissionRate,
+	        snapshot.commissionRate,
+	        20
+	      );
+	      const listing = pickText(
+	        snapshot.listingTitle,
+	        snapshot.title,
+	        snapshot.community,
+	        item.listingTitle,
+	        item.listing,
+	        item.community,
+	        item.listingId
+	      ) || '-';
+	      return `上传人 ${uploader} · 成交人 ${dealer} · 固定 ${rate}% · 房源快照 ${listing}`;
+	    }
 
     async function getAdminData(path, fallback) {
       if (!canUseAdminApi()) return fallback();
@@ -1145,34 +1233,98 @@
       }
     }
 
-    async function getDashboardData() {
-      return getAdminData('/admin/dashboard', () => dataCenter.getDashboardSummary());
-    }
+	    async function getDashboardData() {
+	      return getAdminData('/admin/dashboard', () => dataCenter.getDashboardSummary());
+	    }
 
-    async function renderDashboardStats() {
-      const summary = await getDashboardData();
-      const areaText = summary.areaStats.map((item) => `${item.area} ${item.count}`).join(' · ');
-      document.getElementById('dashboardStats').innerHTML = [
-        { value: summary.listingCount, label: `区域房源数量<br>${areaText}` },
-        { value: summary.userCount, label: `中介账号<br>已实名 ${summary.authedUsers} 人` },
-        { value: summary.staleListingCount || 0, label: `待电话核验<br>废房源池 ${summary.expiredListingCount || 0} 套` },
-        { value: summary.todaySensitiveViews || 0, label: `今日敏感查看<br>需复盘 ${summary.todaySensitiveViews || 0} 次` }
-      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+	    async function getDashboardFallbackRows() {
+	      const [reports, deals, listings, expiredListings, footprints] = await Promise.all([
+	        getAdminData('/admin/reports', getLocalReportRows),
+	        getAdminData('/admin/deals', getLocalDealRows),
+	        getAdminData('/admin/listings', () => dataCenter.getAdminListings()),
+	        getAdminData('/admin/expired-listings', () => (
+	          dataCenter.getExpiredListings ? dataCenter.getExpiredListings({}) : []
+	        )),
+	        getAdminData('/admin/footprints', () => dataCenter.getAdminLogs())
+	      ]);
+	      return {
+	        reports: arrayValue(reports),
+	        deals: arrayValue(deals),
+	        listings: arrayValue(listings),
+	        expiredListings: arrayValue(expiredListings),
+	        footprints: arrayValue(footprints)
+	      };
+	    }
 
-      document.getElementById('riskRows').innerHTML = [
-        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '房源管理', status: summary.staleListingCount > 0 ? '需核验' : '正常', time: '自动统计' },
-        { title: '敏感信息查看记录新增', object: '房源足迹', status: summary.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-        { title: '签单审核待管理员确认', object: '签单审核', status: '处理中', time: '今天' }
-      ].map((item) => `
-        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
-      `).join('');
-    }
+	    async function buildTodayTaskMetrics(summary = {}) {
+	      const rows = await getDashboardFallbackRows();
+	      const pendingReports = rows.reports.filter((item) => {
+	        const status = String(item.status || '');
+	        return !item.dealId && status !== '已签单' && status !== '已取消';
+	      }).length;
+	      const pendingDeals = rows.deals.filter((item) => item.status !== '已确认');
+	      const pendingCommissionFen = pendingDeals.reduce((sum, item) => sum + expectedUploaderCommissionFen(item), 0);
+	      const expiringSoon = rows.listings.filter((item) => {
+	        const statusText = [item.verifyStatus, item.verifyTip, item.status].filter(Boolean).join(' ');
+	        return Number(item.staleDays || 0) >= 5 || /再次提醒|即将失效|重点核验/.test(statusText);
+	      }).length;
+	      const todaySensitiveViews = rows.footprints.filter((item) => item.action !== '记录带看').length;
+	      return {
+	        pendingMaintenanceListings: numberValue(
+	          summary.pendingMaintenanceListingCount,
+	          summary.pendingMaintenanceCount,
+	          summary.staleListingCount,
+	          rows.listings.filter((item) => item.needsVerify || item.verifyStatus === '需核验').length
+	        ),
+	        expiringSoonListings: numberValue(
+	          summary.expiringSoonListingCount,
+	          summary.soonExpiredListingCount,
+	          summary.nearExpiredListingCount,
+	          expiringSoon
+	        ),
+	        expiredListingCount: numberValue(summary.expiredListingCount, rows.expiredListings.length),
+	        pendingReportCount: numberValue(summary.pendingReportCount, summary.pendingClientReportCount, pendingReports),
+	        pendingDealCount: numberValue(summary.pendingDealCount, summary.pendingDealConfirmCount, pendingDeals.length),
+	        todaySensitiveViews: numberValue(summary.todaySensitiveViews, todaySensitiveViews),
+	        pendingUploaderCommissionFen: numberValue(
+	          summary.pendingUploaderCommissionFen,
+	          summary.pendingExpectedUploaderCommissionFen,
+	          pendingCommissionFen
+	        )
+	      };
+	    }
 
-    async function renderAreaStats() {
-      const summary = await getDashboardData();
-      const areaData = summary.areaStats || dataCenter.getAreaStats();
-      const max = Math.max.apply(null, areaData.map((item) => item.count));
-      document.getElementById('areaStats').innerHTML = areaData.map((item) => `
+	    async function renderDashboardStats() {
+	      const summary = await getDashboardData() || {};
+	      const tasks = await buildTodayTaskMetrics(summary);
+	      const areaStats = arrayValue(summary.areaStats);
+	      const areaText = areaStats.length ? areaStats.map((item) => `${item.area} ${item.count}`).join(' · ') : '暂无分区数据';
+	      document.getElementById('dashboardStats').innerHTML = [
+	        { value: tasks.pendingMaintenanceListings, label: `待维护房源<br>${areaText}` },
+	        { value: `${tasks.expiringSoonListings}/${tasks.expiredListingCount}`, label: '即将失效 / 废房源池<br>第7天自动进入资产池' },
+	        { value: tasks.pendingReportCount, label: '待跟进报备<br>未发起签单或待补充' },
+	        { value: tasks.pendingDealCount, label: '待确认签单<br>管理员确认后生成分佣' },
+	        { value: tasks.todaySensitiveViews, label: `今日敏感查看<br>需复盘 ${tasks.todaySensitiveViews} 次` },
+	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端固定 20%' }
+	      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+
+	      document.getElementById('riskRows').innerHTML = [
+	        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '待维护房源', status: tasks.pendingMaintenanceListings > 0 ? '需核验' : '正常', time: '今日任务' },
+	        { title: '即将失效房源与废房源池复盘', object: '资产池', status: (tasks.expiringSoonListings + tasks.expiredListingCount) > 0 ? '需关注' : '正常', time: '今日任务' },
+	        { title: '报备记录待跟进', object: '报备记录', status: tasks.pendingReportCount > 0 ? '待联系核对' : '正常', time: '今日任务' },
+	        { title: '签单审核待管理员确认', object: '签单审核', status: tasks.pendingDealCount > 0 ? '待确认' : '正常', time: '今日任务' },
+	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
+	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '后端固定20%' }
+	      ].map((item) => `
+	        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
+	      `).join('');
+	    }
+
+	    async function renderAreaStats() {
+	      const summary = await getDashboardData() || {};
+	      const areaData = summary.areaStats || dataCenter.getAreaStats();
+	      const max = Math.max(1, Math.max.apply(null, areaData.map((item) => item.count)));
+	      document.getElementById('areaStats').innerHTML = areaData.map((item) => `
         <div class="area-row">
           <strong>${item.area}</strong>
           <div class="bar"><i style="width: ${Math.max(18, Math.round(item.count / max * 100))}%"></i></div>
@@ -1302,19 +1454,20 @@
       expiredListingEmpty.hidden = rows.length > 0;
     }
 
-    async function renderAdminLogs() {
-      const rows = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
-      document.getElementById('adminLogRows').innerHTML = rows.map((item) => `
-        <tr>
-          <td>${item.viewer}</td>
-          <td>${item.listing}</td>
-          <td>${item.action}</td>
-          <td>${item.uploader}</td>
-          <td><span class="${pillClass(item.sync)}">${item.sync}</span></td>
-          <td>${item.time}</td>
-        </tr>
-      `).join('');
-    }
+	    async function renderAdminLogs() {
+	      const rows = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
+	      document.getElementById('adminLogRows').innerHTML = rows.map((item) => `
+	        <tr>
+	          <td>${safeText(item.viewer || item.user)}</td>
+	          <td>${safeText(item.listing || item.title)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
+	          <td>${safeText(item.action || item.status)}</td>
+	          <td>${safeText(needIdText(item))}<span class="sub-cell">${safeText(footprintPurposeText(item))}</span></td>
+	          <td>${safeText(item.uploader)}</td>
+	          <td><span class="${pillClass(item.sync)}">${safeText(item.sync)}</span></td>
+	          <td>${safeText(item.time)}</td>
+	        </tr>
+	      `).join('');
+	    }
 
     function getLocalReportRows() {
       if (!dataCenter.getClientReports) return [];
@@ -1353,14 +1506,16 @@
       const rows = await getAdminData('/admin/reports', getLocalReportRows);
       const body = document.getElementById('reportRows');
       const empty = document.getElementById('reportEmpty');
-      body.innerHTML = rows.map((item) => {
-        const dealText = item.dealId ? `已发起：${safeText(item.dealId)}` : '未发起';
-        return `
-          <tr>
-            <td>${safeText(item.listingTitle || item.listing || item.community)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
-            <td>${safeText(item.broker)}</td>
-            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
-            <td><span class="${pillClass(item.status)}">${safeText(item.status || '已报备')}</span></td>
+	      body.innerHTML = rows.map((item) => {
+	        const dealText = item.dealId ? `已发起：${safeText(item.dealId)}` : '未发起';
+	        const snapshotText = snapshotSummaryText(item, item.broker);
+	        return `
+	          <tr>
+	            <td>${safeText(item.listingTitle || item.listing || item.community)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
+	            <td>${safeText(needIdText(item))}<span class="sub-cell">${safeText(snapshotText)}</span></td>
+	            <td>${safeText(item.broker)}</td>
+	            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
+	            <td><span class="${pillClass(item.status)}">${safeText(item.status || '已报备')}</span></td>
             <td>${dealText}</td>
             <td>${safeText(item.time || item.createdAt)}</td>
           </tr>
@@ -1393,12 +1548,13 @@
         const commissionText = confirmed
           ? moneyText(item.uploaderCommission, commissionFen)
           : moneyText(item.expectedUploaderCommission, commissionFen);
-        return `
-          <tr>
-            <td>${safeText(item.listingTitle || item.listing)}<span class="sub-cell">报备 ${safeText(item.reportId, '-')}</span></td>
-            <td>${safeText(item.broker)}</td>
-            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
-            <td>
+	        return `
+	          <tr>
+	            <td>${safeText(item.listingTitle || item.listing)}<span class="sub-cell">报备 ${safeText(item.reportId, '-')}</span></td>
+	            <td>${safeText(needIdText(item))}<span class="sub-cell">${safeText(snapshotSummaryText(item, item.broker))}</span></td>
+	            <td>${safeText(item.broker)}</td>
+	            <td>${safeText(item.customerName || '未填写')}<span class="sub-cell">${safeText(maskedCustomerPhone(item))}</span></td>
+	            <td>
               <span class="money-strong">月租 ${safeText(moneyText(item.dealMonthlyRent, item.dealMonthlyRentFen))}</span>
               <span class="sub-cell">房东实付佣金 ${safeText(moneyText(item.landlordCommission, item.landlordCommissionFen))}</span>
             </td>

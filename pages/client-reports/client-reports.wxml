@@ -47,8 +47,9 @@
             <view class="customer-value">{{item.customerPhoneMasked}}</view>
           </view>
         </view>
+        <view wx:if="{{item.needId}}" class="need-row">需求单：{{item.needId}}</view>
         <view class="card-actions">
-          <button class="ghost-button" bindtap="openListing" data-id="{{item.listingId}}">查看房源</button>
+          <button class="ghost-button" bindtap="openListing" data-id="{{item.listingId}}" data-need-id="{{item.needId}}">查看房源</button>
           <button class="primary-button" disabled="{{!item.canCreateDeal}}" bindtap="openDealModal" data-id="{{item.id}}">{{item.canCreateDeal ? '发起签单' : '已提交签单'}}</button>
         </view>
       </view>

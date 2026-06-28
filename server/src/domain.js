@@ -75,12 +75,22 @@ function reportById(db, reportId) {
   return (db.clientReports || []).find((report) => report.id === reportId)
 }
 
+function rentalNeedById(db, needId) {
+  return (db.rentalNeeds || db.clientNeeds || []).find((need) => need.id === needId)
+}
+
 function dealById(db, dealId) {
   return (db.dealRecords || []).find((deal) => deal.id === dealId)
 }
 
+function looksLikeVideoPath(value = '') {
+  return /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(String(value || '').trim())
+}
+
 function hasListingVideo(listing = {}) {
-  return Boolean(String(listing.videoUrl || '').trim() || String(listing.videoKey || '').trim())
+  const videoKey = String(listing.videoKey || '').trim()
+  const videoUrl = String(listing.videoUrl || '').trim()
+  return looksLikeVideoPath(videoKey) || looksLikeVideoPath(videoUrl)
 }
 
 function isSoldListing(listing = {}) {
@@ -522,7 +532,15 @@ function setListingMaintenanceRule(db, adminId, payload = {}) {
 }
 
 function currentUser(db, userId) {
-  return userById(db, userId) || (db.users || [])[0] || {}
+  return userById(db, userId) || {}
+}
+
+function assertKnownUser(db, userId) {
+  const user = userById(db, userId)
+  if (user) return user
+  const error = new Error('未登录或账号未开通，请先使用内部中介账号登录')
+  error.statusCode = 403
+  throw error
 }
 
 function loginByPhone(db, phone) {
@@ -534,20 +552,9 @@ function loginByPhone(db, phone) {
   }
   const user = userByPhone(db, target)
   if (!user) {
-    db.users = db.users || []
-    const broker = {
-      id: id('U'),
-      name: `中介${target.slice(-4)}`,
-      phone: target,
-      role: BROKER_ROLE,
-      authed: BROKER_AUTHED,
-      isAdmin: false,
-      brokerStatus: '未开通',
-      createdAt: nowText()
-    }
-    db.users.push(broker)
-    db.currentUserId = broker.id
-    return clone(broker)
+    const error = new Error('该手机号未开通内部中介账号，请联系管理员开通')
+    error.statusCode = 403
+    throw error
   }
   db.currentUserId = user.id
   return clone(user)
@@ -578,19 +585,9 @@ function registerUser(db, payload = {}) {
     return clone(existed)
   }
 
-  db.users = db.users || []
-  const user = {
-    id: id('U'),
-    name,
-    phone,
-    role: payload.role || '内部员工',
-    authed: '已实名',
-    isAdmin: false,
-    createdAt: nowText()
-  }
-  db.users.push(user)
-  db.currentUserId = user.id
-  return clone(user)
+  const error = new Error('第一版仅支持内部邀请开通账号，请联系管理员添加中介账号')
+  error.statusCode = 403
+  throw error
 }
 
 function pointBalance(db, userId) {
@@ -613,6 +610,7 @@ function dashboardSummary(db) {
   const areas = areaStats(db)
   const groups = db.groups || []
   const users = db.users || []
+  const today = todayKey()
   return {
     listingCount: publicListings(db).length,
     areaStats: areas,
@@ -622,7 +620,11 @@ function dashboardSummary(db) {
     unlockedGroupCount: groups.filter((group) => group.unlocked).length,
     userCount: users.length,
     authedUsers: users.filter((user) => user.authed === '已实名').length,
-    todaySensitiveViews: (db.footprints || []).filter((item) => item.action !== '记录带看').length,
+    todaySensitiveViews: (db.footprints || []).filter((item) => {
+      if (item.action === '记录带看') return false
+      if (item.dateKey) return item.dateKey === today
+      return item.time === '刚刚' || String(item.time || '').indexOf(today) !== -1
+    }).length,
     pendingShowingUploadCount: (db.showingUploads || []).filter((item) => item.status === '待审核').length
   }
 }
@@ -671,19 +673,50 @@ function brokerSensitiveUsage(db, userId, date = todayKey()) {
   }
 }
 
-function assertSensitiveViewAllowed(db, userId, listing) {
+function normalizePurposePayload(payload = {}) {
+  if (typeof payload === 'string') return { action: payload, purpose: '', needId: '' }
+  return {
+    action: payload.action || '',
+    purpose: String(payload.purpose || payload.scene || payload.reason || '').trim(),
+    needId: String(payload.needId || payload.rentalNeedId || payload.clientNeedId || '').trim()
+  }
+}
+
+function assertUserNeed(db, userId, needId, fieldName = 'needId') {
+  if (!needId) {
+    const error = new Error(`${fieldName}必填`)
+    error.statusCode = 400
+    throw error
+  }
+  const need = rentalNeedById(db, needId)
+  if (!need) {
+    const error = new Error('未找到需求单')
+    error.statusCode = 404
+    throw error
+  }
+  if (need.brokerId !== userId) {
+    const error = new Error('只能使用自己的需求单')
+    error.statusCode = 403
+    throw error
+  }
+  return need
+}
+
+function assertSensitiveViewAllowed(db, userId, listing, payload = {}) {
   const viewer = userById(db, userId) || {}
   const category = sensitiveQuotaCategory(listing, userId)
-  if (category === 'own') {
-    return { category, quota: brokerSensitiveUsage(db, userId) }
+  if (!isBrokerUser(viewer) && viewer.authed !== '已实名') {
+    const error = new Error('查看地址和房东联系方式前需要先完成实名认证')
+    error.statusCode = 403
+    throw error
   }
-  if (!isBrokerUser(viewer)) {
-    if (viewer.authed !== '已实名' && !viewer.isAdmin) {
-      const error = new Error('查看地址和房东联系方式前需要先完成实名认证')
-      error.statusCode = 403
-      throw error
-    }
-    return { category, quota: brokerSensitiveUsage(db, userId) }
+
+  const purpose = normalizePurposePayload(payload)
+  assertUserNeed(db, userId, purpose.needId)
+  if (!purpose.purpose) {
+    const error = new Error('查看房源敏感信息必须填写查看用途')
+    error.statusCode = 400
+    throw error
   }
 
   const date = todayKey()
@@ -902,7 +935,26 @@ function listingDetail(db, listingId) {
   }
 }
 
-function listingLogs(db, listingId) {
+function assertListingLogsReadable(db, userId, listing) {
+  const user = userById(db, userId) || {}
+  if (user.isAdmin || listing.uploaderId === userId) return
+  const hasViewed = (db.footprints || []).some((item) => item.listingId === listing.id && item.viewerId === userId)
+  if (hasViewed) return
+  const error = new Error('只能查看自己上传或自己已留痕房源的足迹')
+  error.statusCode = 403
+  throw error
+}
+
+function listingLogs(db, listingId, userId) {
+  const listing = listingById(db, listingId)
+  if (userId !== undefined) {
+    if (!listing) {
+      const error = new Error('未找到该房源')
+      error.statusCode = 404
+      throw error
+    }
+    assertListingLogsReadable(db, userId, listing)
+  }
   return (db.footprints || [])
     .filter((item) => item.listingId === listingId)
     .map((item) => {
@@ -910,6 +962,8 @@ function listingLogs(db, listingId) {
       return {
         user: user.name || '未知',
         action: item.action,
+        needId: item.needId || '',
+        purpose: item.purpose || '',
         time: item.time
       }
     })
@@ -935,10 +989,65 @@ function footprintRecords(db, userId) {
         time: record.time,
         price: listing.rent ? `¥${listing.rent}/月` : '',
         meta: `上传人：${uploader.name || '未知'} · ${record.sync}`,
+        needId: record.needId || '',
+        purpose: record.purpose || '',
         direction: isMine ? '我查看的' : '我的房源被查看',
         raw: clone(record)
       }
     })
+}
+
+function formatRentalNeed(need = {}) {
+  return {
+    id: need.id,
+    brokerId: need.brokerId,
+    rawText: need.rawText || '',
+    voiceText: need.voiceText || '',
+    confirmedNeed: clone(need.confirmedNeed || need.form || {}),
+    form: clone(need.form || need.confirmedNeed || {}),
+    source: need.source || 'manual',
+    status: need.status || 'active',
+    createdAt: need.createdAt || '',
+    updatedAt: need.updatedAt || ''
+  }
+}
+
+function userRentalNeeds(db, userId) {
+  return (db.rentalNeeds || [])
+    .filter((need) => need.brokerId === userId)
+    .map(formatRentalNeed)
+}
+
+function createRentalNeed(db, userId, payload = {}) {
+  assertKnownUser(db, userId)
+  const rawText = String(payload.rawText || payload.text || '').trim()
+  const voiceText = String(payload.voiceText || payload.voice || '').trim()
+  const confirmedNeed = clone(payload.confirmedNeed || payload.form || payload.confirmedForm || {})
+  if (!rawText && !voiceText && !Object.keys(confirmedNeed).length) {
+    const error = new Error('需求内容必填')
+    error.statusCode = 400
+    throw error
+  }
+
+  const now = nowText()
+  const need = {
+    id: id('N'),
+    brokerId: userId,
+    rawText,
+    voiceText,
+    confirmedNeed,
+    form: clone(confirmedNeed),
+    source: String(payload.source || 'manual').trim() || 'manual',
+    status: String(payload.status || 'active').trim() || 'active',
+    createdAt: now,
+    updatedAt: now
+  }
+  db.rentalNeeds = db.rentalNeeds || []
+  db.rentalNeeds.unshift(need)
+  return {
+    message: '需求单已创建',
+    need: formatRentalNeed(need)
+  }
 }
 
 function ownedListings(db, userId) {
@@ -997,6 +1106,90 @@ function profileState(db, userId) {
         status: bill.status,
         time: bill.time
       }))
+  }
+}
+
+function todayTaskItem(type, title, count, unit, desc, url, tone) {
+  return { type, title, count, unit, desc, url, tone }
+}
+
+function todayTasks(db, userId) {
+  const owned = activeListings(db).filter((listing) => listing.uploaderId === userId)
+  const staleOwned = owned.filter((listing) => listingFreshness(listing).needsVerify)
+  const expiringOwned = owned.filter((listing) => {
+    const freshness = listingFreshness(listing)
+    return freshness.reminderStage === 'day5' || freshness.reminderStage === 'expire'
+  })
+  const reports = userReportRows(db, userId)
+  const deals = userDealRows(db, userId)
+  const commissions = userCommissionRows(db, userId)
+  const footprints = footprintRecords(db, userId)
+  const pendingReports = reports.filter((report) => !report.dealId && !/失效|取消/.test(String(report.status || ''))).length
+  const pendingDeals = deals.filter((deal) => !/已确认|已驳回/.test(String(deal.status || ''))).length
+  const pendingCommissions = commissions.filter((record) => !/已确认/.test(String(record.status || ''))).length
+  const confirmedCommissions = commissions.filter((record) => /已确认/.test(String(record.status || ''))).length
+  const tasks = [
+    todayTaskItem(
+      'maintenance',
+      '待维护房源',
+      staleOwned.length,
+      '套',
+      staleOwned.length ? '按第 3 天、第 5 天提醒优先电话核验。' : '暂无需要维护的房源。',
+      '/pages/my-listings/my-listings',
+      'green'
+    ),
+    todayTaskItem(
+      'expiring',
+      '即将失效房源',
+      expiringOwned.length,
+      '套',
+      expiringOwned.length ? `第 ${VERIFY_STALE_DAYS} 天未更新会自动失效，先处理临期房源。` : '暂无临期失效房源。',
+      '/pages/my-listings/my-listings',
+      'orange'
+    ),
+    todayTaskItem(
+      'reports',
+      '待跟进报备',
+      pendingReports,
+      '条',
+      pendingReports ? '从报备记录继续发起签单或补充跟进。' : '暂无待跟进报备。',
+      '/pages/client-reports/client-reports',
+      'blue'
+    ),
+    todayTaskItem(
+      'deals',
+      '待确认签单',
+      pendingDeals,
+      '单',
+      pendingDeals ? '已提交签单等待管理员确认分佣。' : '暂无待确认签单。',
+      '/pages/deal-records/deal-records',
+      'red'
+    ),
+    todayTaskItem(
+      'commissions',
+      '分佣提醒',
+      pendingCommissions,
+      '笔',
+      `待确认 ${pendingCommissions} 笔，已确认 ${confirmedCommissions} 笔。`,
+      '/pages/commissions/commissions',
+      'yellow'
+    ),
+    todayTaskItem(
+      'footprints',
+      '敏感查看留痕',
+      footprints.length,
+      '条',
+      footprints.length ? '复盘地址、电话查看记录，防跳单留痕。' : '暂无新的敏感查看记录。',
+      '/pages/footprint/footprint',
+      'gray'
+    )
+  ]
+  return {
+    summary: {
+      pendingCount: tasks.reduce((sum, item) => sum + Number(item.count || 0), 0),
+      updatedAt: nowText()
+    },
+    tasks
   }
 }
 
@@ -1462,6 +1655,8 @@ function adminLogs(db) {
       viewer: viewer.name,
       listing: listing.shortTitle,
       action: item.action,
+      needId: item.needId || '',
+      purpose: item.purpose || '',
       uploader: uploader.name,
       sync: item.sync,
       time: item.time
@@ -1601,7 +1796,7 @@ function showingUploadRows(db) {
   })
 }
 
-function addSensitiveFootprint(db, userId, listingId, action) {
+function addSensitiveFootprint(db, userId, listingId, payload = {}) {
   const listing = listingById(db, listingId)
   if (!listing) {
     const error = new Error('未找到该房源')
@@ -1609,14 +1804,17 @@ function addSensitiveFootprint(db, userId, listingId, action) {
     throw error
   }
   assertFrontendListingAvailable(listing)
-  const access = assertSensitiveViewAllowed(db, userId, listing)
+  const purposePayload = normalizePurposePayload(payload)
+  const access = assertSensitiveViewAllowed(db, userId, listing, purposePayload)
 
   db.footprints = db.footprints || []
   db.footprints.unshift({
     id: id('F'),
     listingId,
     viewerId: userId,
-    action: action || '查看地址和电话',
+    action: purposePayload.action || '查看地址和电话',
+    needId: purposePayload.needId || '',
+    purpose: purposePayload.purpose || '',
     time: '刚刚',
     dateKey: todayKey(),
     quotaCategory: access.category,
@@ -1779,13 +1977,18 @@ function formatClientReport(db, report = {}) {
   const listing = listingById(db, report.listingId) || {}
   const location = publicListingLocationFields(listing)
   const broker = userById(db, report.brokerId) || {}
+  const snapshot = report.reportSnapshot || {}
   return {
     id: report.id,
+    needId: report.needId || '',
     listingId: report.listingId,
-    listingTitle: publicListingTitle(listing, location) || '未知房源',
+    listingTitle: report.listingTitle || snapshot.listingTitle || publicListingTitle(listing, location) || '未知房源',
+    community: report.community || snapshot.community || location.community || '',
     broker: broker.name || '未知',
     customerName: report.customerName || '',
     customerPhoneMasked: maskPhone(report.customerPhone),
+    reportSnapshot: clone(snapshot),
+    snapshotAt: report.snapshotAt || snapshot.snapshotAt || '',
     status: report.status,
     dealId: report.dealId || '',
     time: report.createdAt || report.time || ''
@@ -1824,10 +2027,32 @@ function createClientReport(db, userId, listingId, payload = {}) {
   }
 
   const now = nowText()
-  const report = {
-    id: id('R'),
+  const needId = String(payload.needId || payload.rentalNeedId || payload.clientNeedId || '').trim()
+  assertUserNeed(db, userId, needId)
+  const location = publicListingLocationFields(listing)
+  const listingTitle = publicListingTitle(listing, location) || listing.title || '未知房源'
+  const reportSnapshot = {
+    needId,
     listingId,
     brokerId: userId,
+    uploaderId: listing.uploaderId,
+    listingTitle,
+    community: location.community || '',
+    rentAtReport: listing.rent || '',
+    rentFen: Math.round(Number(listing.rent || 0) * 100),
+    source: listing.source || listingSourceFields(listing).sourceLabel || '',
+    snapshotAt: now
+  }
+  const report = {
+    id: id('R'),
+    needId,
+    listingId,
+    brokerId: userId,
+    uploaderId: listing.uploaderId,
+    listingTitle,
+    community: location.community || '',
+    snapshotAt: now,
+    reportSnapshot,
     customerName: String(payload.customerName || payload.customer || payload.name || '').trim(),
     customerPhone,
     status: '已报备',
@@ -1853,8 +2078,10 @@ function formatDealRecord(db, deal = {}) {
   return {
     id: deal.id,
     reportId: deal.reportId,
+    needId: deal.needId || '',
     listingId: deal.listingId,
-    listingTitle: publicListingTitle(listing, location) || '未知房源',
+    listingTitle: deal.listingTitle || publicListingTitle(listing, location) || '未知房源',
+    community: deal.community || location.community || '',
     broker: broker.name || '未知',
     uploader: uploader.name || '未知',
     customerName: report.customerName || '',
@@ -1869,6 +2096,13 @@ function formatDealRecord(db, deal = {}) {
     uploaderCommissionFen: deal.uploaderCommissionFen || 0,
     uploaderCommission: fenToYuanText(deal.uploaderCommissionFen || 0),
     commissionRecordId: deal.commissionRecordId || '',
+    rentFen: deal.rentFen || 0,
+    rentAtDeal: deal.rentAtDeal || '',
+    ownerType: deal.ownerType || '',
+    source: deal.source || '',
+    commissionRule: clone(deal.commissionRule || { rate: UPLOADER_COMMISSION_RATE }),
+    snapshotAt: deal.snapshotAt || '',
+    dealSnapshot: clone(deal.dealSnapshot || {}),
     status: deal.status,
     remark: deal.remark || '',
     time: deal.createdAt || deal.time || '',
@@ -1926,12 +2160,42 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   )
 
   const now = nowText()
+  const location = publicListingLocationFields(listing)
+  const listingTitle = publicListingTitle(listing, location) || listing.title || '未知房源'
+  const rentFen = Math.round(Number(listing.rent || 0) * 100)
+  const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
+  const source = listing.source || listingSourceFields(listing).sourceLabel || ''
+  const dealSnapshot = {
+    needId: report.needId || '',
+    listingId: report.listingId,
+    reportId,
+    brokerId: report.brokerId,
+    uploaderId: listing.uploaderId,
+    listingTitle,
+    community: location.community || '',
+    rentAtDeal: listing.rent || '',
+    rentFen,
+    ownerType,
+    source,
+    commissionRule: { rate: UPLOADER_COMMISSION_RATE },
+    snapshotAt: now
+  }
   const deal = {
     id: id('D'),
     reportId,
+    needId: report.needId || '',
     listingId: report.listingId,
     brokerId: report.brokerId,
     uploaderId: listing.uploaderId,
+    listingTitle,
+    community: location.community || '',
+    rentAtDeal: listing.rent || '',
+    rentFen,
+    ownerType,
+    source,
+    commissionRule: { rate: UPLOADER_COMMISSION_RATE },
+    snapshotAt: now,
+    dealSnapshot,
     dealMonthlyRentFen,
     landlordCommissionFen,
     remark: String(payload.remark || payload.note || '').trim(),
@@ -1984,8 +2248,9 @@ function confirmDeal(db, adminId, dealId) {
     id: id('C'),
     dealId: deal.id,
     reportId: deal.reportId,
+    needId: deal.needId || '',
     listingId: deal.listingId,
-    uploaderId: listing.uploaderId,
+    uploaderId: deal.uploaderId,
     dealUserId: deal.brokerId,
     rate: UPLOADER_COMMISSION_RATE,
     dealMonthlyRentFen: deal.dealMonthlyRentFen,
@@ -2579,10 +2844,41 @@ function validateListingFields(fields, user = {}, options = {}) {
   }
 }
 
+function duplicateListingValue(value) {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase()
+}
+
+function duplicateListingPhone(value) {
+  return String(value || '').replace(/\D/g, '')
+}
+
+function duplicateListingKey(fields = {}) {
+  return [
+    duplicateListingValue(fields.community),
+    duplicateListingValue(fields.building),
+    duplicateListingValue(fields.unit),
+    duplicateListingValue(fields.roomNumber),
+    duplicateListingPhone(fields.contact || fields.landlordPhone)
+  ].join('|')
+}
+
+function assertNoDuplicateActiveListing(db, fields, currentListingId = '') {
+  const targetKey = duplicateListingKey(fields)
+  const duplicate = activeListings(db).find((listing) => (
+    listing.id !== currentListingId &&
+    duplicateListingKey(listing) === targetKey
+  ))
+  if (!duplicate) return
+  const error = new Error(`已存在同一小区、楼栋、单元、房号和房东手机号的有效房源，请勿重复上传（房东手机号 ${maskPhone(fields.contact)}）`)
+  error.statusCode = 409
+  throw error
+}
+
 function addNormalListing(db, userId, form = {}, options = {}) {
   const fields = normalizeListingForm(form)
-  const user = currentUser(db, userId)
+  const user = assertKnownUser(db, userId)
   validateListingFields(fields, user, options)
+  assertNoDuplicateActiveListing(db, fields)
 
   const listingId = id('L')
   const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
@@ -2716,6 +3012,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
 
   const fields = normalizeListingForm(form, listing)
   validateListingFields(fields, user, options)
+  assertNoDuplicateActiveListing(db, fields, listingId)
   const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
 
   listing.title = `${fields.address} · ${fields.layout}`
@@ -2840,8 +3137,11 @@ module.exports = {
   listingDetail,
   listingLogs,
   footprintRecords,
+  userRentalNeeds,
+  createRentalNeed,
   ownedListings,
   profileState,
+  todayTasks,
   groupState,
   mapCommunities,
   mapPins,

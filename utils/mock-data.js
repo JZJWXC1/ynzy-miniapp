@@ -56,24 +56,34 @@
     骏塘名庭: { latitude: 30.282157, longitude: 120.215869, source: 'lianjia-bd09-to-gcj02' },
     翰皋名府: { latitude: 30.280384, longitude: 120.211055, source: 'lianjia-bd09-to-gcj02' },
     皋塘运都: { latitude: 30.281799, longitude: 120.213997, source: 'hangzhou-rentals-amap' },
-    长木府: { latitude: 30.304535, longitude: 120.177467, source: 'lianjia-bd09-to-gcj02' },
-    香柠颜家府: { latitude: 30.307094, longitude: 120.176774, source: 'lianjia-bd09-to-gcj02' },
-    杨乐府: { latitude: 30.303432, longitude: 120.168634, source: 'lianjia-bd09-to-gcj02' },
-    长岳王马府: { latitude: 30.295281, longitude: 120.175526, source: 'lianjia-bd09-to-gcj02' },
-    兴业杨家府: { latitude: 30.323286, longitude: 120.191643, source: 'estimated-by-yangjia-qinyuan' },
-    华丰欣苑: { latitude: 30.337823, longitude: 120.200076, source: 'lianjia-bd09-to-gcj02' },
-    石桥铭苑: { latitude: 30.342859, longitude: 120.190776, source: 'estimated-by-shiqiao-road' },
-    永佳新苑: { latitude: 30.344938, longitude: 120.189903, source: 'lianjia-bd09-to-gcj02' },
-    中融城市花园: { latitude: 30.272679, longitude: 120.128231, source: 'lianjia-bd09-to-gcj02' },
+	    长木府: { latitude: 30.304535, longitude: 120.177467, source: 'lianjia-bd09-to-gcj02' },
+	    长浜龙吟轩: { latitude: 30.309357, longitude: 120.184283, source: 'amap-poi-B0K6U5MNPA' },
+	    香柠颜家府: { latitude: 30.307094, longitude: 120.176774, source: 'lianjia-bd09-to-gcj02' },
+	    杨乐府: { latitude: 30.303432, longitude: 120.168634, source: 'lianjia-bd09-to-gcj02' },
+	    长岳王马府: { latitude: 30.295281, longitude: 120.175526, source: 'lianjia-bd09-to-gcj02' },
+	    兴业杨家府: { latitude: 30.32315, longitude: 120.198637, source: 'amap-poi-B0MA5XR20Z' },
+	    杨家新雅苑: { latitude: 30.319816, longitude: 120.190283, source: 'amap-poi-B0MB4KYB67' },
+	    琬秋铭府: { latitude: 30.287781, longitude: 120.196655, source: 'amap-poi-B0KKK5QPUI' },
+	    华丰欣苑: { latitude: 30.337823, longitude: 120.200076, source: 'lianjia-bd09-to-gcj02' },
+	    华丰新苑: { latitude: 30.338453, longitude: 120.199293, source: 'amap-poi-B0L6SY3412' },
+	    石桥铭苑: { latitude: 30.332732, longitude: 120.190706, source: 'amap-poi-B0L16HRS32' },
+	    永佳新苑: { latitude: 30.344938, longitude: 120.189903, source: 'lianjia-bd09-to-gcj02' },
+	    永佳欣苑: { latitude: 30.344415, longitude: 120.189613, source: 'amap-poi-B0LB2ZPTD0' },
+	    中融城市花园: { latitude: 30.272679, longitude: 120.128231, source: 'lianjia-bd09-to-gcj02' },
     大华海派风景: { latitude: 30.345286, longitude: 120.121984, source: 'lianjia-bd09-to-gcj02' },
     星桥锦绣嘉苑: { latitude: 30.330332, longitude: 120.113377, source: 'lianjia-bd09-to-gcj02' },
     孔家埭和府: { latitude: 30.330706, longitude: 120.098179, source: 'lianjia-bd09-to-gcj02' },
     合嵣悦府: { latitude: 30.357956, longitude: 120.071333, source: 'lianjia-bd09-to-gcj02' },
     臻棠樾府: { latitude: 30.328821, longitude: 120.151128, source: 'lianjia-bd09-to-gcj02' },
     万融城: { latitude: 30.333846, longitude: 120.127299, source: 'lianjia-bd09-to-gcj02' },
-    吉如家园: { latitude: 30.31814, longitude: 120.129706, source: 'lianjia-bd09-to-gcj02' },
-    棠润府: { latitude: 30.336618, longitude: 120.129081, source: 'lianjia-bd09-to-gcj02' }
-  };
+	    吉如家园: { latitude: 30.31814, longitude: 120.129706, source: 'lianjia-bd09-to-gcj02' },
+	    棠润府: { latitude: 30.336618, longitude: 120.129081, source: 'lianjia-bd09-to-gcj02' },
+	    白田畈龙吟府: { latitude: 30.300532, longitude: 120.191573, source: 'amap-poi-B0KDBHKX6N' },
+	    嘉樘星绣府: { latitude: 30.317987, longitude: 120.184781, source: 'amap-poi-B0JKVRM87Y' },
+	    嘉橖星绣府: { latitude: 30.317987, longitude: 120.184781, source: 'amap-poi-B0JKVRM87Y' },
+	    小洋坝家园二区: { latitude: 30.347765, longitude: 120.102918, source: 'amap-poi-B0I637WD1Z' },
+	    昌运里三区: { latitude: 30.342866, longitude: 120.131563, source: 'amap-poi-B0J6VZ5YOP' }
+	  };
 
   function parseFeatureInput(value) {
     var source = Array.isArray(value) ? value : String(value || '').split(/[，,、|]/);
@@ -373,17 +383,9 @@
       return String(item.phone || '') === target;
     });
     if (!user) {
-      user = {
-        id: 'U' + Date.now(),
-        name: '中介' + target.slice(-4),
-        phone: target,
-        role: BROKER_ROLE,
-        authed: BROKER_AUTHED,
-        isAdmin: false,
-        brokerStatus: '未开通',
-        createdAt: '刚刚'
-      };
-      state.users.push(user);
+      var error = new Error('该手机号未开通内部中介账号，请联系管理员开通');
+      error.statusCode = 403;
+      throw error;
     }
     state.currentUserId = user.id;
     return clone(user);
@@ -393,6 +395,14 @@
     return state.listings.find(function (listing) {
       return listing.id === id;
     });
+  }
+
+  function looksLikeVideoPath(value) {
+    return /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(String(value || '').trim());
+  }
+
+  function hasListingVideo(listing) {
+    return looksLikeVideoPath(listing && listing.videoUrl) || looksLikeVideoPath(listing && listing.videoKey);
   }
 
   function isExpiredListing(listing) {
@@ -1329,17 +1339,24 @@
     };
   }
 
-  function assertSensitiveViewAllowed(listing) {
+  function assertSensitiveViewAllowed(listing, payload) {
+    var data = payload || {};
     var viewer = getUser() || {};
     var category = sensitiveQuotaCategory(listing || {}, state.currentUserId);
-    if (category === 'own') return { category: category, quota: brokerSensitiveUsage(state.currentUserId) };
-    if (!isBrokerUser(viewer)) {
-      if (viewer.authed !== '已实名' && !viewer.isAdmin) {
-        var authError = new Error('查看地址和房东联系方式前需要先完成实名认证');
-        authError.statusCode = 403;
-        throw authError;
-      }
-      return { category: category, quota: brokerSensitiveUsage(state.currentUserId) };
+    if (!isBrokerUser(viewer) && viewer.authed !== '已实名') {
+      var authError = new Error('查看地址和房东联系方式前需要先完成实名认证');
+      authError.statusCode = 403;
+      throw authError;
+    }
+    if (!(data.needId || data.rentalNeedId || data.clientNeedId)) {
+      var needError = new Error('查看房源敏感信息必须绑定找房需求');
+      needError.statusCode = 400;
+      throw needError;
+    }
+    if (!(data.purpose || data.scene || data.reason)) {
+      var purposeError = new Error('查看房源敏感信息必须填写查看用途');
+      purposeError.statusCode = 400;
+      throw purposeError;
     }
     var date = todayKey();
     var alreadyViewed = (state.footprints || []).some(function (record) {
@@ -1431,19 +1448,40 @@
     if (!/^1[3-9]\d{9}$/.test(phone)) {
       throw new Error('客户手机号必填');
     }
+    var needId = String(data.needId || data.rentalNeedId || data.clientNeedId || '').trim();
+    if (!needId) {
+      throw new Error('needId必填');
+    }
+    var now = new Date().toLocaleString('zh-CN', { hour12: false });
+    var reportSnapshot = {
+      needId: needId,
+      listingId: listingId,
+      brokerId: state.currentUserId,
+      uploaderId: listing.uploaderId,
+      listingTitle: listing.title || listing.shortTitle || '',
+      community: listing.community || '',
+      rentAtReport: listing.rent || '',
+      rentFen: Math.round(Number(listing.rent || 0) * 100),
+      source: listing.source || '',
+      snapshotAt: now
+    };
     state.clientReports = state.clientReports || [];
     var report = {
       id: 'CR' + Date.now(),
+      needId: needId,
       listingId: listingId,
       listingTitle: listing.title || listing.shortTitle || '',
       community: listing.community || '',
       brokerId: state.currentUserId,
+      uploaderId: listing.uploaderId,
+      snapshotAt: now,
+      reportSnapshot: reportSnapshot,
       customerName: String(data.customerName || '').trim(),
       customerPhone: phone,
       customerPhoneMasked: maskedPhone(phone),
       status: '已报备',
       dealId: '',
-      createdAt: new Date().toLocaleString('zh-CN', { hour12: false })
+      createdAt: now
     };
     state.clientReports.unshift(report);
     return {
@@ -1501,7 +1539,8 @@
     };
   }
 
-  function addSensitiveFootprint(listingId, action) {
+  function addSensitiveFootprint(listingId, payload) {
+    var data = typeof payload === 'object' && payload ? payload : { action: payload };
     var listing = getListing(listingId);
     if (isExpiredListing(listing)) {
       throw new Error('该房源已下架，已进入后台废房源池');
@@ -1509,13 +1548,15 @@
     if (isPendingOwnerReview(listing)) {
       throw new Error('该房源正在等待管理员审核，审核通过后才会上架');
     }
-    var access = assertSensitiveViewAllowed(listing);
+    var access = assertSensitiveViewAllowed(listing, data);
     var id = 'F' + Date.now();
     state.footprints.unshift({
       id: id,
       listingId: listingId,
       viewerId: state.currentUserId,
-      action: action || '查看地址和电话',
+      action: data.action || '查看地址和电话',
+      needId: data.needId || data.rentalNeedId || data.clientNeedId || '',
+      purpose: data.purpose || data.scene || data.reason || '',
       time: '刚刚',
       dateKey: todayKey(),
       quotaCategory: access.category,
@@ -1714,7 +1755,7 @@
     var communityReview = normalizeCommunityReviewState(form, {});
     var needsReview = sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview;
     var mapCoordinate = listingMapCoordinateFields(community, form, {});
-    if (!address || !form.contact || !form.rent || !layout || !form.videoUrl || !rawCommunity || !building || !roomNumber) {
+    if (!address || !form.contact || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
       throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
     }
     if (!Number.isFinite(rate) || rate < 0 || rate > 20) {

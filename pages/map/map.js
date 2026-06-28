@@ -138,6 +138,7 @@ function validCommunity(item) {
 
 function emptyFilters() {
   return {
+    needId: '',
     rentKey: '',
     rentMin: '',
     rentMax: '',
@@ -208,8 +209,10 @@ Page({
     const sourceType = pending.sourceType || pending.houseSourceType || pending.category || ''
     const area = pending.area || pending.region || pending.district || pending.block || pending.community || ''
     const listingIds = toArray(pending.listingIds || pending.ids || pending.listingId)
+    const needId = pending.needId || pending.rentalNeedId || pending.clientNeedId || ''
     return {
       ...baseFilters,
+      needId,
       rentMin,
       rentMax,
       rentKey: rentKeyFromRange(rentMin, rentMax),
@@ -384,8 +387,10 @@ Page({
   openListing(event) {
     const id = event.currentTarget.dataset.id
     if (!id) return
+    const needId = this.data.filters && this.data.filters.needId ? this.data.filters.needId : ''
+    const query = needId ? `&needId=${encodeURIComponent(needId)}&source=map` : ''
     wx.navigateTo({
-      url: `/pages/listing-detail/listing-detail?id=${id}`
+      url: `/pages/listing-detail/listing-detail?id=${id}${query}`
     })
   },
 
@@ -395,6 +400,7 @@ Page({
     const listingFilters = {
       category: listingCategoryFromMapFilters(filters),
       filters: {
+        needId: filters.needId || '',
         area: selectedCommunity ? '' : (filters.area || ''),
         block: '',
         community: selectedCommunity ? selectedCommunity.community : '',

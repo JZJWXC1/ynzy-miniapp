@@ -24,6 +24,11 @@ const communityCoordinates = {
     longitude: 120.177467,
     source: 'lianjia-bd09-to-gcj02'
   },
+  长浜龙吟轩: {
+    latitude: 30.309357,
+    longitude: 120.184283,
+    source: 'amap-poi-B0K6U5MNPA'
+  },
   香柠颜家府: {
     latitude: 30.307094,
     longitude: 120.176774,
@@ -40,24 +45,44 @@ const communityCoordinates = {
     source: 'lianjia-bd09-to-gcj02'
   },
   兴业杨家府: {
-    latitude: 30.323286,
-    longitude: 120.191643,
-    source: 'estimated-by-yangjia-qinyuan'
+    latitude: 30.32315,
+    longitude: 120.198637,
+    source: 'amap-poi-B0MA5XR20Z'
+  },
+  杨家新雅苑: {
+    latitude: 30.319816,
+    longitude: 120.190283,
+    source: 'amap-poi-B0MB4KYB67'
+  },
+  琬秋铭府: {
+    latitude: 30.287781,
+    longitude: 120.196655,
+    source: 'amap-poi-B0KKK5QPUI'
   },
   华丰欣苑: {
     latitude: 30.337823,
     longitude: 120.200076,
     source: 'lianjia-bd09-to-gcj02'
   },
+  华丰新苑: {
+    latitude: 30.338453,
+    longitude: 120.199293,
+    source: 'amap-poi-B0L6SY3412'
+  },
   石桥铭苑: {
-    latitude: 30.342859,
-    longitude: 120.190776,
-    source: 'estimated-by-shiqiao-road'
+    latitude: 30.332732,
+    longitude: 120.190706,
+    source: 'amap-poi-B0L16HRS32'
   },
   永佳新苑: {
     latitude: 30.344938,
     longitude: 120.189903,
     source: 'lianjia-bd09-to-gcj02'
+  },
+  永佳欣苑: {
+    latitude: 30.344415,
+    longitude: 120.189613,
+    source: 'amap-poi-B0LB2ZPTD0'
   },
   中融城市花园: {
     latitude: 30.272679,
@@ -103,6 +128,31 @@ const communityCoordinates = {
     latitude: 30.336618,
     longitude: 120.129081,
     source: 'lianjia-bd09-to-gcj02'
+  },
+  白田畈龙吟府: {
+    latitude: 30.300532,
+    longitude: 120.191573,
+    source: 'amap-poi-B0KDBHKX6N'
+  },
+  嘉樘星绣府: {
+    latitude: 30.317987,
+    longitude: 120.184781,
+    source: 'amap-poi-B0JKVRM87Y'
+  },
+  嘉橖星绣府: {
+    latitude: 30.317987,
+    longitude: 120.184781,
+    source: 'amap-poi-B0JKVRM87Y'
+  },
+  小洋坝家园二区: {
+    latitude: 30.347765,
+    longitude: 120.102918,
+    source: 'amap-poi-B0I637WD1Z'
+  },
+  昌运里三区: {
+    latitude: 30.342866,
+    longitude: 120.131563,
+    source: 'amap-poi-B0J6VZ5YOP'
   }
 }
 

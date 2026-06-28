@@ -1,4 +1,5 @@
 const llmService = require('../../utils/llm-service')
+const apiService = require('../../utils/api-service')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 const {
@@ -276,6 +277,11 @@ function buildMapFilters(need, listings) {
   }
 }
 
+function needIdFromResult(result) {
+  const data = result || {}
+  return data.needId || data.id || (data.need && (data.need.needId || data.need.id)) || ''
+}
+
 Page({
   data: {
     messages: [
@@ -469,14 +475,20 @@ Page({
   appendAssistantResult(matchResult) {
     const listingSections = buildListingSections(matchResult)
     const listings = flattenSections(listingSections)
+    const requestPayload = this.lastRequestPayload || {}
+    const needId = matchResult.needId || requestPayload.needId || ''
+    const needTemporary = Boolean(requestPayload.needTemporary || matchResult.needTemporary)
     const assistantMessage = {
       id: createMessageId('assistant'),
       role: 'assistant',
       text: buildAssistantText(matchResult, listings),
       needTags: buildNeedTags(matchResult.need),
+      needId,
+      needTemporary,
+      needNotice: needTemporary ? '需求单接口暂不可用，已生成临时需求单，可继续看房验证。' : '',
       listingSections,
       listings,
-      mapFilters: buildMapFilters(matchResult.need, listings),
+      mapFilters: Object.assign(buildMapFilters(matchResult.need, listings), { needId }),
       retryable: Boolean(matchResult.networkFailed),
       retryAction: 'match',
       retryText: '重试匹配',
@@ -584,9 +596,11 @@ Page({
 
   openListing(event) {
     const id = event.currentTarget.dataset.id
+    const needId = event.currentTarget.dataset.needId || ''
     if (!id) return
+    const query = needId ? `&needId=${encodeURIComponent(needId)}&source=match` : ''
     wx.navigateTo({
-      url: `/pages/listing-detail/listing-detail?id=${id}`
+      url: `/pages/listing-detail/listing-detail?id=${id}${query}`
     })
   },
 
@@ -608,19 +622,50 @@ Page({
       role: 'user',
       text: '确认这些条件，开始匹配。'
     }
-    this.lastRequestPayload = payload
     this.setData({
       messages: this.data.messages.concat(userMessage),
       loading: true,
       scrollTarget: 'typing-row'
     })
-    this.executeMatch(payload)
+    this.createNeedAndMatch(payload, message)
+  },
+
+  createNeedAndMatch(payload, message) {
+    const need = confirmFormToNeed(message.confirmForm, message.need)
+    apiService.createRentalNeed({
+      source: 'match-chat',
+      text: payload.text,
+      need,
+      form: payload.form
+    }).then((result) => {
+      const needId = needIdFromResult(result)
+      const needTemporary = Boolean(result && result.temporary)
+      const nextPayload = Object.assign({}, payload, {
+        needId,
+        needTemporary,
+        need
+      })
+      this.lastNeedContext = {
+        needId,
+        needTemporary
+      }
+      this.lastRequestPayload = nextPayload
+      if (needTemporary) {
+        wx.showToast({ title: '已用临时需求单继续验证', icon: 'none' })
+      }
+      this.executeMatch(nextPayload)
+    }).catch(() => {
+      this.lastRequestPayload = payload
+      wx.showToast({ title: '需求单保存失败，继续本地匹配', icon: 'none' })
+      this.executeMatch(payload)
+    })
   },
 
   openMapForListing(event) {
     const messageId = event.currentTarget.dataset.messageId
     const message = this.findMessage(messageId) || {}
     const filters = Object.assign({}, message.mapFilters || {})
+    if (message.needId) filters.needId = message.needId
     filters.listingIds = (message.listings || []).map((listing) => listing.id).filter(Boolean)
     if (!filters.listingIds.length) {
       const id = event.currentTarget.dataset.id

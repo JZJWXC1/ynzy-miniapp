@@ -266,6 +266,12 @@ check('报备、签单、管理员确认和 20% 分佣契约正确', () => {
   assert.ok(listRow && detailRow, '有效且有视频房源必须进入前台列表和详情')
   assertNoPublicSensitiveFields(listRow, '前台列表')
   assertNoPublicSensitiveFields(detailRow, '前台详情')
+  const needResult = domain.createRentalNeed(db, 'U2', {
+    rawText: '客户找滨江两室，预算 4500',
+    confirmedNeed: { area: '滨江区', layout: '两室', budgetMax: 4500 },
+    source: 'acceptance'
+  })
+  const need = db.rentalNeeds.find((item) => item.id === needResult.need.id)
 
   assertRejects(
     () => domain.createClientReport(db, 'U2', created.id, { customerName: '王先生' }),
@@ -273,12 +279,15 @@ check('报备、签单、管理员确认和 20% 分佣契约正确', () => {
     '报备客户手机号必须必填'
   )
   const reportResult = domain.createClientReport(db, 'U2', created.id, {
+    needId: need.id,
     customerName: '',
     customerPhone: '13800001111',
     brokerId: 'CLIENT_BROKER'
   })
   const report = db.clientReports.find((item) => item.id === reportResult.report.id)
   assert.strictEqual(report.brokerId, 'U2', '报备 brokerId 必须来自服务端当前用户')
+  assert.strictEqual(report.needId, need.id, '报备必须绑定需求单')
+  assert.ok(report.reportSnapshot && report.reportSnapshot.uploaderId === 'U1', '报备必须冻结房源快照')
 
   assertRejects(
     () => domain.registerDeal(db, 'U2', created.id),

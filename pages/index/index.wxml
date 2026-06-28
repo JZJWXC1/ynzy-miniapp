@@ -8,8 +8,8 @@
           <image class="ai-logo" src="/assets/logo.png" mode="aspectFit"></image>
         </view>
         <view class="ai-head-text">
-          <view class="ai-title">寓你配房小帮手</view>
-          <view class="ai-subtitle">告诉我预算 区域 户型 快速匹配</view>
+          <view class="ai-title">寓你找房助手</view>
+          <view class="ai-subtitle">先识别需求，确认字段后再匹配房源</view>
         </view>
       </view>
       <view class="assistant-input-row">
@@ -40,6 +40,39 @@
       </view>
     </view>
 
+    <view class="task-summary-card">
+      <view>
+        <view class="task-summary-label">今日待处理</view>
+        <view class="task-summary-value">{{taskSummary.pendingCount || 0}}</view>
+      </view>
+      <view class="task-summary-copy">{{taskLoading ? '正在同步任务' : '来自个人工作聚合'}}</view>
+    </view>
+
+    <view class="section-title">
+      <view class="section-title-main">今日任务</view>
+      <view class="section-title-action tap-target" bindtap="openPage" data-url="/pages/profile/profile">我的</view>
+    </view>
+    <view class="task-list">
+      <view wx:for="{{visibleTodayTasks}}" wx:key="type" class="task-card tone-{{item.tone}}" bindtap="openTask" data-url="{{item.url}}">
+        <view class="task-main">
+          <view class="task-title">{{item.title}}</view>
+          <view class="task-desc">{{item.desc}}</view>
+        </view>
+        <view class="task-count">
+          <text>{{item.count}}</text>
+          <text>{{item.unit}}</text>
+        </view>
+      </view>
+      <view wx:if="{{!todayTasks.length && !taskLoading}}" class="empty-card soft-card">
+        <view class="empty-title">今日任务暂未同步</view>
+        <view class="empty-desc">可先进入我的页面查看房态、报备、签单和分佣。</view>
+      </view>
+      <view wx:if="{{collapsedTaskCount}}" class="task-fold tap-target" bindtap="toggleTaskFold">
+        <text class="task-fold-text">{{taskFoldText}}</text>
+        <text class="task-fold-meta">{{taskFoldMeta}}</text>
+      </view>
+    </view>
+
     <view class="category-grid">
       <view wx:for="{{categories}}" wx:key="name" class="category-card tap-target" bindtap="openCategory" data-name="{{item.name}}">
         <view class="category-icon">{{item.icon}}</view>
@@ -49,7 +82,7 @@
     </view>
 
     <view class="section-title">
-      <view class="section-title-main">内部配房工具</view>
+      <view class="section-title-main">找房入口</view>
       <view class="section-title-action tap-target" bindtap="openPage" data-url="/pages/upload/upload">上传房源</view>
     </view>
     <view class="quick-grid">
@@ -93,7 +126,7 @@
     </view>
 
     <view class="section-title">
-      <view class="section-title-main">中介效率工具</view>
+      <view class="section-title-main">处理规则</view>
       <view class="section-title-action tap-target" bindtap="handleTap" data-name="我的工作台">进入工作台</view>
     </view>
     <view class="workbench-grid">

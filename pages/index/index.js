@@ -26,18 +26,29 @@ Page({
     quickActions: [
       {
         title: '地图找房',
-        desc: '按区域、商圈和通勤位置快速看公司共享房源',
+        desc: '查看已确认小区坐标的真实可租房源',
         icon: '图',
         url: '/pages/map/map'
       },
       {
         title: '我的房源',
-        desc: '管理自己上传的房源、查看敏感信息访问足迹',
+        desc: '维护自己上传的房态和可租状态',
         icon: '房',
         url: '/pages/my-listings/my-listings'
       }
     ],
     listings: [],
+    todayTasks: [],
+    visibleTodayTasks: [],
+    collapsedTaskCount: 0,
+    taskExpanded: false,
+    taskFoldText: '展开其他任务',
+    taskFoldMeta: '',
+    taskSummary: {
+      pendingCount: 0,
+      updatedAt: ''
+    },
+    taskLoading: false,
     workbench: [
       { title: '实名查看留痕', value: '地址和电话查看同步上传人和管理员' },
       { title: '分佣规则', value: '签单后按平台规则计算' },
@@ -54,6 +65,7 @@ Page({
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
+    this.loadTodayTasks();
     apiService.getHomeListings().then((listings) => {
       this.setData({ listings })
     }).catch(() => {
@@ -93,6 +105,46 @@ Page({
         });
         wx.showToast({ title: '语音识别失败', icon: 'none' });
       }
+    });
+  },
+
+  loadTodayTasks() {
+    this.setData({ taskLoading: true });
+    apiService.getTodayTasks().then((result) => {
+      const todayTasks = (result && result.tasks) || [];
+      this.setData({
+        taskLoading: false,
+        todayTasks,
+        taskSummary: (result && result.summary) || { pendingCount: 0, updatedAt: '' },
+        ...this.buildTaskView(todayTasks, this.data.taskExpanded)
+      });
+    }).catch(() => {
+      this.setData({ taskLoading: false });
+      wx.showToast({ title: '今日任务加载失败', icon: 'none' });
+    });
+  },
+
+  buildTaskView(tasks, expanded) {
+    const taskList = tasks || [];
+    const primaryTypes = ['maintenance', 'expiring'];
+    let primaryTasks = taskList.filter((item) => primaryTypes.includes(item.type));
+    if (!primaryTasks.length) primaryTasks = taskList.slice(0, 2);
+    const primaryKeys = new Set(primaryTasks.map((item) => item.type || item.title));
+    const foldedTasks = taskList.filter((item) => !primaryKeys.has(item.type || item.title));
+    const collapsedTaskCount = foldedTasks.length;
+    return {
+      visibleTodayTasks: expanded ? taskList : primaryTasks,
+      collapsedTaskCount,
+      taskFoldText: expanded ? '收起其他任务' : '展开其他任务',
+      taskFoldMeta: expanded ? '已显示全部' : `${collapsedTaskCount} 项已折叠`
+    };
+  },
+
+  toggleTaskFold() {
+    const taskExpanded = !this.data.taskExpanded;
+    this.setData({
+      taskExpanded,
+      ...this.buildTaskView(this.data.todayTasks, taskExpanded)
     });
   },
 
@@ -178,6 +230,12 @@ Page({
         wx.showToast({ title: '页面打开失败', icon: 'none' });
       }
     });
+  },
+
+  openTask(event) {
+    const url = event.currentTarget.dataset.url;
+    if (!url) return;
+    this.openPage({ currentTarget: { dataset: { url } } });
   },
 
   openCategory(event) {

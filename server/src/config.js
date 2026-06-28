@@ -84,6 +84,11 @@ module.exports = {
     readUrlExpireSeconds: numberFromEnv('ALI_OSS_READ_URL_EXPIRE_SECONDS', 900)
   },
   rechargePaymentMode: process.env.RECHARGE_PAYMENT_MODE || 'manual',
+  miniProgram: {
+    requestDomain: process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
+    uploadDomain: process.env.MINI_UPLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com',
+    downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
+  },
   feishu: {
     baseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn/open-apis',
     appId: process.env.FEISHU_APP_ID || '',
@@ -100,7 +105,7 @@ module.exports = {
     recordsFile: process.env.FEISHU_RECORDS_FILE || '',
     materialsFile: process.env.FEISHU_MATERIALS_FILE || '',
     uploadToOss: boolFromEnv('FEISHU_UPLOAD_TO_OSS', true),
-    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 480)
+    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 1440)
   },
   wechatPay: {
     enabled: process.env.RECHARGE_PAYMENT_MODE === 'wechat',

@@ -108,6 +108,8 @@
             <text wx:for="{{message.needTags}}" wx:for-item="tag" wx:key="*this">{{tag}}</text>
           </view>
 
+          <view wx:if="{{message.needNotice}}" class="need-notice">{{message.needNotice}}</view>
+
           <view wx:if="{{message.empty}}" class="empty-match">
             <view class="empty-title">暂无合适房源</view>
             <view class="empty-desc">可以放宽预算、区域或户型后再试。</view>
@@ -148,7 +150,7 @@
                 <view class="card-bottom">
                   <view class="card-price">{{listing.price}}</view>
                   <view class="card-actions">
-                    <button catchtap="openListing" data-id="{{listing.id}}">看详情</button>
+                    <button catchtap="openListing" data-id="{{listing.id}}" data-need-id="{{message.needId}}">看详情</button>
                     <button catchtap="openMapForListing" data-id="{{listing.id}}" data-message-id="{{message.id}}">地图查看</button>
                   </view>
                 </view>

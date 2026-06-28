@@ -1,4 +1,5 @@
 const apiClient = require('./api-client')
+const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
 
@@ -23,6 +24,140 @@ function mapRent(value) {
   if (Number.isFinite(number)) return number
   const matched = String(value || '').match(/(\d+(?:\.\d+)?)/)
   return matched ? Number(matched[1]) : 0
+}
+
+function firstNumber(value) {
+  const matched = String(value || '').match(/\d+/)
+  return matched ? Number(matched[0]) : 0
+}
+
+function makeTempNeedId() {
+  return `TMP-NEED-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+}
+
+function normalizeNeedResponse(result, payload, temporary) {
+  const data = result || {}
+  const need = data.need || data.rentalNeed || payload || {}
+  const needId = data.needId || data.id || need.id || makeTempNeedId()
+  return Object.assign({}, data, {
+    id: needId,
+    needId,
+    temporary: Boolean(temporary || data.temporary),
+    need: Object.assign({}, need, { id: needId, needId })
+  })
+}
+
+function listFromProfile(profile, keys) {
+  const data = profile || {}
+  for (let i = 0; i < keys.length; i += 1) {
+    if (Array.isArray(data[keys[i]])) return data[keys[i]]
+  }
+  return []
+}
+
+function findReminderCount(profile, patterns) {
+  const reminders = listFromProfile(profile, ['reminders'])
+  const row = reminders.find((item) => {
+    const text = `${item.title || ''}${item.value || ''}${item.desc || ''}`
+    return patterns.some((pattern) => pattern.test(text))
+  })
+  return row ? firstNumber(row.value || row.desc || row.title) : 0
+}
+
+function findSourceStatCount(profile, patterns) {
+  const stats = listFromProfile(profile, ['sourceStats'])
+  const row = stats.find((item) => {
+    const text = `${item.label || ''}${item.title || ''}`
+    return patterns.some((pattern) => pattern.test(text))
+  })
+  return row ? firstNumber(row.value) : 0
+}
+
+function buildTodayTasksFromProfile(profile) {
+  const reports = listFromProfile(profile, ['reports', 'clientReports'])
+  const deals = listFromProfile(profile, ['deals', 'dealRecords'])
+  const commissions = listFromProfile(profile, ['commissions', 'commissionRecords'])
+  const footprints = listFromProfile(profile, ['footprints', 'sensitiveFootprints'])
+
+  const pendingReports = reports.filter((item) => {
+    const status = String(item.status || '')
+    return !item.dealId && status.indexOf('失效') === -1 && status.indexOf('取消') === -1
+  }).length
+  const pendingDeals = deals.filter((item) => {
+    const status = String(item.status || '')
+    return status.indexOf('已确认') === -1 && status.indexOf('已驳回') === -1
+  }).length
+  const pendingCommissions = commissions.filter((item) => String(item.status || '').indexOf('已确认') === -1).length ||
+    findSourceStatCount(profile, [/待分佣/, /待确认分佣/])
+  const confirmedCommissions = commissions.filter((item) => String(item.status || '').indexOf('已确认') !== -1).length
+  const maintenanceCount = findReminderCount(profile, [/房态/, /维护/, /核验/])
+  const expiringCount = findReminderCount(profile, [/即将失效/, /失效/, /第\s*7\s*天/, /7\s*天/])
+
+  const tasks = [
+    {
+      type: 'maintenance',
+      title: '待维护房源',
+      count: maintenanceCount,
+      unit: '套',
+      desc: maintenanceCount ? '按第 3 天、第 5 天提醒优先电话核验。' : '暂无需要维护的房源。',
+      url: '/pages/my-listings/my-listings',
+      tone: 'green'
+    },
+    {
+      type: 'expiring',
+      title: '即将失效房源',
+      count: expiringCount,
+      unit: '套',
+      desc: expiringCount ? '第 7 天未更新会自动失效，先处理临期房源。' : '暂无临期失效房源。',
+      url: '/pages/my-listings/my-listings',
+      tone: 'orange'
+    },
+    {
+      type: 'reports',
+      title: '待跟进报备',
+      count: pendingReports,
+      unit: '条',
+      desc: pendingReports ? '从报备记录继续发起签单或补充跟进。' : '暂无待跟进报备。',
+      url: '/pages/client-reports/client-reports',
+      tone: 'blue'
+    },
+    {
+      type: 'deals',
+      title: '待确认签单',
+      count: pendingDeals,
+      unit: '单',
+      desc: pendingDeals ? '已提交签单等待管理员确认分佣。' : '暂无待确认签单。',
+      url: '/pages/deal-records/deal-records',
+      tone: 'red'
+    },
+    {
+      type: 'commissions',
+      title: '分佣提醒',
+      count: pendingCommissions,
+      unit: '笔',
+      desc: `待确认 ${pendingCommissions} 笔，已确认 ${confirmedCommissions} 笔。`,
+      url: '/pages/commissions/commissions',
+      tone: 'yellow'
+    },
+    {
+      type: 'footprints',
+      title: '敏感查看留痕',
+      count: footprints.length,
+      unit: '条',
+      desc: footprints.length ? '复盘地址、电话查看记录，防跳单留痕。' : '暂无新的敏感查看记录。',
+      url: '/pages/footprint/footprint',
+      tone: 'gray'
+    }
+  ]
+
+  return {
+    summary: {
+      pendingCount: tasks.reduce((sum, item) => sum + Number(item.count || 0), 0),
+      updatedAt: profile && profile.updatedAt ? profile.updatedAt : ''
+    },
+    tasks,
+    profile
+  }
 }
 
 function truthyMapFlag(value) {
@@ -250,7 +385,7 @@ function registerUser(form) {
     path: '/mini/auth/register',
     method: 'POST',
     data: form,
-    mock: () => mockData.getCurrentUser()
+    mock: () => mockData.loginByPhone(form && form.phone)
   })
 }
 
@@ -312,11 +447,14 @@ function getListingLogs(id) {
 }
 
 function addSensitiveFootprint(listingId, action) {
+  const payload = typeof action === 'object'
+    ? action
+    : { action }
   return apiClient.call({
     path: `/mini/listings/${listingId}/sensitive-view`,
     method: 'POST',
-    data: { action },
-    mock: () => mockData.addSensitiveFootprint(listingId, action)
+    data: payload,
+    mock: () => mockData.addSensitiveFootprint(listingId, payload)
   })
 }
 
@@ -420,6 +558,39 @@ function getProfileState() {
   return apiClient.call({
     path: '/mini/profile',
     mock: () => mockData.getProfileState()
+  })
+}
+
+function getTodayTasks() {
+  return apiClient.call({
+    path: '/mini/today-tasks',
+    mock: () => buildTodayTasksFromProfile(mockData.getProfileState())
+  }).then((result) => {
+    if (result && result.tasks) return result
+    return buildTodayTasksFromProfile(result || {})
+  }).catch(() => getProfileState().then(buildTodayTasksFromProfile))
+}
+
+function createRentalNeed(payload) {
+  const data = payload || {}
+  return apiClient.call({
+    path: '/mini/rental-needs',
+    method: 'POST',
+    data,
+    mock: () => normalizeNeedResponse({
+      message: '本地临时需求单已创建',
+      temporary: true
+    }, data, true)
+  }).then((result) => normalizeNeedResponse(result, data, false)).catch((error) => {
+    if (!shouldUseMock(getRuntimeConfig())) {
+      throw error
+    }
+    const message = error && error.message ? error.message : '需求单接口暂不可用'
+    return normalizeNeedResponse({
+      message: `${message}，已使用临时需求单继续验证。`,
+      temporary: true,
+      warning: message
+    }, data, true)
   })
 }
 
@@ -619,6 +790,8 @@ module.exports = {
   getEditableListing,
   updateNormalListing,
   getProfileState,
+  getTodayTasks,
+  createRentalNeed,
   rechargePoints,
   getCommissionRecords,
   getGroupState,

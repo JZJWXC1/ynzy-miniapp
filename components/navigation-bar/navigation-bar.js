@@ -91,10 +91,22 @@ Component({
     },
     back() {
       const data = this.data
-      if (data.delta) {
-        wx.navigateBack({
-          delta: data.delta
+      const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+      const fallbackHome = () => {
+        wx.switchTab({
+          url: '/pages/index/index',
+          fail: () => {
+            wx.reLaunch({ url: '/pages/index/index' })
+          }
         })
+      }
+      if (data.delta && pages.length > data.delta) {
+        wx.navigateBack({
+          delta: data.delta,
+          fail: fallbackHome
+        })
+      } else {
+        fallbackHome()
       }
       this.triggerEvent('back', { delta: data.delta }, {})
     }

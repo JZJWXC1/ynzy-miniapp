@@ -63,6 +63,10 @@
         <view class="hidden-label">房东电话</view>
         <view class="hidden-value">{{sensitiveVisible ? listing.landlordPhone : '完成确认后可查看'}}</view>
       </view>
+      <view class="need-bind-row {{needId ? 'bound' : ''}}">
+        <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>
+        <view class="need-bind-desc">{{needId ? needId : '从找房助手进入会自动带入，也可用当前房源创建最小需求。'}}</view>
+      </view>
       <button class="primary-button" bindtap="revealSensitive">{{sensitiveVisible ? '已记录足迹' : '查看地址和电话'}}</button>
       <view class="showing-action-card {{showingSubmitting ? 'is-loading' : ''}}" bindtap="recordShowing">
         <view class="showing-action-copy">
@@ -105,6 +109,33 @@
     <view class="v1-modal-actions">
       <button class="ghost-button" bindtap="closeReportModal">取消</button>
       <button class="primary-button" loading="{{reportSubmitting}}" bindtap="submitClientReport">提交报备</button>
+    </view>
+  </view>
+</view>
+
+<view wx:if="{{sensitivePurposeModalVisible}}" class="v1-modal-mask" catchtap="closeSensitivePurposeModal">
+  <view class="v1-modal" catchtap="noop">
+    <view class="v1-modal-title">查看用途</view>
+    <view class="modal-sub">查看地址和房东电话前，请选择本次用途并绑定需求单。</view>
+    <view class="purpose-options">
+      <button
+        wx:for="{{sensitivePurposeOptions}}"
+        wx:key="*this"
+        class="purpose-option {{sensitivePurpose === item ? 'active' : ''}}"
+        data-purpose="{{item}}"
+        bindtap="chooseSensitivePurpose"
+      >
+        {{item}}
+      </button>
+    </view>
+    <view class="v1-field">
+      <text>补充用途</text>
+      <input value="{{sensitivePurposeCustom}}" bindinput="updateSensitivePurposeCustom" placeholder="可选，填写后优先使用" />
+    </view>
+    <view class="need-modal-note">{{needTemporary ? '当前为临时需求单，可继续验证。' : '需求单会随足迹、报备和签单一起提交。'}}</view>
+    <view class="v1-modal-actions">
+      <button class="ghost-button" bindtap="closeSensitivePurposeModal">取消</button>
+      <button class="primary-button" loading="{{sensitiveSubmitting}}" bindtap="confirmRevealSensitive">确认查看</button>
     </view>
   </view>
 </view>

@@ -1,5 +1,9 @@
 const assert = require('assert')
 const domain = require('../src/domain')
+const {
+  communityCoordinates,
+  isReliableCoordinateSource
+} = require('../src/community-coordinates')
 
 const NOW = new Date().toLocaleString('zh-CN', { hour12: false })
 const EIGHT_DAYS_AGO = new Date(Date.now() - 8 * 86400000).toLocaleString('zh-CN', { hour12: false })
@@ -148,7 +152,10 @@ assert(!byCommunity(rows, '默认中心小区'), '默认中心坐标不会进入
 assert(!byCommunity(rows, '散列估算小区'), '区域估算或散列坐标不会进入地图')
 assert(!byCommunity(rows, '旧偏移小区'), 'legacy map offset 坐标不会进入地图')
 assert(!byCommunity(rows, '手填未验证小区'), '未验证的手填经纬度不会进入地图')
-assert(!byCommunity(rows, '兴业杨家府'), '坐标库中的估算来源不会进入地图')
+assert(Object.entries(communityCoordinates).every(([, coordinate]) => (
+  isReliableCoordinateSource(coordinate.source)
+)), '坐标库不能保留估算、散列、默认中心或待确认来源')
+assert(byCommunity(rows, '兴业杨家府'), '已补可靠 POI 坐标的小区应进入地图')
 assert(byCommunity(rows, '管理员确认小区'), 'coordinateVerified 为 true 的管理员坐标可以进入地图')
 assert(!byCommunity(rows, '待审核小区'), '待审核房源不会进入地图')
 assert(!byCommunity(rows, '已失效小区'), '已失效房源不会进入地图')

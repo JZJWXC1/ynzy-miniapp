@@ -39,7 +39,7 @@ function updateDb(mutator) {
 
 function getCurrentUserId(req, db) {
   const fromHeader = req && req.headers ? req.headers['x-user-id'] : ''
-  return fromHeader || (db && db.currentUserId) || 'U001'
+  return fromHeader || (db && db.currentUserId) || ''
 }
 
 module.exports = {
