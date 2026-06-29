@@ -67,6 +67,12 @@ if [ ! -f "$APP_DIR/server/.env" ]; then
   echo "Created server/.env from example. Fill real secrets before testing uploads or LLM."
 fi
 
+if grep -q '^PORT=' "$APP_DIR/server/.env"; then
+  sed -i 's/^PORT=.*/PORT=3101/' "$APP_DIR/server/.env"
+else
+  printf '\nPORT=3101\n' >> "$APP_DIR/server/.env"
+fi
+
 install_nginx_config() {
   local nginx_conf_dir="/etc/nginx/conf.d"
   local nginx_conf="$nginx_conf_dir/ynzy-miniapp.conf"
@@ -83,7 +89,14 @@ install_nginx_config() {
   grep -q 'location \^~ /room-database/' "$nginx_conf"
   grep -q 'location \^~ /media/' "$nginx_conf"
   grep -q 'proxy_pass http://127.0.0.1:8000;' "$nginx_conf"
-  grep -q 'proxy_pass http://127.0.0.1:3000;' "$nginx_conf"
+  if grep -q 'proxy_pass http://127.0.0.1:3000;' "$nginx_conf"; then
+    echo "Miniapp must not share the robot domain fallback port 3000."
+    exit 1
+  fi
+  if grep -q 'zf-api.ynzyqbot.cn' "$nginx_conf"; then
+    echo "zf-api.ynzyqbot.cn must stay in its own Nginx config and proxy to 3101."
+    exit 1
+  fi
 }
 
 cp "$APP_DIR/deploy/ynzy-miniapp.service" /etc/systemd/system/ynzy-miniapp.service
@@ -97,7 +110,6 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 
-curl -fsS http://127.0.0.1:3000/healthz
-curl -fsS -H 'Host: ynzyqbot.cn' http://127.0.0.1/healthz
+curl -fsS http://127.0.0.1:3101/healthz
 
 echo "Server install finished."
