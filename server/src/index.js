@@ -253,7 +253,10 @@ function serveAdminWeb(req, res, pathname) {
   const ext = path.extname(filePath).toLowerCase()
   res.writeHead(200, {
     'Content-Type': contentTypes[ext] || 'application/octet-stream',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0'
   })
   fs.createReadStream(filePath).pipe(res)
 }
@@ -268,7 +271,10 @@ function serveUtilityScript(req, res, pathname) {
   const filePath = path.resolve(config.rootDir, '..', 'utils', 'mock-data.js')
   res.writeHead(200, {
     'Content-Type': 'application/javascript; charset=utf-8',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    Pragma: 'no-cache',
+    Expires: '0'
   })
   fs.createReadStream(filePath).pipe(res)
 }
