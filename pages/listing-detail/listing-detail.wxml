@@ -95,7 +95,7 @@
     <button class="deal-button" bindtap="startReportDeal">先报备客户，再从报备发起签单</button>
   </view>
 </scroll-view>
-<view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal">
+<view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal" catchtouchmove="noop">
   <view class="v1-modal" catchtap="noop">
     <view class="v1-modal-title">客户报备</view>
     <view class="v1-field">
@@ -113,7 +113,7 @@
   </view>
 </view>
 
-<view wx:if="{{sensitivePurposeModalVisible}}" class="v1-modal-mask" catchtap="closeSensitivePurposeModal">
+<view wx:if="{{sensitivePurposeModalVisible}}" class="v1-modal-mask" catchtap="closeSensitivePurposeModal" catchtouchmove="noop">
   <view class="v1-modal" catchtap="noop">
     <view class="v1-modal-title">查看用途</view>
     <view class="modal-sub">查看地址和房东电话前，请选择本次用途并绑定需求单。</view>
@@ -140,7 +140,7 @@
   </view>
 </view>
 
-<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal">
+<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal" catchtouchmove="noop">
   <view class="v1-modal" catchtap="noop">
     <view class="v1-modal-title">提交签单</view>
     <view class="v1-field">

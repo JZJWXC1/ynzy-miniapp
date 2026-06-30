@@ -53,10 +53,24 @@ Component({
 
     switchTab(event) {
       const { path, index } = event.currentTarget.dataset;
+      if (!path) {
+        wx.showToast({ title: '页面入口异常', icon: 'none' });
+        return;
+      }
+      const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : [];
+      const currentPage = pages[pages.length - 1];
+      const currentPath = currentPage && currentPage.route ? `/${currentPage.route}` : '';
+      if (currentPath === path) {
+        this.setData({ selected: index });
+        return;
+      }
       wx.switchTab({
         url: path,
         success: () => {
           this.setData({ selected: index });
+        },
+        fail: () => {
+          wx.showToast({ title: '页面切换失败', icon: 'none' });
         }
       });
     }

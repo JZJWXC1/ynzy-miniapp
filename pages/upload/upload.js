@@ -470,12 +470,18 @@ Page({
         await apiService.addNormalListing(payload)
       }
       wx.hideLoading()
-      wx.showToast({
-        title: this.data.mode === 'edit' ? '修改成功' : '房源上传成功',
-        icon: 'success'
-      })
       if (this.data.mode === 'edit') {
-        setTimeout(() => wx.navigateBack(), 500)
+        wx.showModal({
+          title: '保存成功',
+          content: '房源信息已更新，返回后可在我的房源中查看最新状态。',
+          showCancel: false,
+          confirmText: '返回',
+          success: () => {
+            wx.navigateBack({
+              fail: () => wx.redirectTo({ url: '/pages/my-listings/my-listings' })
+            })
+          }
+        })
       } else {
         this.setData({
           form: Object.assign({}, defaultForm),
@@ -490,6 +496,19 @@ Page({
           videoFile: null,
           existingVideoUrl: '',
           existingVideoKey: ''
+        })
+        wx.showModal({
+          title: '上传成功',
+          content: '房源已提交。若小区或业主房源需要审核，通过后会展示给中介找房使用。',
+          cancelText: '继续上传',
+          confirmText: '查看房源',
+          success: (res) => {
+            if (!res.confirm) return
+            wx.navigateTo({
+              url: '/pages/my-listings/my-listings',
+              fail: () => wx.redirectTo({ url: '/pages/my-listings/my-listings' })
+            })
+          }
         })
       }
     } catch (error) {

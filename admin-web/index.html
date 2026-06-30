@@ -303,6 +303,10 @@
       box-shadow: var(--shadow);
     }
 
+    .table-wrap {
+      overflow-x: auto;
+    }
+
     .info-panel {
       padding: 18px;
     }
@@ -447,8 +451,195 @@
       gap: 8px;
     }
 
+    .cell-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .cell-actions .table-action {
+      min-height: 30px;
+      padding: 0 12px;
+      font-size: 13px;
+    }
+
     .audit-note {
       margin-bottom: 14px;
+    }
+
+    .review-card-list {
+      display: grid;
+      gap: 14px;
+    }
+
+    .detail-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .detail-toolbar h3 {
+      margin: 0;
+      color: var(--deep);
+      font-size: 22px;
+    }
+
+    .detail-back-button {
+      min-width: 112px;
+      color: var(--pine);
+      background: var(--mint);
+    }
+
+    .list-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      max-width: 260px;
+    }
+
+    .list-tags .pill {
+      min-height: 24px;
+      padding: 0 8px;
+      font-size: 12px;
+    }
+
+    .review-card {
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .review-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+      background: #f7fbf8;
+    }
+
+    .review-card-actions {
+      min-width: 180px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-content: flex-start;
+      gap: 8px;
+    }
+
+    .review-card-head h3 {
+      margin: 0 0 8px;
+      color: var(--deep);
+      font-size: 20px;
+    }
+
+    .review-card-body {
+      display: grid;
+      grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+      gap: 18px;
+      padding: 18px;
+    }
+
+    .review-video {
+      min-height: 220px;
+      overflow: hidden;
+      background: #eef7f3;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    .review-video video {
+      display: block;
+      width: 100%;
+      height: 220px;
+      background: #0f2f29;
+      object-fit: contain;
+    }
+
+    .review-video-empty {
+      display: flex;
+      min-height: 220px;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      color: var(--muted);
+      text-align: center;
+      font-weight: 900;
+    }
+
+    .review-video-link {
+      display: block;
+      padding: 12px 14px;
+      color: var(--pine);
+      font-weight: 900;
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .review-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .review-detail.full {
+      grid-column: 1 / -1;
+    }
+
+    .review-detail {
+      min-height: 66px;
+      padding: 10px 12px;
+      background: #fbfdfb;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    .review-detail span {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .review-detail strong {
+      display: block;
+      color: var(--deep);
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .review-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .review-raw {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .review-raw pre {
+      max-height: 260px;
+      margin: 10px 0 0;
+      overflow: auto;
+      padding: 12px;
+      color: var(--ink);
+      background: #f7fbf8;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     .deal-summary {
@@ -680,10 +871,21 @@
         grid-template-columns: 1fr;
       }
 
+      .review-card-head {
+        flex-direction: column;
+      }
+
+      .review-card-actions {
+        min-width: 0;
+        justify-content: flex-start;
+      }
+
       .config-grid,
       .launch-summary,
       .launch-grid,
       .deal-summary,
+      .review-card-body,
+      .review-detail-grid,
       .form-grid {
         grid-template-columns: 1fr;
       }
@@ -726,6 +928,7 @@
       <div class="menu-title">运营看板</div>
       <button class="nav-button active" data-panel="dashboard">数据总览</button>
       <button class="nav-button" data-panel="listings">房源管理</button>
+      <button class="nav-button" data-panel="listingReviews">房源审核</button>
       <button class="nav-button" data-panel="expiredListings">废房源池</button>
       <div class="menu-title">成交闭环</div>
       <button class="nav-button" data-panel="reports">报备记录</button>
@@ -817,18 +1020,40 @@
         </div>
       </section>
 
+      <section class="panel" id="listingReviews">
+        <div class="status-box audit-note">只显示业主房源、小区未匹配或其他需要人工确认的待审核房源。审核通过后才会进入前台有效房源；驳回后不会对中介展示。</div>
+        <div id="listingReviewList">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>房源</th><th>来源/状态</th><th>小区</th><th>租金</th><th>户型</th><th>标签</th><th>视频</th><th>上传人</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="listingReviewRows"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="listingReviewEmpty" hidden>暂无待审核房源</div>
+        </div>
+        <div id="listingReviewDetail" hidden></div>
+      </section>
+
       <section class="panel" id="expiredListings">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>房源</th><th>区域</th><th>板块</th><th>小区名称</th><th>上传人</th><th>租金</th><th>户型</th><th>最后核验</th><th>下架时间</th><th>下架原因</th><th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="expiredListingRows"></tbody>
-          </table>
+        <div class="status-box audit-note">后台资产池保留完整房源信息、视频和标签；重新上架前请核对视频、房态、地址和房东联系方式。</div>
+        <div id="expiredListingList">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>房源</th><th>状态/原因</th><th>小区</th><th>租金</th><th>户型</th><th>标签</th><th>视频</th><th>下架时间</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="expiredListingRows"></tbody>
+            </table>
+          </div>
           <div class="empty" id="expiredListingEmpty" hidden>暂无废房源</div>
         </div>
+        <div id="expiredListingDetail" hidden></div>
       </section>
 
       <section class="panel" id="logs">
@@ -1036,6 +1261,7 @@
     const panelTitles = {
       dashboard: '数据总览',
       listings: '房源管理',
+      listingReviews: '房源审核',
       expiredListings: '废房源池',
       reports: '报备记录',
       deals: '签单审核',
@@ -1058,13 +1284,15 @@
       custom: { apiBaseUrl: '', model: '', protocol: 'custom-json' }
     };
 
+    const DEFAULT_LLM_SYSTEM_PROMPT = '你是寓你配房小帮手。根据租客预算、区域、户型、入住时间、通勤位置，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。';
+
     const defaultLlmConfig = {
       provider: 'local',
       protocol: 'openai-compatible',
       apiBaseUrl: '',
       model: 'local-match-v1',
       secretName: 'LLM_API_KEY',
-      systemPrompt: '你是寓你配房小帮手。根据租客预算、区域、户型、入住时间、通勤位置，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
+      systemPrompt: DEFAULT_LLM_SYSTEM_PROMPT
     };
 
     const dataCenter = window.MockData;
@@ -1077,12 +1305,20 @@
     const communityFilter = document.getElementById('communityFilter');
     const listingRows = document.getElementById('listingRows');
     const listingEmpty = document.getElementById('listingEmpty');
+    const listingReviewList = document.getElementById('listingReviewList');
+    const listingReviewDetail = document.getElementById('listingReviewDetail');
+    const listingReviewRows = document.getElementById('listingReviewRows');
+    const listingReviewEmpty = document.getElementById('listingReviewEmpty');
+    const expiredListingList = document.getElementById('expiredListingList');
+    const expiredListingDetail = document.getElementById('expiredListingDetail');
     const expiredListingRows = document.getElementById('expiredListingRows');
     const expiredListingEmpty = document.getElementById('expiredListingEmpty');
     const maintenanceRuleEnabled = document.getElementById('maintenanceRuleEnabled');
     const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
     let llmConfigInitialized = false;
+    let listingReviewItems = [];
+    let expiredListingItems = [];
     const localConfirmedDeals = {};
 
     function pillClass(value) {
@@ -1376,6 +1612,310 @@
       listingEmpty.hidden = rows.length > 0;
     }
 
+    function isPendingListingReview(item) {
+      const reviewStatus = String(item.reviewStatus || '').trim();
+      const status = String(item.status || '').trim();
+      return reviewStatus === '待审核' || status === '待审核';
+    }
+
+    function listingReviewReason(item) {
+      if (item.manualReviewReason) return item.manualReviewReason;
+      if (item.communityMatchStatus === '未匹配') return '小区名称未匹配，需要管理员确认';
+      if (item.ownerType === '业主房源' || item.sourceLabel === '业主房源') return '业主房源需要管理员审核';
+      return item.reviewNote || '房源需要管理员人工确认';
+    }
+
+    function uniqueTextList(values) {
+      const seen = {};
+      return (values || [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .filter((value) => {
+          if (seen[value]) return false;
+          seen[value] = true;
+          return true;
+        });
+    }
+
+    function textList(value) {
+      if (Array.isArray(value)) return value;
+      return String(value || '').split(/[，,、|·]/);
+    }
+
+    function listingTagList(item) {
+      return uniqueTextList(
+        textList(item.tags)
+          .concat(textList(item.features))
+          .concat(textList(item.featureText))
+          .filter((value) => value !== '无')
+      );
+    }
+
+    function renderTagPills(item) {
+      const tags = listingTagList(item);
+      if (!tags.length) return '<span class="pill warn">未标标签</span>';
+      return tags.map((tag) => `<span class="pill">${safeText(tag)}</span>`).join('');
+    }
+
+    function renderListTagPills(item, limit = 3) {
+      const tags = listingTagList(item);
+      if (!tags.length) return '<span class="pill warn">未标标签</span>';
+      const shown = tags.slice(0, limit).map((tag) => `<span class="pill">${safeText(tag)}</span>`);
+      if (tags.length > limit) shown.push(`<span class="pill">+${tags.length - limit}</span>`);
+      return shown.join('');
+    }
+
+    function videoStatusText(item) {
+      if (item.videoPreviewUrl || item.videoUrl || item.videoKey || item.hasVideo) return '有视频';
+      return pickText(item.video, '缺视频');
+    }
+
+    function renderReviewVideo(item) {
+      const videoUrl = pickText(item.videoPreviewUrl, item.videoUrl);
+      const sourceUrl = pickText(item.videoUrl, videoUrl);
+      const videoKey = pickText(item.videoKey);
+      if (videoUrl) {
+        return `
+          <div class="review-video">
+            <video controls preload="metadata" playsinline src="${safeAttr(videoUrl)}"></video>
+            <a class="review-video-link" href="${safeAttr(sourceUrl)}" target="_blank" rel="noopener">播放失败时打开原视频</a>
+          </div>
+        `;
+      }
+      return `
+        <div class="review-video">
+          <div class="review-video-empty">
+            ${safeText(videoKey ? `已记录视频Key：${videoKey}` : '未返回可播放视频地址')}
+          </div>
+        </div>
+      `;
+    }
+
+    function roomPositionText(item) {
+      return pickText(
+        item.roomAddress,
+        [item.building, item.unit, item.roomNumber].filter(Boolean).join(' / ')
+      );
+    }
+
+    function roomStructureText(item) {
+      return pickText(
+        [item.room, item.hall, item.bath].filter(Boolean).join(' / '),
+        item.rawLayout,
+        item.layout
+      );
+    }
+
+    function renderReviewDetail(label, value, full = false) {
+      return `
+        <div class="review-detail${full ? ' full' : ''}">
+          <span>${safeText(label)}</span>
+          <strong>${safeText(value)}</strong>
+        </div>
+      `;
+    }
+
+    function adminListingDetails(item, mode) {
+      const reviewReason = listingReviewReason(item);
+      const rows = [
+        ['房源ID', item.id],
+        ['来源类型', pickText(item.sourceLabel, item.ownerType, item.source)],
+        ['状态', item.status],
+        ['审核状态', item.reviewStatus],
+        ['审核原因', reviewReason],
+        ['小区匹配', item.communityMatchStatus],
+        ['租金', item.rent],
+        ['租赁方式', pickText(item.rentMode, item.type)],
+        ['户型/结构', roomStructureText(item)],
+        ['城市/区域', [item.city, item.area].filter(Boolean).join(' / ')],
+        ['板块', item.block],
+        ['小区', item.community],
+        ['楼栋/单元/房号', roomPositionText(item)],
+        ['完整地址', item.address, true],
+        ['房东电话', pickText(item.landlordPhone, item.contact)],
+        ['上传人', item.uploader],
+        ['上传人电话', item.uploaderPhone],
+        ['视频状态', item.hasVideo || item.videoUrl ? '已上传视频' : pickText(item.video, '未传视频')],
+        ['视频Key', item.videoKey, true],
+        ['分佣规则', pickText(item.commissionText, item.commission, item.commissionRate ? `${item.commissionRate}%` : '')],
+        ['最后核验', pickText(item.lastVerifiedAt, '未核验')],
+        ['房态提示', pickText(item.verifyTip, item.maintenanceText)],
+        ['创建时间', item.createdAt],
+        ['更新时间', item.updatedAt]
+      ];
+      if (mode === 'expired') {
+        rows.splice(6, 0, ['下架时间', item.expiredAt], ['下架原因', item.expiredReason, true], ['资产池', item.expiredPool]);
+      }
+      return rows.map((row) => renderReviewDetail(row[0], row[1], Boolean(row[2]))).join('');
+    }
+
+    function renderAdminListingCard(item, options) {
+      const mode = options && options.mode ? options.mode : 'review';
+      const actions = options && options.actions ? options.actions : '';
+      const statusTags = uniqueTextList([
+        pickText(item.sourceLabel, item.ownerType, item.source),
+        item.status,
+        item.reviewStatus && item.reviewStatus !== '无需审核' ? item.reviewStatus : '',
+        videoStatusText(item)
+      ]);
+      return `
+        <article class="review-card">
+          <div class="review-card-head">
+            <div>
+              <h3>${safeText(pickText(item.title, item.community, item.fullTitle, item.id))}</h3>
+              <div class="review-tags">${statusTags.map((tag) => `<span class="${pillClass(tag)}">${safeText(tag)}</span>`).join('')}</div>
+            </div>
+            <div class="review-card-actions">${actions}</div>
+          </div>
+          <div class="review-card-body">
+            <div>
+              ${renderReviewVideo(item)}
+              <div class="review-tags">${renderTagPills(item)}</div>
+            </div>
+            <div>
+              <div class="review-detail-grid">${adminListingDetails(item, mode)}</div>
+              <details class="review-raw">
+                <summary>查看完整原始字段</summary>
+                <pre>${safeText(JSON.stringify(item, null, 2), '{}')}</pre>
+              </details>
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function listingReviewActions(item) {
+      return `
+        <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve">审核通过</button>
+        <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject">驳回</button>
+      `;
+    }
+
+    function expiredListingActions(item) {
+      return `<button class="table-action restore-expired-listing-button" data-id="${safeAttr(item.id)}">重新上架</button>`;
+    }
+
+    function renderDetailPage(item, type) {
+      const isExpired = type === 'expired';
+      const backClass = isExpired ? 'back-expired-list-button' : 'back-review-list-button';
+      const actions = isExpired ? expiredListingActions(item) : listingReviewActions(item);
+      return `
+        <div class="detail-toolbar">
+          <button class="detail-back-button ${backClass}" type="button">返回列表</button>
+          <h3>${safeText(pickText(item.title, item.community, item.id))}</h3>
+        </div>
+        ${renderAdminListingCard(item, {
+          mode: isExpired ? 'expired' : 'review',
+          actions
+        })}
+      `;
+    }
+
+    function showListingReviewList() {
+      listingReviewList.hidden = false;
+      listingReviewDetail.hidden = true;
+      listingReviewDetail.innerHTML = '';
+    }
+
+    function showExpiredListingList() {
+      expiredListingList.hidden = false;
+      expiredListingDetail.hidden = true;
+      expiredListingDetail.innerHTML = '';
+    }
+
+    function findListItem(rows, id, index) {
+      const numericIndex = Number(index);
+      if (Number.isInteger(numericIndex) && numericIndex >= 0 && rows[numericIndex]) return rows[numericIndex];
+      return rows.find((row) => String(row.id) === String(id));
+    }
+
+    function showListingReviewDetail(id, index) {
+      const item = findListItem(listingReviewItems, id, index);
+      if (!item) {
+        alert('未找到这套待审核房源，请刷新列表后重试。');
+        return;
+      }
+      listingReviewDetail.innerHTML = renderDetailPage(item, 'review');
+      listingReviewList.hidden = true;
+      listingReviewDetail.hidden = false;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function showExpiredListingDetail(id, index) {
+      const item = findListItem(expiredListingItems, id, index);
+      if (!item) {
+        alert('未找到这套废房源，请刷新列表后重试。');
+        return;
+      }
+      expiredListingDetail.innerHTML = renderDetailPage(item, 'expired');
+      expiredListingList.hidden = true;
+      expiredListingDetail.hidden = false;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function renderReviewListRow(item, index) {
+      return `
+        <tr>
+          <td>
+            ${safeText(item.title)}
+            <span class="sub-cell">${safeText(item.id)}</span>
+            <div class="cell-actions">
+              <button class="table-action listing-detail-button" data-type="review" data-index="${safeAttr(index)}" data-id="${safeAttr(item.id)}">查看详情</button>
+            </div>
+          </td>
+          <td><span class="${pillClass(item.reviewStatus || item.status)}">${safeText(item.reviewStatus || item.status)}</span><span class="sub-cell">${safeText(pickText(item.sourceLabel, item.ownerType, item.source))}</span></td>
+          <td>${safeText(item.community)}<span class="sub-cell">${safeText([item.area, item.block].filter(Boolean).join(' / '))}</span></td>
+          <td>${safeText(item.rent)}</td>
+          <td>${safeText(roomStructureText(item))}</td>
+          <td><div class="list-tags">${renderListTagPills(item)}</div></td>
+          <td><span class="${pillClass(videoStatusText(item))}">${safeText(videoStatusText(item))}</span></td>
+          <td>${safeText(item.uploader)}<span class="sub-cell">${safeText(item.uploaderPhone)}</span></td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action listing-detail-button" data-type="review" data-index="${safeAttr(index)}" data-id="${safeAttr(item.id)}">查看详情</button>
+              ${listingReviewActions(item)}
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    function renderExpiredListRow(item, index) {
+      return `
+        <tr>
+          <td>
+            ${safeText(item.title)}
+            <span class="sub-cell">${safeText(item.id)}</span>
+            <div class="cell-actions">
+              <button class="table-action listing-detail-button" data-type="expired" data-index="${safeAttr(index)}" data-id="${safeAttr(item.id)}">查看详情</button>
+            </div>
+          </td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status || '已下架')}</span><span class="sub-cell">${safeText(item.expiredReason)}</span></td>
+          <td>${safeText(item.community)}<span class="sub-cell">${safeText([item.area, item.block].filter(Boolean).join(' / '))}</span></td>
+          <td>${safeText(item.rent)}</td>
+          <td>${safeText(roomStructureText(item))}</td>
+          <td><div class="list-tags">${renderListTagPills(item)}</div></td>
+          <td><span class="${pillClass(videoStatusText(item))}">${safeText(videoStatusText(item))}</span></td>
+          <td>${safeText(item.expiredAt || '-')}</td>
+          <td>
+            <div class="row-actions">
+              <button class="table-action listing-detail-button" data-type="expired" data-index="${safeAttr(index)}" data-id="${safeAttr(item.id)}">查看详情</button>
+              ${expiredListingActions(item)}
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    async function renderListingReviews() {
+      const listingData = await getAdminData('/admin/listings', () => dataCenter.getAdminListings());
+      const rows = arrayValue(listingData).filter(isPendingListingReview);
+      listingReviewItems = rows;
+      listingReviewRows.innerHTML = rows.map(renderReviewListRow).join('');
+      listingReviewEmpty.hidden = rows.length > 0;
+      showListingReviewList();
+    }
+
     function maintenanceRuleDisplayText(rule, extraText = '') {
       const enabled = Boolean(rule && rule.enabled);
       const status = rule && rule.status ? rule.status : (enabled ? '已开启' : '已关闭');
@@ -1433,25 +1973,13 @@
       const area = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
-      const rows = await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community })}`, () => (
+      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community })}`, () => (
         dataCenter.getExpiredListings ? dataCenter.getExpiredListings({ area, block, community }) : []
-      ));
-      expiredListingRows.innerHTML = rows.map((item) => `
-        <tr>
-          <td>${item.title}</td>
-          <td>${item.area}</td>
-          <td>${item.block}</td>
-          <td>${item.community}</td>
-          <td>${item.uploader}</td>
-          <td>${item.rent}</td>
-          <td>${item.layout}</td>
-          <td>${item.lastVerifiedAt || '未核验'}<span class="sub-cell">${item.verifyTip || ''}</span></td>
-          <td>${item.expiredAt || '-'}</td>
-          <td><span class="${pillClass(item.status)}">${item.status || '已下架'}</span><span class="sub-cell">${item.expiredReason || ''}</span></td>
-          <td><button class="table-action restore-expired-listing-button" data-id="${item.id}">重新上架</button></td>
-        </tr>
-      `).join('');
+      )));
+      expiredListingItems = rows;
+      expiredListingRows.innerHTML = expiredListingItems.map(renderExpiredListRow).join('');
       expiredListingEmpty.hidden = rows.length > 0;
+      showExpiredListingList();
     }
 
 	    async function renderAdminLogs() {
@@ -1797,6 +2325,7 @@
         if (dataCenter.reviewOwnerListing) {
           dataCenter.reviewOwnerListing(id, action);
           await renderListings();
+          await renderListingReviews();
           await renderDashboardStats();
           await renderAreaStats();
           return;
@@ -1813,6 +2342,7 @@
         })
       });
       await renderListings();
+      await renderListingReviews();
       await renderDashboardStats();
       await renderAreaStats();
     }
@@ -2051,16 +2581,33 @@
       await renderDashboardStats();
       await renderAreaStats();
       await renderListings();
+      await renderListingReviews();
       await renderExpiredListings();
       await renderLaunchCheck();
+    }
+
+    function looksBrokenPrompt(value) {
+      const text = String(value || '').trim();
+      if (!text) return true;
+      const questionCount = (text.match(/\?/g) || []).length;
+      const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+      return text.indexOf('\uFFFD') !== -1 || (text.length >= 8 && questionCount / text.length > 0.25 && cjkCount === 0);
+    }
+
+    function normalizeLlmConfig(config) {
+      const next = Object.assign({}, defaultLlmConfig, config || {});
+      if (looksBrokenPrompt(next.systemPrompt)) {
+        next.systemPrompt = DEFAULT_LLM_SYSTEM_PROMPT;
+      }
+      return next;
     }
 
     function getSavedLlmConfig() {
       try {
         const saved = localStorage.getItem('ynzy_llm_config');
-        return saved ? Object.assign({}, defaultLlmConfig, JSON.parse(saved)) : defaultLlmConfig;
+        return saved ? normalizeLlmConfig(JSON.parse(saved)) : normalizeLlmConfig(defaultLlmConfig);
       } catch (error) {
-        return defaultLlmConfig;
+        return normalizeLlmConfig(defaultLlmConfig);
       }
     }
 
@@ -2068,7 +2615,7 @@
       if (!canUseAdminApi()) return getSavedLlmConfig();
       try {
         const config = await adminRequest('/admin/llm-config');
-        return Object.assign({}, defaultLlmConfig, config || {});
+        return normalizeLlmConfig(config || {});
       } catch (error) {
         showLlmStatus('后端配置读取失败，当前展示浏览器本地配置。');
         return getSavedLlmConfig();
@@ -2076,7 +2623,7 @@
     }
 
     function readLlmConfigForm() {
-      return {
+      return normalizeLlmConfig({
         provider: document.getElementById('llmProvider').value,
         protocol: document.getElementById('llmProtocol').value,
         apiBaseUrl: document.getElementById('llmApiBaseUrl').value.trim(),
@@ -2084,10 +2631,11 @@
         secretName: document.getElementById('llmSecretName').value.trim() || 'LLM_API_KEY',
         systemPrompt: document.getElementById('llmSystemPrompt').value.trim(),
         enabled: document.getElementById('llmProvider').value !== 'local'
-      };
+      });
     }
 
     function fillLlmConfigForm(config) {
+      config = normalizeLlmConfig(config);
       document.getElementById('llmProvider').value = config.provider;
       document.getElementById('llmProtocol').value = config.protocol;
       document.getElementById('llmApiBaseUrl').value = config.apiBaseUrl;
@@ -2098,6 +2646,7 @@
     }
 
     function renderLlmConfigPreview(config) {
+      config = normalizeLlmConfig(config);
       const isLocal = config.provider === 'local';
       document.getElementById('llmConfigStatus').textContent = isLocal
         ? '当前使用本地模拟匹配。正式上线时请选择真实供应商，并在服务端保存密钥。'
@@ -2200,6 +2749,7 @@
       renderAreaStats();
       renderMaintenanceRule();
       renderListings();
+      renderListingReviews();
       renderExpiredListings();
       renderAdminLogs();
       renderReports();
@@ -2287,6 +2837,30 @@
         return;
       }
 
+      const detailButton = event.target.closest('.listing-detail-button');
+      if (detailButton && !detailButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (detailButton.dataset.type === 'expired') {
+          showExpiredListingDetail(detailButton.dataset.id, detailButton.dataset.index);
+        } else {
+          showListingReviewDetail(detailButton.dataset.id, detailButton.dataset.index);
+        }
+        return;
+      }
+
+      const backReviewButton = event.target.closest('.back-review-list-button');
+      if (backReviewButton) {
+        showListingReviewList();
+        return;
+      }
+
+      const backExpiredButton = event.target.closest('.back-expired-list-button');
+      if (backExpiredButton) {
+        showExpiredListingList();
+        return;
+      }
+
       const ownerReviewButton = event.target.closest('.review-owner-listing-button');
       if (ownerReviewButton && !ownerReviewButton.disabled) {
         reviewOwnerListing(ownerReviewButton.dataset.id, ownerReviewButton.dataset.action).catch((error) => {
@@ -2318,6 +2892,8 @@
         button.classList.add('active');
         document.getElementById(button.dataset.panel).classList.add('active');
         title.textContent = panelTitles[button.dataset.panel] || button.textContent;
+        if (button.dataset.panel === 'listingReviews') showListingReviewList();
+        if (button.dataset.panel === 'expiredListings') showExpiredListingList();
       });
     });
 

@@ -1535,6 +1535,38 @@ function mapPins(db, filter = {}) {
   return mapCommunities(db, filter)
 }
 
+function adminListingDetailFields(listing = {}, uploader = {}, location = listingLocationFields(listing), display = listingDisplayFields(listing)) {
+  const contact = listing.landlordPhone || listing.contact || ''
+  return {
+    fullTitle: listing.title || listing.shortTitle || '',
+    uploaderPhone: uploader.phone || '',
+    address: listing.address || [location.locationSummary, location.roomAddress].filter(Boolean).join(''),
+    landlordPhone: contact,
+    contact,
+    videoUrl: listing.videoUrl || '',
+    videoKey: listing.videoKey || '',
+    videoLabel: listing.videoLabel || (hasListingVideo(listing) ? '房源视频' : ''),
+    hasVideo: hasListingVideo(listing),
+    type: listing.type || listing.rentMode || '',
+    rentMode: listing.rentMode || listing.type || '',
+    room: listing.room || '',
+    hall: listing.hall || '',
+    bath: listing.bath || '',
+    rawLayout: listing.layout || '',
+    rentValue: Number(listing.rent || 0),
+    commissionRate: Number(listing.commissionRate || 0),
+    features: display.features || [],
+    tags: display.features || [],
+    featureText: display.featureText || '',
+    createdAt: listing.createdAt || '',
+    updatedAt: listing.updatedAt || '',
+    reviewNote: listing.reviewNote || '',
+    manualReviewReason: display.manualReviewReason || listing.manualReviewReason || '',
+    communityMatchStatus: display.communityMatchStatus || listing.communityMatchStatus || '',
+    expiredPool: listing.expiredPool || ''
+  }
+}
+
 function adminListings(db, filter = {}) {
   return activeListings(db)
     .filter((listing) => {
@@ -1553,6 +1585,7 @@ function adminListings(db, filter = {}) {
         title: listing.shortTitle,
         ...location,
         ...display,
+        ...adminListingDetailFields(listing, uploader, location, display),
         uploader: uploader.name,
         rent: `${listing.rent}/月`,
         layout: String(listing.layout || '').replace('整租', ''),
@@ -1589,6 +1622,7 @@ function expiredListings(db, filter = {}) {
         title: listing.shortTitle || listing.title,
         ...location,
         ...display,
+        ...adminListingDetailFields(listing, uploader, location, display),
         uploader: uploader.name || '未知',
         uploaderPhone: uploader.phone || '',
         rent: `${listing.rent}/月`,

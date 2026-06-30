@@ -1,3 +1,10 @@
+const tabPagePaths = [
+  '/pages/index/index',
+  '/pages/listings/listings',
+  '/pages/map/map',
+  '/pages/profile/profile'
+]
+
 Component({
   options: {
     multipleSlots: true // 在组件定义时的选项中启用多slot支持
@@ -92,6 +99,9 @@ Component({
     back() {
       const data = this.data
       const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+      const currentPage = pages[pages.length - 1]
+      const currentPath = currentPage && currentPage.route ? `/${currentPage.route}` : ''
+      const isTabPage = tabPagePaths.indexOf(currentPath) !== -1
       const fallbackHome = () => {
         wx.switchTab({
           url: '/pages/index/index',
@@ -100,7 +110,7 @@ Component({
           }
         })
       }
-      if (data.delta && pages.length > data.delta) {
+      if (!isTabPage && data.delta && pages.length > data.delta) {
         wx.navigateBack({
           delta: data.delta,
           fail: fallbackHome

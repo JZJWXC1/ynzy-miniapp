@@ -1,5 +1,5 @@
 <!--profile.wxml-->
-<navigation-bar title="我的" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="我的" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell profile-page">
     <view class="user-card">

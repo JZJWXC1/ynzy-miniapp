@@ -81,8 +81,14 @@ page {
   display: flex;
   justify-content: space-between;
   gap: 18rpx;
-  align-items: center;
+  align-items: stretch;
   padding: 26rpx;
+  flex-wrap: wrap;
+}
+
+.listing-info {
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
 .listing-title {
@@ -97,6 +103,8 @@ page {
   margin-top: 8rpx;
   color: #78918a;
   font-size: 23rpx;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .verify-line {
@@ -111,9 +119,11 @@ page {
 }
 
 .listing-actions {
-  flex: 0 0 auto;
+  width: 100%;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 12rpx;
 }
 

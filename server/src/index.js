@@ -279,17 +279,33 @@ function serveUtilityScript(req, res, pathname) {
   fs.createReadStream(filePath).pipe(res)
 }
 
-function saveLlmConfig(db, body) {
-  const next = {
-    provider: body.provider || 'local',
-    protocol: body.protocol || 'openai-chat',
-    apiBaseUrl: body.apiBaseUrl || '',
-    model: body.model || 'local-match-v1',
-    secretName: body.secretName || 'LLM_API_KEY',
-    systemPrompt: body.systemPrompt || '你是寓你配房小帮手。只能基于内部房源库候选房源回复，不编造不存在的房源，不输出详细地址、房东联系方式、房间号或视频签名链接。',
-    enabled: Boolean(body.enabled),
-    updatedAt: new Date().toLocaleString('zh-CN', { hour12: false })
+const DEFAULT_LLM_SYSTEM_PROMPT = '你是寓你配房小帮手。根据租客预算、区域、户型、入住时间、通勤位置，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
+
+function looksBrokenPrompt(value) {
+  const text = String(value || '').trim()
+  if (!text) return true
+  const questionCount = (text.match(/\?/g) || []).length
+  const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length
+  return text.indexOf('\uFFFD') !== -1 || (text.length >= 8 && questionCount / text.length > 0.25 && cjkCount === 0)
+}
+
+function normalizeLlmConfig(raw = {}) {
+  const systemPrompt = String(raw.systemPrompt || '').trim()
+  return {
+    provider: raw.provider || 'local',
+    protocol: raw.protocol || 'openai-compatible',
+    apiBaseUrl: raw.apiBaseUrl || '',
+    model: raw.model || 'local-match-v1',
+    secretName: raw.secretName || 'LLM_API_KEY',
+    systemPrompt: looksBrokenPrompt(systemPrompt) ? DEFAULT_LLM_SYSTEM_PROMPT : systemPrompt,
+    enabled: Boolean(raw.enabled),
+    updatedAt: raw.updatedAt || ''
   }
+}
+
+function saveLlmConfig(db, body) {
+  const next = normalizeLlmConfig(body)
+  next.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
   db.llmConfig = next
   return next
 }
@@ -464,6 +480,13 @@ function withSignedVideoUrl(detail) {
     ...detail,
     videoUrl: oss.createSignedReadUrl(detail.videoKey)
   }
+}
+
+function withSignedListingVideoUrls(rows) {
+  return (rows || []).map((row) => ({
+    ...row,
+    videoPreviewUrl: row.videoKey ? oss.createSignedReadUrl(row.videoKey) : row.videoUrl
+  }))
 }
 
 function withSignedScreenshotUrls(rows) {
@@ -834,28 +857,28 @@ async function handleAdmin(req, res, pathname, searchParams) {
     })
   }
   if (method === 'GET' && pathname === '/admin/listings') {
-    return sendJson(res, domain.adminListings(db, {
+    return sendJson(res, withSignedListingVideoUrls(domain.adminListings(db, {
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || ''
-    }))
+    })))
   }
   if (method === 'GET' && pathname === '/admin/expired-listings') {
-    return sendJson(res, domain.expiredListings(db, {
+    return sendJson(res, withSignedListingVideoUrls(domain.expiredListings(db, {
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || ''
-    }))
+    })))
   }
   const adminExpiredRestoreMatch = pathname.match(/^\/admin\/expired-listings\/([^/]+)\/restore$/)
   if (method === 'POST' && adminExpiredRestoreMatch) {
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.restoreExpiredListing(nextDb, adminAccount.userId || adminAccount.id, adminExpiredRestoreMatch[1])
-      return domain.expiredListings(nextDb, {
+      return withSignedListingVideoUrls(domain.expiredListings(nextDb, {
         area: searchParams.get('area') || '',
         block: searchParams.get('block') || '',
         community: searchParams.get('community') || ''
-      })
+      }))
     }))
   }
   const adminListingEditMatch = pathname.match(/^\/admin\/listings\/([^/]+)$/)
@@ -867,18 +890,18 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && adminListingVerifyMatch) {
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.verifyListingAvailability(nextDb, adminAccount.userId || adminAccount.id, adminListingVerifyMatch[1], { admin: true })
-      return domain.adminListings(nextDb, {
+      return withSignedListingVideoUrls(domain.adminListings(nextDb, {
         area: searchParams.get('area') || '',
         block: searchParams.get('block') || '',
         community: searchParams.get('community') || ''
-      })
+      }))
     }))
   }
   const adminListingReviewMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/review$/)
   if (method === 'POST' && adminListingReviewMatch) {
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
-      domain.reviewOwnerListing(nextDb, adminAccount.userId || adminAccount.id, adminListingReviewMatch[1], body)
+      withSignedListingVideoUrls(domain.reviewOwnerListing(nextDb, adminAccount.userId || adminAccount.id, adminListingReviewMatch[1], body))
     )))
   }
   if (method === 'GET' && pathname === '/admin/footprints') {
@@ -1063,7 +1086,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     }))
   }
   if (method === 'GET' && pathname === '/admin/llm-config') {
-    return sendJson(res, db.llmConfig || {})
+    return sendJson(res, normalizeLlmConfig(db.llmConfig || {}))
   }
   if (method === 'PUT' && pathname === '/admin/llm-config') {
     const body = await parseBody(req)
@@ -1071,7 +1094,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'POST' && pathname === '/admin/llm-config/test') {
     const body = await parseBody(req)
-    const tempDb = { ...db, llmConfig: { ...(db.llmConfig || {}), ...body, enabled: body.enabled !== false } }
+    const tempDb = { ...db, llmConfig: { ...normalizeLlmConfig({ ...(db.llmConfig || {}), ...body }), enabled: body.enabled !== false } }
     return sendJson(res, await llm.matchRentalNeed(tempDb, { text: '预算3000，滨江两室，月底入住' }))
   }
 

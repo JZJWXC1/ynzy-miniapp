@@ -875,24 +875,57 @@
     var uploader = getUser(listing.uploaderId) || {};
     var freshness = listingFreshness(listing);
     var display = listingDisplayFields(listing);
+    var location = listingLocationFields(listing);
+    var hasVideo = hasListingVideo(listing);
     return Object.assign({
       id: listing.id,
       title: listing.shortTitle,
+      fullTitle: listing.title || listing.shortTitle || '',
+      city: location.city,
+      district: location.district,
       area: listing.area,
       block: listing.block,
       community: listing.community,
+      building: location.building,
+      unit: location.unit,
+      roomNumber: location.roomNumber,
+      locationSummary: location.locationSummary,
+      roomAddress: location.roomAddress,
+      address: listing.address || [location.locationSummary, location.roomAddress].filter(Boolean).join(''),
       uploader: uploader.name,
+      uploaderPhone: uploader.phone || '',
       rent: listing.rent + '/月',
+      rentValue: Number(listing.rent || 0),
       layout: listing.layout.replace('整租', ''),
+      rawLayout: listing.layout || '',
       commission: V1_COMMISSION_TEXT,
+      commissionRate: Number(listing.commissionRate || 0),
       source: listing.source || display.sourceLabel,
-      video: '已传',
+      video: hasVideo ? '已传' : '未传',
+      videoUrl: listing.videoUrl || '',
+      videoKey: listing.videoKey || '',
+      videoLabel: listing.videoLabel || (hasVideo ? '房源视频' : ''),
+      hasVideo: hasVideo,
+      landlordPhone: listing.landlordPhone || listing.contact || '',
+      contact: listing.landlordPhone || listing.contact || '',
       status: listing.status,
+      type: listing.type || listing.rentMode || '',
+      rentMode: listing.rentMode || listing.type || '',
+      room: listing.room || '',
+      hall: listing.hall || '',
+      bath: listing.bath || '',
+      features: display.features || [],
+      tags: display.features || [],
+      featureText: display.featureText || '',
       lastVerifiedAt: freshness.lastVerifiedAt,
       verifyStatus: freshness.verifyStatus,
       verifyTip: freshness.verifyTip,
       staleDays: freshness.staleDays,
-      needsVerify: freshness.needsVerify
+      needsVerify: freshness.needsVerify,
+      createdAt: listing.createdAt || '',
+      updatedAt: listing.updatedAt || '',
+      reviewNote: listing.reviewNote || '',
+      expiredPool: listing.expiredPool || ''
     }, display);
   }
 

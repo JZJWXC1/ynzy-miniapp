@@ -1,5 +1,5 @@
 <!--index.wxml-->
-<navigation-bar title="寓你住一起" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="寓你住一起" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell home-page">
     <view class="ai-card">

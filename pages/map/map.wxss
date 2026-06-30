@@ -35,13 +35,18 @@ page {
 }
 
 .filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
   margin-top: 4rpx;
 }
 
 .filter-row {
   width: 100%;
-  margin-top: 14rpx;
-  white-space: nowrap;
+  min-height: 58rpx;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
 }
 
 .filter-chip {
@@ -50,7 +55,6 @@ page {
   justify-content: center;
   min-width: 104rpx;
   height: 58rpx;
-  margin-right: 12rpx;
   padding: 0 22rpx;
   color: #2f6f60;
   background: #ffffff;
@@ -72,6 +76,7 @@ page {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 18rpx;
   margin-top: 22rpx;
   color: #153f36;
@@ -89,6 +94,7 @@ page {
 .sheet-head button,
 .listing-card button {
   flex: 0 0 auto;
+  min-width: 188rpx;
   height: 56rpx;
   margin: 0;
   padding: 0 22rpx;

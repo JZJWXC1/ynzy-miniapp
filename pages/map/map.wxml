@@ -7,18 +7,18 @@
   </view>
 
   <view class="filter-panel">
-    <scroll-view class="filter-row" scroll-x enable-flex>
+    <view class="filter-row">
       <view wx:for="{{rentFilters}}" wx:key="key" class="filter-chip {{filters.rentKey === item.key ? 'active' : ''}}" bindtap="changeRentFilter" data-key="{{item.key}}">{{item.label}}</view>
-    </scroll-view>
-    <scroll-view class="filter-row" scroll-x enable-flex>
+    </view>
+    <view class="filter-row">
       <view wx:for="{{layoutFilters}}" wx:key="*this" class="filter-chip {{(!filters.layout && item === '全部') || filters.layout === item ? 'active' : ''}}" bindtap="changeFilter" data-type="layout" data-value="{{item}}">{{item}}</view>
-    </scroll-view>
-    <scroll-view class="filter-row" scroll-x enable-flex>
+    </view>
+    <view class="filter-row">
       <view wx:for="{{rentModeFilters}}" wx:key="*this" class="filter-chip {{(!filters.rentMode && item === '全部') || filters.rentMode === item ? 'active' : ''}}" bindtap="changeFilter" data-type="rentMode" data-value="{{item}}">{{item}}</view>
-    </scroll-view>
-    <scroll-view class="filter-row" scroll-x enable-flex>
+    </view>
+    <view class="filter-row">
       <view wx:for="{{sourceTypeFilters}}" wx:key="*this" class="filter-chip {{(!filters.sourceType && item === '全部') || filters.sourceType === item ? 'active' : ''}}" bindtap="changeFilter" data-type="sourceType" data-value="{{item}}">{{item}}</view>
-    </scroll-view>
+    </view>
   </view>
 
   <view class="map-summary">
