@@ -87,6 +87,7 @@ module.exports = {
   miniProgram: {
     requestDomain: process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
     uploadDomain: process.env.MINI_UPLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com',
+    socketDomain: process.env.MINI_SOCKET_DOMAIN || process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
     downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
   },
   feishu: {

@@ -123,8 +123,11 @@ function assertNoListings(result) {
 
 function assertConfirmationFields(result) {
   const keys = (result.confirmationFields || []).map((field) => field.key)
-  ;['budget', 'location', 'layout', 'moveIn', 'commute', 'features'].forEach((key) => {
+  ;['budget', 'location', 'layout', 'features'].forEach((key) => {
     assert(keys.includes(key), `确认字段缺失：${key}`)
+  })
+  ;['moveIn', 'commute'].forEach((key) => {
+    assert(!keys.includes(key), `第一版确认字段不应包含：${key}`)
   })
 }
 
@@ -225,9 +228,6 @@ async function main() {
       community: '东新园',
       rentMode: '整租',
       layout: '一室',
-      moveIn: '下周入住',
-      commuteLocation: '武林广场',
-      maxCommuteMinutes: '30',
       features: '近地铁、带阳台'
     }
   })
@@ -236,9 +236,9 @@ async function main() {
   assert.strictEqual(result.need.community, '东新园', '确认字段小区/板块应进入匹配')
   assert.strictEqual(result.need.rentMode, '整租', '确认字段租法应进入匹配')
   assert.strictEqual(result.need.layout, '一室', '确认字段户型应覆盖原文户型')
-  assert.strictEqual(result.need.moveIn, '下周入住', '确认字段入住时间应进入匹配')
-  assert.strictEqual(result.need.commuteLocation, '武林广场', '确认字段通勤地点应进入匹配')
-  assert.strictEqual(result.need.maxCommuteMinutes, 30, '确认字段通勤时间应进入匹配')
+  assert.strictEqual(result.need.moveIn, undefined, '确认字段不应再带入住时间')
+  assert.strictEqual(result.need.commuteLocation, undefined, '确认字段不应再带通勤地点')
+  assert.strictEqual(result.need.maxCommuteMinutes, undefined, '确认字段不应再带通勤时间')
   assert((result.preferences.features || []).indexOf('近地铁') !== -1, '确认字段偏好标签未进入偏好')
   assert((result.preferences.features || []).indexOf('带阳台') !== -1, '确认字段偏好标签未完整进入偏好')
   assert.strictEqual(result.followUpQuestion, '', '确认字段完整时不应继续追问')
@@ -253,9 +253,6 @@ async function main() {
       community: '',
       rentMode: '',
       layout: '',
-      moveIn: '',
-      commuteLocation: '',
-      maxCommuteMinutes: '',
       features: ''
     }
   })
@@ -277,6 +274,12 @@ async function main() {
   assert.strictEqual(result.need.minBudget, 3000, '最低预算解析失败')
   assert.strictEqual(result.need.maxBudget, 4000, '预算区间最高值解析失败')
 
+  result = run('四千以内一室', db)
+  assert.strictEqual(result.hardConstraints.minBudget, 3000, '单上限预算应默认设置75%最低匹配金额')
+  returnedListings(result).forEach((listing) => {
+    assert(listing.rent >= 3000, '预算4000以内不应返回低于75%的房源')
+  })
+
   result = run('想住东新园附近，两室，3500以内', db)
   assert.strictEqual(result.need.community, '东新园', '小区解析失败')
   assert((result.listings || []).some((listing) => listing.community === '东新园'), '小区匹配结果缺失')
@@ -289,11 +292,11 @@ async function main() {
   result = run('上城区整租一室，下周入住', db)
   assert.strictEqual(result.need.area, '上城', '上城区解析失败')
   assert.strictEqual(result.need.rentMode, '整租', '整租解析失败')
-  assert(result.need.moveIn.indexOf('下周') !== -1, '入住时间解析失败')
+  assert.strictEqual(result.need.moveIn, undefined, '入住时间不应进入第一版找房结构化字段')
 
   result = run('滨江两室，通勤西兴半小时以内', db)
-  assert.strictEqual(result.need.commuteLocation, '西兴', '通勤地点解析失败')
-  assert.strictEqual(result.need.maxCommuteMinutes, 30, '最长通勤时间解析失败')
+  assert.strictEqual(result.need.commuteLocation, undefined, '通勤地点不应进入第一版找房结构化字段')
+  assert.strictEqual(result.need.maxCommuteMinutes, undefined, '最长通勤时间不应进入第一版找房结构化字段')
 
   result = run('滨江四千左右两室，必须有燃气', db)
   assert((result.hardConstraints.features || []).indexOf('燃气') !== -1, '必须类条件未进入硬条件')
@@ -319,6 +322,21 @@ async function main() {
   result = run('滨江五千以内两室', db)
   assertMaxFive(result)
   assertKnownIds(result, db)
+
+  result = matchService.buildLocalMatch(clone(makeDb({
+    placeCoordinates: {
+      测试地标: {
+        latitude: 30.28,
+        longitude: 120.18,
+        source: 'manual-confirmed-test-coordinate',
+        coordinateVerified: true,
+        area: '拱墅'
+      }
+    }
+  })), { text: '测试地标3公里内有哪些一室整租' })
+  assert.strictEqual(result.placeResolution.status, 'resolved', '旧匹配链路应保留地点解析状态')
+  assert(!Object.prototype.hasOwnProperty.call(result.placeResolution, 'latitude'), '旧匹配链路不应暴露纬度')
+  assert(!Object.prototype.hasOwnProperty.call(result.placeResolution, 'longitude'), '旧匹配链路不应暴露经度')
 
   const failDb = makeDb({
     llmConfig: {

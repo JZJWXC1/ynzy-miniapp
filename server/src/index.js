@@ -8,8 +8,12 @@ const dbStore = require('./db')
 const domain = require('./domain')
 const feishuSync = require('./feishu-sync')
 const llm = require('./llm')
+const asrService = require('./asr-service')
+const asrRealtime = require('./asr-realtime')
+const assistantService = require('./assistant-service')
 const oss = require('./oss')
 const wxpay = require('./wxpay')
+const { parseMultipartForm } = require('./multipart')
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -279,7 +283,10 @@ function serveUtilityScript(req, res, pathname) {
   fs.createReadStream(filePath).pipe(res)
 }
 
-const DEFAULT_LLM_SYSTEM_PROMPT = '你是寓你配房小帮手。根据租客预算、区域、户型、入住时间、通勤位置，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
+const DEFAULT_LLM_SYSTEM_PROMPT = '你是寓你配房小帮手。根据租客预算、区域、户型和标签偏好，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
+const DEFAULT_QWEN_NEED_PARSER_MODEL = 'qwen3.5-plus'
+const DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL = 'qwen3.7-plus'
+const DEFAULT_QWEN_REPLY_MODEL = 'qwen-turbo'
 
 function looksBrokenPrompt(value) {
   const text = String(value || '').trim()
@@ -290,12 +297,18 @@ function looksBrokenPrompt(value) {
 }
 
 function normalizeLlmConfig(raw = {}) {
+  const provider = raw.provider || 'local'
+  const defaultModel = provider === 'qwen' ? DEFAULT_QWEN_NEED_PARSER_MODEL : 'local-match-v1'
+  const model = String(raw.model || defaultModel).trim() || defaultModel
   const systemPrompt = String(raw.systemPrompt || '').trim()
   return {
-    provider: raw.provider || 'local',
+    provider,
     protocol: raw.protocol || 'openai-compatible',
     apiBaseUrl: raw.apiBaseUrl || '',
-    model: raw.model || 'local-match-v1',
+    model,
+    needParserModel: String(raw.needParserModel || (provider === 'qwen' ? DEFAULT_QWEN_NEED_PARSER_MODEL : model)).trim() || model,
+    complexNeedParserModel: String(raw.complexNeedParserModel || (provider === 'qwen' ? DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL : model)).trim() || model,
+    replyModel: String(raw.replyModel || (provider === 'qwen' ? DEFAULT_QWEN_REPLY_MODEL : model)).trim() || model,
     secretName: raw.secretName || 'LLM_API_KEY',
     systemPrompt: looksBrokenPrompt(systemPrompt) ? DEFAULT_LLM_SYSTEM_PROMPT : systemPrompt,
     enabled: Boolean(raw.enabled),
@@ -340,6 +353,7 @@ function buildLaunchCheck(db) {
   const accounts = db.adminAccounts || defaultAdminAccounts(db)
   const llmConfig = db.llmConfig || {}
   const llmSecretName = llmConfig.secretName || 'LLM_API_KEY'
+  const asrStatus = asrService.configStatus(db)
   const defaultPasswords = new Set(['admin123', 'manager123'])
   const weakAdmins = accounts.filter((account) => account.password || defaultPasswords.has(String(account.password || '')))
   const ossMissing = []
@@ -357,6 +371,12 @@ function buildLaunchCheck(db) {
   const baseStatus = userCount && groupCount ? (listingCount ? '通过' : '待确认') : '需处理'
 
   const items = [
+    launchCheckItem(
+      '百炼 ASR 语音识别',
+      asrStatus.ready ? '通过' : '需处理',
+      asrStatus.ready ? `${asrStatus.model} 已配置，音频由后端代理转写` : `缺少服务端密钥环境变量 ${asrStatus.secretName}`,
+      '在服务端环境变量中设置 ASR_API_KEY、DASHSCOPE_API_KEY，或复用 LLM_API_KEY；微信小程序 uploadFile 合法域名也要指向后端'
+    ),
     launchCheckItem(
       'OSS/RAM 最小权限',
       ossMissing.length ? '需处理' : '通过',
@@ -429,6 +449,7 @@ function buildLaunchCheck(db) {
 function buildMissingEnvTemplate(db) {
   const llmConfig = db.llmConfig || {}
   const llmSecretName = llmConfig.secretName || 'LLM_API_KEY'
+  const asrStatus = asrService.configStatus(db)
   const names = []
   if (!process.env.ADMIN_TOKEN_SECRET) names.push('ADMIN_TOKEN_SECRET')
   if (!config.oss.bucket) names.push('ALI_OSS_BUCKET')
@@ -437,6 +458,7 @@ function buildMissingEnvTemplate(db) {
   if (!config.oss.accessKeySecret) names.push('ALI_OSS_ACCESS_KEY_SECRET')
   if (!config.oss.publicBaseUrl) names.push('ALI_OSS_PUBLIC_BASE_URL')
   if (llmConfig.enabled && llmConfig.provider !== 'local' && !process.env[llmSecretName]) names.push(llmSecretName)
+  if (!asrStatus.ready) names.push(asrStatus.secretName || 'ASR_API_KEY')
   if (config.wechatPay.enabled) {
     wxpay.requiredMissing().forEach((name) => names.push(name))
   }
@@ -575,6 +597,25 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/llm/match') {
     return sendJson(res, await llm.matchRentalNeed(db, await parseBody(req)))
+  }
+
+  if (method === 'POST' && pathname === '/mini/assistant/chat') {
+    const body = await parseBody(req)
+    return sendJson(res, await dbStore.updateDbAsync((nextDb) => assistantService.chat(nextDb, body, { userId })))
+  }
+
+  if (method === 'POST' && pathname === '/mini/asr/transcribe') {
+    const form = await parseMultipartForm(req, { maxBytes: asrService.MAX_AUDIO_BYTES })
+    const file = (form.files || []).find((item) => item.name === 'file' || item.name === 'audio') || form.file
+    return sendJson(res, await asrService.transcribeAudio(db, file, {
+      fields: form.fields || {},
+      userId
+    }))
+  }
+
+  if (method === 'POST' && pathname === '/mini/assistant/feedback') {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => assistantService.feedback(nextDb, body, { userId })))
   }
 
   if (method === 'GET' && pathname === '/mini/map/communities') {
@@ -737,6 +778,20 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.listingLogs(db, listingLogsMatch[1], userId))
   }
 
+  const videoShareMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/video-share$/)
+  if (method === 'POST' && videoShareMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.recordVideoShare(nextDb, userId, videoShareMatch[1], {
+      channel: body.channel,
+      target: body.target,
+      purpose: body.purpose,
+      needId: body.needId,
+      rentalNeedId: body.rentalNeedId,
+      sharePath: body.sharePath,
+      shareTitle: body.shareTitle
+    })))
+  }
+
   const reportMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/reports$/)
   if (method === 'POST' && reportMatch) {
     const body = await parseBody(req)
@@ -826,6 +881,44 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'GET' && pathname === '/admin/launch-check') {
     return sendJson(res, buildLaunchCheck(db))
+  }
+  if (method === 'GET' && pathname === '/admin/assistant/feedbacks') {
+    return sendJson(res, assistantService.feedbackRows(db, {
+      status: searchParams.get('status') || '',
+      feedbackType: searchParams.get('feedbackType') || searchParams.get('type') || '',
+      limit: searchParams.get('limit') || ''
+    }))
+  }
+  if (method === 'GET' && pathname === '/admin/assistant/eval-cases') {
+    return sendJson(res, assistantService.evalCaseRows(db, {
+      status: searchParams.get('status') || '',
+      limit: searchParams.get('limit') || ''
+    }))
+  }
+  if (method === 'GET' && pathname === '/admin/assistant/traces') {
+    return sendJson(res, assistantService.traceRows(db, {
+      threadId: searchParams.get('threadId') || '',
+      intent: searchParams.get('intent') || '',
+      limit: searchParams.get('limit') || ''
+    }))
+  }
+  const assistantFeedbackReviewMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/review$/)
+  if (method === 'POST' && assistantFeedbackReviewMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => (
+      assistantService.reviewFeedback(nextDb, assistantFeedbackReviewMatch[1], body, {
+        userId: adminAccount.userId || adminAccount.id
+      })
+    )))
+  }
+  const assistantFeedbackEvalMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/promote-eval$/)
+  if (method === 'POST' && assistantFeedbackEvalMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => (
+      assistantService.promoteFeedbackToEvalCase(nextDb, assistantFeedbackEvalMatch[1], body, {
+        userId: adminAccount.userId || adminAccount.id
+      })
+    )))
   }
   if (method === 'GET' && pathname === '/admin/env-template') {
     return sendJson(res, {
@@ -1095,9 +1188,14 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/admin/llm-config/test') {
     const body = await parseBody(req)
     const tempDb = { ...db, llmConfig: { ...normalizeLlmConfig({ ...(db.llmConfig || {}), ...body }), enabled: body.enabled !== false } }
-    return sendJson(res, await llm.matchRentalNeed(tempDb, { text: '预算3000，滨江两室，月底入住' }))
+    return sendJson(res, await assistantService.chat(tempDb, {
+      debugTrace: true,
+      text: body.testText || '\u62f1\u5885\u4e07\u8fbe\u9644\u8fd1\u6709\u54ea\u4e9b2000\u5de6\u53f3\u7684\u5355\u95f4'
+    }, {
+      userId: adminAccount.userId || adminAccount.id,
+      debugTrace: true
+    }))
   }
-
   const error = new Error(`后台接口不存在：${method} ${pathname}`)
   error.statusCode = 404
   throw error
@@ -1201,7 +1299,12 @@ function startFeishuSyncTimer() {
   console.log(`飞书房源自动同步已开启：每 ${minutes} 分钟执行一次`)
 }
 
-http.createServer(router).listen(config.port, () => {
+const server = http.createServer(router)
+asrRealtime.attachRealtimeAsr(server, {
+  getDb: dbStore.readDb
+})
+
+server.listen(config.port, () => {
   console.log(`寓你住一起后端已启动：http://127.0.0.1:${config.port}`)
   console.log(`管理后台：http://127.0.0.1:${config.port}/admin-web/`)
   startFeishuSyncTimer()

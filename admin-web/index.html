@@ -940,6 +940,8 @@
       <div class="menu-title">系统配置</div>
       <button class="nav-button" data-panel="feishuSync">飞书同步</button>
       <button class="nav-button" data-panel="llmConfig">LLM配置</button>
+      <button class="nav-button" data-panel="assistantFeedback">客服反馈</button>
+      <button class="nav-button" data-panel="assistantTraces">客服Trace</button>
       <button class="nav-button" data-panel="launchCheck">上线检查</button>
       <button class="nav-button" data-panel="admins">账号管理</button>
       <button class="nav-button" data-panel="dataBackup">数据备份</button>
@@ -1160,8 +1162,20 @@
                 <input id="llmApiBaseUrl" placeholder="例如：https://api.example.com/v1/chat/completions">
               </label>
               <label class="form-item">
-                <span>模型名称</span>
-                <input id="llmModel" placeholder="例如：gpt-4.1-mini / deepseek-chat">
+                <span>兜底模型</span>
+                <input id="llmModel" placeholder="例如：qwen3.5-plus">
+              </label>
+              <label class="form-item">
+                <span>需求理解模型</span>
+                <input id="llmNeedParserModel" placeholder="例如：qwen3.5-plus">
+              </label>
+              <label class="form-item">
+                <span>复杂理解模型</span>
+                <input id="llmComplexNeedParserModel" placeholder="例如：qwen3.7-plus">
+              </label>
+              <label class="form-item">
+                <span>客服话术模型</span>
+                <input id="llmReplyModel" placeholder="例如：qwen-turbo">
               </label>
               <label class="form-item">
                 <span>密钥保存名</span>
@@ -1183,6 +1197,70 @@
             <div class="status-box" id="llmConfigStatus">当前使用本地模拟匹配。正式上线时，密钥应保存在服务端环境变量或密钥管理系统中，不要下发到小程序端。</div>
             <div class="copy-box" id="llmConfigPreview"></div>
           </div>
+        </div>
+      </section>
+
+      <section class="panel" id="assistantFeedback">
+        <div class="config-card">
+          <h3>智能客服反馈标注</h3>
+          <div class="status-box">只处理客服推荐结果的质量反馈，不参与当前找房决策。典型坏 case 可加入评估集，用于后续回归。</div>
+          <div class="filter-bar">
+            <label class="filter-item">
+              <span>状态</span>
+              <select id="assistantFeedbackStatus">
+                <option value="">全部</option>
+                <option value="open">待处理</option>
+                <option value="triaged">已分诊</option>
+                <option value="in_eval">已加入评估</option>
+                <option value="resolved">已解决</option>
+                <option value="ignored">已忽略</option>
+              </select>
+            </label>
+            <button class="ghost-button" id="refreshAssistantFeedback">刷新反馈</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>反馈</th><th>需求摘要</th><th>推荐房源</th><th>Trace</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="assistantFeedbackRows"></tbody>
+          </table>
+          <div class="empty" id="assistantFeedbackEmpty" hidden>暂无客服反馈</div>
+        </div>
+        <div class="config-card">
+          <h3>评估样本</h3>
+          <div class="status-box">从反馈沉淀出的 eval case，会保留输入、期望需求、期望房源和必须经过的关键节点。</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>样本</th><th>期望需求</th><th>期望房源</th><th>关键节点</th></tr></thead>
+            <tbody id="assistantEvalCaseRows"></tbody>
+          </table>
+          <div class="empty" id="assistantEvalCaseEmpty" hidden>暂无评估样本</div>
+        </div>
+      </section>
+
+      <section class="panel" id="assistantTraces">
+        <div class="config-card">
+          <h3>智能客服 Trace</h3>
+          <div class="status-box">这里展示每轮客服对话的服务端 trace 摘要，用于复盘意图、槽位、工具输入输出和追问决策。小程序端默认不展示 trace。</div>
+          <div class="filter-bar">
+            <label class="filter-item">
+              <span>意图</span>
+              <select id="assistantTraceIntent">
+                <option value="">全部</option>
+                <option value="rental_match">找房</option>
+                <option value="business_faq">业务问答</option>
+              </select>
+            </label>
+            <button class="ghost-button" id="refreshAssistantTraces">刷新Trace</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>对话</th><th>需求/地点</th><th>工具结果</th><th>最终回复</th><th>Trace</th></tr></thead>
+            <tbody id="assistantTraceRows"></tbody>
+          </table>
+          <div class="empty" id="assistantTraceEmpty" hidden>暂无客服 trace</div>
         </div>
       </section>
 
@@ -1270,6 +1348,8 @@
       showingUploads: '带看审核',
       feishuSync: '飞书同步',
       llmConfig: 'LLM配置',
+      assistantFeedback: '客服反馈',
+      assistantTraces: '客服Trace',
       launchCheck: '上线检查',
       admins: '账号管理',
       dataBackup: '数据备份'
@@ -1279,7 +1359,7 @@
       local: { apiBaseUrl: '', model: 'local-match-v1', protocol: 'openai-compatible' },
       'openai-compatible': { apiBaseUrl: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4.1-mini', protocol: 'openai-compatible' },
       deepseek: { apiBaseUrl: 'https://api.deepseek.com/chat/completions', model: 'deepseek-chat', protocol: 'openai-compatible' },
-      qwen: { apiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus', protocol: 'openai-compatible' },
+      qwen: { apiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen3.5-plus', needParserModel: 'qwen3.5-plus', complexNeedParserModel: 'qwen3.7-plus', replyModel: 'qwen-turbo', protocol: 'openai-compatible' },
       zhipu: { apiBaseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-4-flash', protocol: 'openai-compatible' },
       custom: { apiBaseUrl: '', model: '', protocol: 'custom-json' }
     };
@@ -1291,6 +1371,9 @@
       protocol: 'openai-compatible',
       apiBaseUrl: '',
       model: 'local-match-v1',
+      needParserModel: 'local-match-v1',
+      complexNeedParserModel: 'local-match-v1',
+      replyModel: 'local-match-v1',
       secretName: 'LLM_API_KEY',
       systemPrompt: DEFAULT_LLM_SYSTEM_PROMPT
     };
@@ -2115,6 +2198,139 @@
       `).join('');
     }
 
+    function assistantFeedbackStatusText(status) {
+      return {
+        open: '待处理',
+        triaged: '已分诊',
+        in_eval: '已加入评估',
+        resolved: '已解决',
+        ignored: '已忽略'
+      }[status] || status || '待处理';
+    }
+
+    function assistantNeedText(need = {}) {
+      return [
+        need.budget || need.maxBudget ? `预算 ${need.budget || need.maxBudget}` : '',
+        need.area ? `区域 ${need.area}` : '',
+        need.community ? `小区 ${need.community}` : '',
+        need.anchorName ? `地点 ${need.anchorName}` : '',
+        need.radiusKm ? `${need.radiusKm}公里内` : '',
+        need.rentMode || '',
+        need.layout || ''
+      ].filter(Boolean).join(' · ') || '-';
+    }
+
+    function assistantListingText(listings = []) {
+      return (listings || []).slice(0, 4).map((item) => (
+        `${item.id || '-'} ${item.community || item.title || ''} ${item.rent || item.price || ''}`
+      )).join('；') || '-';
+    }
+
+    async function renderAssistantEvalCases() {
+      const rows = await getAdminData('/admin/assistant/eval-cases?limit=50', () => []);
+      const body = document.getElementById('assistantEvalCaseRows');
+      const empty = document.getElementById('assistantEvalCaseEmpty');
+      body.innerHTML = rows.map((item) => `
+        <tr>
+          <td>${safeText(item.text)}<span class="sub-cell">${safeText(item.id)} · 来源 ${safeText(item.sourceFeedbackId)}</span></td>
+          <td>${safeText(assistantNeedText(item.expectedNeed || {}))}<span class="sub-cell">${safeText(item.behavior)}</span></td>
+          <td>${safeText((item.expectedListingIds || []).join('、') || '-')}</td>
+          <td>${safeText((item.requiredNodes || []).join(' -> ') || '-')}</td>
+        </tr>
+      `).join('');
+      empty.hidden = rows.length > 0;
+    }
+
+    async function renderAssistantFeedbacks() {
+      const status = document.getElementById('assistantFeedbackStatus').value;
+      const rows = await getAdminData(`/admin/assistant/feedbacks${buildQuery({ status, limit: 80 })}`, () => []);
+      const body = document.getElementById('assistantFeedbackRows');
+      const empty = document.getElementById('assistantFeedbackEmpty');
+      body.innerHTML = rows.map((item) => `
+        <tr>
+          <td>
+            <strong>${safeText(item.feedbackType)}</strong>
+            <span class="sub-cell">${safeText(item.reason || item.sourceText || '-')}</span>
+            <span class="sub-cell">${safeText(item.createdAt || '')}</span>
+          </td>
+          <td>${safeText(assistantNeedText(item.need || {}))}<span class="sub-cell">${safeText(item.placeResolution && item.placeResolution.name || '')}</span></td>
+          <td>${safeText(assistantListingText(item.listings || []))}</td>
+          <td>${safeText(item.traceSummary && item.traceSummary.timeline || '-')}</td>
+          <td><span class="${pillClass(item.status === 'open' ? '需要处理' : '通过')}">${safeText(assistantFeedbackStatusText(item.status))}</span><span class="sub-cell">${safeText(item.operatorNote || '')}</span></td>
+          <td>
+            <div class="cell-actions">
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="triaged">分诊</button>
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="resolved">解决</button>
+              <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="ignored">忽略</button>
+              <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}">加入评估</button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+      empty.hidden = rows.length > 0;
+      await renderAssistantEvalCases();
+    }
+
+    function assistantTraceToolText(item = {}) {
+      const audit = item.traceSummary && item.traceSummary.audit || {};
+      const toolOutput = audit.toolOutput || {};
+      const ranking = toolOutput.rankingResult || {};
+      const place = item.placeResolution || toolOutput.placeResolution || {};
+      return [
+        ranking.listingCount !== undefined ? `推荐 ${ranking.listingCount}` : '',
+        ranking.exactCount !== undefined ? `符合 ${ranking.exactCount}` : '',
+        ranking.nearbyCount !== undefined ? `接近 ${ranking.nearbyCount}` : '',
+        place.status ? `地点 ${place.status}` : '',
+        item.shouldAskFollowUp ? '需要追问' : '已可回复'
+      ].filter(Boolean).join(' · ') || '-';
+    }
+
+    async function renderAssistantTraces() {
+      const intent = document.getElementById('assistantTraceIntent').value;
+      const rows = await getAdminData(`/admin/assistant/traces${buildQuery({ intent, limit: 100 })}`, () => []);
+      const body = document.getElementById('assistantTraceRows');
+      const empty = document.getElementById('assistantTraceEmpty');
+      body.innerHTML = rows.map((item) => {
+        const trace = item.traceSummary || {};
+        return `
+          <tr>
+            <td>${safeText(item.intent || '-')}<span class="sub-cell">${safeText(item.threadId || '')}</span><span class="sub-cell">${safeText(item.createdAt || '')}</span></td>
+            <td>${safeText(assistantNeedText(item.need || {}))}<span class="sub-cell">${safeText(item.placeResolution && item.placeResolution.name || '')}</span></td>
+            <td>${safeText(assistantTraceToolText(item))}<span class="sub-cell">${safeText(assistantListingText(item.listings || []))}</span></td>
+            <td>${safeText(item.reply || item.nextQuestion || '-')}<span class="sub-cell">${safeText(item.replyMode || '')}</span></td>
+            <td>${safeText(trace.timeline || '-')}<span class="sub-cell">${safeText(trace.readable || '')}</span></td>
+          </tr>
+        `;
+      }).join('');
+      empty.hidden = rows.length > 0;
+    }
+
+    async function reviewAssistantFeedback(id, status) {
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再标注客服反馈：/admin-web/');
+        return;
+      }
+      const operatorNote = window.prompt('填写处理备注，可留空', '') || '';
+      await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ status, operatorNote })
+      });
+      await renderAssistantFeedbacks();
+    }
+
+    async function promoteAssistantFeedbackToEval(id) {
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再加入评估集：/admin-web/');
+        return;
+      }
+      const operatorNote = window.prompt('这条评估样本的备注，可留空', '') || '';
+      await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/promote-eval`, {
+        method: 'POST',
+        body: JSON.stringify({ behavior: 'recommend', operatorNote })
+      });
+      await renderAssistantFeedbacks();
+    }
+
     async function getShowingUploadData() {
       if (!canUseAdminApi()) return dataCenter.getShowingUploadRows();
       try {
@@ -2595,7 +2811,13 @@
     }
 
     function normalizeLlmConfig(config) {
-      const next = Object.assign({}, defaultLlmConfig, config || {});
+      const source = config || {};
+      const next = Object.assign({}, defaultLlmConfig, source);
+      const preset = llmProviderDefaults[next.provider] || {};
+      if (!next.model && preset.model) next.model = preset.model;
+      if (!source.needParserModel) next.needParserModel = preset.needParserModel || next.model;
+      if (!source.complexNeedParserModel) next.complexNeedParserModel = preset.complexNeedParserModel || next.needParserModel || next.model;
+      if (!source.replyModel) next.replyModel = preset.replyModel || next.model;
       if (looksBrokenPrompt(next.systemPrompt)) {
         next.systemPrompt = DEFAULT_LLM_SYSTEM_PROMPT;
       }
@@ -2628,6 +2850,9 @@
         protocol: document.getElementById('llmProtocol').value,
         apiBaseUrl: document.getElementById('llmApiBaseUrl').value.trim(),
         model: document.getElementById('llmModel').value.trim(),
+        needParserModel: document.getElementById('llmNeedParserModel').value.trim(),
+        complexNeedParserModel: document.getElementById('llmComplexNeedParserModel').value.trim(),
+        replyModel: document.getElementById('llmReplyModel').value.trim(),
         secretName: document.getElementById('llmSecretName').value.trim() || 'LLM_API_KEY',
         systemPrompt: document.getElementById('llmSystemPrompt').value.trim(),
         enabled: document.getElementById('llmProvider').value !== 'local'
@@ -2640,6 +2865,9 @@
       document.getElementById('llmProtocol').value = config.protocol;
       document.getElementById('llmApiBaseUrl').value = config.apiBaseUrl;
       document.getElementById('llmModel').value = config.model;
+      document.getElementById('llmNeedParserModel').value = config.needParserModel;
+      document.getElementById('llmComplexNeedParserModel').value = config.complexNeedParserModel;
+      document.getElementById('llmReplyModel').value = config.replyModel;
       document.getElementById('llmSecretName').value = config.secretName;
       document.getElementById('llmSystemPrompt').value = config.systemPrompt;
       renderLlmConfigPreview(config);
@@ -2650,14 +2878,18 @@
       const isLocal = config.provider === 'local';
       document.getElementById('llmConfigStatus').textContent = isLocal
         ? '当前使用本地模拟匹配。正式上线时请选择真实供应商，并在服务端保存密钥。'
-        : `当前配置：${config.provider} / ${config.model}。小程序应调用后端 /mini/llm/match，由后端转发到该 LLM 接口。`;
+        : `当前配置：${config.provider}。普通理解 ${config.needParserModel}，复杂理解 ${config.complexNeedParserModel}，话术 ${config.replyModel}。`;
       document.getElementById('llmConfigPreview').textContent = JSON.stringify({
         provider: config.provider,
         protocol: config.protocol,
         apiBaseUrl: config.apiBaseUrl,
         model: config.model,
+        needParserModel: config.needParserModel,
+        complexNeedParserModel: config.complexNeedParserModel,
+        replyModel: config.replyModel,
         secretName: config.secretName,
-        miniProgramEndpoint: '/mini/llm/match'
+        miniProgramEndpoint: '/mini/assistant/chat',
+        adminTestEndpoint: '/admin/llm-config/test'
       }, null, 2);
     }
 
@@ -2671,6 +2903,9 @@
       document.getElementById('llmProtocol').value = preset.protocol;
       document.getElementById('llmApiBaseUrl').value = preset.apiBaseUrl;
       document.getElementById('llmModel').value = preset.model;
+      document.getElementById('llmNeedParserModel').value = preset.needParserModel || preset.model;
+      document.getElementById('llmComplexNeedParserModel').value = preset.complexNeedParserModel || preset.needParserModel || preset.model;
+      document.getElementById('llmReplyModel').value = preset.replyModel || preset.model;
       renderLlmConfigPreview(readLlmConfigForm());
     }
 
@@ -2684,7 +2919,7 @@
             body: JSON.stringify(config)
           });
           fillLlmConfigForm(saved);
-          showLlmStatus('LLM 配置已保存到后端。小程序会通过 /mini/llm/match 使用该配置。');
+          showLlmStatus('LLM 配置已保存到后端。小程序会通过 /mini/assistant/chat 使用该配置。');
           renderLaunchCheck();
           return;
         }
@@ -2712,7 +2947,13 @@
           method: 'POST',
           body: JSON.stringify(config)
         });
-        showLlmStatus(`测试完成：${result.mode}${result.warning ? '，已回退本地匹配：' + result.warning : '。'}`);
+        showLlmStatus([
+          `Assistant 测试完成：${result.mode || 'unknown'}`,
+          `需求解析：${result.needParserMode || 'unknown'}`,
+          `话术：${result.replyMode || 'unknown'}`,
+          `trace：${result.traceSummary && result.traceSummary.eventCount ? result.traceSummary.eventCount : 0} 节点`,
+          result.warning || result.llmWarning || ''
+        ].filter(Boolean).join('；'));
       } catch (error) {
         showLlmStatus(error.message || 'LLM 测试失败');
       }
@@ -2756,6 +2997,8 @@
       renderDeals();
       renderCommissions();
       renderShowingUploads();
+      renderAssistantFeedbacks();
+      renderAssistantTraces();
       renderAdmins();
       renderFeishuSync();
       renderLaunchCheck();
@@ -2829,6 +3072,25 @@
         return;
       }
 
+      const assistantFeedbackReviewButton = event.target.closest('.assistant-feedback-review-button');
+      if (assistantFeedbackReviewButton && !assistantFeedbackReviewButton.disabled) {
+        reviewAssistantFeedback(
+          assistantFeedbackReviewButton.dataset.id,
+          assistantFeedbackReviewButton.dataset.status
+        ).catch((error) => {
+          alert(error.message || '客服反馈标注失败');
+        });
+        return;
+      }
+
+      const assistantFeedbackEvalButton = event.target.closest('.assistant-feedback-eval-button');
+      if (assistantFeedbackEvalButton && !assistantFeedbackEvalButton.disabled) {
+        promoteAssistantFeedbackToEval(assistantFeedbackEvalButton.dataset.id).catch((error) => {
+          alert(error.message || '加入评估集失败');
+        });
+        return;
+      }
+
       const showingReviewButton = event.target.closest('.showing-review-button');
       if (showingReviewButton && !showingReviewButton.disabled) {
         reviewShowingUpload(showingReviewButton.dataset.id, showingReviewButton.dataset.action).catch((error) => {
@@ -2894,6 +3156,8 @@
         title.textContent = panelTitles[button.dataset.panel] || button.textContent;
         if (button.dataset.panel === 'listingReviews') showListingReviewList();
         if (button.dataset.panel === 'expiredListings') showExpiredListingList();
+        if (button.dataset.panel === 'assistantFeedback') renderAssistantFeedbacks();
+        if (button.dataset.panel === 'assistantTraces') renderAssistantTraces();
       });
     });
 
@@ -2918,6 +3182,18 @@
       saveMaintenanceRule().catch((error) => {
         alert(error.message || '规则开关保存失败');
       });
+    });
+    document.getElementById('assistantFeedbackStatus').addEventListener('change', () => {
+      renderAssistantFeedbacks();
+    });
+    document.getElementById('refreshAssistantFeedback').addEventListener('click', () => {
+      renderAssistantFeedbacks();
+    });
+    document.getElementById('assistantTraceIntent').addEventListener('change', () => {
+      renderAssistantTraces();
+    });
+    document.getElementById('refreshAssistantTraces').addEventListener('click', () => {
+      renderAssistantTraces();
     });
     document.getElementById('createAdminAccount').addEventListener('click', () => {
       createAdminAccount().catch((error) => {

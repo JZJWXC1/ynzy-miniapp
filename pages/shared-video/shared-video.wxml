@@ -1,0 +1,19 @@
+<navigation-bar title="房源视频" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell shared-video-page">
+    <view class="share-hero">
+      <video
+        wx:if="{{listing.videoUrl}}"
+        class="share-video"
+        src="{{listing.videoUrl}}"
+        controls
+        show-center-play-btn
+        object-fit="cover"
+      ></video>
+      <view wx:else class="share-placeholder">
+        <view class="play">▶</view>
+        <view class="placeholder-title">视频暂不可播放</view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

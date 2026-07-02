@@ -1,4 +1,13 @@
 const domain = require('./domain')
+const { normalizeAsrText } = require('./asr-normalizer')
+const {
+  DEFAULT_RADIUS_KM,
+  SERVICE_AREAS,
+  distanceKm,
+  listingCoordinate,
+  placeNames,
+  resolvePlace
+} = require('./place-locator')
 const {
   NO_FEATURE,
   DEPOSIT_FREE_FEATURE,
@@ -6,14 +15,14 @@ const {
 } = require('./listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
-const DEFAULT_BUDGET_TOLERANCE = 200
+const DEFAULT_BUDGET_TOLERANCE = 300
+const COMMUNITY_NEARBY_RADIUS_KM = 2
+const MIN_BUDGET_RATIO = 0.75
 
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
   { key: 'layout', label: '户型/租法', emptyText: '待补充' },
-  { key: 'moveIn', label: '入住时间', emptyText: '可后补' },
-  { key: 'commute', label: '通勤', emptyText: '可后补' },
   { key: 'features', label: '标签/偏好', emptyText: '不限' }
 ]
 
@@ -175,6 +184,30 @@ function numberFrom(value) {
   return matched ? Number(matched[1]) : 0
 }
 
+function implicitMinBudget(maxBudget) {
+  const value = numberFrom(maxBudget)
+  return value ? Math.ceil(value * MIN_BUDGET_RATIO) : 0
+}
+
+function effectiveMinBudget(need = {}) {
+  const hard = need.hardConstraints || {}
+  return numberFrom(hard.minBudget || need.minBudget) || implicitMinBudget(hard.maxBudget || need.maxBudget)
+}
+
+function allowedBudgetOverage(need = {}) {
+  const preferences = need.preferences || {}
+  return Math.max(0, numberFrom(preferences.budgetTolerance))
+}
+
+function exceedsBudgetOverage(need = {}, rent = 0) {
+  const hard = need.hardConstraints || {}
+  const maxBudget = numberFrom(hard.maxBudget || need.maxBudget)
+  if (!maxBudget || !rent) return false
+  const over = rent - maxBudget
+  if (over <= 0) return false
+  return over > allowedBudgetOverage(need)
+}
+
 function compactText(value) {
   return String(value || '').replace(/\s+/g, '')
 }
@@ -198,13 +231,13 @@ function scrubDemandSource(value) {
     .replace(/[一二三四五六七八九十]{1,3}(?:栋|幢|号楼|座|单元)/g, '')
 }
 
-function sourceTextFromPayload(payload = {}) {
-  return scrubDemandSource([
+function sourceTextFromPayload(payload = {}, vocabulary = []) {
+  return normalizeAsrText(scrubDemandSource([
     payload.text,
     payload.voiceText,
     payload.form && payload.form.text,
     payload.form && payload.form.remark
-  ].filter(Boolean).join('，'))
+  ].filter(Boolean).join('，')), { vocabulary })
 }
 
 function shouldUseConfirmedFormOnly(payload = {}) {
@@ -217,6 +250,46 @@ function normalizeCommunity(value) {
     .replace(/\s+/g, '')
     .replace(/^(杭州市?|杭州)?(上城区|拱墅区|西湖区|滨江区|萧山区|余杭区|临平区|钱塘区)/, '')
     .replace(/附近$/, '')
+}
+
+function asrVocabularyFromCandidates(candidates = [], extraTerms = []) {
+  const listingTerms = (candidates || []).flatMap((listing) => [
+    listing.city,
+    listing.district,
+    listing.area,
+    listing.block,
+    listing.community,
+    listing.layout,
+    listing.room,
+    listing.hall,
+    listing.bath,
+    listing.type,
+    listing.rentMode,
+    ...(parseFeatureInput(listing.features) || []),
+    ...(parseFeatureInput(listing.rawFeatures) || [])
+  ])
+  const featureTerms = FEATURE_RULES.flatMap((rule) => [rule.name].concat(rule.aliases || []))
+  return unique([
+    ...AREA_WORDS,
+    ...Object.keys(AREA_ALIASES),
+    ...Object.values(AREA_ALIASES),
+    '一室',
+    '两室',
+    '三室',
+    '四室',
+    '五室',
+    '六室',
+    '一厅',
+    '两厅',
+    '一卫',
+    '两卫',
+    '单间',
+    '整租',
+    '合租',
+    ...featureTerms,
+    ...listingTerms,
+    ...extraTerms
+  ])
 }
 
 function parseBudget(source) {
@@ -299,16 +372,116 @@ function parseBudget(source) {
   return budget
 }
 
+function parseRadiusValue(source) {
+  const text = compactText(source)
+  const matched = text.match(/([一二两三四五六七八九十百千万\d.]+)(?:公里|千米|km)(?:以内|内|范围内|范围)?/i)
+  if (!matched) return 0
+  const value = amountValue(matched[1])
+  return value > 0 ? value : 0
+}
+
+function cleanAnchorName(value) {
+  return compactText(value)
+    .replace(/^(客户|租客|他|她|我|帮我|帮客户|帮租客)/, '')
+    .replace(/^(想|要|想要|想住|想找|找|找个|找一套|看看|看下|有没有)/, '')
+    .replace(/^(在|离|距|距离)/, '')
+    .replace(/(上班|工作|通勤|住的|住|有哪些|有什么|房源|找房|附近|周边|旁边|边上|一带)$/g, '')
+    .replace(/[，,。；;：:！？?]/g, '')
+}
+
+function shouldUseNearbyRadius(anchorName) {
+  const text = cleanAnchorName(anchorName)
+  if (!text) return false
+  if (AREA_WORDS.map(normalizeArea).indexOf(normalizeArea(text)) !== -1) return false
+  if (/园|苑|府|城|广场|万达|中心|大厦|智慧园|产业园|写字楼|新天地/.test(text)) return true
+  return false
+}
+
+function parseRadiusSearch(source) {
+  const text = compactText(source)
+  if (!text) return null
+  const explicitRadius = parseRadiusValue(text)
+
+  const workplace = text.match(/(?:客户|租客|他|她)?(?:在|离|距|距离)(.{2,30}?)(?:上班|工作|通勤)/)
+  if (workplace) {
+    const anchorName = cleanAnchorName(workplace[1])
+    if (anchorName) {
+      return {
+        searchMode: 'radius_around_place',
+        anchorName,
+        anchorRole: 'workplace',
+        radiusKm: explicitRadius || DEFAULT_RADIUS_KM
+      }
+    }
+  }
+
+  const radiusNearAnchor = text.match(/(.{2,30}?)(?:的)?[一二两三四五六七八九十百千万\d.]+(?:公里|千米|km)(?:以内|内|范围内|范围)?/i)
+  if (radiusNearAnchor) {
+    const anchorName = cleanAnchorName(radiusNearAnchor[1])
+    if (anchorName) {
+      return {
+        searchMode: 'radius_around_place',
+        anchorName,
+        anchorRole: 'anchor',
+        radiusKm: explicitRadius || DEFAULT_RADIUS_KM
+      }
+    }
+  }
+
+  const nearbyAnchor = text.match(/(.{2,30}?)(?:附近|周边|旁边|边上|一带)/)
+  if (nearbyAnchor) {
+    if (/想住|住在|住到/.test(nearbyAnchor[1])) return null
+    const anchorName = cleanAnchorName(nearbyAnchor[1])
+    if (anchorName && shouldUseNearbyRadius(anchorName)) {
+      return {
+        searchMode: 'radius_around_place',
+        anchorName,
+        anchorRole: 'anchor',
+        radiusKm: DEFAULT_RADIUS_KM
+      }
+    }
+  }
+
+  return null
+}
+
 function parseArea(source) {
   const text = compactText(source)
   const matched = AREA_WORDS.find((word) => text.indexOf(word) !== -1)
   return normalizeArea(matched || '')
 }
 
-function parseCommunity(source, candidates) {
+function cleanExplicitCommunity(value) {
+  const candidate = normalizeCommunity(value)
+    .replace(/^(想住|住在|住到|想看|看看|看下|找|有没有|有无)/, '')
+    .replace(/(有|有没有|附近|周边|旁边|一室|两室|三室|四室|单间|整租|合租|预算|\d{3,5}).*$/, '')
+  if (!candidate || candidate.length < 3 || candidate.length > 24) return ''
+  if (['小区', '公寓', '家园', '花园'].indexOf(candidate) !== -1) return ''
+  if (AREA_WORDS.map(normalizeArea).indexOf(normalizeArea(candidate)) !== -1) return ''
+  return candidate
+}
+
+function parseExplicitCommunity(source) {
   const text = normalizeCommunity(source)
   if (!text) return ''
-  const communities = unique((candidates || []).map((listing) => listing.community))
+  const suffix = '(?:小区|公寓|家园|花园|新村|苑|府|园|城|湾|庭|轩|里|坊|庄|村|郡|阁|寓|邸)'
+  const patterns = [
+    new RegExp(`(?:想住|住在|住到|想看|看看|看下|找|有没有|有无)([\\u4e00-\\u9fa5A-Za-z0-9·（）()]{2,24}?${suffix})`),
+    new RegExp(`([\\u4e00-\\u9fa5A-Za-z0-9·（）()]{2,24}?${suffix})(?:有|有没有|附近|周边|旁边|一室|两室|三室|四室|单间|整租|合租|预算|\\d{3,5}|$)`)
+  ]
+  for (const pattern of patterns) {
+    const matched = text.match(pattern)
+    const candidate = matched ? cleanExplicitCommunity(matched[1]) : ''
+    if (candidate) return candidate
+  }
+  return ''
+}
+
+function parseCommunity(source, candidates, options = {}) {
+  const text = normalizeCommunity(source)
+  if (!text) return ''
+  const communities = unique((candidates || []).map((listing) => listing.community)
+    .concat(options.communityNames || []))
     .filter((item) => normalizeCommunity(item).length >= 2)
     .sort((left, right) => normalizeCommunity(right).length - normalizeCommunity(left).length)
 
@@ -316,7 +489,7 @@ function parseCommunity(source, candidates) {
     const name = normalizeCommunity(community)
     return text.indexOf(name) !== -1 || (name.length >= 3 && name.indexOf(text) !== -1)
   })
-  return matched || ''
+  return matched || parseExplicitCommunity(text)
 }
 
 function parseLayout(source) {
@@ -331,33 +504,9 @@ function parseLayout(source) {
 
 function parseRentMode(source) {
   const text = compactText(source)
-  if (/合租|单间/.test(text)) return '合租'
   if (/整租/.test(text)) return '整租'
+  if (/合租|单间/.test(text)) return '合租'
   return ''
-}
-
-function parseMoveIn(source) {
-  const text = compactText(source)
-  const matched = text.match(/(?:入住|搬入|起租|月底|月初|下周|今天|明天|周末)[^，。,.；;]{0,8}/)
-  return matched ? matched[0] : ''
-}
-
-function parseCommute(source) {
-  const text = compactText(source)
-  const matched = text.match(/(?:通勤到|上班到|公司到)([^，。,.；;]{2,12})/)
-    || text.match(/通勤([^，。,.；;]{2,12})/)
-  const location = matched ? matched[1].replace(/(?:半小时|[一二两三四五六七八九十\d]+分钟|以内|内).*$/, '') : ''
-  let minutes = 0
-  if (/半小时/.test(text)) {
-    minutes = 30
-  } else {
-    const minuteMatch = text.match(/([一二两三四五六七八九十\d]{1,3})(?:分钟|分)/)
-    if (minuteMatch) minutes = amountValue(minuteMatch[1])
-  }
-  return {
-    commuteLocation: location,
-    maxCommuteMinutes: minutes
-  }
 }
 
 function featurePriority(source, alias) {
@@ -403,10 +552,22 @@ function cleanConstraintObject(data) {
   return result
 }
 
-function parseNeed(payload = {}, candidates = []) {
+function parseNeed(payload = {}, candidates = [], options = {}) {
   const useConfirmedFormOnly = shouldUseConfirmedFormOnly(payload)
-  const source = useConfirmedFormOnly ? '' : sourceTextFromPayload(payload)
+  const coordinateVocabulary = placeNames(options.db || {}, candidates)
+  const communityNames = placeNames(options.db || {}, candidates, { types: ['community'] })
+  const source = useConfirmedFormOnly
+    ? ''
+    : sourceTextFromPayload(payload, asrVocabularyFromCandidates(candidates, coordinateVocabulary))
   const form = payload.form || {}
+  const radiusSearch = form.searchMode === 'radius_around_place'
+    ? {
+        searchMode: 'radius_around_place',
+        anchorName: form.anchorName || form.anchorPlace || '',
+        anchorRole: form.anchorRole || 'anchor',
+        radiusKm: numberFrom(form.radiusKm) || DEFAULT_RADIUS_KM
+      }
+    : parseRadiusSearch(source)
   const budget = parseBudget([form.budget, form.budgetText, source].filter(Boolean).join('，'))
   const formMinBudget = numberFrom(form.minBudget)
   const formMaxBudget = numberFrom(form.maxBudget)
@@ -415,26 +576,20 @@ function parseNeed(payload = {}, candidates = []) {
     budget.maxBudget = formMaxBudget
     budget.budgetText = budget.minBudget ? `${budget.minBudget}-${budget.maxBudget}` : `${budget.maxBudget}`
   }
-  const community = form.community || parseCommunity(source, candidates)
+  const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames }))
   const area = normalizeArea(form.area || parseArea(source))
   const layout = form.layout || parseLayout(source)
   const rentMode = form.rentMode || parseRentMode(source)
-  const moveIn = form.moveIn || parseMoveIn(source)
-  const commute = parseCommute([source, form.commute, form.commuteLocation].filter(Boolean).join('，'))
-  if (form.commuteLocation) commute.commuteLocation = form.commuteLocation
-  if (numberFrom(form.maxCommuteMinutes)) commute.maxCommuteMinutes = numberFrom(form.maxCommuteMinutes)
   const featureResult = parseFeatures([source, parseFeatureInput(form.features).join('，')].filter(Boolean).join('，'))
   const allFeatures = unique(featureResult.hardFeatures.concat(featureResult.preferenceFeatures))
+  const hardMinBudget = budget.minBudget || implicitMinBudget(budget.maxBudget)
   const hardConstraints = cleanConstraintObject({
-    minBudget: budget.minBudget || '',
+    minBudget: hardMinBudget || '',
     maxBudget: budget.maxBudget || '',
-    area,
-    community,
+    area: radiusSearch ? '' : area,
+    community: radiusSearch ? '' : community,
     rentMode,
     layout,
-    moveIn,
-    commuteLocation: commute.commuteLocation,
-    maxCommuteMinutes: commute.maxCommuteMinutes || '',
     features: featureResult.hardFeatures
   })
   const preferences = cleanConstraintObject({
@@ -450,11 +605,13 @@ function parseNeed(payload = {}, candidates = []) {
     budgetText: budget.budgetText,
     area,
     community,
+    searchMode: radiusSearch ? radiusSearch.searchMode : '',
+    anchorName: radiusSearch ? radiusSearch.anchorName : '',
+    anchorRole: radiusSearch ? radiusSearch.anchorRole : '',
+    radiusKm: radiusSearch ? radiusSearch.radiusKm : '',
+    preferredAreas: radiusSearch ? SERVICE_AREAS.slice() : [],
     rentMode,
     layout,
-    moveIn,
-    commuteLocation: commute.commuteLocation,
-    maxCommuteMinutes: commute.maxCommuteMinutes || '',
     features: allFeatures,
     hardConstraints,
     preferences
@@ -464,7 +621,7 @@ function parseNeed(payload = {}, candidates = []) {
 function recognizedCoreCount(need) {
   return [
     Boolean(need.maxBudget || need.minBudget),
-    Boolean(need.area || need.community),
+    Boolean(need.area || need.community || need.anchorName),
     Boolean(need.layout || need.rentMode)
   ].filter(Boolean).length
 }
@@ -472,22 +629,20 @@ function recognizedCoreCount(need) {
 function buildFollowUpQuestion(need) {
   if (recognizedCoreCount(need) >= 2) return ''
   if (!need.maxBudget && !need.minBudget) return '预算大概多少？'
-  if (!need.area && !need.community) return '想看哪个区域或小区？'
+  if (!need.area && !need.community && !need.anchorName) return '想看哪个区域、小区或地点周边？'
   if (!need.layout && !need.rentMode) return '客户想要几室或单间？'
   return ''
 }
 
 function confirmationFieldValue(need = {}, key) {
   if (key === 'budget') return need.budgetText || (need.maxBudget ? `${need.maxBudget}以内` : '')
-  if (key === 'location') return [need.area, need.community].filter(Boolean).join(' · ')
-  if (key === 'layout') return [need.rentMode, need.layout].filter(Boolean).join(' · ')
-  if (key === 'moveIn') return need.moveIn || ''
-  if (key === 'commute') {
-    return [
-      need.commuteLocation,
-      need.maxCommuteMinutes ? `${need.maxCommuteMinutes}分钟内` : ''
-    ].filter(Boolean).join(' · ')
+  if (key === 'location') {
+    if (need.searchMode === 'radius_around_place') {
+      return [need.anchorName, need.radiusKm ? `${need.radiusKm}公里内` : '附近'].filter(Boolean).join(' · ')
+    }
+    return [need.area, need.community].filter(Boolean).join(' · ')
   }
+  if (key === 'layout') return [need.rentMode, need.layout].filter(Boolean).join(' · ')
   if (key === 'features') return (need.features || []).join('、')
   return ''
 }
@@ -628,18 +783,14 @@ function rentModeMatches(listing, rentMode) {
 }
 
 function exactReasonParts(listing, need, matchedPreferenceFeatures) {
-  const reasons = []
-  if (need.maxBudget && rentOfListing(listing) <= need.maxBudget) reasons.push('预算内')
-  if (need.area || need.community) reasons.push('位置匹配')
-  if (need.layout) reasons.push('户型匹配')
-  if (need.rentMode) reasons.push(`${need.rentMode}匹配`)
-  ;(need.hardConstraints.features || []).forEach((feature) => {
-    reasons.push(getFeatureRule(feature).reason)
-  })
-  matchedPreferenceFeatures.forEach((feature) => {
-    reasons.push(getFeatureRule(feature).reason)
-  })
-  return unique(reasons).slice(0, 3)
+  const hardFeatureReasons = (need.hardConstraints.features || []).map((feature) => getFeatureRule(feature).reason)
+  const preferenceFeatureReasons = matchedPreferenceFeatures.map((feature) => getFeatureRule(feature).reason)
+  const baseReasons = []
+  if (need.maxBudget && rentOfListing(listing) <= need.maxBudget) baseReasons.push('预算内')
+  if (need.area || need.community) baseReasons.push('位置匹配')
+  if (need.layout) baseReasons.push('户型匹配')
+  if (need.rentMode) baseReasons.push(`${need.rentMode}匹配`)
+  return unique(hardFeatureReasons.concat(preferenceFeatureReasons).concat(baseReasons)).slice(0, 3)
 }
 
 function evaluateListing(listing, need) {
@@ -707,6 +858,8 @@ function evaluateListing(listing, need) {
   })
 
   if (String(listing.status || '').indexOf('在租') !== -1) score += 5
+  if (listing.qualityScore) score += Math.min(8, Math.round(Number(listing.qualityScore) / 15))
+  if (listing.freshnessScore) score += Math.min(5, Math.round(Number(listing.freshnessScore) / 25))
   const differences = unique(hardDifferences.concat(preferenceDifferences))
   const exact = hardDifferences.length === 0
   const reasons = exactReasonParts(listing, need, matchedPreferenceFeatures)
@@ -723,12 +876,13 @@ function evaluateListing(listing, need) {
 
 function canBeNearby(item, need) {
   if (item.exact || !item.differences.length) return false
-  const tolerance = Number((need.preferences && need.preferences.budgetTolerance) || DEFAULT_BUDGET_TOLERANCE)
+  if (hasHardFeatureMismatch(item, need)) return false
   const rent = rentOfListing(item.listing)
-  const maxBudget = Number(need.maxBudget || 0)
-  const tooExpensive = maxBudget && rent && rent - maxBudget > Math.max(800, tolerance + 400)
+  const minBudget = effectiveMinBudget(need)
+  const tooExpensive = exceedsBudgetOverage(need, rent)
+  const tooCheap = minBudget && rent && rent < minBudget
   const impossibleArea = item.hardDifferences.indexOf('区域不符') !== -1 && item.hardDifferences.length > 1
-  return !tooExpensive && !impossibleArea && item.score >= 25
+  return !tooCheap && !tooExpensive && !impossibleArea && item.score >= 25
 }
 
 function displayTitle(listing = {}) {
@@ -744,7 +898,7 @@ function sanitizeListing(item, group) {
   const relevanceScore = Math.round(item.score || listing.relevanceScore || 50)
   const differenceText = item.differences && item.differences.length
     ? item.differences.join('、')
-    : ''
+    : '无明显差异'
   const matchReason = item.reasons && item.reasons.length
     ? item.reasons.join('、')
     : '基础条件相近'
@@ -773,7 +927,13 @@ function sanitizeListing(item, group) {
     relevanceScore,
     relevancePercent: `${relevanceScore}%`,
     matchScore: `${relevanceScore}%`,
-    displayRelevance: `${relevanceScore}%`
+    displayRelevance: `${relevanceScore}%`,
+    qualityScore: listing.qualityScore || 0,
+    freshnessScore: listing.freshnessScore || 0,
+    coordinateQuality: listing.coordinateQuality || '',
+    distanceKm: listing.distanceKm || '',
+    distanceText: listing.distanceText || '',
+    anchorName: listing.anchorName || ''
   }
 }
 
@@ -789,23 +949,34 @@ function candidateListings(db = {}) {
   const rawMap = rawListingsById(db)
   return domain.filterListings(db, {}).map((listing) => {
     const raw = rawMap.get(listing.id) || {}
+    const profile = raw.recommendationProfile || null
+    const profileLocation = profile && profile.publicLocation ? profile.publicLocation : {}
+    if (profile && profile.ready !== true) return null
     return {
       ...listing,
+      recommendationProfile: profile || undefined,
       rawFeatures: unique(parseFeatureInput(raw.features).concat(parseFeatureInput(raw.tags))),
       status: raw.status || listing.status || '',
-      rent: numberFrom(raw.rent || listing.rent || listing.price),
-      layout: raw.layout || listing.layout || '',
-      rentMode: raw.rentMode || raw.type || listing.rentMode || listing.type || '',
-      type: raw.type || raw.rentMode || listing.type || listing.rentMode || '',
-      room: raw.room || listing.room || '',
-      hall: raw.hall || listing.hall || '',
-      bath: raw.bath || listing.bath || '',
-      area: raw.area || raw.district || listing.area || listing.district || '',
-      district: raw.district || listing.district || listing.area || '',
-      block: raw.block || listing.block || '',
-      community: raw.community || listing.community || ''
+      rent: numberFrom((profile && profile.rent) || raw.rent || listing.rent || listing.price),
+      layout: (profile && profile.layout) || raw.layout || listing.layout || '',
+      rentMode: (profile && profile.rentMode) || raw.rentMode || raw.type || listing.rentMode || listing.type || '',
+      type: (profile && profile.rentMode) || raw.type || raw.rentMode || listing.type || listing.rentMode || '',
+      room: (profile && profile.room) || raw.room || listing.room || '',
+      hall: (profile && profile.hall) || raw.hall || listing.hall || '',
+      bath: (profile && profile.bath) || raw.bath || listing.bath || '',
+      area: profileLocation.area || raw.area || raw.district || listing.area || listing.district || '',
+      district: profileLocation.district || raw.district || listing.district || listing.area || '',
+      block: profileLocation.block || raw.block || listing.block || '',
+      community: profileLocation.community || raw.community || listing.community || '',
+      mapLatitude: raw.mapLatitude || raw.latitude || listing.mapLatitude || listing.latitude || '',
+      mapLongitude: raw.mapLongitude || raw.longitude || listing.mapLongitude || listing.longitude || '',
+      coordinateSource: raw.coordinateSource || listing.coordinateSource || '',
+      coordinateVerified: raw.coordinateVerified === true || listing.coordinateVerified === true,
+      qualityScore: Number(profile && profile.qualityScore) || 0,
+      freshnessScore: Number(profile && profile.freshnessScore) || 0,
+      coordinateQuality: (profile && profile.coordinateQuality) || ''
     }
-  })
+  }).filter(Boolean)
 }
 
 function sortEvaluated(left, right) {
@@ -813,14 +984,247 @@ function sortEvaluated(left, right) {
   return rentOfListing(left.listing) - rentOfListing(right.listing)
 }
 
-function groupListings(candidates, need) {
+function formatDistance(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return ''
+  if (number < 1) return `${Math.round(number * 1000)}m`
+  return `${number.toFixed(1)}km`
+}
+
+function radiusEvaluationNeed(need = {}) {
+  return {
+    ...need,
+    area: '',
+    community: '',
+    hardConstraints: {
+      ...(need.hardConstraints || {}),
+      area: '',
+      community: ''
+    }
+  }
+}
+
+function addDistanceToListing(listing, place, distanceValue) {
+  const distanceText = formatDistance(distanceValue)
+  return {
+    ...listing,
+    distanceKm: Number(distanceValue.toFixed(3)),
+    distanceText: distanceText ? `距${place.name}约${distanceText}` : '',
+    anchorName: place.name
+  }
+}
+
+function sortRadiusEvaluated(left, right) {
+  if (right.score !== left.score) return right.score - left.score
+  return Number(left.listing.distanceKm || 999) - Number(right.listing.distanceKm || 999)
+}
+
+function hasStructuralMismatch(item) {
+  return (item.hardDifferences || []).some((text) => /户型不符|户型少|户型多|整租不符|合租不符/.test(text))
+}
+
+function hasHardFeatureMismatch(item, need = {}) {
+  const features = (need.hardConstraints && need.hardConstraints.features) || []
+  if (!features.length) return false
+  const differences = item.hardDifferences || []
+  return features.some((feature) => differences.indexOf(getFeatureRule(feature).missing) !== -1)
+}
+
+function canBeRadiusNearby(item, need) {
+  if (item.exact || !item.differences.length) return false
+  if (hasStructuralMismatch(item)) return false
+  if (hasHardFeatureMismatch(item, need)) return false
+  const rent = rentOfListing(item.listing)
+  const minBudget = effectiveMinBudget(need)
+  if (minBudget && rent && rent < minBudget) return false
+  if (exceedsBudgetOverage(need, rent)) return false
+  return item.score >= 35
+}
+
+function buildPlaceFollowUp(resolution, need = {}) {
+  if (!need.anchorName) return '想围绕哪个地点找房？'
+  if (resolution && resolution.status === 'ambiguous') {
+    const names = (resolution.candidates || []).map((item) => [item.area, item.name].filter(Boolean).join('')).slice(0, 3)
+    return names.length
+      ? `我找到多个叫「${need.anchorName}」的地点，你指的是：${names.join('、')}？`
+      : `我找到多个叫「${need.anchorName}」的地点，需要你确认一下具体位置。`
+  }
+  if (need.anchorName === '乐富智慧园') {
+    return '乐富智慧园我没确认坐标，是祥符这边的吗？或者你再发我一个附近的地点。'
+  }
+  return `${need.anchorName}我没确认坐标，你再发我一个附近的地点或更具体地址，我再按${need.radiusKm || DEFAULT_RADIUS_KM}公里内筛。`
+}
+
+function buildRadiusGroupReply(need = {}, place = {}, groups = {}) {
+  const placeName = place.name || need.anchorName || '这个地点'
+  const radiusKm = need.radiusKm || DEFAULT_RADIUS_KM
+  const exactCount = (groups.exactListings || []).length
+  const nearbyCount = (groups.nearbyListings || []).length
+  if (exactCount && nearbyCount) {
+    return `我按${placeName}${radiusKm}公里内筛了，找到${exactCount}套符合要求，另有${nearbyCount}套接近房源。`
+  }
+  if (exactCount) {
+    return `我按${placeName}${radiusKm}公里内筛了，找到${exactCount}套符合要求，已按距离和匹配度排序。`
+  }
+  if (nearbyCount) {
+    return `我按${placeName}${radiusKm}公里内筛了，没有完全符合的，先给你${nearbyCount}套接近房源。`
+  }
+  return `我按${placeName}${radiusKm}公里内筛了，暂未找到合适房源，可以放宽预算、户型或距离。`
+}
+
+function buildCommunityNearbyReply(need = {}, place = {}, groups = {}) {
+  const community = need.community || (need.hardConstraints && need.hardConstraints.community) || place.name || '这个小区'
+  const count = (groups.nearbyListings || []).length
+  if (count) {
+    return `${community}里暂时没有完全符合的，我按周边${COMMUNITY_NEARBY_RADIUS_KM}公里找了${count}套相邻小区房源。`
+  }
+  return `${community}里暂时没有完全符合的，周边${COMMUNITY_NEARBY_RADIUS_KM}公里也没筛到合适房源，可以放宽预算、户型或距离。`
+}
+
+function communityAdjacentEvaluationNeed(need = {}) {
+  return {
+    ...need,
+    community: '',
+    hardConstraints: {
+      ...(need.hardConstraints || {}),
+      community: ''
+    }
+  }
+}
+
+function shouldUseCommunityAdjacentFallback(need = {}, exact = []) {
+  const community = need.community || (need.hardConstraints && need.hardConstraints.community)
+  return Boolean(community && exact.length === 0)
+}
+
+function groupCommunityAdjacentListings(candidates, need, options = {}) {
+  const community = need.community || (need.hardConstraints && need.hardConstraints.community)
+  const resolution = resolvePlace(options.db || {}, community, candidates)
+  if (resolution.status !== 'resolved') {
+    const nextQuestion = community
+      ? `${community}我没确认坐标，你再发我一个附近的地点或更具体地址，我再按周边帮你筛。`
+      : '你说的小区我没确认坐标，你再发我一个附近的地点或更具体地址。'
+    return {
+      exactListings: [],
+      nearbyListings: [],
+      listings: [],
+      nextQuestion,
+      reply: nextQuestion,
+      placeResolution: resolution
+    }
+  }
+
+  const scopedCandidates = (candidates || []).map((listing) => {
+    const coordinate = listingCoordinate(listing)
+    if (!coordinate) return null
+    const value = distanceKm(resolution, coordinate)
+    if (!Number.isFinite(value) || value > COMMUNITY_NEARBY_RADIUS_KM) return null
+    return addDistanceToListing(listing, resolution, value)
+  }).filter(Boolean)
+
+  const needForEvaluation = communityAdjacentEvaluationNeed(need)
+  const evaluated = scopedCandidates.map((listing) => {
+    const item = evaluateListing(listing, needForEvaluation)
+    const distanceValue = Number(listing.distanceKm || 0)
+    const distanceBoost = Math.max(0, Math.round(8 - (distanceValue / COMMUNITY_NEARBY_RADIUS_KM) * 8))
+    item.score = Math.max(1, Math.min(99, item.score + distanceBoost))
+    item.reasons = unique([listing.distanceText].concat(item.reasons || [])).slice(0, 3)
+    if (!communityMatches(listing, community)) {
+      item.hardDifferences = unique((item.hardDifferences || []).concat(`不在${community}`))
+      item.differences = unique((item.differences || []).concat(`不在${community}`))
+      item.exact = false
+    }
+    return item
+  }).filter((item) => item.exact || canBeRadiusNearby(item, needForEvaluation))
+    .sort(sortRadiusEvaluated)
+
+  const nearbyListings = evaluated.slice(0, MAX_RECOMMEND_COUNT).map((item) => sanitizeListing(item, 'nearby'))
+  const groups = {
+    exactListings: [],
+    nearbyListings,
+    listings: nearbyListings,
+    placeResolution: resolution
+  }
+  return {
+    ...groups,
+    reply: buildCommunityNearbyReply(need, resolution, groups)
+  }
+}
+
+function groupRadiusListings(candidates, need, options = {}) {
+  const resolution = resolvePlace(options.db || {}, need.anchorName, candidates)
+  const empty = {
+    exactListings: [],
+    nearbyListings: [],
+    listings: [],
+    placeResolution: resolution
+  }
+  if (resolution.status !== 'resolved') {
+    const nextQuestion = buildPlaceFollowUp(resolution, need)
+    return {
+      ...empty,
+      nextQuestion,
+      reply: nextQuestion
+    }
+  }
+
+  const radiusKm = Number(need.radiusKm || DEFAULT_RADIUS_KM)
+  const scopedCandidates = (candidates || []).map((listing) => {
+    const coordinate = listingCoordinate(listing)
+    if (!coordinate) return null
+    const value = distanceKm(resolution, coordinate)
+    if (!Number.isFinite(value) || value > radiusKm) return null
+    return addDistanceToListing(listing, resolution, value)
+  }).filter(Boolean)
+
+  const needForEvaluation = radiusEvaluationNeed(need)
+  const evaluated = scopedCandidates.map((listing) => {
+    const item = evaluateListing(listing, needForEvaluation)
+    const distanceValue = Number(listing.distanceKm || 0)
+    const distanceBoost = Math.max(0, Math.round(12 - (distanceValue / Math.max(radiusKm, 0.1)) * 12))
+    item.score = Math.max(1, Math.min(99, item.score + distanceBoost))
+    item.reasons = unique([listing.distanceText].concat(item.reasons || [])).slice(0, 3)
+    return item
+  })
+
+  const exact = evaluated
+    .filter((item) => item.exact)
+    .sort(sortRadiusEvaluated)
+  const nearby = evaluated
+    .filter((item) => canBeRadiusNearby(item, needForEvaluation))
+    .sort(sortRadiusEvaluated)
+  const exactListings = exact.slice(0, MAX_RECOMMEND_COUNT).map((item) => sanitizeListing(item, 'exact'))
+  const nearbyListings = nearby.slice(0, MAX_RECOMMEND_COUNT).map((item) => sanitizeListing(item, 'nearby'))
+  const listings = exactListings.concat(nearbyListings).slice(0, MAX_RECOMMEND_COUNT)
+  const reply = buildRadiusGroupReply(need, resolution, { exactListings, nearbyListings })
+
+  return {
+    exactListings,
+    nearbyListings,
+    listings,
+    reply,
+    placeResolution: resolution
+  }
+}
+
+function groupListings(candidates, need, options = {}) {
+  if (need && need.searchMode === 'radius_around_place') {
+    return groupRadiusListings(candidates, need, options)
+  }
   const evaluated = (candidates || []).map((listing) => evaluateListing(listing, need))
   const exact = evaluated
     .filter((item) => item.exact)
     .sort(sortEvaluated)
-  const nearby = evaluated
-    .filter((item) => canBeNearby(item, need))
-    .sort(sortEvaluated)
+  if (shouldUseCommunityAdjacentFallback(need, exact)) {
+    const adjacentGroups = groupCommunityAdjacentListings(candidates, need, options)
+    if (adjacentGroups) return adjacentGroups
+  }
+  const explicitCommunity = Boolean(need.community || (need.hardConstraints && need.hardConstraints.community))
+  const nearby = explicitCommunity && exact.length
+    ? []
+    : evaluated
+      .filter((item) => canBeNearby(item, need))
+      .sort(sortEvaluated)
   const exactListings = exact.slice(0, MAX_RECOMMEND_COUNT).map((item) => sanitizeListing(item, 'exact'))
   const nearbyListings = nearby.slice(0, MAX_RECOMMEND_COUNT).map((item) => sanitizeListing(item, 'nearby'))
   const listings = exactListings.concat(nearbyListings).slice(0, MAX_RECOMMEND_COUNT)
@@ -831,6 +1235,26 @@ function groupListings(candidates, need) {
   }
 }
 
+function publicPlaceResolution(resolution) {
+  if (!resolution || typeof resolution !== 'object') return null
+  const result = {}
+  ;['status', 'query', 'name', 'area', 'type', 'source'].forEach((key) => {
+    const value = resolution[key]
+    if (value !== undefined && value !== null && value !== '') result[key] = value
+  })
+  if (Array.isArray(resolution.candidates)) {
+    result.candidates = resolution.candidates.slice(0, 5).map((item) => {
+      const candidate = {}
+      ;['name', 'area', 'type', 'source'].forEach((key) => {
+        const value = item && item[key]
+        if (value !== undefined && value !== null && value !== '') candidate[key] = value
+      })
+      return candidate
+    })
+  }
+  return Object.keys(result).length ? result : null
+}
+
 function clampReply(text) {
   const value = String(text || '').trim()
   return value.length > 100 ? `${value.slice(0, 97)}...` : value
@@ -838,6 +1262,21 @@ function clampReply(text) {
 
 function buildReply(need, groups, followUpQuestion) {
   if (followUpQuestion) return followUpQuestion
+  if (groups.reply) return clampReply(groups.reply)
+  if (need && need.searchMode === 'radius_around_place') {
+    const placeName = (groups.placeResolution && groups.placeResolution.name) || need.anchorName || '这个地点'
+    const radiusKm = need.radiusKm || DEFAULT_RADIUS_KM
+    if (groups.exactListings.length && groups.nearbyListings.length) {
+      return clampReply(`我按${placeName}${radiusKm}公里内筛了，找到${groups.exactListings.length}套符合要求，另有${groups.nearbyListings.length}套接近房源。`)
+    }
+    if (groups.exactListings.length) {
+      return clampReply(`我按${placeName}${radiusKm}公里内筛了，找到${groups.exactListings.length}套符合要求，已按距离和匹配度排序。`)
+    }
+    if (groups.nearbyListings.length) {
+      return clampReply(`我按${placeName}${radiusKm}公里内筛了，没有完全符合的，先给你${groups.nearbyListings.length}套接近房源。`)
+    }
+    return clampReply(`我按${placeName}${radiusKm}公里内筛了，暂未找到合适房源，可以放宽预算、户型或距离。`)
+  }
   if (groups.exactListings.length && groups.nearbyListings.length) {
     return clampReply(`找到${groups.exactListings.length}套符合要求，另有${groups.nearbyListings.length}套接近房源，差异已标出。`)
   }
@@ -852,26 +1291,28 @@ function buildReply(need, groups, followUpQuestion) {
 
 function buildLocalMatch(db, payload = {}, options = {}) {
   const candidates = options.candidates || candidateListings(db || {})
-  const need = parseNeed(payload, candidates)
+  const need = parseNeed(payload, candidates, { db })
   const followUpQuestion = buildFollowUpQuestion(need)
   const emptyGroups = { exactListings: [], nearbyListings: [], listings: [] }
-  const groups = followUpQuestion ? emptyGroups : groupListings(candidates, need)
+  const groups = followUpQuestion ? emptyGroups : groupListings(candidates, need, { db })
+  const nextQuestion = followUpQuestion || groups.nextQuestion || ''
   return {
     need,
     hardConstraints: need.hardConstraints,
     preferences: need.preferences,
     exactListings: groups.exactListings,
     nearbyListings: groups.nearbyListings,
-    followUpQuestion,
+    followUpQuestion: nextQuestion,
     listings: groups.listings,
-    reply: buildReply(need, groups, followUpQuestion),
+    placeResolution: publicPlaceResolution(groups.placeResolution),
+    reply: buildReply(need, groups, nextQuestion),
     mode: 'local-match-v1'
   }
 }
 
 function recognizeNeed(db, payload = {}, options = {}) {
   const candidates = options.candidates || candidateListings(db || {})
-  const need = parseNeed(payload, candidates)
+  const need = parseNeed(payload, candidates, { db })
   const followUpQuestion = buildFollowUpQuestion(need)
   return {
     stage: 'recognize',
@@ -903,7 +1344,13 @@ function safeListingsForPrompt(listings) {
     matchGroupText: listing.matchGroupText,
     matchReason: listing.matchReason,
     differenceText: listing.differenceText,
-    relevancePercent: listing.relevancePercent
+    relevancePercent: listing.relevancePercent,
+    qualityScore: listing.qualityScore,
+    freshnessScore: listing.freshnessScore,
+    coordinateQuality: listing.coordinateQuality,
+    distanceKm: listing.distanceKm,
+    distanceText: listing.distanceText,
+    anchorName: listing.anchorName
   }))
 }
 
@@ -915,9 +1362,14 @@ module.exports = {
   safeListingsForPrompt,
   _internal: {
     amountValue,
+    asrVocabularyFromCandidates,
     buildConfirmationFields,
     buildFollowUpQuestion,
     candidateListings,
+    parseExplicitCommunity,
+    publicPlaceResolution,
+    groupCommunityAdjacentListings,
+    groupRadiusListings,
     groupListings,
     evaluateListing
   }

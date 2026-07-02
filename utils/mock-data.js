@@ -977,6 +977,8 @@
       return {
         user: user.name || '未知',
         action: item.action,
+        needId: item.needId || '',
+        purpose: item.purpose || '',
         time: item.time
       };
     });
@@ -1185,6 +1187,256 @@
       latitude: Number((defaultMapCenter.latitude + ((50 - top) / 50) * 0.035).toFixed(6)),
       longitude: Number((defaultMapCenter.longitude + ((left - 50) / 50) * 0.045).toFixed(6))
     };
+  }
+
+  function isSoldListing(listing) {
+    var data = listing || {};
+    return data.lifecycleStatus === 'sold' || /成交|签单/.test(String(data.status || ''));
+  }
+
+  function isMockFrontendEffectiveListing(listing) {
+    return !isExpiredListing(listing) && !isSoldListing(listing) && hasListingVideo(listing) && !isPendingOwnerReview(listing);
+  }
+
+  function recommendationNowText() {
+    return new Date().toLocaleString('zh-CN', { hour12: false });
+  }
+
+  function recommendationText(value) {
+    return String(value || '').trim();
+  }
+
+  function recommendationSensitiveFragments(listing) {
+    var data = listing || {};
+    return [
+      data.address,
+      data.landlordPhone,
+      data.contact,
+      data.customerPhone,
+      data.clientPhone,
+      data.idCard,
+      data.identityNo,
+      data.wechat,
+      data.weixin,
+      data.wx,
+      data.videoUrl,
+      data.videoSignedUrl,
+      data.signedVideoUrl
+    ].map(recommendationText).filter(function (item) {
+      return item.length >= 4;
+    });
+  }
+
+  function cleanRecommendationText(value, fragments) {
+    var result = recommendationText(value);
+    (fragments || []).forEach(function (fragment) {
+      result = result.split(fragment).join('');
+    });
+    return result
+      .replace(/https?:\/\/\S+/ig, '')
+      .replace(/(?:微信|微 信|wx|wechat)[号號\s:：-]*[A-Za-z0-9_-]{4,}/ig, '')
+      .replace(/1[3-9]\d{9}/g, '')
+      .replace(/\b\d{17}[\dXx]\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function uniqueRecommendationValues(values) {
+    var seen = {};
+    return values.filter(function (value) {
+      var item = recommendationText(value);
+      if (!item || seen[item]) return false;
+      seen[item] = true;
+      return true;
+    });
+  }
+
+  function reliableRecommendationCoordinate(listing) {
+    var data = listing || {};
+    var communityCoordinate = coordinateByCommunity(data.community);
+    if (communityCoordinate) {
+      return {
+        latitude: communityCoordinate.latitude,
+        longitude: communityCoordinate.longitude,
+        source: communityCoordinate.source || 'community-coordinate'
+      };
+    }
+    var latitude = Number(data.mapLatitude || data.latitude);
+    var longitude = Number(data.mapLongitude || data.longitude);
+    var source = recommendationText(data.coordinateSource);
+    if (!isFinite(latitude) || !isFinite(longitude)) return null;
+    if (Math.abs(latitude - defaultMapCenter.latitude) < 0.000001 && Math.abs(longitude - defaultMapCenter.longitude) < 0.000001) return null;
+    if (/^estimated-|^legacy-|default-center|listing-coordinate|area|hash|random|pending/i.test(source)) return null;
+    if (!/lianjia|amap|community-coordinate|admin-verified-coordinate/i.test(source)) return null;
+    return { latitude: latitude, longitude: longitude, source: source };
+  }
+
+  function recommendationCoordinateQuality(listing) {
+    var data = listing || {};
+    if (coordinateByCommunity(data.community)) return 'community_verified';
+    var latitude = Number(data.mapLatitude || data.latitude);
+    var longitude = Number(data.mapLongitude || data.longitude);
+    var source = recommendationText(data.coordinateSource);
+    if (!isFinite(latitude) || !isFinite(longitude)) return 'missing';
+    if (Math.abs(latitude - defaultMapCenter.latitude) < 0.000001 && Math.abs(longitude - defaultMapCenter.longitude) < 0.000001) return 'missing';
+    if (/^estimated-|^legacy-|default-center|listing-coordinate|area|hash|random|pending/i.test(source)) return 'unsafe_source';
+    if (/community-coordinate|lianjia|amap/i.test(source)) return 'community_verified';
+    if (/admin-verified-coordinate/i.test(source)) return 'admin_verified';
+    return 'unverified';
+  }
+
+  function recommendationPublicLocation(listing, fragments) {
+    var data = listing || {};
+    var city = cleanRecommendationText(data.city || '杭州', fragments);
+    var district = cleanRecommendationText(data.district || data.area || '待分区', fragments);
+    var area = cleanRecommendationText(data.area || data.district || '待分区', fragments);
+    var block = cleanRecommendationText(data.block || area || '待板块', fragments);
+    var community = cleanRecommendationText(data.community || '', fragments);
+    var coordinate = reliableRecommendationCoordinate(data);
+    return {
+      city: city,
+      district: district,
+      area: area,
+      block: block,
+      community: community,
+      locationSummary: cleanRecommendationText([city, area, community].filter(Boolean).join(''), fragments),
+      coordinate: coordinate ? {
+        latitude: coordinate.latitude,
+        longitude: coordinate.longitude,
+        source: cleanRecommendationText(coordinate.source, fragments)
+      } : null
+    };
+  }
+
+  function recommendationFreshnessScore(listing, generatedAt) {
+    var data = listing || {};
+    if (data.lifecycleStatus === 'expired' || data.lifecycleStatus === 'sold' || /已下架|已失效|已成交|签单/.test(String(data.status || ''))) return 0;
+    var source = recommendationText(data.lastVerifiedAt || data.updatedAt || data.createdAt);
+    if (!source || source === '刚刚') return 100;
+    var timestamp = Date.parse(source);
+    if (!isFinite(timestamp)) return 80;
+    var now = Date.parse(generatedAt);
+    if (!isFinite(now)) return 80;
+    var days = Math.max(0, Math.floor((now - timestamp) / (24 * 60 * 60 * 1000)));
+    return Math.max(0, Math.min(100, 100 - days * 14));
+  }
+
+  function recommendationPublicFields(listing, fragments) {
+    var data = listing || {};
+    var features = normalizeListingFeatures(data.features).map(function (item) {
+      return cleanRecommendationText(item, fragments);
+    }).filter(Boolean);
+    return {
+      publicLocation: recommendationPublicLocation(data, fragments),
+      rent: isFinite(Number(data.rent || 0)) ? Number(data.rent || 0) : 0,
+      layout: cleanRecommendationText(data.layout || '', fragments),
+      rentMode: cleanRecommendationText(data.rentMode || data.type || '', fragments),
+      room: cleanRecommendationText(data.room || '', fragments),
+      hall: cleanRecommendationText(data.hall || '', fragments),
+      bath: cleanRecommendationText(data.bath || '', fragments),
+      features: features,
+      featureText: cleanRecommendationText(featureText(features), fragments),
+      coordinateQuality: recommendationCoordinateQuality(data),
+      hasVideo: hasListingVideo(data)
+    };
+  }
+
+  function recommendationSearchText(profile, fragments) {
+    var location = profile.publicLocation || {};
+    return cleanRecommendationText(uniqueRecommendationValues([
+      location.city,
+      location.district,
+      location.area,
+      location.block,
+      location.community,
+      location.locationSummary,
+      profile.rent ? profile.rent + '元' : '',
+      profile.layout,
+      profile.rentMode,
+      profile.room,
+      profile.hall,
+      profile.bath,
+      profile.featureText,
+      profile.hasVideo ? '有视频' : ''
+    ]).join(' '), fragments);
+  }
+
+  function recommendationQualityScore(profile) {
+    var score = 20;
+    if (profile.publicLocation && profile.publicLocation.community) score += 15;
+    if (Number(profile.rent || 0) > 0) score += 10;
+    if (profile.layout || profile.room) score += 10;
+    if ((profile.features || []).filter(function (item) { return item !== NO_FEATURE; }).length) score += 10;
+    if (profile.hasVideo) score += 15;
+    if (/verified/.test(profile.coordinateQuality || '')) score += 20;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  function buildRecommendationProfile(listing) {
+    var generatedAt = recommendationNowText();
+    var fragments = recommendationSensitiveFragments(listing);
+    var fields = recommendationPublicFields(listing, fragments);
+    var profile = Object.assign({
+      ready: true,
+      listingId: recommendationText((listing || {}).id),
+      generatedAt: generatedAt
+    }, fields, {
+      searchText: '',
+      qualityScore: 0,
+      freshnessScore: recommendationFreshnessScore(listing, generatedAt),
+      safetyVersion: 'recommendation-profile-v1',
+      unavailableReason: ''
+    });
+    profile.searchText = recommendationSearchText(profile, fragments);
+    profile.qualityScore = recommendationQualityScore(profile);
+    return profile;
+  }
+
+  function buildUnavailableRecommendationProfile(listing, reason) {
+    var generatedAt = recommendationNowText();
+    var fragments = recommendationSensitiveFragments(listing);
+    var fields = recommendationPublicFields(listing, fragments);
+    return Object.assign({
+      ready: false,
+      listingId: recommendationText((listing || {}).id),
+      generatedAt: generatedAt
+    }, fields, {
+      searchText: '',
+      qualityScore: 0,
+      freshnessScore: 0,
+      safetyVersion: 'recommendation-profile-v1',
+      unavailableReason: cleanRecommendationText(reason || 'not_frontend_effective', fragments)
+    });
+  }
+
+  function refreshListingRecommendationProfile(listing) {
+    if (!listing) return null;
+    listing.recommendationProfile = buildRecommendationProfile(listing);
+    return listing.recommendationProfile;
+  }
+
+  function clearListingRecommendationProfile(listing, reason) {
+    if (!listing) return null;
+    listing.recommendationProfile = buildUnavailableRecommendationProfile(listing, reason);
+    return listing.recommendationProfile;
+  }
+
+  function recommendationUnavailableReason(listing, fallback) {
+    var data = listing || {};
+    if (isExpiredListing(data)) return 'expired';
+    if (isSoldListing(data)) return 'sold';
+    if (isPendingOwnerReview(data)) {
+      if (data.reviewStatus === '已驳回' || data.status === '已驳回') return 'review_rejected';
+      return 'pending_review';
+    }
+    if (!hasListingVideo(data)) return 'missing_video';
+    return fallback || 'not_frontend_effective';
+  }
+
+  function syncListingRecommendationProfile(listing, reason) {
+    if (!listing) return null;
+    if (isMockFrontendEffectiveListing(listing)) return refreshListingRecommendationProfile(listing);
+    return clearListingRecommendationProfile(listing, reason || recommendationUnavailableReason(listing));
   }
 
   function getMapPins() {
@@ -1566,6 +1818,7 @@
     state.dealRecords.unshift(deal);
     report.dealId = deal.id;
     report.status = '已提交签单';
+    clearListingRecommendationProfile(listing, 'deal_pending');
     return {
       message: '签单已提交，待管理员确认后生成分佣',
       deal: Object.assign({}, deal)
@@ -1618,6 +1871,52 @@
         sensitiveLocked: false
       } : {},
       quota: brokerSensitiveUsage(state.currentUserId)
+    };
+  }
+
+  function recordVideoShare(listingId, payload) {
+    var data = payload || {};
+    var listing = getListing(listingId);
+    var user = getUser();
+    if (!user) {
+      throw new Error('请先登录内部中介账号');
+    }
+    if (!listing || isExpiredListing(listing)) {
+      throw new Error('房源不存在或已下架');
+    }
+    if (isPendingOwnerReview(listing)) {
+      throw new Error('该房源正在等待管理员审核，审核通过后才会上架');
+    }
+    if (!hasListingVideo(listing)) {
+      throw new Error('该房源暂无可转发视频');
+    }
+    var location = publicListingLocationFields(listing);
+    var title = publicListingTitle(listing, location) || listing.shortTitle || '房源视频';
+    state.footprints.unshift({
+      id: 'F' + Date.now(),
+      listingId: listingId,
+      viewerId: user.id,
+      action: '转发房间视频给租客',
+      needId: data.needId || data.rentalNeedId || '',
+      purpose: data.purpose || '推荐房源视频',
+      time: '刚刚',
+      dateKey: todayKey(),
+      shareChannel: data.channel || 'wechat',
+      shareTarget: data.target || 'tenant',
+      sharePath: data.sharePath || '',
+      sync: '已记录视频转发，便于推荐追踪'
+    });
+    return {
+      message: '视频转发已留痕',
+      share: {
+        listingId: listingId,
+        title: title,
+        shareTitle: data.shareTitle || ('推荐你看这套房：' + title),
+        sharePath: data.sharePath || '',
+        broker: user.name || '中介',
+        time: '刚刚'
+      },
+      logs: getListingLogs(listingId)
     };
   }
 
@@ -1803,7 +2102,7 @@
     if (featureState.invalidFeatures.length) {
       throw new Error('房源特点标签无效：' + featureState.invalidFeatures.join('、'));
     }
-    state.listings.unshift({
+    var listing = {
       id: id,
       title: address + ' · ' + layout,
       shortTitle: community || address,
@@ -1851,7 +2150,9 @@
       coordinateSource: mapCoordinate.coordinateSource,
       createdAt: '刚刚',
       lastVerifiedAt: '刚刚'
-    });
+    };
+    state.listings.unshift(listing);
+    syncListingRecommendationProfile(listing, needsReview ? 'pending_review' : '');
     state.pointLogs.unshift({
       id: 'P' + Date.now(),
       userId: state.currentUserId,
@@ -1978,6 +2279,7 @@
       listing.reviewStatus = '无需审核';
       if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认';
     }
+    syncListingRecommendationProfile(listing, needsReview && listing.reviewStatus !== '已通过' ? 'pending_review' : '');
     return getEditableListing(id);
   }
 
@@ -1987,6 +2289,7 @@
       listing.status = '在租';
       listing.lifecycleStatus = 'active';
       listing.lastVerifiedAt = '刚刚';
+      syncListingRecommendationProfile(listing);
     }
     return getOwnedListings();
   }
@@ -1997,6 +2300,7 @@
       listing.status = '在租';
       listing.lifecycleStatus = 'active';
       listing.lastVerifiedAt = '刚刚';
+      syncListingRecommendationProfile(listing);
     }
     return activeListings().map(formatAdminListing);
   }
@@ -2010,6 +2314,11 @@
     listing.reviewedAt = '刚刚';
     listing.reviewNote = approved ? '管理员审核通过，房源已上架' : '管理员审核驳回，房源暂不上架';
     if (approved) applyCommunityMapCoordinate(listing);
+    if (approved) {
+      syncListingRecommendationProfile(listing);
+    } else {
+      clearListingRecommendationProfile(listing, 'review_rejected');
+    }
     return activeListings().map(formatAdminListing);
   }
 
@@ -2035,6 +2344,7 @@
     listing.expiredPool = '后台废房源池';
     listing.expiredReason = '超过 ' + VERIFY_STALE_DAYS + ' 天未电话联系房东确认房态';
     listing.expiredStaleDays = freshness.staleDays;
+    clearListingRecommendationProfile(listing, 'expired');
     return true;
   }
 
@@ -2095,6 +2405,7 @@
     delete listing.expiredPool;
     delete listing.expiredReason;
     delete listing.expiredStaleDays;
+    syncListingRecommendationProfile(listing);
     state.footprints.unshift({
       id: 'F' + Date.now(),
       listingId: id,
@@ -2106,6 +2417,10 @@
     return getEditableListing(id);
   }
 
+  state.listings.forEach(function (listing) {
+    syncListingRecommendationProfile(listing);
+  });
+
   return {
     getCurrentUser: function () { return clone(getUser()); },
     loginByPhone: loginByPhone,
@@ -2114,6 +2429,7 @@
     matchListings: matchListings,
     getListingDetail: getListingDetail,
     getListingLogs: getListingLogs,
+    recordVideoShare: recordVideoShare,
     getFootprintRecords: getFootprintRecords,
     getOwnedListings: getOwnedListings,
     verifyMyListing: verifyMyListing,

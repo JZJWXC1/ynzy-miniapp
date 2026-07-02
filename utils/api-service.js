@@ -35,6 +35,10 @@ function makeTempNeedId() {
   return `TMP-NEED-${Date.now()}-${Math.floor(Math.random() * 10000)}`
 }
 
+function makeTempThreadId() {
+  return `LOCAL-AST-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+}
+
 function normalizeNeedResponse(result, payload, temporary) {
   const data = result || {}
   const need = data.need || data.rentalNeed || payload || {}
@@ -416,6 +420,50 @@ function matchListings(condition) {
   }))
 }
 
+function chatAssistant(payload) {
+  const data = payload || {}
+  return apiClient.call({
+    path: '/mini/assistant/chat',
+    method: 'POST',
+    data,
+    mock: () => {
+      const need = data.need || data.form || {}
+      const result = mockData.matchListings(need)
+      const listings = listingDisplay.normalizeListings((result && result.listings) || [])
+      const nextQuestion = listings.length ? '' : '预算、区域和户型里先补充两个条件？'
+      return {
+        threadId: data.threadId || makeTempThreadId(),
+        reply: listings.length ? `先看这${listings.length}套真实房源。` : nextQuestion,
+        nextQuestion,
+        intent: 'rental_match',
+        need,
+        listings,
+        exactListings: listings,
+        nearbyListings: [],
+        mode: 'local-graph-assistant-v1'
+      }
+    }
+  }).then((result) => Object.assign({}, result, {
+    listings: listingDisplay.normalizeListings((result && result.listings) || []),
+    exactListings: listingDisplay.normalizeListings((result && result.exactListings) || []),
+    nearbyListings: listingDisplay.normalizeListings((result && result.nearbyListings) || [])
+  }))
+}
+
+function submitAssistantFeedback(payload) {
+  const data = payload || {}
+  return apiClient.call({
+    path: '/mini/assistant/feedback',
+    method: 'POST',
+    data,
+    mock: () => ({
+      id: makeTempThreadId().replace('LOCAL-AST', 'LOCAL-AF'),
+      status: 'open',
+      feedbackType: data.feedbackType || 'other'
+    })
+  })
+}
+
 function getMapCommunities(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
@@ -455,6 +503,15 @@ function addSensitiveFootprint(listingId, action) {
     method: 'POST',
     data: payload,
     mock: () => mockData.addSensitiveFootprint(listingId, payload)
+  })
+}
+
+function recordVideoShare(listingId, payload) {
+  return apiClient.call({
+    path: `/mini/listings/${listingId}/video-share`,
+    method: 'POST',
+    data: payload || {},
+    mock: () => mockData.recordVideoShare(listingId, payload || {})
   })
 }
 
@@ -704,6 +761,58 @@ function createVideoUploadPolicy(fileInfo) {
   })
 }
 
+function transcribeVoice(filePath, metadata) {
+  const info = metadata || {}
+  const config = getRuntimeConfig()
+  return apiClient.uploadFile({
+    url: apiClient.buildUrl(config.baseUrl, '/mini/asr/transcribe'),
+    filePath,
+    name: 'file',
+    formData: {
+      duration: info.duration || 0,
+      fileSize: info.fileSize || info.size || 0,
+      format: info.format || 'mp3',
+      context: info.context || '找房小程序中介语音输入'
+    },
+    header: {
+      Authorization: config.token ? `Bearer ${config.token}` : '',
+      'X-User-Id': (typeof wx !== 'undefined' && wx.getStorageSync) ? (wx.getStorageSync('ynzy_user_id') || '') : ''
+    },
+    mock: () => ({
+      text: info.mockText || '拱墅万达附近2000左右的单间',
+      provider: 'mock-asr',
+      model: 'mock-qwen3-asr-flash',
+      mode: 'mock'
+    })
+  }).then((result) => result && result.data ? result.data : result)
+}
+
+function buildRealtimeAsrUrl() {
+  const config = getRuntimeConfig()
+  const httpUrl = apiClient.buildUrl(config.baseUrl, '/mini/asr/realtime')
+  return httpUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+}
+
+function currentUserId() {
+  try {
+    return (typeof wx !== 'undefined' && wx.getStorageSync) ? (wx.getStorageSync('ynzy_user_id') || '') : ''
+  } catch (error) {
+    return ''
+  }
+}
+
+function createRealtimeAsrSocket() {
+  const config = getRuntimeConfig()
+  if (shouldUseMock(config) || typeof wx === 'undefined' || !wx.connectSocket) return null
+  return wx.connectSocket({
+    url: buildRealtimeAsrUrl(),
+    header: {
+      Authorization: config.token ? `Bearer ${config.token}` : '',
+      'X-User-Id': currentUserId()
+    }
+  })
+}
+
 function uploadVideo(filePath, policy) {
   return uploadOssFile(filePath, policy, '视频上传配置不完整')
 }
@@ -773,11 +882,17 @@ module.exports = {
   getCurrentUser,
   bindWechatOpenid,
   matchListings,
+  chatAssistant,
+  submitAssistantFeedback,
+  transcribeVoice,
+  buildRealtimeAsrUrl,
+  createRealtimeAsrSocket,
   getMapCommunities,
   getMapPins,
   getListingDetail,
   getListingLogs,
   addSensitiveFootprint,
+  recordVideoShare,
   recordShowing,
   getClientReports,
   createClientReport,

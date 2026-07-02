@@ -17,6 +17,22 @@
       </view>
     </view>
 
+    <view class="video-share-card">
+      <view class="video-share-copy">
+        <view class="video-share-title">转发房间视频给租客</view>
+        <view class="video-share-sub">{{shareStateText}}</view>
+      </view>
+      <button
+        class="video-share-button"
+        open-type="share"
+        data-share-type="tenant-video"
+        bindtap="prepareVideoShare"
+        disabled="{{!canShareVideo}}"
+      >
+        一键转发
+      </button>
+    </view>
+
     <view class="detail-card soft-card">
       <view class="detail-head">
         <view>

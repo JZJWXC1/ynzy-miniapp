@@ -90,6 +90,12 @@ Page({
       onRecognize: (text) => {
         this.applyVoiceText(text, false);
       },
+      onTranscribing: () => {
+        this.setData({
+          isVoiceListening: false,
+          voiceTip: '正在识别语音'
+        });
+      },
       onStop: (text) => {
         this.setData({ isVoiceListening: false });
         if (!text) {

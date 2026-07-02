@@ -1,6 +1,10 @@
 const { clone } = require('./db')
 const { coordinateByCommunity } = require('./community-coordinates')
 const {
+  refreshRecommendationProfile,
+  clearRecommendationProfile
+} = require('./listing-recommendation-profile')
+const {
   NO_FEATURE,
   NO_COMMISSION_FEATURE,
   DEPOSIT_FREE_FEATURE,
@@ -431,6 +435,39 @@ function listingDisplayFields(listing = {}) {
   }
 }
 
+function recommendationUnavailableReason(listing = {}, fallback = 'not_frontend_effective') {
+  if (isExpiredListing(listing)) return 'expired'
+  if (isSoldListing(listing)) return 'sold'
+  if (isPendingOwnerReview(listing)) {
+    if (listing.reviewStatus === '已驳回' || listing.status === '已驳回') return 'review_rejected'
+    return 'pending_review'
+  }
+  if (!hasListingVideo(listing)) return 'missing_video'
+  return fallback
+}
+
+function syncListingRecommendationProfile(listing, unavailableReason = '') {
+  if (!listing) return null
+  const generatedAt = nowText()
+  if (isFrontendEffectiveListing(listing)) {
+    return refreshRecommendationProfile(listing, { generatedAt })
+  }
+  return clearRecommendationProfile(
+    listing,
+    unavailableReason || recommendationUnavailableReason(listing),
+    { generatedAt }
+  )
+}
+
+function clearListingRecommendationProfile(listing, reason) {
+  if (!listing) return null
+  return clearRecommendationProfile(
+    listing,
+    reason || recommendationUnavailableReason(listing),
+    { generatedAt: nowText() }
+  )
+}
+
 function listingMatchFeatureSet(listing = {}) {
   return new Set(listingFeatureFields(listing).features
     .concat([listing.rentMode, listing.type])
@@ -479,6 +516,7 @@ function expireListing(db, listing, reason) {
   listing.expiredReason = reason || `超过 ${VERIFY_STALE_DAYS} 天未电话联系房东确认房态`
   listing.expiredStaleDays = freshness.staleDays
   listing.updatedAt = now
+  clearListingRecommendationProfile(listing, 'expired')
   db.footprints = db.footprints || []
   db.footprints.unshift({
     id: id('F'),
@@ -1667,6 +1705,7 @@ function restoreExpiredListing(db, adminId, listingId) {
   delete listing.expiredPool
   delete listing.expiredReason
   delete listing.expiredStaleDays
+  syncListingRecommendationProfile(listing)
 
   db.footprints = db.footprints || []
   db.footprints.unshift({
@@ -1867,6 +1906,56 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
       landlordPhone: listing.landlordPhone,
       sensitiveLocked: false
     }
+  }
+}
+
+function recordVideoShare(db, userId, listingId, payload = {}) {
+  const user = assertKnownUser(db, userId)
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  assertFrontendListingAvailable(listing)
+  if (!hasListingVideo(listing)) {
+    const error = new Error('该房源暂无可转发视频')
+    error.statusCode = 400
+    throw error
+  }
+
+  const now = nowText()
+  const location = publicListingLocationFields(listing)
+  const title = publicListingTitle(listing, location) || listing.shortTitle || '房源视频'
+  const sharePath = String(payload.sharePath || '').trim() || `/pages/shared-video/shared-video?id=${encodeURIComponent(listingId)}&source=tenant-video-share`
+  const shareTitle = String(payload.shareTitle || '').trim() || `推荐你看这套房：${title}`
+  db.footprints = db.footprints || []
+  db.footprints.unshift({
+    id: id('F'),
+    listingId,
+    viewerId: userId,
+    action: '转发房间视频给租客',
+    needId: String(payload.needId || payload.rentalNeedId || '').trim(),
+    purpose: String(payload.purpose || '推荐房源视频').trim(),
+    time: '刚刚',
+    dateKey: todayKey(),
+    shareChannel: String(payload.channel || 'wechat').trim(),
+    shareTarget: String(payload.target || 'tenant').trim(),
+    sharePath,
+    sync: '已记录视频转发，便于推荐追踪'
+  })
+
+  return {
+    message: '视频转发已留痕',
+    share: {
+      listingId,
+      title,
+      shareTitle,
+      sharePath,
+      broker: user.name || '中介',
+      time: now
+    },
+    logs: listingLogs(db, listingId, userId)
   }
 }
 
@@ -2245,6 +2334,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   report.updatedAt = now
   listing.status = '已签单待确认'
   listing.updatedAt = now
+  clearListingRecommendationProfile(listing, 'deal_pending')
 
   return {
     message: '签单已提交，等待管理员确认',
@@ -2315,6 +2405,7 @@ function confirmDeal(db, adminId, dealId) {
   listing.status = '已成交'
   listing.lifecycleStatus = 'sold'
   listing.updatedAt = now
+  clearListingRecommendationProfile(listing, 'sold')
 
   return {
     message: '签单已确认，正式分佣记录已生成',
@@ -2972,6 +3063,7 @@ function addNormalListing(db, userId, form = {}, options = {}) {
   db.listings = db.listings || []
   db.pointLogs = db.pointLogs || []
   db.listings.unshift(listing)
+  syncListingRecommendationProfile(listing, needsReview ? 'pending_review' : '')
   if (!options.skipPointLog) {
     db.pointLogs.unshift({
       id: id('P'),
@@ -3096,6 +3188,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
     if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认'
   }
   listing.updatedAt = nowText()
+  syncListingRecommendationProfile(listing, needsReview && listing.reviewStatus !== '已通过' ? 'pending_review' : '')
 
   return editableListingDetail(db, userId, listingId, { admin: true })
 }
@@ -3120,6 +3213,11 @@ function reviewOwnerListing(db, adminId, listingId, payload = {}) {
   listing.reviewNote = payload.note || (approved ? '管理员审核通过，已上架' : '管理员审核驳回，暂不上架')
   if (approved) applyCommunityMapCoordinate(listing)
   listing.updatedAt = listing.reviewedAt
+  if (approved) {
+    syncListingRecommendationProfile(listing)
+  } else {
+    clearListingRecommendationProfile(listing, 'review_rejected')
+  }
   return adminListings(db)
 }
 
@@ -3143,6 +3241,7 @@ function verifyListingAvailability(db, userId, listingId, options = {}) {
   listing.lifecycleStatus = 'active'
   listing.lastVerifiedAt = nowText()
   listing.updatedAt = listing.lastVerifiedAt
+  syncListingRecommendationProfile(listing)
   db.footprints = db.footprints || []
   db.footprints.unshift({
     id: id('F'),
@@ -3170,6 +3269,7 @@ module.exports = {
   matchListings,
   listingDetail,
   listingLogs,
+  recordVideoShare,
   footprintRecords,
   userRentalNeeds,
   createRentalNeed,

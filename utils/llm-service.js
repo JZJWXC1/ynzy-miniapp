@@ -1,4 +1,5 @@
 const apiClient = require('./api-client')
+const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const dataCenter = require('./mock-data')
 const listingDisplay = require('./listing-display')
 const {
@@ -13,8 +14,6 @@ const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
   { key: 'layout', label: '户型/租法', emptyText: '待补充' },
-  { key: 'moveIn', label: '入住时间', emptyText: '可后补' },
-  { key: 'commute', label: '通勤', emptyText: '可后补' },
   { key: 'features', label: '标签/偏好', emptyText: '不限' }
 ]
 const CN_DIGITS = {
@@ -122,20 +121,10 @@ function parseBudget(source) {
 function parseNeedText(text) {
   const source = scrubDemandSource(text).replace(/\s+/g, '')
   const budget = parseBudget(source)
-  const commuteMatch = source.match(/(?:通勤到|上班到|公司到)([^，。,.；;]{2,12})/)
-  const moveInMatch = source.match(/(?:入住|搬入|起租|月底|月初|下周|今天|明天|周末)[^，。,.；;]{0,8}/)
   const layoutMatch = source.match(/单间|[一二两三四五六七八九\d](?:室|房)/)
   const features = LISTING_FEATURE_OPTIONS
     .filter((feature) => feature !== NO_FEATURE)
     .filter((feature) => (FEATURE_ALIASES[feature] || [feature]).some((word) => source.indexOf(word) !== -1))
-
-  let maxCommuteMinutes = ''
-  if (/半小时/.test(source)) {
-    maxCommuteMinutes = 30
-  } else {
-    const minuteMatch = source.match(/([一二两三四五六七八九十\d]{1,3})(?:分钟|分)/)
-    if (minuteMatch) maxCommuteMinutes = amountValue(minuteMatch[1])
-  }
 
   return {
     budget: budget.budget,
@@ -147,9 +136,6 @@ function parseNeedText(text) {
       ? '合租'
       : (source.indexOf('整租') !== -1 ? '整租' : ''),
     layout: layoutMatch ? layoutMatch[0].replace('房', '室') : '',
-    moveIn: moveInMatch ? moveInMatch[0] : '',
-    commuteLocation: commuteMatch ? commuteMatch[1] : '',
-    maxCommuteMinutes,
     features
   }
 }
@@ -194,9 +180,6 @@ function mergeNeed(textNeed, formNeed = {}) {
     community: formNeed.community || textNeed.community || '',
     rentMode: formNeed.rentMode || textNeed.rentMode || '',
     layout: formNeed.layout || textNeed.layout || '',
-    moveIn: formNeed.moveIn || textNeed.moveIn || '',
-    commuteLocation: formNeed.commuteLocation || formNeed.commute || textNeed.commuteLocation || '',
-    maxCommuteMinutes: numberFrom(formNeed.maxCommuteMinutes || textNeed.maxCommuteMinutes) || '',
     features: rawFormFeatures.length ? formFeatures : (textNeed.features || [])
   }
 }
@@ -221,9 +204,6 @@ function mergeServerNeed(clientNeed, serverNeed, options = {}) {
       community: clientNeed.community || '',
       rentMode: clientNeed.rentMode || '',
       layout: clientNeed.layout || '',
-      moveIn: clientNeed.moveIn || '',
-      commuteLocation: clientNeed.commuteLocation || '',
-      maxCommuteMinutes: clientNeed.maxCommuteMinutes || '',
       features: clientNeed.features || [],
       hardConstraints: hardConstraintsFromNeed(clientNeed),
       preferences: { features: clientNeed.features || [] }
@@ -239,9 +219,6 @@ function mergeServerNeed(clientNeed, serverNeed, options = {}) {
     community: server.community || clientNeed.community || '',
     rentMode: server.rentMode || clientNeed.rentMode || '',
     layout: server.layout || clientNeed.layout || '',
-    moveIn: server.moveIn || clientNeed.moveIn || '',
-    commuteLocation: server.commuteLocation || clientNeed.commuteLocation || '',
-    maxCommuteMinutes: server.maxCommuteMinutes || clientNeed.maxCommuteMinutes || '',
     features: server.features && server.features.length ? server.features : (clientNeed.features || [])
   }
 }
@@ -266,13 +243,6 @@ function confirmationFieldValue(need = {}, key) {
   if (key === 'budget') return need.budgetText || (need.maxBudget ? `${need.maxBudget}以内` : '')
   if (key === 'location') return [need.area, need.community].filter(Boolean).join(' · ')
   if (key === 'layout') return [need.rentMode, need.layout].filter(Boolean).join(' · ')
-  if (key === 'moveIn') return need.moveIn || ''
-  if (key === 'commute') {
-    return [
-      need.commuteLocation,
-      need.maxCommuteMinutes ? `${need.maxCommuteMinutes}分钟内` : ''
-    ].filter(Boolean).join(' · ')
-  }
   if (key === 'features') return (need.features || []).join('、')
   return ''
 }
@@ -324,8 +294,6 @@ function hardConstraintsFromNeed(need) {
     community: need.community || '',
     rentMode: need.rentMode || '',
     layout: need.layout || '',
-    moveIn: need.moveIn || '',
-    commuteLocation: need.commuteLocation || '',
     features: []
   }
 }
@@ -370,6 +338,53 @@ function buildLocalRecognition(payload) {
     nearbyListings: [],
     listings: [],
     reply: buildRecognitionReply(followUpQuestion)
+  }
+}
+
+function networkWarning(error) {
+  return (error && error.message) || '网络请求失败'
+}
+
+function shouldUseLocalFallbackAfterError() {
+  return shouldUseMock(getRuntimeConfig())
+}
+
+function emptyNetworkMatchResult(requestPayload, error, extra) {
+  const need = needFromPayload(requestPayload)
+  return {
+    ...(extra || {}),
+    need,
+    hardConstraints: hardConstraintsFromNeed(need),
+    preferences: { features: need.features || [] },
+    exactListings: [],
+    nearbyListings: [],
+    listings: [],
+    reply: '网络连接失败，请点下方按钮重试。',
+    followUpQuestion: '',
+    nextQuestion: '',
+    warning: networkWarning(error),
+    networkFailed: true,
+    mode: 'server-unavailable'
+  }
+}
+
+function emptyNetworkRecognitionResult(requestPayload, error) {
+  const need = needFromPayload(requestPayload)
+  return {
+    stage: 'recognize',
+    need,
+    hardConstraints: hardConstraintsFromNeed(need),
+    preferences: { features: need.features || [] },
+    confirmationFields: buildConfirmationFields(need),
+    readyToConfirm: false,
+    followUpQuestion: '',
+    exactListings: [],
+    nearbyListings: [],
+    listings: [],
+    reply: '网络连接失败，请补充条件后重试。',
+    warning: networkWarning(error),
+    networkFailed: true,
+    mode: 'server-unavailable'
   }
 }
 
@@ -440,11 +455,16 @@ function recognizeRentalNeed(payload) {
     method: 'POST',
     data: requestPayload,
     mock: () => localResult
-  }).then((serverResult) => normalizeRecognitionResult(serverResult, requestPayload)).catch((error) => ({
-    ...localResult,
-    warning: error.message || '网络请求失败',
-    networkFailed: true
-  }))
+  }).then((serverResult) => normalizeRecognitionResult(serverResult, requestPayload)).catch((error) => {
+    if (shouldUseLocalFallbackAfterError()) {
+      return {
+        ...localResult,
+        warning: networkWarning(error),
+        networkFailed: true
+      }
+    }
+    return emptyNetworkRecognitionResult(requestPayload, error)
+  })
 }
 
 function matchRentalNeed(payload) {
@@ -455,11 +475,73 @@ function matchRentalNeed(payload) {
     method: 'POST',
     data: requestPayload,
     mock: () => localResult
-  }).then((serverResult) => normalizeServerResult(serverResult, requestPayload)).catch((error) => ({
-    ...localResult,
-    warning: error.message || '网络请求失败',
-    networkFailed: true
-  }))
+  }).then((serverResult) => normalizeServerResult(serverResult, requestPayload)).catch((error) => {
+    if (shouldUseLocalFallbackAfterError()) {
+      return {
+        ...localResult,
+        warning: networkWarning(error),
+        networkFailed: true
+      }
+    }
+    return emptyNetworkMatchResult(requestPayload, error)
+  })
+}
+
+function normalizeAssistantResult(serverResult, requestPayload, localResult) {
+  const result = serverResult || localResult || {}
+  const normalized = normalizeServerResult(result, requestPayload)
+  return {
+    ...result,
+    ...normalized,
+    threadId: result.threadId || requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
+    nextQuestion: result.nextQuestion || result.followUpQuestion || normalized.followUpQuestion || '',
+    intent: result.intent || 'rental_match',
+    mode: result.mode || 'local-graph-assistant-v1'
+  }
+}
+
+function chatAssistant(payload) {
+  const requestPayload = Object.assign({}, payload || {})
+  const localMatch = buildLocalMatch(requestPayload)
+  const localResult = {
+    ...localMatch,
+    threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
+    nextQuestion: localMatch.followUpQuestion || '',
+    intent: 'rental_match',
+    mode: 'local-graph-assistant-v1'
+  }
+  return apiClient.call({
+    path: '/mini/assistant/chat',
+    method: 'POST',
+    data: requestPayload,
+    mock: () => localResult
+  }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, localResult)).catch((error) => {
+    if (shouldUseLocalFallbackAfterError()) {
+      return {
+        ...normalizeAssistantResult(localResult, requestPayload, localResult),
+        warning: networkWarning(error),
+        networkFailed: true
+      }
+    }
+    return emptyNetworkMatchResult(requestPayload, error, {
+      threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
+      intent: 'rental_match'
+    })
+  })
+}
+
+function submitAssistantFeedback(payload) {
+  const requestPayload = Object.assign({}, payload || {})
+  return apiClient.call({
+    path: '/mini/assistant/feedback',
+    method: 'POST',
+    data: requestPayload,
+    mock: () => ({
+      id: `LOCAL-AF-${Date.now()}`,
+      status: 'open',
+      feedbackType: requestPayload.feedbackType || 'other'
+    })
+  })
 }
 
 module.exports = {
@@ -467,5 +549,7 @@ module.exports = {
   buildLocalRecognition,
   buildLocalMatch,
   recognizeRentalNeed,
-  matchRentalNeed
+  matchRentalNeed,
+  chatAssistant,
+  submitAssistantFeedback
 }

@@ -1,5 +1,9 @@
 const matchService = require('./match-service')
 
+const DEFAULT_QWEN_NEED_PARSER_MODEL = 'qwen3.5-plus'
+const DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL = 'qwen3.7-plus'
+const DEFAULT_QWEN_REPLY_MODEL = 'qwen-turbo'
+
 function scrubSensitiveText(value) {
   return String(value || '')
     .replace(/https?:\/\/[^\s"'，。；;]+/ig, '[链接已隐藏]')
@@ -13,7 +17,7 @@ function scrubSensitiveText(value) {
     .replace(/(?:微信号?|微信|VX|V信|weixin|wechat)[:：\s]*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, '[微信号已隐藏]')
     .replace(/[A-Za-z0-9\u4e00-\u9fa5]{0,30}(?:\d{1,3}|[一二三四五六七八九十]{1,3})(?:栋|幢|号楼|座)[^，。,.；;\s]{0,30}/g, '[地址已隐藏]')
     .replace(/(?:房号|门牌|房间|室号)[:：\s]*[A-Za-z0-9-]{2,12}/g, '[房号已隐藏]')
-    .replace(/\d{1,3}[-－]\d{1,3}[-－]\d{2,4}/g, '[房号已隐藏]')
+    .replace(/(^|[^\d])\d{1,3}[-－]\d{1,3}[-－]\d{2,4}(?!\d)/g, '$1[房号已隐藏]')
     .replace(/\d{2,5}(?:室|房号)/g, '[房号已隐藏]')
     .replace(/\d{1,3}(?:栋|幢|号楼|座|单元)/g, '[房号已隐藏]')
     .replace(/[一二三四五六七八九十]{1,3}(?:栋|幢|号楼|座|单元)/g, '[房号已隐藏]')
@@ -37,22 +41,108 @@ function recognizeRentalNeed(db, payload = {}) {
   return matchService.recognizeNeed(db, payload)
 }
 
-function extractProviderText(body) {
-  if (!body || typeof body !== 'object') return ''
-  if (typeof body.output_text === 'string') return body.output_text
-  if (Array.isArray(body.choices) && body.choices[0]) {
-    return body.choices[0].message && body.choices[0].message.content
-      ? body.choices[0].message.content
-      : body.choices[0].text || ''
+function providerProtocol(config = {}) {
+  return String(config.protocol || 'openai-compatible').trim() || 'openai-compatible'
+}
+
+function providerSystemPrompt(config = {}) {
+  return config.systemPrompt || '你是寓你配房小帮手。'
+}
+
+function configForTask(config = {}, task = '') {
+  const taskKeyMap = {
+    need_parser: 'needParserModel',
+    llm_need_parser: 'needParserModel',
+    complex_need_parser: 'complexNeedParserModel',
+    complex_llm_need_parser: 'complexNeedParserModel',
+    reply_writer: 'replyModel',
+    llm_reply_writer: 'replyModel'
   }
-  if (body.output && Array.isArray(body.output)) {
+  const modelKey = taskKeyMap[task] || ''
+  const taskModel = modelKey ? String(config[modelKey] || '').trim() : ''
+  const qwenDefaults = {
+    needParserModel: DEFAULT_QWEN_NEED_PARSER_MODEL,
+    complexNeedParserModel: DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL,
+    replyModel: DEFAULT_QWEN_REPLY_MODEL
+  }
+  const qwenDefault = config.provider === 'qwen' ? qwenDefaults[modelKey] : ''
+  return {
+    ...config,
+    model: taskModel || qwenDefault || config.model
+  }
+}
+
+function providerTextPart(value) {
+  if (!value) return ''
+  if (typeof value === 'string') return value
+  if (typeof value.text === 'string') return value.text
+  if (value.text && typeof value.text.value === 'string') return value.text.value
+  if (typeof value.output_text === 'string') return value.output_text
+  return ''
+}
+
+function providerContentText(content) {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map(providerTextPart).filter(Boolean).join('\n')
+  }
+  return providerTextPart(content)
+}
+
+function extractProviderText(body) {
+  if (!body) return ''
+  if (typeof body === 'string') return body
+  if (typeof body !== 'object') return ''
+  if (typeof body.output_text === 'string') return body.output_text
+  if (body.data && typeof body.data.text === 'string') return body.data.text
+  if (body.data && typeof body.data.output_text === 'string') return body.data.output_text
+  if (Array.isArray(body.choices) && body.choices[0]) {
+    const choice = body.choices[0]
+    const messageText = choice.message ? providerContentText(choice.message.content) : ''
+    return messageText || providerContentText(choice.text)
+  }
+  if (Array.isArray(body.output)) {
     return body.output
-      .flatMap((item) => item.content || [])
-      .map((item) => item.text || '')
+      .map((item) => providerContentText(item.content) || providerTextPart(item))
       .filter(Boolean)
       .join('\n')
   }
   return ''
+}
+
+function buildProviderRequestBody(config = {}, prompt) {
+  const protocol = providerProtocol(config)
+  const systemPrompt = providerSystemPrompt(config)
+
+  if (protocol === 'responses-compatible') {
+    return {
+      model: config.model,
+      input: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.2
+    }
+  }
+
+  if (protocol === 'custom-json') {
+    return {
+      model: config.model,
+      system: systemPrompt,
+      prompt,
+      temperature: 0.2
+    }
+  }
+
+  return {
+    model: config.model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2
+  }
 }
 
 async function callProvider(config, prompt) {
@@ -65,14 +155,7 @@ async function callProvider(config, prompt) {
     throw new Error('LLM API 地址或服务端密钥未配置')
   }
 
-  const body = {
-    model: config.model,
-    messages: [
-      { role: 'system', content: config.systemPrompt || '你是寓你配房小帮手。' },
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.2
-  }
+  const body = buildProviderRequestBody(config, prompt)
 
   const res = await fetch(config.apiBaseUrl, {
     method: 'POST',
@@ -126,9 +209,6 @@ function safeNeedForPrompt(need = {}) {
     'community',
     'rentMode',
     'layout',
-    'moveIn',
-    'commuteLocation',
-    'maxCommuteMinutes',
     'features'
   ])
 }
@@ -141,9 +221,6 @@ function safeConstraintsForPrompt(constraints = {}) {
     'community',
     'rentMode',
     'layout',
-    'moveIn',
-    'commuteLocation',
-    'maxCommuteMinutes',
     'features'
   ])
 }
@@ -206,7 +283,7 @@ async function matchRentalNeed(db, payload = {}) {
   }
 
   try {
-    const reply = await callProvider(config, buildPrompt(payload, local))
+    const reply = await callProvider(configForTask(config, 'reply_writer'), buildPrompt(payload, local))
     return {
       ...local,
       reply: clampReply(reply, local.reply),
@@ -231,6 +308,9 @@ module.exports = {
     safeNeedForPrompt,
     safeListingsForPrompt,
     scrubSensitiveText,
+    extractProviderText,
+    buildProviderRequestBody,
+    configForTask,
     callProvider
   }
 }

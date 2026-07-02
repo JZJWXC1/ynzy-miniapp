@@ -64,18 +64,6 @@
                 <text class="confirm-field-label">户型</text>
                 <input value="{{message.confirmForm.layout}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="layout" placeholder="如 两室/单间" />
               </view>
-              <view class="editable-field">
-                <text class="confirm-field-label">入住时间</text>
-                <input value="{{message.confirmForm.moveIn}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="moveIn" placeholder="如 下周/月底" />
-              </view>
-              <view class="editable-field">
-                <text class="confirm-field-label">通勤地点</text>
-                <input value="{{message.confirmForm.commuteLocation}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="commuteLocation" placeholder="如 武林广场" />
-              </view>
-              <view class="editable-field">
-                <text class="confirm-field-label">最长通勤</text>
-                <input value="{{message.confirmForm.maxCommuteMinutes}}" type="number" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="maxCommuteMinutes" placeholder="分钟" />
-              </view>
               <view class="editable-field wide">
                 <text class="confirm-field-label">标签/偏好</text>
                 <input value="{{message.confirmForm.featuresText}}" bindinput="handleConfirmFieldInput" data-message-id="{{message.id}}" data-field="featuresText" placeholder="近地铁、燃气、带阳台" />
@@ -140,6 +128,10 @@
                   <text>理由</text>
                   <view>{{listing.matchReason}}</view>
                 </view>
+                <view wx:if="{{listing.distanceText}}" class="distance-line">
+                  <text>距离</text>
+                  <view>{{listing.distanceText}}</view>
+                </view>
                 <view wx:if="{{listing.differenceText}}" class="diff-line">
                   <text>差异</text>
                   <view>{{listing.differenceText}}</view>
@@ -156,6 +148,33 @@
                 </view>
               </view>
             </view>
+          </view>
+          <view wx:if="{{message.canFeedback}}" class="assistant-feedback">
+            <view wx:if="{{!message.feedbackSent}}" class="feedback-actions">
+              <button
+                class="feedback-button useful"
+                size="mini"
+                loading="{{message.feedbackLoading}}"
+                disabled="{{message.feedbackLoading}}"
+                catchtap="submitAssistantFeedback"
+                data-message-id="{{message.id}}"
+                data-type="helpful"
+              >
+                有用
+              </button>
+              <button
+                class="feedback-button"
+                size="mini"
+                loading="{{message.feedbackLoading}}"
+                disabled="{{message.feedbackLoading}}"
+                catchtap="submitAssistantFeedback"
+                data-message-id="{{message.id}}"
+                data-type="bad_recommendation"
+              >
+                不准
+              </button>
+            </view>
+            <view wx:else class="feedback-done">已收到反馈</view>
           </view>
         </view>
         <view wx:if="{{message.role === 'user'}}" class="avatar user-avatar">我</view>

@@ -24,7 +24,7 @@
         class="need-textarea"
         value="{{needText}}"
         bindinput="updateNeedText"
-        placeholder="例如：客户预算3000，滨江西兴，两室，带阳台和燃气，月底入住，通勤到滨康地铁站"
+        placeholder="例如：客户预算3000，滨江西兴，两室，带阳台和燃气"
         maxlength="220"
       ></textarea>
       <view class="voice-row">
@@ -41,7 +41,7 @@
         maxlength="220"
       ></textarea>
       <view class="demo-row">
-        <button class="demo-chip" bindtap="useDemoNeed" data-type="commute">通勤优先</button>
+        <button class="demo-chip" bindtap="useDemoNeed" data-type="feature">标签优先</button>
         <button class="demo-chip" bindtap="useDemoNeed" data-type="apartment">低预算公寓</button>
       </view>
     </view>
@@ -66,18 +66,6 @@
       <view class="field-card">
         <view class="field-label">户型</view>
         <input value="{{form.layout}}" data-field="layout" bindinput="updateField" placeholder="两室" />
-      </view>
-      <view class="field-card">
-        <view class="field-label">入住</view>
-        <input value="{{form.moveIn}}" data-field="moveIn" bindinput="updateField" placeholder="月底" />
-      </view>
-      <view class="field-card">
-        <view class="field-label">通勤位置</view>
-        <input value="{{form.commuteLocation}}" data-field="commuteLocation" bindinput="updateField" placeholder="滨康地铁站" />
-      </view>
-      <view class="field-card">
-        <view class="field-label">最长通勤</view>
-        <input value="{{form.maxCommuteMinutes}}" type="number" data-field="maxCommuteMinutes" bindinput="updateField" placeholder="30 分钟" />
       </view>
     </view>
 

@@ -37,6 +37,13 @@ function updateDb(mutator) {
   return result
 }
 
+async function updateDbAsync(mutator) {
+  const db = readDb()
+  const result = await mutator(db)
+  writeDb(db)
+  return result
+}
+
 function getCurrentUserId(req, db) {
   const fromHeader = req && req.headers ? req.headers['x-user-id'] : ''
   return fromHeader || (db && db.currentUserId) || ''
@@ -47,5 +54,6 @@ module.exports = {
   readDb,
   writeDb,
   updateDb,
+  updateDbAsync,
   getCurrentUserId
 }

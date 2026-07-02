@@ -1,0 +1,255 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1680" viewBox="0 0 2400 1680">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <marker id="softArrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#64748b"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 34px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 18px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #475569; }
+      .lane-title { font: 700 22px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #0f172a; }
+      .box-title { font: 700 19px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #111827; }
+      .box-text { font: 15px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #334155; }
+      .small { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #475569; }
+      .tiny { font: 12px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #64748b; }
+      .tag { font: 700 12px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #075985; }
+      .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 2; rx: 20; }
+      .graph-frame { fill: #eef7ff; stroke: #60a5fa; stroke-width: 3; rx: 24; }
+      .node { fill: #ffffff; stroke: #2563eb; stroke-width: 2.5; rx: 16; }
+      .node-soft { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 14; }
+      .tool { fill: #fff7ed; stroke: #f59e0b; stroke-width: 2; rx: 14; }
+      .safe { fill: #ecfdf5; stroke: #10b981; stroke-width: 2; rx: 14; }
+      .warn { fill: #fef2f2; stroke: #ef4444; stroke-width: 2; rx: 14; }
+      .data { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; rx: 12; }
+      .decision { fill: #fefce8; stroke: #ca8a04; stroke-width: 2.5; }
+      .edge { stroke: #334155; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .edge-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#softArrow); stroke-dasharray: 7 6; }
+      .edge-label { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #334155; }
+      .code { font: 13px Consolas, "Microsoft YaHei", monospace; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2400" height="1680"/>
+  <text class="title" x="70" y="70">找房智能客服链路 × LangGraph StateGraph 总览</text>
+  <text class="subtitle" x="70" y="104">当前实现：小程序入口进入 assistant-service，LangGraph 负责状态流转；规则、地图、房源库分别作为工具节点/服务被调用。</text>
+
+  <!-- Lanes -->
+  <rect class="lane" x="60" y="145" width="450" height="1210"/>
+  <text class="lane-title" x="90" y="185">小程序 / 会话入口</text>
+
+  <rect class="graph-frame" x="560" y="145" width="920" height="1210"/>
+  <text class="lane-title" x="595" y="185">LangGraph StateGraph 编排层</text>
+  <text class="small" x="595" y="212">StateGraph + Annotation + START/END + 条件边；节点只返回 partial state。</text>
+
+  <rect class="lane" x="1530" y="145" width="800" height="1210"/>
+  <text class="lane-title" x="1565" y="185">工具 / 数据 / 安全边界</text>
+
+  <!-- Entrance -->
+  <rect class="node-soft" x="95" y="230" width="350" height="92"/>
+  <text class="box-title" x="120" y="260">1. 小程序请求</text>
+  <text class="box-text" x="120" y="286">POST /mini/assistant/chat</text>
+  <text class="small" x="120" y="309">payload: text / voiceText / form / threadId</text>
+
+  <rect class="node-soft" x="95" y="380" width="350" height="112"/>
+  <text class="box-title" x="120" y="410">2. assistant-service</text>
+  <text class="box-text" x="120" y="436">resolveThreadId</text>
+  <text class="box-text" x="120" y="459">threadStore.getThread()</text>
+  <text class="small" x="120" y="482">拿 previousNeed，作为图初始状态</text>
+
+  <rect class="data" x="95" y="550" width="350" height="122"/>
+  <text class="box-title" x="120" y="580">初始 State</text>
+  <text class="code" x="120" y="606">db, payload, threadId</text>
+  <text class="code" x="120" y="629">previousNeed</text>
+  <text class="code" x="120" y="652">trace: []</text>
+
+  <rect class="safe" x="95" y="1180" width="350" height="112"/>
+  <text class="box-title" x="120" y="1210">返回与保存</text>
+  <text class="box-text" x="120" y="1236">threadStore.saveThread()</text>
+  <text class="small" x="120" y="1260">保存 need / lastIntent</text>
+  <text class="small" x="120" y="1283">返回 response 给小程序</text>
+
+  <!-- Graph nodes -->
+  <rect class="node" x="770" y="235" width="350" height="96"/>
+  <text class="box-title" x="795" y="265">sanitize_input</text>
+  <text class="box-text" x="795" y="291">脱敏、去除敏感字段</text>
+  <text class="small" x="795" y="315">输出 rawPayload / sanitizedText / voiceText</text>
+
+  <rect class="node" x="770" y="375" width="350" height="96"/>
+  <text class="box-title" x="795" y="405">intent_router</text>
+  <text class="box-text" x="795" y="431">判断找房还是业务问答</text>
+  <text class="small" x="795" y="455">输出 intent / intentTopic</text>
+
+  <polygon class="decision" points="945,520 1135,600 945,680 755,600"/>
+  <text class="box-title" x="870" y="590">条件边</text>
+  <text class="small" x="850" y="615">intent === rental_match ?</text>
+
+  <rect class="node" x="660" y="735" width="390" height="118"/>
+  <text class="box-title" x="685" y="765">merge_rental_need</text>
+  <text class="box-text" x="685" y="791">parseNeed + 合并 previousNeed</text>
+  <text class="small" x="685" y="815">处理多轮上下文、半径切换、小区切换</text>
+  <text class="small" x="685" y="838">输出 need / hardConstraints / preferences</text>
+
+  <rect class="node" x="660" y="900" width="390" height="110"/>
+  <text class="box-title" x="685" y="930">confidence_gate</text>
+  <text class="box-text" x="685" y="956">判断是否低置信、冲突或缺关键条件</text>
+  <text class="small" x="685" y="980">输出 confidence / reasons / readyToMatch</text>
+
+  <rect class="node" x="660" y="1055" width="390" height="96"/>
+  <text class="box-title" x="685" y="1085">check_required_fields</text>
+  <text class="box-text" x="685" y="1111">预算、位置、户型/租法至少满足两个</text>
+  <text class="small" x="685" y="1135">输出 nextQuestion / readyToMatch</text>
+
+  <polygon class="decision" points="855,1190 1045,1260 855,1330 665,1260"/>
+  <text class="box-title" x="790" y="1252">条件边</text>
+  <text class="small" x="790" y="1276">readyToMatch ?</text>
+
+  <rect class="node" x="585" y="1400" width="340" height="112"/>
+  <text class="box-title" x="610" y="1430">match_listings</text>
+  <text class="box-text" x="610" y="1456">调用 match-service 查房源</text>
+  <text class="small" x="610" y="1480">输出 exact / nearby / listings</text>
+  <text class="small" x="610" y="1503">输出 placeResolution / reply</text>
+
+  <rect class="node" x="975" y="1400" width="340" height="112"/>
+  <text class="box-title" x="1000" y="1430">ask_followup</text>
+  <text class="box-text" x="1000" y="1456">不查房，只追问</text>
+  <text class="small" x="1000" y="1480">输出空 listings + reply / nextQuestion</text>
+
+  <rect class="node" x="1165" y="735" width="240" height="118"/>
+  <text class="box-title" x="1190" y="765">business_faq</text>
+  <text class="box-text" x="1190" y="791">报备/签单/地图/维护等规则回答</text>
+  <text class="small" x="1190" y="815">输出 reply / nextQuestion</text>
+
+  <rect class="safe" x="1120" y="1550" width="360" height="96"/>
+  <text class="box-title" x="1145" y="1580">generate_reply</text>
+  <text class="box-text" x="1145" y="1606">安全输出 response</text>
+  <text class="small" x="1145" y="1630">safeNeed / safeListings / safePlaceResolution</text>
+
+  <!-- Tools right lane -->
+  <rect class="tool" x="1575" y="235" width="330" height="126"/>
+  <text class="box-title" x="1600" y="265">safety</text>
+  <text class="box-text" x="1600" y="291">scrubDeep / scrubSensitiveText</text>
+  <text class="small" x="1600" y="315">过滤手机号、房号、房东电话、签名链接</text>
+  <text class="small" x="1600" y="338">最终输出也会二次白名单</text>
+
+  <rect class="tool" x="1575" y="405" width="330" height="140"/>
+  <text class="box-title" x="1600" y="435">intents</text>
+  <text class="box-text" x="1600" y="461">routeIntent</text>
+  <text class="small" x="1600" y="485">找房信号优先：预算、房源、附近、户型</text>
+  <text class="small" x="1600" y="508">地图怎么用/坐标问题才走 FAQ</text>
+  <text class="small" x="1600" y="531">输出 rental_match / business_faq</text>
+
+  <rect class="tool" x="1575" y="595" width="330" height="170"/>
+  <text class="box-title" x="1600" y="625">match-service.parseNeed</text>
+  <text class="box-text" x="1600" y="651">ASR 纠偏 + 槽位抽取</text>
+  <text class="small" x="1600" y="675">预算：左右默认 ±300</text>
+  <text class="small" x="1600" y="698">预算上限默认 75% 最低匹配线</text>
+  <text class="small" x="1600" y="721">地点：区域/小区/半径锚点</text>
+  <text class="small" x="1600" y="744">输出 latestNeed</text>
+
+  <rect class="tool" x="1575" y="810" width="330" height="160"/>
+  <text class="box-title" x="1600" y="840">confidence-gate</text>
+  <text class="box-text" x="1600" y="866">只做门禁，不查房、不排序</text>
+  <text class="small" x="1600" y="890">单间 + 整租冲突要追问</text>
+  <text class="small" x="1600" y="913">半径找房缺锚点/半径要追问</text>
+  <text class="small" x="1600" y="936">低置信时阻断 match_listings</text>
+
+  <rect class="tool" x="1575" y="1015" width="330" height="215"/>
+  <text class="box-title" x="1600" y="1045">match-service.groupListings</text>
+  <text class="box-text" x="1600" y="1071">候选房源过滤 + 打分 + 排序</text>
+  <text class="small" x="1600" y="1095">candidateListings: 只取有效且 profile ready</text>
+  <text class="small" x="1600" y="1118">普通找房：exact / nearby</text>
+  <text class="small" x="1600" y="1141">小区无房：按真实坐标找相邻小区</text>
+  <text class="small" x="1600" y="1164">半径找房：按 place 坐标直线距离筛</text>
+  <text class="small" x="1600" y="1187">无坐标：追问，不静默推荐</text>
+  <text class="small" x="1600" y="1210">输出 listings / placeResolution</text>
+
+  <rect class="tool" x="1955" y="1015" width="330" height="215"/>
+  <text class="box-title" x="1980" y="1045">place-locator</text>
+  <text class="box-text" x="1980" y="1071">resolvePlace / distanceKm</text>
+  <text class="small" x="1980" y="1095">来源：placeCoordinates</text>
+  <text class="small" x="1980" y="1118">来源：communityCoordinates</text>
+  <text class="small" x="1980" y="1141">来源：房源真实确认坐标</text>
+  <text class="small" x="1980" y="1164">禁止随机/估算/默认坐标进入地图</text>
+  <text class="small" x="1980" y="1187">输出 resolved / missing / ambiguous</text>
+
+  <rect class="safe" x="1955" y="1280" width="330" height="130"/>
+  <text class="box-title" x="1980" y="1310">response 安全白名单</text>
+  <text class="box-text" x="1980" y="1336">safeNeed / safeListings</text>
+  <text class="small" x="1980" y="1360">placeResolution 不返回经纬度</text>
+  <text class="small" x="1980" y="1383">不返回完整地址、房号、电话、微信</text>
+
+  <!-- Edges entrance to graph -->
+  <path class="edge" d="M445 276 C560 276 640 276 770 276"/>
+  <text class="edge-label" x="505" y="258">payload</text>
+  <path class="edge" d="M270 322 L270 380"/>
+  <path class="edge" d="M445 436 C540 436 630 426 770 426"/>
+  <text class="edge-label" x="500" y="418">payload + previousNeed</text>
+  <path class="edge-soft" d="M445 615 C520 615 585 240 770 260"/>
+  <text class="edge-label" x="500" y="600">initial state</text>
+
+  <!-- Graph edges -->
+  <path class="edge" d="M945 331 L945 375"/>
+  <path class="edge" d="M945 471 L945 520"/>
+  <path class="edge" d="M855 670 L855 735"/>
+  <text class="edge-label" x="790" y="710">rental_match</text>
+  <path class="edge" d="M1105 630 C1220 645 1285 690 1285 735"/>
+  <text class="edge-label" x="1160" y="650">business_faq / fallback</text>
+  <path class="edge" d="M855 853 L855 900"/>
+  <path class="edge" d="M855 1010 L855 1055"/>
+  <path class="edge" d="M855 1151 L855 1190"/>
+  <path class="edge" d="M790 1320 C770 1360 760 1375 755 1400"/>
+  <text class="edge-label" x="700" y="1362">true</text>
+  <path class="edge" d="M930 1320 C1040 1360 1110 1375 1145 1400"/>
+  <text class="edge-label" x="1065" y="1362">false</text>
+  <path class="edge" d="M755 1512 C810 1560 1000 1585 1120 1598"/>
+  <path class="edge" d="M1145 1512 C1158 1532 1180 1548 1215 1550"/>
+  <path class="edge" d="M1285 853 C1285 1160 1285 1450 1285 1550"/>
+  <path class="edge" d="M1120 1600 C870 1620 500 1600 290 1292"/>
+  <text class="edge-label" x="665" y="1642">response + need 保存回 threadStore</text>
+
+  <!-- Tool edges -->
+  <path class="edge-soft" d="M1120 283 C1300 270 1450 260 1575 282"/>
+  <text class="edge-label" x="1255" y="260">scrubDeep</text>
+  <path class="edge-soft" d="M1120 425 C1300 430 1450 452 1575 460"/>
+  <text class="edge-label" x="1260" y="412">routeIntent</text>
+  <path class="edge-soft" d="M1050 790 C1300 770 1450 675 1575 675"/>
+  <text class="edge-label" x="1245" y="748">parseNeed(candidates, db)</text>
+  <path class="edge-soft" d="M1050 952 C1280 930 1450 885 1575 880"/>
+  <text class="edge-label" x="1260" y="918">evaluateConfidence</text>
+  <path class="edge-soft" d="M925 1450 C1190 1405 1395 1135 1575 1110"/>
+  <text class="edge-label" x="1190" y="1394">groupListings</text>
+  <path class="edge-soft" d="M1905 1122 L1955 1122"/>
+  <text class="edge-label" x="1914" y="1105">坐标解析</text>
+  <path class="edge-soft" d="M1480 1598 C1700 1580 1960 1450 2070 1410"/>
+  <text class="edge-label" x="1700" y="1538">safe 输出</text>
+
+  <!-- Bottom data contract -->
+  <rect class="lane" x="60" y="1385" width="500" height="245"/>
+  <text class="lane-title" x="90" y="1425">LangGraph 工作原理</text>
+  <text class="box-text" x="90" y="1460">1. Annotation 定义可写入的状态字段。</text>
+  <text class="box-text" x="90" y="1490">2. 每个节点读取 state，返回 partial state。</text>
+  <text class="box-text" x="90" y="1520">3. reducer 合并状态；trace reducer 追加节点名。</text>
+  <text class="box-text" x="90" y="1550">4. 条件边根据 state 决定下一节点。</text>
+  <text class="box-text" x="90" y="1580">5. compile().invoke(initialState) 执行完整图。</text>
+
+  <rect class="lane" x="1515" y="1435" width="815" height="195"/>
+  <text class="lane-title" x="1545" y="1475">相邻模块字段传输速查</text>
+  <text class="code" x="1545" y="1510">入口 → Graph: db, payload, threadId, previousNeed</text>
+  <text class="code" x="1545" y="1538">sanitize → intent: sanitizedText, sanitizedVoiceText</text>
+  <text class="code" x="1545" y="1566">intent → merge: intent, intentTopic</text>
+  <text class="code" x="1545" y="1594">merge → gate: need, hardConstraints, preferences, candidates</text>
+  <text class="code" x="1545" y="1622">match → reply: exactListings, nearbyListings, listings, placeResolution, reply</text>
+
+  <!-- Legend -->
+  <rect class="data" x="1930" y="235" width="355" height="160"/>
+  <text class="box-title" x="1955" y="265">图例</text>
+  <rect class="node" x="1955" y="290" width="34" height="20"/>
+  <text class="small" x="2000" y="306">LangGraph 节点</text>
+  <rect class="tool" x="1955" y="322" width="34" height="20"/>
+  <text class="small" x="2000" y="338">工具/服务模块</text>
+  <rect class="safe" x="1955" y="354" width="34" height="20"/>
+  <text class="small" x="2000" y="370">安全输出/保存</text>
+</svg>

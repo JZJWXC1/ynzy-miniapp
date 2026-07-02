@@ -109,6 +109,9 @@ Page({
     sensitivePurposeOptions: SENSITIVE_PURPOSE_OPTIONS,
     sensitivePurpose: SENSITIVE_PURPOSE_OPTIONS[0],
     sensitivePurposeCustom: '',
+    canShareVideo: false,
+    shareStateText: '登录中介账号后，可把公开视频推荐卡转发给租客。',
+    shareBrokerName: '',
     needId: '',
     needTemporary: false,
     entrySource: '',
@@ -152,12 +155,18 @@ Page({
         user.authed === '手机号登录' ||
         String(user.role || '').indexOf('中介') !== -1
       )
+      const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
       this.setData({
         listing,
         logs,
         sensitiveVisible: false,
         isVerified: canTrySensitive,
-        sensitiveAuthLabel: canTrySensitive ? '可查看' : '需实名'
+        sensitiveAuthLabel: canTrySensitive ? '可查看' : '需实名',
+        canShareVideo,
+        shareBrokerName: user.name || '',
+        shareStateText: canShareVideo
+          ? '只转发视频和公开摘要，不包含地址、房东电话、楼栋单元房号。'
+          : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
     }).catch(() => {
       wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
@@ -165,6 +174,54 @@ Page({
   },
 
   noop() {},
+
+  shareVideoPath() {
+    const listing = this.data.listing || {}
+    const params = [
+      `id=${encodeURIComponent(listing.id || '')}`,
+      'source=tenant-video-share'
+    ]
+    if (this.data.shareBrokerName) {
+      params.push(`broker=${encodeURIComponent(this.data.shareBrokerName)}`)
+    }
+    return `/pages/shared-video/shared-video?${params.join('&')}`
+  },
+
+  shareVideoTitle() {
+    return '房间视频'
+  },
+
+  prepareVideoShare() {
+    if (!this.data.canShareVideo) {
+      wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
+      return
+    }
+    const listing = this.data.listing || {}
+    apiService.recordVideoShare(listing.id, {
+      channel: 'wechat',
+      target: 'tenant',
+      sharePath: this.shareVideoPath(),
+      shareTitle: this.shareVideoTitle()
+    }).then((result) => {
+      if (result && result.logs) {
+        this.setData({ logs: result.logs })
+      }
+    }).catch((error) => {
+      wx.showToast({
+        title: error && error.message ? error.message : '转发留痕失败',
+        icon: 'none'
+      })
+    })
+  },
+
+  onShareAppMessage() {
+    const listing = this.data.listing || {}
+    return {
+      title: this.shareVideoTitle(),
+      path: this.shareVideoPath(),
+      imageUrl: listing.shareImageUrl || ''
+    }
+  },
 
   revealSensitive() {
     if (this.data.sensitiveVisible) {

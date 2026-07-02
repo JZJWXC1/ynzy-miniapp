@@ -38,9 +38,6 @@ function formFromNeed(need, currentForm) {
     community: data.community || current.community || '',
     rentMode: data.rentMode || current.rentMode || '',
     layout: data.layout || current.layout || '',
-    moveIn: data.moveIn || current.moveIn || '',
-    commuteLocation: data.commuteLocation || current.commuteLocation || current.commute || '',
-    maxCommuteMinutes: data.maxCommuteMinutes || current.maxCommuteMinutes || '',
     features: data.features && data.features.length ? data.features : (current.features || [])
   })
 }
@@ -53,9 +50,6 @@ function payloadForm(form) {
     community: trimValue(data.community),
     rentMode: trimValue(data.rentMode),
     layout: trimValue(data.layout),
-    moveIn: trimValue(data.moveIn),
-    commuteLocation: trimValue(data.commuteLocation || data.commute),
-    maxCommuteMinutes: trimValue(data.maxCommuteMinutes),
     features: parseFeatureInput(data.features).filter((item) => item !== NO_FEATURE)
   }
 }
@@ -72,24 +66,21 @@ function buildGuideTips(form, needText, voiceText) {
 
 Page({
   data: {
-    needText: '客户预算3000左右，想住滨江西兴，两室，带阳台和燃气，月底入住，通勤到滨康地铁站',
+    needText: '客户预算3000左右，想住滨江西兴，两室，带阳台和燃气',
     form: {
       budget: '',
       area: '',
       community: '',
       rentMode: '',
       layout: '',
-      moveIn: '',
-      commuteLocation: '',
-      maxCommuteMinutes: '',
       features: []
     },
     featureOptions: buildFeatureOptions([]),
-    guideTips: buildGuideTips({ features: [] }, '客户预算3000左右，想住滨江西兴，两室，带阳台和燃气，月底入住，通勤到滨康地铁站', ''),
+    guideTips: buildGuideTips({ features: [] }, '客户预算3000左右，想住滨江西兴，两室，带阳台和燃气', ''),
     messages: [
       {
         role: 'assistant',
-        text: '把租客预算、区域、户型、特点和通勤位置发给我，我会先整理字段，确认后再匹配房源。'
+        text: '把租客预算、区域、户型和特点发给我，我会先整理字段，确认后再匹配房源。'
       }
     ],
     parsedNeed: [],
@@ -137,6 +128,12 @@ Page({
       },
       onRecognize: (text) => {
         this.applyVoiceNeed(text, false)
+      },
+      onTranscribing: () => {
+        this.setData({
+          isVoiceListening: false,
+          voiceTip: '正在识别语音'
+        })
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
@@ -189,8 +186,6 @@ Page({
     if (need.budget) nextForm.budget = need.budget
     if (need.area) nextForm.area = need.area
     if (need.layout) nextForm.layout = need.layout
-    if (need.moveIn) nextForm.moveIn = need.moveIn
-    if (need.commute) nextForm.commuteLocation = need.commute
     this.setData({
       needText: text,
       voiceText: text,
@@ -250,9 +245,7 @@ Page({
       { label: '小区/板块', value: need.community || '不限' },
       { label: '租法', value: need.rentMode || '不限' },
       { label: '户型', value: need.layout || '不限' },
-      { label: '特点', value: features },
-      { label: '入住', value: need.moveIn || '待确认' },
-      { label: '通勤', value: need.commuteLocation || need.commute || '待确认' }
+      { label: '特点', value: features }
     ]
   },
 
@@ -344,9 +337,9 @@ Page({
 
   useDemoNeed(event) {
     const type = event.currentTarget.dataset.type
-    const text = type === 'commute'
-      ? '客户预算3500，滨江长河或西兴，两室，近地铁，带阳台，7月入住，通勤到江陵路地铁站'
-      : '客户预算2600，想找萧山建设路，一室公寓，独卫，燃气，越快入住越好'
+    const text = type === 'feature'
+      ? '客户预算3500，滨江长河或西兴，两室，近地铁，带阳台'
+      : '客户预算2600，想找萧山建设路，一室公寓，独卫，燃气'
     this.setData({ needText: text }, () => {
       this.refreshGuideTips(null, text)
       this.runMatch()

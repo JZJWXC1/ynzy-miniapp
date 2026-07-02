@@ -12,8 +12,6 @@ const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
   { key: 'layout', label: '户型/租法', emptyText: '待补充' },
-  { key: 'moveIn', label: '入住时间', emptyText: '可后补' },
-  { key: 'commute', label: '通勤', emptyText: '可后补' },
   { key: 'features', label: '标签/偏好', emptyText: '不限' }
 ]
 
@@ -102,12 +100,14 @@ function buildNeedTags(need) {
   const data = need || {}
   const budget = data.budget || data.maxBudget || data.budgetText
   if (budget) tags.push(`预算 ${budget}`)
+  if (data.searchMode === 'radius_around_place') {
+    if (data.anchorName) tags.push(`地点 ${data.anchorName}`)
+    if (data.radiusKm) tags.push(`${data.radiusKm}公里内`)
+  }
   if (data.area) tags.push(`区域 ${data.area}`)
   if (data.community) tags.push(`小区 ${data.community}`)
   if (data.rentMode) tags.push(data.rentMode)
   if (data.layout) tags.push(`户型 ${data.layout}`)
-  if (data.moveIn) tags.push(data.moveIn)
-  if (data.commuteLocation) tags.push(`通勤 ${data.commuteLocation}`)
   if (data.features && data.features.length) tags.push(data.features.join('、'))
   return tags
 }
@@ -117,13 +117,6 @@ function fieldValue(need, key) {
   if (key === 'budget') return data.budgetText || (data.maxBudget ? `${data.maxBudget}以内` : (data.budget || ''))
   if (key === 'location') return [data.area, data.community].filter(Boolean).join(' · ')
   if (key === 'layout') return [data.rentMode, data.layout].filter(Boolean).join(' · ')
-  if (key === 'moveIn') return data.moveIn || ''
-  if (key === 'commute') {
-    return [
-      data.commuteLocation,
-      data.maxCommuteMinutes ? `${data.maxCommuteMinutes}分钟内` : ''
-    ].filter(Boolean).join(' · ')
-  }
   if (key === 'features') return (data.features || []).join('、')
   return ''
 }
@@ -164,9 +157,6 @@ function needToConfirmForm(need) {
     community: data.community || '',
     rentMode: data.rentMode || '',
     layout: data.layout || '',
-    moveIn: data.moveIn || '',
-    commuteLocation: data.commuteLocation || '',
-    maxCommuteMinutes: data.maxCommuteMinutes || '',
     featuresText: featuresTextFromNeed(data)
   }
 }
@@ -181,9 +171,6 @@ function confirmFormToPayload(form) {
     community: trimValue(data.community),
     rentMode: trimValue(data.rentMode),
     layout: trimValue(data.layout),
-    moveIn: trimValue(data.moveIn),
-    commuteLocation: trimValue(data.commuteLocation),
-    maxCommuteMinutes: trimValue(data.maxCommuteMinutes),
     features: parseFeaturesText(data.featuresText)
   }
 }
@@ -199,9 +186,6 @@ function confirmFormToNeed(form, baseNeed) {
     community: data.community,
     rentMode: data.rentMode,
     layout: data.layout,
-    moveIn: data.moveIn,
-    commuteLocation: data.commuteLocation,
-    maxCommuteMinutes: data.maxCommuteMinutes,
     features: data.features
   })
 }
@@ -245,9 +229,10 @@ function clampAssistantText(text) {
 function buildAssistantText(result, listings) {
   const data = result || {}
   if (data.networkFailed) {
-    return clampAssistantText(listings.length ? '网络连接失败，可重试；先给你本地匹配结果。' : '网络连接失败，请点下方按钮重试。')
+    return '网络连接失败，请点下方按钮重试。'
   }
-  if (data.followUpQuestion) return data.followUpQuestion
+  const question = data.nextQuestion || data.followUpQuestion || ''
+  if (question) return question
   if (data.reply) return clampAssistantText(data.reply)
   if (!listings.length) return '暂未找到合适房源，建议放宽预算、区域或户型。'
   return `先看这${listings.length}套真实房源，已按预算、位置和偏好排序。`
@@ -273,6 +258,8 @@ function buildMapFilters(need, listings) {
     community: data.community || '',
     layout: data.layout || '',
     rentMode: data.rentMode || '',
+    anchorName: data.anchorName || '',
+    radiusKm: data.radiusKm || '',
     listingIds: (listings || []).map((listing) => listing.id).filter(Boolean)
   }
 }
@@ -288,7 +275,7 @@ Page({
       {
         id: 'welcome',
         role: 'assistant',
-        text: '告诉我预算、区域/小区和户型，我会先整理成字段，确认后再匹配真实可租房源。'
+        text: '直接说客户预算、位置和户型，我会按真实房源查；条件不够时只追问一个关键问题。'
       }
     ],
     inputText: '',
@@ -326,6 +313,9 @@ Page({
       },
       onRecognize: (text) => {
         if (text && !this.data.loading) this.setData({ inputText: text })
+      },
+      onTranscribing: () => {
+        this.setData({ isVoiceListening: false })
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
@@ -388,14 +378,14 @@ Page({
     }
     const needHistory = this.data.needHistory.concat(text)
     const messages = this.data.messages.concat(userMessage)
-    const combinedText = needHistory.join('，补充：')
     const payload = {
-      text: combinedText,
+      text,
       voiceText: source === 'voice' ? (this.data.voiceText || text) : '',
-      form: {}
+      form: {},
+      threadId: this.currentThreadId || ''
     }
 
-    this.lastRecognizePayload = payload
+    this.lastAssistantPayload = payload
     this.setData({
       messages,
       needHistory,
@@ -403,7 +393,27 @@ Page({
       loading: true,
       scrollTarget: 'typing-row'
     })
-    this.executeRecognize(payload)
+    this.executeAssistantChat(payload)
+  },
+
+  executeAssistantChat(payload) {
+    const requestId = createMessageId('assistant-chat')
+    this.activeRequestId = requestId
+    this.lastAssistantPayload = payload
+    llmService.chatAssistant(payload).then((result) => {
+      if (this.activeRequestId !== requestId) return
+      this.lastAssistantResultSource = 'assistant-chat'
+      this.appendAssistantResult(result || {})
+    }).catch((error) => {
+      if (this.activeRequestId !== requestId) return
+      this.lastAssistantResultSource = 'assistant-chat'
+      this.appendAssistantResult({
+        reply: '网络连接失败，请点下方按钮重试。',
+        warning: error.message || '网络连接失败',
+        networkFailed: true,
+        listings: []
+      })
+    })
   },
 
   executeRecognize(payload) {
@@ -430,9 +440,11 @@ Page({
     this.activeRequestId = requestId
     llmService.matchRentalNeed(payload).then((result) => {
       if (this.activeRequestId !== requestId) return
+      this.lastAssistantResultSource = 'match'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
       if (this.activeRequestId !== requestId) return
+      this.lastAssistantResultSource = 'match'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
         warning: error.message || '网络连接失败',
@@ -473,16 +485,26 @@ Page({
   },
 
   appendAssistantResult(matchResult) {
-    const listingSections = buildListingSections(matchResult)
+    if (matchResult && matchResult.threadId) {
+      this.currentThreadId = matchResult.threadId
+    }
+    const listingSections = matchResult && matchResult.networkFailed ? [] : buildListingSections(matchResult)
     const listings = flattenSections(listingSections)
-    const requestPayload = this.lastRequestPayload || {}
+    const requestPayload = this.lastAssistantResultSource === 'match'
+      ? (this.lastRequestPayload || this.lastAssistantPayload || {})
+      : (this.lastAssistantPayload || this.lastRequestPayload || {})
     const needId = matchResult.needId || requestPayload.needId || ''
     const needTemporary = Boolean(requestPayload.needTemporary || matchResult.needTemporary)
+    const assistantMessageId = createMessageId('assistant')
     const assistantMessage = {
-      id: createMessageId('assistant'),
+      id: assistantMessageId,
       role: 'assistant',
       text: buildAssistantText(matchResult, listings),
+      threadId: matchResult.threadId || this.currentThreadId || '',
+      sourceText: requestPayload.text || '',
       needTags: buildNeedTags(matchResult.need),
+      need: matchResult.need || {},
+      placeResolution: matchResult.placeResolution || null,
       needId,
       needTemporary,
       needNotice: needTemporary ? '需求单接口暂不可用，已生成临时需求单，可继续看房验证。' : '',
@@ -490,9 +512,12 @@ Page({
       listings,
       mapFilters: Object.assign(buildMapFilters(matchResult.need, listings), { needId }),
       retryable: Boolean(matchResult.networkFailed),
-      retryAction: 'match',
+      retryAction: matchResult.networkFailed ? 'assistant-chat' : 'match',
       retryText: '重试匹配',
-      empty: !listings.length && !matchResult.followUpQuestion
+      empty: !listings.length && !(matchResult.nextQuestion || matchResult.followUpQuestion),
+      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId),
+      feedbackLoading: false,
+      feedbackSent: false
     }
     this.setData({
       messages: this.data.messages.concat(assistantMessage),
@@ -509,6 +534,10 @@ Page({
       loading: true,
       scrollTarget: 'typing-row'
     })
+    if (retryAction === 'assistant-chat' && this.lastAssistantPayload) {
+      this.executeAssistantChat(this.lastAssistantPayload)
+      return
+    }
     if (retryAction === 'recognize' && this.lastRecognizePayload) {
       this.executeRecognize(this.lastRecognizePayload)
       return
@@ -530,6 +559,43 @@ Page({
       return updater(Object.assign({}, message))
     })
     this.setData({ messages })
+  },
+
+  submitAssistantFeedback(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    const feedbackType = event.currentTarget.dataset.type || 'other'
+    const message = this.findMessage(messageId) || {}
+    if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent) return
+    this.updateMessage(messageId, (item) => {
+      item.feedbackLoading = true
+      return item
+    })
+    llmService.submitAssistantFeedback({
+      threadId: message.threadId || this.currentThreadId || '',
+      messageId,
+      feedbackType,
+      reason: feedbackType === 'helpful' ? '中介认为这条推荐有用' : '中介认为这条推荐不准',
+      sourceText: message.sourceText || '',
+      reply: message.text || '',
+      need: message.need || {},
+      listings: message.listings || [],
+      selectedListingIds: (message.listings || []).map((listing) => listing.id).filter(Boolean),
+      placeResolution: message.placeResolution || null
+    }).then(() => {
+      this.updateMessage(messageId, (item) => {
+        item.feedbackLoading = false
+        item.feedbackSent = true
+        item.feedbackType = feedbackType
+        return item
+      })
+      wx.showToast({ title: '已记录反馈', icon: 'none' })
+    }).catch(() => {
+      this.updateMessage(messageId, (item) => {
+        item.feedbackLoading = false
+        return item
+      })
+      wx.showToast({ title: '反馈提交失败', icon: 'none' })
+    })
   },
 
   handleConfirmFieldInput(event) {
