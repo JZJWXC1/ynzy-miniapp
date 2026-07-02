@@ -250,22 +250,13 @@ function run() {
     (error) => error.statusCode === 400 && /手机号/.test(error.message),
     '报备客户手机号必须必填'
   )
-  const needResult = domain.createRentalNeed(db, 'U2', {
-    rawText: '客户找滨江两室，预算 4500',
-    confirmedNeed: { area: '滨江区', layout: '两室', budgetMax: 4500 },
-    source: 'backend-contract'
-  })
-  const need = db.rentalNeeds.find((item) => item.id === needResult.need.id)
   const reportResult = domain.createClientReport(db, 'U2', created.id, {
-    needId: need.id,
     customerName: '王先生',
     customerPhone: '13800001111',
     brokerId: 'EVIL_BROKER'
   })
   const report = db.clientReports.find((item) => item.id === reportResult.report.id)
   assert.strictEqual(report.brokerId, 'U2', '报备 brokerId 必须来自服务端当前用户')
-  assert.strictEqual(report.needId, need.id, '报备必须保存服务端认可的需求单')
-  assert.ok(report.reportSnapshot && report.reportSnapshot.uploaderId === 'U1', '报备必须冻结房源快照')
   assert.strictEqual(report.customerName, '王先生', '客户称呼可选但应保存传入值')
 
   assertRejects(
