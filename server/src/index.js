@@ -580,6 +580,10 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.homeListings(db))
   }
 
+  if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
+    return sendJson(res, await feishuSync.sheetSnapshot())
+  }
+
   if (method === 'GET' && pathname === '/mini/listings') {
     return sendJson(res, domain.filterListings(db, {
       category: searchParams.get('category') || '',

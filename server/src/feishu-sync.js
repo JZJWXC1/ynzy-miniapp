@@ -405,6 +405,82 @@ async function loadSheetRecords(token) {
   return sheetRowsToRecords(valueRange.values || data.values || [])
 }
 
+function trimSheetValues(values = []) {
+  const rows = Array.isArray(values) ? values : []
+  let minRow = -1
+  let maxRow = -1
+  let minCol = -1
+  let maxCol = -1
+
+  rows.forEach((row, rowIndex) => {
+    const cells = Array.isArray(row) ? row : []
+    cells.forEach((cell, colIndex) => {
+      if (!normalizeText(cell)) return
+      if (minRow === -1 || rowIndex < minRow) minRow = rowIndex
+      if (maxRow === -1 || rowIndex > maxRow) maxRow = rowIndex
+      if (minCol === -1 || colIndex < minCol) minCol = colIndex
+      if (maxCol === -1 || colIndex > maxCol) maxCol = colIndex
+    })
+  })
+
+  if (minRow === -1) {
+    return {
+      rows: [],
+      startRow: 0,
+      startCol: 0,
+      rowCount: 0,
+      columnCount: 0
+    }
+  }
+
+  const trimmedRows = rows.slice(minRow, maxRow + 1).map((row) => {
+    const cells = Array.isArray(row) ? row : []
+    return cells.slice(minCol, maxCol + 1).map((cell) => normalizeText(cell))
+  })
+
+  return {
+    rows: trimmedRows,
+    startRow: minRow + 1,
+    startCol: minCol + 1,
+    rowCount: trimmedRows.length,
+    columnCount: maxCol - minCol + 1
+  }
+}
+
+async function sheetSnapshot() {
+  const sheetToken = config.feishu.sheetToken
+  if (!sheetToken) {
+    const error = new Error('未配置飞书表格，无法生成实时截图')
+    error.statusCode = 503
+    throw error
+  }
+
+  const token = await tenantAccessToken()
+  let sheetId = config.feishu.sheetId
+  if (!sheetId) {
+    const firstSheet = await loadSheetMeta(token)
+    sheetId = firstSheet && (firstSheet.sheetId || firstSheet.sheet_id || firstSheet.id)
+  }
+  if (!sheetId) {
+    const error = new Error('未找到飞书房源表工作表 ID，请配置 FEISHU_SHEET_ID')
+    error.statusCode = 503
+    throw error
+  }
+
+  const rawRange = config.feishu.sheetRange || 'A1:Z1000'
+  const range = rawRange.indexOf('!') !== -1 ? rawRange : `${sheetId}!${rawRange}`
+  const data = await feishuJson(`/sheets/v2/spreadsheets/${encodeURIComponent(sheetToken)}/values/${encodeURIComponent(range)}`, token)
+  const valueRange = data.valueRange || data.value_range || {}
+  const snapshot = trimSheetValues(valueRange.values || data.values || [])
+  return {
+    title: '寓你住一起房源表',
+    sheetUrl: config.feishu.sheetUrl,
+    range,
+    updatedAt: nowText(),
+    ...snapshot
+  }
+}
+
 async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 0) {
   if (!folderToken || depth > config.feishu.maxFolderDepth) return []
   let pageToken = ''
@@ -731,6 +807,7 @@ function status(db = {}) {
 module.exports = {
   sync,
   status,
+  sheetSnapshot,
   normalizeRecord,
   applySync
 }

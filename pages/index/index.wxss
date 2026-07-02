@@ -258,36 +258,134 @@ page {
   margin-top: 24rpx;
 }
 
-.task-summary-card {
+.company-listing-panel {
+  margin-top: 22rpx;
+  padding: 24rpx;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 28rpx;
+  box-shadow: 0 14rpx 32rpx rgba(31, 81, 68, 0.08);
+}
+
+.company-listing-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20rpx;
-  margin-top: 22rpx;
-  padding: 24rpx 28rpx;
-  color: #ffffff;
-  background: #153f36;
-  border-radius: 28rpx;
-  box-shadow: 0 14rpx 32rpx rgba(21, 63, 54, 0.14);
+  gap: 18rpx;
 }
 
-.task-summary-label {
-  color: rgba(255, 255, 255, 0.72);
+.company-kicker {
+  color: #2f6f60;
   font-size: 22rpx;
   font-weight: 800;
 }
 
-.task-summary-value {
-  margin-top: 4rpx;
-  font-size: 48rpx;
+.company-title {
+  margin-top: 6rpx;
+  color: #153f36;
+  font-size: 32rpx;
   font-weight: 900;
-  line-height: 1;
+  line-height: 1.2;
 }
 
-.task-summary-copy {
-  color: rgba(255, 255, 255, 0.78);
+.company-count {
+  flex: 0 0 auto;
+  min-height: 56rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 22rpx;
+  font-weight: 800;
+  background: #fff3cf;
+  border-radius: 18rpx;
+}
+
+.company-table {
+  margin-top: 20rpx;
+  overflow: hidden;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+}
+
+.company-table-row {
+  min-height: 76rpx;
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  padding: 14rpx 16rpx;
+  border-top: 1rpx solid #edf3f0;
+}
+
+.company-table-row:first-child {
+  border-top: 0;
+}
+
+.company-table-head {
+  min-height: 58rpx;
+  color: #78918a;
+  font-size: 20rpx;
+  font-weight: 900;
+  background: #f7fbf8;
+}
+
+.company-col-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.company-col-rent {
+  flex: 0 0 138rpx;
+  color: #f2765d;
+  font-size: 22rpx;
+  font-weight: 900;
+  text-align: right;
+}
+
+.company-col-status {
+  flex: 0 0 112rpx;
+  color: #2f6f60;
+  font-size: 21rpx;
+  font-weight: 900;
+  text-align: right;
+}
+
+.company-row-title {
+  color: #153f36;
+  font-size: 25rpx;
+  font-weight: 900;
+  line-height: 1.28;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-row-sub {
+  margin-top: 6rpx;
+  color: #78918a;
+  font-size: 20rpx;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-empty {
+  padding: 28rpx 16rpx;
+  color: #78918a;
   font-size: 23rpx;
   font-weight: 800;
+  text-align: center;
+}
+
+.company-panel-action {
+  min-height: 64rpx;
+  margin-top: 16rpx;
+  color: #2f6f60;
+  font-size: 24rpx;
+  font-weight: 900;
+  background: #e9f5f0;
+  border-radius: 18rpx;
 }
 
 .task-list {

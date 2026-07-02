@@ -375,6 +375,42 @@ function getListings(filter) {
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
+function getCompanyListings() {
+  return getListings({ category: '公司房源' })
+}
+
+function buildMockCompanySheetSnapshot() {
+  const listings = listingDisplay.normalizeListings(mockData.getListings({ category: '公司房源' }))
+  const rows = [
+    ['小区', '区域', '户型', '租金', '房态'],
+    ...listings.map((item) => [
+      item.community || item.title || '公司房源',
+      item.area || item.locationSummary || '待分区',
+      item.layout || item.rentMode || item.type || '户型待补充',
+      item.price || (item.rent ? `¥${item.rent}/月` : '租金待补充'),
+      item.maintenanceText || item.verifyStatus || '在租'
+    ])
+  ]
+  return {
+    title: '寓你住一起房源表',
+    sheetUrl: 'https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl',
+    range: 'mock!A1:E1000',
+    updatedAt: '刚刚',
+    rows,
+    rowCount: rows.length,
+    columnCount: rows[0].length,
+    startRow: 1,
+    startCol: 1
+  }
+}
+
+function getCompanySheetSnapshot() {
+  return apiClient.call({
+    path: '/mini/company-sheet-snapshot',
+    mock: () => buildMockCompanySheetSnapshot()
+  })
+}
+
 function loginByPhone(phone) {
   return apiClient.call({
     path: '/mini/auth/login',
@@ -877,6 +913,8 @@ function addNormalListing(form) {
 module.exports = {
   getHomeListings,
   getListings,
+  getCompanyListings,
+  getCompanySheetSnapshot,
   loginByPhone,
   registerUser,
   getCurrentUser,

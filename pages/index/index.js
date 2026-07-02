@@ -4,12 +4,30 @@ const voiceInput = require('../../utils/voice-input')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
+const companyListingPageUrl = '/pages/my-listings/my-listings?scope=company'
 const tabBarPages = [
   '/pages/index/index',
   listingTabUrl,
   '/pages/map/map',
   '/pages/profile/profile'
 ]
+
+function companyListingRentText(item) {
+  if (item.price) return item.price
+  if (item.rent) return `¥${item.rent}/月`
+  return '租金待补充'
+}
+
+function buildCompanyListingRows(listings) {
+  return (listings || []).slice(0, 4).map((item) => ({
+    id: item.id,
+    title: item.community || item.title || '公司房源',
+    location: item.locationSummary || item.area || '位置待补充',
+    layout: item.layout || item.rentMode || item.type || '户型待补充',
+    rentText: companyListingRentText(item),
+    statusText: item.maintenanceText || item.verifyStatus || '在租'
+  }))
+}
 
 Page({
   data: {
@@ -31,13 +49,16 @@ Page({
         url: '/pages/map/map'
       },
       {
-        title: '我的房源',
-        desc: '维护自己上传的房态和可租状态',
+        title: '寓你住一起房源',
+        desc: '单独查看公司在租房源',
         icon: '房',
-        url: '/pages/my-listings/my-listings'
+        url: companyListingPageUrl
       }
     ],
     listings: [],
+    companyListingRows: [],
+    companyListingCount: 0,
+    companyListingsLoading: false,
     todayTasks: [],
     visibleTodayTasks: [],
     collapsedTaskCount: 0,
@@ -66,6 +87,7 @@ Page({
       this.getTabBar().setData({ selected: 0 });
     }
     this.loadTodayTasks();
+    this.loadCompanyListings();
     apiService.getHomeListings().then((listings) => {
       this.setData({ listings })
     }).catch(() => {
@@ -114,6 +136,24 @@ Page({
     });
   },
 
+  loadCompanyListings() {
+    this.setData({ companyListingsLoading: true });
+    apiService.getCompanyListings().then((listings) => {
+      this.setData({
+        companyListingsLoading: false,
+        companyListingRows: buildCompanyListingRows(listings),
+        companyListingCount: (listings || []).length
+      });
+    }).catch(() => {
+      this.setData({
+        companyListingsLoading: false,
+        companyListingRows: [],
+        companyListingCount: 0
+      });
+      wx.showToast({ title: '公司房源加载失败', icon: 'none' });
+    });
+  },
+
   loadTodayTasks() {
     this.setData({ taskLoading: true });
     apiService.getTodayTasks().then((result) => {
@@ -132,9 +172,9 @@ Page({
 
   buildTaskView(tasks, expanded) {
     const taskList = tasks || [];
-    const primaryTypes = ['maintenance', 'expiring'];
+    const primaryTypes = ['maintenance'];
     let primaryTasks = taskList.filter((item) => primaryTypes.includes(item.type));
-    if (!primaryTasks.length) primaryTasks = taskList.slice(0, 2);
+    if (!primaryTasks.length) primaryTasks = taskList.slice(0, 1);
     const primaryKeys = new Set(primaryTasks.map((item) => item.type || item.title));
     const foldedTasks = taskList.filter((item) => !primaryKeys.has(item.type || item.title));
     const collapsedTaskCount = foldedTasks.length;

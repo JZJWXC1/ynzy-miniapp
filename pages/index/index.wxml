@@ -40,12 +40,33 @@
       </view>
     </view>
 
-    <view class="task-summary-card">
-      <view>
-        <view class="task-summary-label">今日待处理</view>
-        <view class="task-summary-value">{{taskSummary.pendingCount || 0}}</view>
+    <view class="company-listing-panel">
+      <view class="company-listing-head">
+        <view>
+          <view class="company-kicker">寓你住一起房源</view>
+          <view class="company-title">公司在租房源表</view>
+        </view>
+        <view class="company-count">{{companyListingCount}} 套在租</view>
       </view>
-      <view class="task-summary-copy">{{taskLoading ? '正在同步任务' : '来自个人工作聚合'}}</view>
+      <view class="company-table">
+        <view class="company-table-row company-table-head">
+          <text class="company-col company-col-main">房源</text>
+          <text class="company-col company-col-rent">租金</text>
+          <text class="company-col company-col-status">维护</text>
+        </view>
+        <view wx:for="{{companyListingRows}}" wx:key="id" class="company-table-row" bindtap="openListing" data-id="{{item.id}}">
+          <view class="company-col company-col-main">
+            <view class="company-row-title">{{item.title}}</view>
+            <view class="company-row-sub">{{item.location}} · {{item.layout}}</view>
+          </view>
+          <text class="company-col company-col-rent">{{item.rentText}}</text>
+          <text class="company-col company-col-status">{{item.statusText}}</text>
+        </view>
+        <view wx:if="{{!companyListingRows.length}}" class="company-empty">
+          {{companyListingsLoading ? '正在同步公司房源' : '暂无公司在租房源'}}
+        </view>
+      </view>
+      <view class="company-panel-action tap-target" bindtap="openPage" data-url="/pages/my-listings/my-listings?scope=company">查看全部公司房源</view>
     </view>
 
     <view class="section-title">
