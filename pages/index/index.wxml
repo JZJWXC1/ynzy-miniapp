@@ -40,59 +40,91 @@
       </view>
     </view>
 
-    <view class="task-summary-card">
-      <view>
-        <view class="task-summary-label">今日待处理</view>
-        <view class="task-summary-value">{{taskSummary.pendingCount || 0}}</view>
-      </view>
-      <view class="task-summary-copy">{{taskLoading ? '正在同步任务' : '来自个人工作聚合'}}</view>
-    </view>
-
-    <view class="section-title">
-      <view class="section-title-main">今日任务</view>
-      <view class="section-title-action tap-target" bindtap="openPage" data-url="/pages/profile/profile">我的</view>
-    </view>
-    <view class="task-list">
-      <view wx:for="{{visibleTodayTasks}}" wx:key="type" class="task-card tone-{{item.tone}}" bindtap="openTask" data-url="{{item.url}}">
-        <view class="task-main">
-          <view class="task-title">{{item.title}}</view>
-          <view class="task-desc">{{item.desc}}</view>
-        </view>
-        <view class="task-count">
-          <text>{{item.count}}</text>
-          <text>{{item.unit}}</text>
-        </view>
-      </view>
-      <view wx:if="{{!todayTasks.length && !taskLoading}}" class="empty-card soft-card">
-        <view class="empty-title">今日任务暂未同步</view>
-        <view class="empty-desc">可先进入我的页面查看房态、报备、签单和分佣。</view>
-      </view>
-      <view wx:if="{{collapsedTaskCount}}" class="task-fold tap-target" bindtap="toggleTaskFold">
-        <text class="task-fold-text">{{taskFoldText}}</text>
-        <text class="task-fold-meta">{{taskFoldMeta}}</text>
-      </view>
-    </view>
-
-    <view class="category-grid">
-      <view wx:for="{{categories}}" wx:key="name" class="category-card tap-target" bindtap="openCategory" data-name="{{item.name}}">
-        <view class="category-icon">{{item.icon}}</view>
-        <view class="category-name">{{item.name}}</view>
-        <view class="category-desc">{{item.desc}}</view>
-      </view>
-    </view>
-
     <view class="section-title">
       <view class="section-title-main">找房入口</view>
       <view class="section-title-action tap-target" bindtap="openPage" data-url="/pages/upload/upload">上传房源</view>
     </view>
-    <view class="quick-grid">
+    <view class="quick-grid top-entry-grid">
       <button wx:for="{{quickActions}}" wx:key="title" class="quick-card" bindtap="openPage" data-url="{{item.url}}" hover-class="quick-card-active" hover-stay-time="80">
         <view class="quick-icon">{{item.icon}}</view>
         <view class="quick-content">
           <view class="quick-title">{{item.title}}</view>
           <view class="quick-desc">{{item.desc}}</view>
+          <view wx:if="{{item.kind}}" class="quick-task-meta">
+            <view class="quick-task-line">
+              <text>待维护房源</text>
+              <text>{{maintenanceWorkbench.count}}{{maintenanceWorkbench.unit}}</text>
+            </view>
+            <view class="quick-task-line muted">
+              <text>工作台任务</text>
+              <text>{{maintenanceWorkbench.foldedText}}</text>
+            </view>
+          </view>
         </view>
       </button>
+    </view>
+
+    <view class="company-sheet-panel">
+      <view class="company-sheet-head">
+        <view>
+          <view class="company-kicker">寓你住一起房源表</view>
+          <view class="company-title">飞书实时房源表截图</view>
+        </view>
+        <view class="company-count">{{companySheetSnapshot.rowCount || 0}} 行内容</view>
+      </view>
+      <view class="sheet-snapshot-frame" bindtap="previewCompanySheetSnapshot">
+        <scroll-view wx:if="{{sheetPreview && sheetPreview.rows.length}}" class="sheet-snapshot-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+          <view class="sheet-preview-table" style="width: {{sheetPreview.tableWidth}}rpx;">
+            <view class="sheet-preview-header">
+              <view
+                wx:for="{{sheetPreview.header}}"
+                wx:for-item="head"
+                wx:key="id"
+                class="sheet-preview-th"
+                style="width: {{head.width}}rpx;"
+              >{{head.title}}</view>
+            </view>
+            <view
+              wx:for="{{sheetPreview.rows}}"
+              wx:for-item="row"
+              wx:key="id"
+              class="sheet-preview-row {{row.isSection ? 'sheet-preview-section-row' : ''}}"
+            >
+              <view wx:if="{{row.isSection}}" class="sheet-preview-section" style="width: {{sheetPreview.tableWidth}}rpx;">{{row.sectionText}}</view>
+              <block wx:else>
+                <view
+                  wx:for="{{row.cells}}"
+                  wx:for-item="cell"
+                  wx:key="id"
+                  class="sheet-preview-td {{cell.strong ? 'strong' : ''}}"
+                  style="width: {{cell.width}}rpx;"
+                >{{cell.text}}</view>
+              </block>
+            </view>
+          </view>
+        </scroll-view>
+        <view wx:else class="sheet-snapshot-empty">
+          <view class="sheet-snapshot-empty-title">{{sheetSnapshotStatus}}</view>
+          <view class="sheet-snapshot-empty-desc">同步飞书后会自动截取有内容的单元格区域。</view>
+        </view>
+      </view>
+      <view wx:if="{{sheetPreview && sheetPreview.rows.length}}" class="sheet-preview-note">
+        <text>横向滑动查看字段</text>
+        <text wx:if="{{sheetPreview.hiddenCount}}">还有 {{sheetPreview.hiddenCount}} 行，点开看完整截图</text>
+        <text wx:else>点开查看完整截图</text>
+      </view>
+      <view class="sheet-action-row">
+        <button class="sheet-action-button" bindtap="previewCompanySheetSnapshot">查看大图</button>
+        <button class="sheet-action-button" bindtap="shareCompanySheetSnapshot">转发图片</button>
+        <button class="sheet-action-button primary" bindtap="saveCompanySheetSnapshot">下载图片</button>
+      </view>
+      <button
+        class="sheet-listing-button"
+        bindtap="openPage"
+        data-url="/pages/my-listings/my-listings?scope=company"
+        hover-class="sheet-listing-button-active"
+        hover-stay-time="80"
+      >进入寓你住一起房源</button>
     </view>
 
     <view class="section-title">
@@ -125,15 +157,11 @@
       </view>
     </view>
 
-    <view class="section-title">
-      <view class="section-title-main">处理规则</view>
-      <view class="section-title-action tap-target" bindtap="handleTap" data-name="我的工作台">进入工作台</view>
-    </view>
-    <view class="workbench-grid">
-      <view wx:for="{{workbench}}" wx:key="title" class="workbench-card">
-        <view class="workbench-title">{{item.title}}</view>
-        <view class="workbench-value">{{item.value}}</view>
-      </view>
-    </view>
+    <canvas
+      type="2d"
+      id="companySheetCanvas"
+      class="sheet-snapshot-canvas"
+      style="width: {{snapshotCanvasWidth}}px; height: {{snapshotCanvasHeight}}px;"
+    ></canvas>
   </view>
 </scroll-view>

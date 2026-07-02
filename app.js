@@ -2,7 +2,19 @@ const { DEFAULT_API_CONFIG } = require('./utils/api-config')
 const deployConfig = require('./utils/deploy-config')
 const apiService = require('./utils/api-service')
 
-const runtimeApiConfig = Object.assign({}, DEFAULT_API_CONFIG, deployConfig)
+function resolveRuntimeApiConfig() {
+  const next = Object.assign({}, DEFAULT_API_CONFIG, deployConfig)
+  try {
+    const systemInfo = wx.getSystemInfoSync ? wx.getSystemInfoSync() : {}
+    if (systemInfo.platform === 'devtools') {
+      next.env = 'local'
+      next.baseUrl = 'http://127.0.0.1:3000'
+    }
+  } catch (error) {}
+  return next
+}
+
+const runtimeApiConfig = resolveRuntimeApiConfig()
 
 App({
   onLaunch() {

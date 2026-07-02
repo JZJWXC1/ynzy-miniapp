@@ -558,6 +558,15 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.homeListings(db))
   }
 
+  if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
+    const cached = feishuSync.cachedSheetSnapshot(db)
+    if (cached) return sendJson(res, cached)
+    const nextDb = dbStore.readDb()
+    const snapshot = await feishuSync.refreshSheetSnapshot(nextDb, { reason: 'mini-request' })
+    dbStore.writeDb(nextDb)
+    return sendJson(res, snapshot)
+  }
+
   if (method === 'GET' && pathname === '/mini/listings') {
     return sendJson(res, domain.filterListings(db, {
       category: searchParams.get('category') || '',

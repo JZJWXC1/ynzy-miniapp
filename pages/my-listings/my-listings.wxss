@@ -31,6 +31,10 @@ page {
   line-height: 1.45;
 }
 
+.company-mode .owner-card {
+  background: #153f36;
+}
+
 .owner-button {
   min-width: 118rpx;
   height: 72rpx;
@@ -75,6 +79,24 @@ page {
   display: flex;
   flex-direction: column;
   gap: 16rpx;
+}
+
+.empty-card {
+  padding: 30rpx;
+  background: #ffffff;
+}
+
+.empty-title {
+  color: #153f36;
+  font-size: 30rpx;
+  font-weight: 900;
+}
+
+.empty-desc {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+  line-height: 1.45;
 }
 
 .owner-listing {
@@ -125,6 +147,11 @@ page {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 12rpx;
+}
+
+.company-actions {
+  min-height: 1rpx;
+  padding-top: 0;
 }
 
 .edit-button,

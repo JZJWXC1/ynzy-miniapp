@@ -14,6 +14,27 @@ function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
 }
 
+function sheetColumnNumber(label) {
+  return String(label || '').toUpperCase().split('').reduce((sum, char) => {
+    const code = char.charCodeAt(0)
+    if (code < 65 || code > 90) return sum
+    return sum * 26 + code - 64
+  }, 0)
+}
+
+function widenSheetRange(rawRange) {
+  const source = normalizeText(rawRange) || 'A1:ZZ1000'
+  const bangIndex = source.lastIndexOf('!')
+  const sheetName = bangIndex === -1 ? '' : source.slice(0, bangIndex)
+  const cellRange = bangIndex === -1 ? source : source.slice(bangIndex + 1)
+  const matched = cellRange.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i)
+  if (!matched) return source
+
+  const endColumn = sheetColumnNumber(matched[3]) < sheetColumnNumber('ZZ') ? 'ZZ' : matched[3].toUpperCase()
+  const nextRange = `${matched[1].toUpperCase()}${matched[2]}:${endColumn}${matched[4]}`
+  return sheetName ? `${sheetName}!${nextRange}` : nextRange
+}
+
 function id(prefix) {
   return `${prefix}${Date.now()}${Math.floor(Math.random() * 1000)}`
 }
@@ -105,23 +126,62 @@ function unique(values) {
   })
 }
 
+function normalizeRoomPart(value, type) {
+  let text = normalizeText(value).replace(/\s+/g, '')
+  if (!text) return ''
+  text = text.replace(/[，,。；;:：]/g, '')
+  if (type === 'building') return text.replace(/^(第)/, '').replace(/(?:号楼|楼|幢|栋|号)$/g, '')
+  if (type === 'unit') return text.replace(/^(第)/, '').replace(/(?:单元)$/g, '')
+  return text.replace(/^(第)/, '').replace(/(?:房间|房|室)$/g, '')
+}
+
+function parseRoomText(value) {
+  const text = normalizeText(value).replace(/\s+/g, '')
+  if (!text) return null
+  const dashed = text.split(/[-－—]/).map((item) => item.trim()).filter(Boolean)
+  if (dashed.length >= 3) {
+    return {
+      building: normalizeRoomPart(dashed[0], 'building'),
+      unit: normalizeRoomPart(dashed[1], 'unit'),
+      roomNumber: normalizeRoomPart(dashed.slice(2).join('-'), 'room')
+    }
+  }
+  const matched = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
+  if (!matched) return null
+  return {
+    building: normalizeRoomPart(matched[1], 'building'),
+    unit: normalizeRoomPart(matched[2], 'unit'),
+    roomNumber: normalizeRoomPart(matched[3], 'room')
+  }
+}
+
 function parseRoomParts(fields) {
   const building = firstField(fields, ['几栋', '楼栋', '栋', '幢', '楼号', 'building', 'buildingNo'])
   const unit = firstField(fields, ['几单元', '单元', 'unit', 'unitNo'])
   const roomNumber = firstField(fields, ['房间号', '房号', '门牌号', '室', 'roomNumber', 'roomNo'])
   if ((building || unit) && roomNumber) {
-    return { building, unit, roomNumber }
+    return {
+      building: normalizeRoomPart(building, 'building'),
+      unit: normalizeRoomPart(unit, 'unit'),
+      roomNumber: normalizeRoomPart(roomNumber, 'room')
+    }
   }
 
   const rawRoom = roomNumber || firstField(fields, ['房间', '房源房号', '房源编号', '编号', 'room', '房号'])
+  const parsedRoom = parseRoomText(rawRoom)
+  if (parsedRoom) return parsedRoom
   const parts = rawRoom.split(/[-－—]/).map((item) => item.trim()).filter(Boolean)
   if (parts.length >= 3) {
-    return { building: parts[0], unit: parts[1], roomNumber: parts.slice(2).join('-') }
+    return {
+      building: normalizeRoomPart(parts[0], 'building'),
+      unit: normalizeRoomPart(parts[1], 'unit'),
+      roomNumber: normalizeRoomPart(parts.slice(2).join('-'), 'room')
+    }
   }
   if (parts.length === 2) {
-    return { building: parts[0], unit: '', roomNumber: parts[1] }
+    return { building: normalizeRoomPart(parts[0], 'building'), unit: '', roomNumber: normalizeRoomPart(parts[1], 'room') }
   }
-  return { building: '', unit: '', roomNumber: rawRoom }
+  return { building: '', unit: '', roomNumber: normalizeRoomPart(rawRoom, 'room') }
 }
 
 function inferRoom(layoutText) {
@@ -330,10 +390,46 @@ async function loadSheetMeta(token) {
   return Array.isArray(sheets) && sheets.length ? sheets[0] : null
 }
 
+async function resolveSheetRange(token) {
+  const sheetToken = config.feishu.sheetToken
+  if (!sheetToken) {
+    const error = new Error('未配置飞书表格，无法生成实时截图')
+    error.statusCode = 503
+    throw error
+  }
+
+  let sheetId = config.feishu.sheetId
+  if (!sheetId) {
+    const firstSheet = await loadSheetMeta(token)
+    sheetId = firstSheet && (firstSheet.sheetId || firstSheet.sheet_id || firstSheet.id)
+  }
+  if (!sheetId) {
+    const error = new Error('未找到飞书房源表工作表 ID，请配置 FEISHU_SHEET_ID')
+    error.statusCode = 503
+    throw error
+  }
+
+  const rawRange = widenSheetRange(config.feishu.sheetRange || 'A1:ZZ1000')
+  return rawRange.indexOf('!') !== -1 ? rawRange : `${sheetId}!${rawRange}`
+}
+
+async function loadSheetValues(token) {
+  const sheetToken = config.feishu.sheetToken
+  const range = await resolveSheetRange(token)
+  const data = await feishuJson(`/sheets/v2/spreadsheets/${encodeURIComponent(sheetToken)}/values/${encodeURIComponent(range)}`, token)
+  const valueRange = data.valueRange || data.value_range || {}
+  return {
+    range,
+    values: valueRange.values || data.values || []
+  }
+}
+
 function isSheetHeaderRow(row = []) {
   const text = row.map((item) => normalizeText(item)).join('|')
   return /区域/.test(text) && /小区/.test(text) && /房号|房间号/.test(text)
 }
+
+const defaultSheetHeaders = ['区域', '小区', '房号', '户型描述', '户型分类', '押一付一', '押二付一', '看房方式密码', '备注']
 
 function sheetContactFromIntro(rows = []) {
   const text = rows.map((row) => (row || []).map((item) => normalizeText(item)).join(' ')).join(' ')
@@ -343,16 +439,19 @@ function sheetContactFromIntro(rows = []) {
 
 function sheetRowsToRecords(values = []) {
   const rows = Array.isArray(values) ? values : []
-  const headerIndex = Math.max(0, rows.findIndex(isSheetHeaderRow))
-  const headers = (rows[headerIndex] || []).map((item) => normalizeText(item))
-  const sharedContact = sheetContactFromIntro(rows.slice(0, headerIndex))
+  const foundHeaderIndex = rows.findIndex(isSheetHeaderRow)
+  const hasHeader = foundHeaderIndex >= 0
+  const headerIndex = hasHeader ? foundHeaderIndex : -1
+  const headers = hasHeader ? (rows[headerIndex] || []).map((item) => normalizeText(item)) : defaultSheetHeaders
+  const sharedContact = sheetContactFromIntro(hasHeader ? rows.slice(0, headerIndex) : [])
   const areaHeader = headers.find((item) => item === '区域' || item === '区') || '区域'
   const communityHeader = headers.find((item) => /小区/.test(item)) || '小区'
   const records = []
   let lastArea = ''
   let lastCommunity = ''
 
-  rows.slice(headerIndex + 1).forEach((cells, index) => {
+  const dataRows = hasHeader ? rows.slice(headerIndex + 1) : rows
+  dataRows.forEach((cells, index) => {
     const fields = {}
     let hasRowValue = false
     let hasListingValue = false
@@ -367,9 +466,9 @@ function sheetRowsToRecords(values = []) {
 
     const currentArea = normalizeText(fields[areaHeader])
     const currentCommunity = normalizeText(fields[communityHeader])
+    if (!hasListingValue) return
     if (currentArea) lastArea = currentArea
     if (currentCommunity) lastCommunity = currentCommunity
-    if (!hasListingValue) return
     if (!currentArea && lastArea) fields[areaHeader] = lastArea
     if (!currentCommunity && lastCommunity) fields[communityHeader] = lastCommunity
     if (sharedContact && !firstField(fields, ['房东联系方式', '联系方式', '房东电话', '电话', '联系人电话', 'contact', 'landlordPhone'])) {
@@ -378,7 +477,7 @@ function sheetRowsToRecords(values = []) {
     const explicitRecordId = firstField(fields, ['房源编号', '编号', 'ID', 'id'])
     records.push({
       record_id: explicitRecordId,
-      rowNumber: headerIndex + index + 2,
+      rowNumber: (hasHeader ? headerIndex + 2 : 1) + index,
       fields
     })
   })
@@ -388,21 +487,78 @@ function sheetRowsToRecords(values = []) {
 async function loadSheetRecords(token) {
   const sheetToken = config.feishu.sheetToken
   if (!sheetToken) return []
-  let sheetId = config.feishu.sheetId
-  if (!sheetId) {
-    const firstSheet = await loadSheetMeta(token)
-    sheetId = firstSheet && (firstSheet.sheetId || firstSheet.sheet_id || firstSheet.id)
+  const sheetData = await loadSheetValues(token)
+  return sheetRowsToRecords(sheetData.values)
+}
+
+function trimSheetValues(values = []) {
+  const rows = Array.isArray(values) ? values : []
+  let minRow = -1
+  let maxRow = -1
+  let minCol = -1
+  let maxCol = -1
+
+  rows.forEach((row, rowIndex) => {
+    const cells = Array.isArray(row) ? row : []
+    cells.forEach((cell, colIndex) => {
+      if (!normalizeText(cell)) return
+      if (minRow === -1 || rowIndex < minRow) minRow = rowIndex
+      if (maxRow === -1 || rowIndex > maxRow) maxRow = rowIndex
+      if (minCol === -1 || colIndex < minCol) minCol = colIndex
+      if (maxCol === -1 || colIndex > maxCol) maxCol = colIndex
+    })
+  })
+
+  if (minRow === -1) {
+    return {
+      rows: [],
+      startRow: 0,
+      startCol: 0,
+      rowCount: 0,
+      columnCount: 0
+    }
   }
-  if (!sheetId) {
-    const error = new Error('未找到飞书房源表工作表 ID，请配置 FEISHU_SHEET_ID')
-    error.statusCode = 503
-    throw error
+
+  const columnCount = maxCol - minCol + 1
+  const trimmedRows = rows.slice(minRow, maxRow + 1).map((row) => {
+    const cells = Array.isArray(row) ? row : []
+    return Array.from({ length: columnCount }).map((_, index) => normalizeText(cells[minCol + index]))
+  })
+
+  return {
+    rows: trimmedRows,
+    startRow: minRow + 1,
+    startCol: minCol + 1,
+    rowCount: trimmedRows.length,
+    columnCount
   }
-  const rawRange = config.feishu.sheetRange || 'A1:Z1000'
-  const range = rawRange.indexOf('!') !== -1 ? rawRange : `${sheetId}!${rawRange}`
-  const data = await feishuJson(`/sheets/v2/spreadsheets/${encodeURIComponent(sheetToken)}/values/${encodeURIComponent(range)}`, token)
-  const valueRange = data.valueRange || data.value_range || {}
-  return sheetRowsToRecords(valueRange.values || data.values || [])
+}
+
+async function sheetSnapshot(options = {}) {
+  const token = options.feishuToken || await tenantAccessToken()
+  const sheetData = await loadSheetValues(token)
+  const snapshot = trimSheetValues(sheetData.values)
+  return {
+    title: '寓你住一起房源表',
+    sheetUrl: config.feishu.sheetUrl,
+    range: sheetData.range,
+    updatedAt: nowText(),
+    ...snapshot
+  }
+}
+
+function cachedSheetSnapshot(db = {}) {
+  const snapshot = db.companySheetSnapshot
+  return snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length ? snapshot : null
+}
+
+async function refreshSheetSnapshot(db = {}, options = {}) {
+  const snapshot = await sheetSnapshot(options)
+  db.companySheetSnapshot = {
+    ...snapshot,
+    cachedAt: nowText()
+  }
+  return db.companySheetSnapshot
 }
 
 async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 0) {
@@ -698,10 +854,31 @@ async function loadRowsAndMaterials(options = {}) {
 
 async function sync(db, adminId, options = {}) {
   const loaded = await loadRowsAndMaterials(options)
-  return applySync(db, loaded.rows, loaded.materials, adminId, {
+  const result = await applySync(db, loaded.rows, loaded.materials, adminId, {
     ...options,
     feishuToken: loaded.feishuToken
   })
+  if (config.feishu.sheetToken && !options.skipSheetSnapshot && !options.dryRun) {
+    try {
+      const snapshot = await refreshSheetSnapshot(db, { feishuToken: loaded.feishuToken })
+      result.sheetSnapshot = {
+        updated: true,
+        rowCount: snapshot.rowCount,
+        columnCount: snapshot.columnCount,
+        updatedAt: snapshot.updatedAt,
+        cachedAt: snapshot.cachedAt
+      }
+    } catch (error) {
+      result.sheetSnapshot = {
+        updated: false,
+        error: error.message
+      }
+      if (result.messages.length < 20) {
+        result.messages.push(`房源表快照更新失败：${error.message}`)
+      }
+    }
+  }
+  return result
 }
 
 function status(db = {}) {
@@ -723,6 +900,8 @@ function status(db = {}) {
     bitableTableId: config.feishu.bitableTableId || '',
     sheetToken: config.feishu.sheetToken ? `${config.feishu.sheetToken.slice(0, 6)}...` : '',
     sheetRange: config.feishu.sheetRange,
+    sheetSnapshotUpdatedAt: db.companySheetSnapshot ? (db.companySheetSnapshot.cachedAt || db.companySheetSnapshot.updatedAt || '') : '',
+    sheetSnapshotRowCount: db.companySheetSnapshot ? (db.companySheetSnapshot.rowCount || 0) : 0,
     lastLog: (db.feishuSyncLogs || [])[0] || null,
     feishuListingCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length
   }
@@ -731,6 +910,9 @@ function status(db = {}) {
 module.exports = {
   sync,
   status,
+  sheetSnapshot,
+  cachedSheetSnapshot,
+  refreshSheetSnapshot,
   normalizeRecord,
   applySync
 }

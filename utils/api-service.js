@@ -31,6 +31,139 @@ function firstNumber(value) {
   return matched ? Number(matched[0]) : 0
 }
 
+function firstText() {
+  for (let index = 0; index < arguments.length; index += 1) {
+    const value = arguments[index]
+    if (Array.isArray(value)) {
+      const text = value.filter(Boolean).join('、').trim()
+      if (text) return text
+      continue
+    }
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function sheetColumnLabel(count) {
+  let index = Math.max(1, Number(count) || 1)
+  let label = ''
+  while (index > 0) {
+    const mod = (index - 1) % 26
+    label = String.fromCharCode(65 + mod) + label
+    index = Math.floor((index - 1) / 26)
+  }
+  return label
+}
+
+function formatRentText(item) {
+  const data = item || {}
+  const text = firstText(data.price, data.rentText)
+  if (text) return text
+  return data.rent ? `¥${data.rent}/月` : ''
+}
+
+function formatFeatureText(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join('、')
+  return String(value || '').trim()
+}
+
+function formatLayoutText(item) {
+  const data = item || {}
+  const layout = firstText(data.layout)
+  if (layout) return layout
+  const room = firstText(data.room)
+  const hall = firstText(data.hall)
+  const bath = firstText(data.bath)
+  if (!room && !hall && !bath) return ''
+  return `${room || 0}室${hall || 0}厅${bath || 0}卫`
+}
+
+function normalizeRoomPart(value, type) {
+  let text = String(value || '').trim().replace(/\s+/g, '')
+  if (!text) return ''
+  text = text.replace(/[，,。；;:：]/g, '')
+  if (type === 'building') return text.replace(/^(第)/, '').replace(/(?:号楼|楼|幢|栋|号)$/g, '')
+  if (type === 'unit') return text.replace(/^(第)/, '').replace(/(?:单元)$/g, '')
+  return text.replace(/^(第)/, '').replace(/(?:房间|房|室)$/g, '')
+}
+
+function parseRoomText(value) {
+  const text = String(value || '').trim().replace(/\s+/g, '')
+  if (!text) return null
+  const dashed = text.split(/[-－—]/).map((item) => item.trim()).filter(Boolean)
+  if (dashed.length >= 3) {
+    return [
+      normalizeRoomPart(dashed[0], 'building'),
+      normalizeRoomPart(dashed[1], 'unit'),
+      normalizeRoomPart(dashed.slice(2).join('-'), 'room')
+    ]
+  }
+  const matched = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
+  if (!matched) return null
+  return [
+    normalizeRoomPart(matched[1], 'building'),
+    normalizeRoomPart(matched[2], 'unit'),
+    normalizeRoomPart(matched[3], 'room')
+  ]
+}
+
+function formatRoomNumber(item) {
+  const data = item || {}
+  const building = firstText(data.building, data.buildingNo, data.buildingNumber)
+  const unit = firstText(data.unit, data.unitNo, data.unitNumber)
+  const room = firstText(data.roomNumber, data.roomNo, data.houseNo, data.doorNo)
+  const rawValues = [building, unit, room].filter(Boolean)
+  const parsed = parseRoomText(rawValues.join('')) || (rawValues.length === 1 ? parseRoomText(rawValues[0]) : null)
+  const parts = parsed || [
+    normalizeRoomPart(building, 'building'),
+    normalizeRoomPart(unit, 'unit'),
+    normalizeRoomPart(room, 'room')
+  ]
+  return parts.filter(Boolean).join('-')
+}
+
+function formatLayoutDescription(item) {
+  const data = item || {}
+  return firstText(
+    data.layoutDescription,
+    data.description,
+    data.houseDescription,
+    data.roomDescription,
+    data.meta,
+    data.layout,
+    data.title
+  )
+}
+
+function formatLayoutCategory(item) {
+  const data = item || {}
+  return firstText(data.layoutCategory, data.category, data.layout, data.rentMode, data.type)
+}
+
+function formatPaymentText(item, names) {
+  const data = item || {}
+  for (let index = 0; index < names.length; index += 1) {
+    const value = firstText(data[names[index]])
+    if (value) return value
+  }
+  return formatRentText(data)
+}
+
+function formatVideoText(item) {
+  const data = item || {}
+  if (data.videoLabel) return data.videoLabel
+  if (data.videoUrl || data.videoKey) return '有视频'
+  return ''
+}
+
+function formatCoordinateText(item) {
+  const data = item || {}
+  const latitude = firstText(data.mapLatitude, data.latitude)
+  const longitude = firstText(data.mapLongitude, data.longitude)
+  return latitude && longitude ? `${latitude}, ${longitude}` : ''
+}
+
 function makeTempNeedId() {
   return `TMP-NEED-${Date.now()}-${Math.floor(Math.random() * 10000)}`
 }
@@ -369,6 +502,76 @@ function getListings(filter) {
     path: `/mini/listings${query}`,
     mock: () => mockData.getListings(filter || {})
   }).then((listings) => listingDisplay.normalizeListings(listings))
+}
+
+function getCompanyListings() {
+  return getListings({ category: '公司房源' })
+}
+
+function buildCompanySheetSnapshotFromListings(listings, updatedAt) {
+  const columns = [
+    { title: '区域', value: (item, state) => state.showArea },
+    { title: '小区', value: (item, state) => state.showCommunity },
+    { title: '房号', value: (item) => formatRoomNumber(item) },
+    { title: '户型描述', value: (item) => formatLayoutDescription(item) },
+    { title: '户型分类', value: (item) => formatLayoutCategory(item) },
+    { title: '押一付一', value: (item) => formatPaymentText(item, ['payOnePrice', 'depositOnePayOne', '押一付一']) },
+    { title: '押二付一', value: (item) => formatPaymentText(item, ['payTwoPrice', 'depositTwoPayOne', '押二付一']) },
+    { title: '看房方式密码', value: (item) => firstText(item.viewingPassword, item.doorCode, item.password, item.accessCode) },
+    { title: '备注', value: (item) => firstText(item.remark, item.note, item.maintenanceText, item.verifyTip) }
+  ]
+  const sortedListings = (listings || []).slice().sort((left, right) => {
+    const leftText = `${left.area || left.locationSummary || ''}${left.community || left.title || ''}`
+    const rightText = `${right.area || right.locationSummary || ''}${right.community || right.title || ''}`
+    return leftText.localeCompare(rightText, 'zh-CN')
+  })
+  let lastArea = ''
+  let lastCommunity = ''
+  const rows = [
+    columns.map((column) => column.title),
+    ...sortedListings.map((item) => {
+      const area = item.area || item.locationSummary || '待分区'
+      const community = item.community || item.title || '公司房源'
+      const showArea = area === lastArea ? '' : area
+      const showCommunity = area === lastArea && community === lastCommunity ? '' : community
+      lastArea = area
+      lastCommunity = community
+      return columns.map((column) => String(column.value(item, { area, community, showArea, showCommunity }) || '').trim())
+    })
+  ]
+  return {
+    title: '寓你住一起房源表',
+    sheetUrl: 'https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl',
+    range: `mock!A1:${sheetColumnLabel(rows[0].length)}1000`,
+    updatedAt: updatedAt || '刚刚',
+    rows,
+    rowCount: rows.length,
+    columnCount: rows[0].length,
+    startRow: 1,
+    startCol: 1
+  }
+}
+
+function buildMockCompanySheetSnapshot() {
+  return {
+    title: '寓你住一起房源表',
+    sheetUrl: 'https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl',
+    range: '',
+    updatedAt: '未连接真实飞书',
+    rows: [],
+    rowCount: 0,
+    columnCount: 9,
+    startRow: 1,
+    startCol: 1,
+    unavailable: true
+  }
+}
+
+function getCompanySheetSnapshot() {
+  return apiClient.call({
+    path: '/mini/company-sheet-snapshot',
+    mock: () => buildMockCompanySheetSnapshot()
+  })
 }
 
 function loginByPhone(phone) {
@@ -768,6 +971,8 @@ function addNormalListing(form) {
 module.exports = {
   getHomeListings,
   getListings,
+  getCompanyListings,
+  getCompanySheetSnapshot,
   loginByPhone,
   registerUser,
   getCurrentUser,
