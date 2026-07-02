@@ -16,6 +16,15 @@ function createDb() {
       { id: 'ADMIN', name: '管理员', phone: '13900000003', role: '管理员', authed: '已实名', isAdmin: true }
     ],
     listings: [],
+    rentalNeeds: [
+      {
+        id: 'N1',
+        brokerId: 'U2',
+        rawText: '客户找滨江两室，预算 4500',
+        confirmedNeed: { area: '滨江区', layout: '两室', budgetMax: 4500 },
+        status: 'active'
+      }
+    ],
     footprints: [],
     pointLogs: [],
     commissionRecords: [],
@@ -251,6 +260,7 @@ function run() {
     '报备客户手机号必须必填'
   )
   const reportResult = domain.createClientReport(db, 'U2', created.id, {
+    needId: 'N1',
     customerName: '王先生',
     customerPhone: '13800001111',
     brokerId: 'EVIL_BROKER'
