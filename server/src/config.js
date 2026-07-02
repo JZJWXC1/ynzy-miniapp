@@ -99,7 +99,7 @@ module.exports = {
     sheetUrl: configuredSheetUrl,
     sheetToken: extractSheetToken(configuredSheetToken),
     sheetId: process.env.FEISHU_SHEET_ID || jsonValue(feishuSheetTokenFile, 'sheet_id'),
-    sheetRange: process.env.FEISHU_SHEET_RANGE || jsonValue(feishuSheetTokenFile, 'range') || 'A1:Z1000',
+    sheetRange: process.env.FEISHU_SHEET_RANGE || jsonValue(feishuSheetTokenFile, 'range') || 'A1:ZZ1000',
     folderToken: process.env.FEISHU_MATERIAL_FOLDER_TOKEN || jsonValue(feishuFolderTokenFile, 'folder_token'),
     pageSize: numberFromEnv('FEISHU_PAGE_SIZE', 50),
     maxFolderDepth: numberFromEnv('FEISHU_MAX_FOLDER_DEPTH', 8),

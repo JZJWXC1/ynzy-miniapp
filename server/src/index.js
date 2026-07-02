@@ -581,7 +581,12 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
-    return sendJson(res, await feishuSync.sheetSnapshot())
+    const cached = feishuSync.cachedSheetSnapshot(db)
+    if (cached) return sendJson(res, cached)
+    const nextDb = dbStore.readDb()
+    const snapshot = await feishuSync.refreshSheetSnapshot(nextDb, { reason: 'mini-request' })
+    dbStore.writeDb(nextDb)
+    return sendJson(res, snapshot)
   }
 
   if (method === 'GET' && pathname === '/mini/listings') {
