@@ -1,4 +1,4 @@
-<navigation-bar title="地图找房" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="地图找房" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <view class="map-page">
   <view class="map-header">
     <view class="map-kicker">地图找房</view>
