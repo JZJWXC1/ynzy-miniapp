@@ -2,14 +2,15 @@ const apiService = require('../../utils/api-service')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const categories = ['全部', '整租', '合租', '业主房源', '公寓']
-const rentModeFilters = ['不限', '整租', '合租']
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
-  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] }
+  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
+  { name: '余杭区', blocks: [] }
 ]
+const layoutOptions = ['不限', '一室', '两室', '三室', '三室以上']
 const emptyFilters = {
   needId: '',
-  area: '',
+  district: '',
   block: '',
   community: '',
   layout: '',
@@ -27,9 +28,16 @@ function normalizeRentModeFilter(value) {
   return value === '整租' || value === '合租' ? value : ''
 }
 
-function blocksForArea(area) {
-  const matched = regionOptions.find((item) => item.name === area)
-  return matched ? matched.blocks : []
+function uniqueCommunities(listings) {
+  const seen = new Set()
+  return (listings || [])
+    .map((item) => String(item.community || item.title || '').trim())
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
 }
 
 function normalizeListingState(input = {}) {
@@ -40,7 +48,7 @@ function normalizeListingState(input = {}) {
   return {
     category,
     filters: {
-      area: cleanFilterValue(sourceFilters.area),
+      district: cleanFilterValue(sourceFilters.district || sourceFilters.area),
       block: cleanFilterValue(sourceFilters.block),
       community: cleanFilterValue(sourceFilters.community),
       layout: cleanFilterValue(sourceFilters.layout),
@@ -56,7 +64,7 @@ function normalizeOptions(options = {}) {
   return normalizeListingState({
     category: options.category ? decodeURIComponent(options.category) : '全部',
     filters: {
-      area: options.area ? decodeURIComponent(options.area) : '',
+      district: options.district ? decodeURIComponent(options.district) : (options.area ? decodeURIComponent(options.area) : ''),
       block: options.block ? decodeURIComponent(options.block) : '',
       community: options.community ? decodeURIComponent(options.community) : '',
       layout: options.layout ? decodeURIComponent(options.layout) : '',
@@ -71,13 +79,13 @@ function normalizeOptions(options = {}) {
 Page({
   data: {
     categories,
-    rentModeFilters,
     regionOptions,
-    blockOptions: [],
+    layoutOptions,
+    communityOptions: [],
     category: '全部',
     filters: {
       needId: '',
-      area: '',
+      district: '',
       block: '',
       community: '',
       layout: '',
@@ -104,12 +112,9 @@ Page({
 
   setListingState(nextState, callback) {
     const filters = Object.assign({}, emptyFilters, nextState.filters)
-    const blockOptions = blocksForArea(filters.area)
-    if (filters.block && blockOptions.indexOf(filters.block) === -1) filters.block = ''
     this.setData({
       category: nextState.category,
-      filters,
-      blockOptions
+      filters
     }, callback)
   },
 
@@ -133,75 +138,83 @@ Page({
     return true
   },
 
-  updateFilter(event) {
-    const field = event.currentTarget.dataset.field
-    this.setData({
-      [`filters.${field}`]: event.detail.value
-    })
-  },
-
   switchCategory(event) {
     const category = event.currentTarget.dataset.category || '全部'
     this.setData({ category }, () => this.loadListings())
   },
 
-  switchRentMode(event) {
-    const mode = event.currentTarget.dataset.mode || ''
-    this.setData({
-      'filters.rentMode': mode === '不限' ? '' : mode
-    }, () => this.loadListings())
+  onUnload() {
+    if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
   },
 
-  selectArea(event) {
-    const area = event.currentTarget.dataset.area || ''
-    this.setData({
-      'filters.area': area,
-      'filters.block': '',
-      blockOptions: blocksForArea(area)
-    }, () => this.loadListings())
+  handleListingFilterChange(event) {
+    const filters = Object.assign({}, this.data.filters, event.detail.filters || {})
+    this.setData({ filters }, () => {
+      if (event.detail.immediate) {
+        this.loadListings()
+        return
+      }
+      this.scheduleFilterRefresh()
+    })
   },
 
-  selectBlock(event) {
-    const block = event.currentTarget.dataset.block || ''
-    this.setData({
-      'filters.block': block
-    }, () => this.loadListings())
+  handleListingFilterApply(event) {
+    const filters = Object.assign({}, this.data.filters, event.detail.filters || {})
+    this.setData({ filters }, () => this.loadListings())
   },
 
-  applyFilters() {
-    this.loadListings()
+  scheduleFilterRefresh() {
+    if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
+    this.filterRefreshTimer = setTimeout(() => {
+      this.filterRefreshTimer = null
+      this.loadListings()
+    }, 320)
   },
 
   resetFilters() {
     this.setData({
       filters: {
         needId: this.data.filters.needId || '',
-        area: '',
+        district: '',
         block: '',
         community: '',
         layout: '',
         rentMode: '',
         rentMin: '',
         rentMax: ''
-      },
-      blockOptions: []
+      }
     }, () => this.loadListings())
   },
 
   loadListings() {
-    if (this.data.loading) return
+    const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+    this.activeListingRequestId = requestId
     this.setData({ loading: true })
-    apiService.getListings({
+    const query = {
       category: this.data.category === '全部' ? '' : this.data.category,
       ...this.data.filters
-    }).then((listings) => {
+    }
+    const communityQuery = {
+      category: query.category,
+      district: query.district || '',
+      block: query.block || '',
+      rentMode: query.rentMode || ''
+    }
+    Promise.all([
+      apiService.getListings(query),
+      apiService.getListings(communityQuery)
+    ]).then(([listings, communityRows]) => {
+      if (this.activeListingRequestId !== requestId) return
       this.setData({
         listings,
+        communityOptions: uniqueCommunities(communityRows),
         emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}房源`
       })
     }).catch(() => {
+      if (this.activeListingRequestId !== requestId) return
       wx.showToast({ title: '房源加载失败', icon: 'none' })
     }).finally(() => {
+      if (this.activeListingRequestId !== requestId) return
       this.setData({ loading: false })
     })
   },

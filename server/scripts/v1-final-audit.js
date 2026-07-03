@@ -229,6 +229,34 @@ function checkVoiceAsrRealtimeChain() {
   return '录音授权、前端诊断、后端 upgrade 监听与 zf-api Nginx Upgrade 模板均存在'
 }
 
+function checkSharedListingFilterComponent() {
+  const componentJs = readText('components/listing-filter/listing-filter.js')
+  const componentWxml = readText('components/listing-filter/listing-filter.wxml')
+  const listingsJson = readText('pages/listings/listings.json')
+  const myListingsJson = readText('pages/my-listings/my-listings.json')
+  const listingsJs = readText('pages/listings/listings.js')
+  const myListingsJs = readText('pages/my-listings/my-listings.js')
+
+  assertOk(listingsJson.includes('/components/listing-filter/listing-filter'), '全部房源页必须注册共用筛选组件')
+  assertOk(myListingsJson.includes('/components/listing-filter/listing-filter'), '公司房源专区必须注册共用筛选组件')
+  assertOk(readText('pages/listings/listings.wxml').includes('<listing-filter'), '全部房源页必须使用共用筛选组件')
+  assertOk(readText('pages/my-listings/my-listings.wxml').includes('<listing-filter'), '公司房源专区必须使用共用筛选组件')
+  ;['不限', '区域', '板块', '小区', '户型', '最低租金', '最高租金', '筛选', '重置'].forEach((text) => {
+    assertOk(componentWxml.includes(text), `共用筛选组件缺少 ${text}`)
+  })
+  ;['filterchange', 'filterapply', 'filterreset', 'visibleCommunities'].forEach((text) => {
+    assertOk(componentJs.includes(text), `共用筛选组件缺少 ${text}`)
+  })
+  ;['拱墅区', '上城区', '余杭区'].forEach((district) => {
+    assertOk(listingsJs.includes(district), `全部房源页区域选项缺少 ${district}`)
+    assertOk(myListingsJs.includes(district), `公司房源专区区域选项缺少 ${district}`)
+  })
+  assertOk(listingsJs.includes('district: cleanFilterValue(sourceFilters.district || sourceFilters.area)'), '全部房源页必须兼容旧 area 参数并落到 district')
+  assertOk(listingsJs.includes('communityOptions: uniqueCommunities'), '全部房源页小区联想必须来自当前在架房源去重')
+  assertOk(myListingsJs.includes('companyCommunityOptions'), '公司房源专区小区联想必须来自当前公司房源去重')
+  return '全部房源页与公司房源专区共用 listing-filter，旧 area 参数兼容为 district'
+}
+
 function checkV1DocsMaintenanceRule() {
   const files = [
     '需求.md',
@@ -292,6 +320,7 @@ const checks = [
   ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
   ['小程序核心找房页面读取同步库', checkMiniProgramDataSources],
   ['语音实时 ASR 链路配置完整', checkVoiceAsrRealtimeChain],
+  ['房源筛选栏共用组件', checkSharedListingFilterComponent],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]

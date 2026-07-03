@@ -2,7 +2,8 @@ const apiService = require('../../utils/api-service')
 
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
-  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] }
+  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
+  { name: '余杭区', blocks: [] }
 ]
 const layoutOptions = ['不限', '一室', '两室', '三室', '三室以上']
 const defaultCompanyFilters = {
@@ -30,14 +31,6 @@ function formatCompanyListings(listings) {
   }))
 }
 
-function blocksForDistrict(district) {
-  if (!district) {
-    return regionOptions.reduce((list, item) => list.concat(item.blocks), [])
-  }
-  const matched = regionOptions.find((item) => item.name === district)
-  return matched ? matched.blocks : []
-}
-
 function uniqueCommunities(listings) {
   const seen = new Set()
   return (listings || [])
@@ -50,12 +43,6 @@ function uniqueCommunities(listings) {
     })
 }
 
-function visibleCommunityOptions(options, keyword) {
-  const text = String(keyword || '').trim()
-  const rows = text ? options.filter((item) => item.indexOf(text) !== -1) : options
-  return rows.slice(0, 8)
-}
-
 Page({
   data: {
     stats: [],
@@ -64,10 +51,8 @@ Page({
     regionOptions,
     layoutOptions,
     companyFilters: Object.assign({}, defaultCompanyFilters),
-    companyBlockOptions: blocksForDistrict(defaultCompanyFilters.district),
+    companyLoading: false,
     companyCommunityOptions: [],
-    visibleCompanyCommunities: [],
-    showCompanyCommunityOptions: false,
     pageTitle: '我的房源',
     ownerTitle: '我的上传房源',
     ownerDesc: '上传真实可租房源，视频必填；第 3/5/7 天按规则核验房态。',
@@ -123,7 +108,10 @@ Page({
   },
 
   refreshCompanyListings() {
+    const requestId = `company-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+    this.activeCompanyRequestId = requestId
     const filters = this.data.companyFilters || defaultCompanyFilters
+    this.setData({ companyLoading: true })
     const query = {
       category: '公司房源',
       district: filters.district || '',
@@ -142,6 +130,7 @@ Page({
       apiService.getListings(query),
       apiService.getListings(communityQuery)
     ]).then(([listings, communityRows]) => {
+      if (this.activeCompanyRequestId !== requestId) return
       const companyListings = formatCompanyListings(listings)
       const companyCommunityOptions = uniqueCommunities(communityRows)
       const maintenanceCount = companyListings.filter((item) => item.needsVerify || (item.verifyStatus && item.verifyStatus !== '正常')).length
@@ -153,11 +142,14 @@ Page({
           { label: '视频房源', value: String(videoCount) }
         ],
         listings: companyListings,
-        companyCommunityOptions,
-        visibleCompanyCommunities: visibleCommunityOptions(companyCommunityOptions, filters.community)
+        companyCommunityOptions
       })
     }).catch(() => {
+      if (this.activeCompanyRequestId !== requestId) return
       wx.showToast({ title: '公司房源加载失败', icon: 'none' })
+    }).finally(() => {
+      if (this.activeCompanyRequestId !== requestId) return
+      this.setData({ companyLoading: false })
     })
   },
 
@@ -169,67 +161,27 @@ Page({
     }, 320)
   },
 
-  selectCompanyDistrict(event) {
-    const district = event.currentTarget.dataset.district || ''
-    this.setData({
-      'companyFilters.district': district,
-      'companyFilters.block': '',
-      'companyFilters.community': '',
-      companyBlockOptions: blocksForDistrict(district),
-      showCompanyCommunityOptions: false
-    }, () => this.refreshCompanyListings())
-  },
-
-  selectCompanyBlock(event) {
-    const block = event.currentTarget.dataset.block || ''
-    this.setData({
-      'companyFilters.block': block,
-      'companyFilters.community': '',
-      showCompanyCommunityOptions: false
-    }, () => this.refreshCompanyListings())
-  },
-
-  selectCompanyLayout(event) {
-    const layout = event.currentTarget.dataset.layout || ''
-    this.setData({
-      'companyFilters.layout': layout === '不限' ? '' : layout
-    }, () => this.refreshCompanyListings())
-  },
-
-  updateCompanyFilter(event) {
-    const field = event.currentTarget.dataset.field
-    const value = event.detail.value
-    this.setData({
-      [`companyFilters.${field}`]: value,
-      showCompanyCommunityOptions: field === 'community',
-      visibleCompanyCommunities: field === 'community'
-        ? visibleCommunityOptions(this.data.companyCommunityOptions, value)
-        : this.data.visibleCompanyCommunities
-    }, () => this.scheduleCompanyFilterRefresh())
-  },
-
-  focusCompanyCommunity() {
-    this.setData({
-      showCompanyCommunityOptions: true,
-      visibleCompanyCommunities: visibleCommunityOptions(this.data.companyCommunityOptions, this.data.companyFilters.community)
+  handleCompanyFilterChange(event) {
+    const companyFilters = Object.assign({}, this.data.companyFilters, event.detail.filters || {})
+    this.setData({ companyFilters }, () => {
+      if (event.detail.immediate) {
+        this.refreshCompanyListings()
+        return
+      }
+      this.scheduleCompanyFilterRefresh()
     })
   },
 
-  selectCompanyCommunity(event) {
-    const community = event.currentTarget.dataset.community || ''
-    this.setData({
-      'companyFilters.community': community,
-      showCompanyCommunityOptions: false,
-      visibleCompanyCommunities: visibleCommunityOptions(this.data.companyCommunityOptions, community)
-    }, () => this.refreshCompanyListings())
+  handleCompanyFilterApply(event) {
+    const companyFilters = Object.assign({}, this.data.companyFilters, event.detail.filters || {})
+    this.setData({ companyFilters }, () => this.refreshCompanyListings())
   },
 
   resetCompanyFilters() {
     const filters = Object.assign({}, defaultCompanyFilters)
     this.setData({
       companyFilters: filters,
-      companyBlockOptions: blocksForDistrict(filters.district),
-      showCompanyCommunityOptions: false
+      companyCommunityOptions: []
     }, () => this.refreshCompanyListings())
   },
 
