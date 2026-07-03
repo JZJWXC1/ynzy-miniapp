@@ -24,7 +24,11 @@ function isCompanyListing(listing = {}) {
 function inferDistrict(listing = {}) {
   const block = text(listing.block)
   const current = text(listing.district || listing.area)
-  const mapped = locationMap.districtForBlock(block || current, current)
+  const mapped = locationMap.districtForLocation({
+    community: listing.community,
+    block: block || current,
+    district: current
+  })
   if (mapped && mapped !== '待分区') return mapped
   if (isCompanyListing(listing) && block && block !== '待板块') return '拱墅区'
   return mapped || current || '待分区'

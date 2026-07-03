@@ -129,11 +129,15 @@ function unique(values) {
   })
 }
 
-function normalizeLocationFields(fields = {}) {
+function normalizeLocationFields(fields = {}, community = '') {
   const explicitDistrict = firstField(fields, ['行政区', '城区', '城市区域', 'districtName'])
   const block = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
   return {
-    area: locationMap.districtForBlock(block, explicitDistrict),
+    area: locationMap.districtForLocation({
+      community,
+      block,
+      district: explicitDistrict
+    }),
     block
   }
 }
@@ -284,7 +288,7 @@ function roomAddressFromParts(parts = {}) {
 function normalizeRecord(rawRecord, index) {
   const fields = rawRecord.fields || rawRecord
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
-  const location = normalizeLocationFields(fields)
+  const location = normalizeLocationFields(fields, community)
   const roomParts = parseRoomParts(fields)
   const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
   const externalId = firstField(fields, ['房源编号', '唯一编号', '编号', 'ID', 'id', 'importKey', 'record_id']) || rawRecord.record_id || fallbackKey

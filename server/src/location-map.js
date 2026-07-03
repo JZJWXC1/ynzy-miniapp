@@ -28,7 +28,22 @@ function configuredDistrictName(value) {
   return districts.find((district) => district === text || district.replace(/区$/, '') === text.replace(/区$/, '')) || ''
 }
 
-function districtForBlock(block, fallback = '') {
+function compactKey(value) {
+  return normalizeText(value).replace(/\s+/g, '')
+}
+
+function districtForCommunity(community) {
+  const text = compactKey(community)
+  if (!text) return ''
+  const overrides = (config.location && config.location.communityDistrictOverrides) || {}
+  const matched = Object.keys(overrides).find((name) => compactKey(name) === text)
+  return matched ? overrides[matched] : ''
+}
+
+function districtForBlock(block, fallback = '', options = {}) {
+  const communityDistrict = districtForCommunity(options.community || options.communityName)
+  if (communityDistrict) return communityDistrict
+
   const explicitDistrict = configuredDistrictName(fallback)
   if (explicitDistrict) return explicitDistrict
 
@@ -43,8 +58,16 @@ function districtForBlock(block, fallback = '') {
   return normalizeText(fallback) || '待分区'
 }
 
+function districtForLocation(location = {}) {
+  return districtForBlock(location.block || location.area, location.district || location.fallback || location.area, {
+    community: location.community || location.communityName
+  })
+}
+
 module.exports = {
   splitLocationTokens,
   configuredDistrictName,
-  districtForBlock
+  districtForCommunity,
+  districtForBlock,
+  districtForLocation
 }

@@ -257,6 +257,23 @@ function checkSharedListingFilterComponent() {
   return '全部房源页与公司房源专区共用 listing-filter，旧 area 参数兼容为 district'
 }
 
+function checkDistrictMappingConfig() {
+  const configSource = readText('server/src/config.js')
+  const locationMapSource = readText('server/src/location-map.js')
+  const feishuSource = readText('server/src/feishu-sync.js')
+  const backfillSource = readText('server/scripts/backfill-listing-districts.js')
+
+  ;['拱墅区', '上城区', '余杭区', '小洋坝家园一区', '小洋坝家园二区', '小洋坝家园三区', '大华海派风景', '风雅乐府', '瑷颐湾'].forEach((text) => {
+    assertOk(configSource.includes(text), `区域配置缺少 ${text}`)
+  })
+  assertOk(configSource.includes('communityDistrictOverrides'), '区域配置必须提供小区级覆盖表')
+  assertOk(locationMapSource.includes('function districtForCommunity'), 'location-map 必须先支持小区级覆盖')
+  assertOk(locationMapSource.includes('districtForLocation'), 'location-map 必须提供统一位置映射入口')
+  assertOk(feishuSource.includes('districtForLocation'), '飞书同步必须使用统一位置映射入口')
+  assertOk(backfillSource.includes('districtForLocation'), 'district 回填脚本必须使用统一位置映射入口')
+  return '三区与余杭小区覆盖表、飞书同步、存量回填共用统一映射入口'
+}
+
 function checkV1DocsMaintenanceRule() {
   const files = [
     '需求.md',
@@ -321,6 +338,7 @@ const checks = [
   ['小程序核心找房页面读取同步库', checkMiniProgramDataSources],
   ['语音实时 ASR 链路配置完整', checkVoiceAsrRealtimeChain],
   ['房源筛选栏共用组件', checkSharedListingFilterComponent],
+  ['区域映射配置可扩展', checkDistrictMappingConfig],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]

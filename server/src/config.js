@@ -66,7 +66,8 @@ const configuredSheetUrl = process.env.FEISHU_SHEET_URL || jsonValue(feishuSheet
 const configuredSheetToken = process.env.FEISHU_SHEET_TOKEN || jsonValue(feishuSheetTokenFile, 'spreadsheet_token') || extractSheetToken(configuredSheetUrl)
 const districtBlocks = {
   '拱墅区': ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'],
-  '上城区': ['闸弄口', '新塘', '元宝塘', '东站']
+  '上城区': ['闸弄口', '新塘', '元宝塘', '东站'],
+  '余杭区': []
 }
 const blockDistrictMap = Object.keys(districtBlocks).reduce((map, district) => {
   districtBlocks[district].forEach((block) => {
@@ -74,6 +75,14 @@ const blockDistrictMap = Object.keys(districtBlocks).reduce((map, district) => {
   })
   return map
 }, {})
+const communityDistrictOverrides = {
+  '小洋坝家园一区': '余杭区',
+  '小洋坝家园二区': '余杭区',
+  '小洋坝家园三区': '余杭区',
+  '大华海派风景': '余杭区',
+  '风雅乐府': '余杭区',
+  '瑷颐湾': '余杭区'
+}
 
 module.exports = {
   rootDir,
@@ -105,7 +114,8 @@ module.exports = {
   },
   location: {
     districtBlocks,
-    blockDistrictMap
+    blockDistrictMap,
+    communityDistrictOverrides
   },
   feishu: {
     baseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn/open-apis',
