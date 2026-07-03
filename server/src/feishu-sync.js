@@ -5,10 +5,12 @@ const domain = require('./domain')
 const oss = require('./oss')
 
 const COMPANY_FEATURES = ['免押金', '不分佣']
+const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
 const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
 const UP_STATUS_PATTERN = /上架|在租|待租|空置|可租|有效|up|on|active/i
 const NOT_UP_PATTERN = /未上架|不上架|否|false|no|0/i
+const SENSITIVE_FEISHU_FIELD_PATTERN = /(看房方式密码|看房方式|看房密码|门锁密码|密码|联系方式|联系电话|房东联系方式|房东电话|联系人电话|手机号|手机|电话|微信|身份证|证件)/i
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -126,6 +128,27 @@ function unique(values) {
   })
 }
 
+function isSensitiveFeishuField(name) {
+  return SENSITIVE_FEISHU_FIELD_PATTERN.test(normalizeText(name).replace(/\s+/g, ''))
+}
+
+function stripSensitiveFields(fields = {}) {
+  return Object.keys(fields || {}).reduce((next, key) => {
+    if (!isSensitiveFeishuField(key)) next[key] = fields[key]
+    return next
+  }, {})
+}
+
+function stripSensitiveSheetRows(rows = []) {
+  const headerIndex = rows.findIndex((row) => (row || []).some((cell) => isSensitiveFeishuField(cell)))
+  const header = headerIndex >= 0 ? (rows[headerIndex] || []) : defaultSheetHeaders
+  const sensitiveIndexes = new Set((header || [])
+    .map((cell, index) => (isSensitiveFeishuField(cell) ? index : -1))
+    .filter((index) => index >= 0))
+  if (!sensitiveIndexes.size) return rows
+  return rows.map((row = []) => row.filter((_, index) => !sensitiveIndexes.has(index)))
+}
+
 function normalizeRoomPart(value, type) {
   let text = normalizeText(value).replace(/\s+/g, '')
   if (!text) return ''
@@ -224,7 +247,7 @@ function inferRentMode(fields, layoutText) {
 }
 
 function normalizeRecord(rawRecord, index) {
-  const fields = rawRecord.fields || rawRecord
+  const fields = stripSensitiveFields(rawRecord.fields || rawRecord)
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
   const roomParts = parseRoomParts(fields)
   const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
@@ -251,7 +274,7 @@ function normalizeRecord(rawRecord, index) {
     building: roomParts.building,
     unit: roomParts.unit,
     roomNumber: roomParts.roomNumber,
-    contact: firstField(fields, ['房东联系方式', '联系方式', '房东电话', '电话', '联系人电话', 'contact', 'landlordPhone']),
+    contact: '公司统一维护',
     rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
     layout: [rentMode, room, hall, bath].filter(Boolean).join(''),
     rentMode,
@@ -320,6 +343,9 @@ function createMaterialMatcher(materials) {
     const keys = unique([
       row.matchKey,
       row.externalId,
+      row.roomNumber,
+      [row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
+      [row.building, row.roomNumber].filter(Boolean).join(''),
       [row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
       [row.community, row.roomNumber].filter(Boolean).join('')
     ]).map(normalizedKey).filter((key) => key.length >= 3)
@@ -443,7 +469,6 @@ function sheetRowsToRecords(values = []) {
   const hasHeader = foundHeaderIndex >= 0
   const headerIndex = hasHeader ? foundHeaderIndex : -1
   const headers = hasHeader ? (rows[headerIndex] || []).map((item) => normalizeText(item)) : defaultSheetHeaders
-  const sharedContact = sheetContactFromIntro(hasHeader ? rows.slice(0, headerIndex) : [])
   const areaHeader = headers.find((item) => item === '区域' || item === '区') || '区域'
   const communityHeader = headers.find((item) => /小区/.test(item)) || '小区'
   const records = []
@@ -471,14 +496,12 @@ function sheetRowsToRecords(values = []) {
     if (currentCommunity) lastCommunity = currentCommunity
     if (!currentArea && lastArea) fields[areaHeader] = lastArea
     if (!currentCommunity && lastCommunity) fields[communityHeader] = lastCommunity
-    if (sharedContact && !firstField(fields, ['房东联系方式', '联系方式', '房东电话', '电话', '联系人电话', 'contact', 'landlordPhone'])) {
-      fields.联系方式 = sharedContact
-    }
+    const safeFields = stripSensitiveFields(fields)
     const explicitRecordId = firstField(fields, ['房源编号', '编号', 'ID', 'id'])
     records.push({
       record_id: explicitRecordId,
       rowNumber: (hasHeader ? headerIndex + 2 : 1) + index,
-      fields
+      fields: safeFields
     })
   })
   return records
@@ -524,13 +547,25 @@ function trimSheetValues(values = []) {
     const cells = Array.isArray(row) ? row : []
     return Array.from({ length: columnCount }).map((_, index) => normalizeText(cells[minCol + index]))
   })
+  const safeRows = stripSensitiveSheetRows(trimmedRows)
 
   return {
-    rows: trimmedRows,
+    rows: safeRows,
     startRow: minRow + 1,
     startCol: minCol + 1,
-    rowCount: trimmedRows.length,
-    columnCount
+    rowCount: safeRows.length,
+    columnCount: safeRows[0] ? safeRows[0].length : 0
+  }
+}
+
+function sanitizeSheetSnapshot(snapshot = {}) {
+  const rows = stripSensitiveSheetRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
+  return {
+    ...snapshot,
+    rows,
+    rowCount: rows.length,
+    columnCount: rows[0] ? rows[0].length : 0,
+    sensitiveStripped: true
   }
 }
 
@@ -549,15 +584,15 @@ async function sheetSnapshot(options = {}) {
 
 function cachedSheetSnapshot(db = {}) {
   const snapshot = db.companySheetSnapshot
-  return snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length ? snapshot : null
+  return snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length ? sanitizeSheetSnapshot(snapshot) : null
 }
 
 async function refreshSheetSnapshot(db = {}, options = {}) {
   const snapshot = await sheetSnapshot(options)
-  db.companySheetSnapshot = {
+  db.companySheetSnapshot = sanitizeSheetSnapshot({
     ...snapshot,
     cachedAt: nowText()
-  }
+  })
   return db.companySheetSnapshot
 }
 
@@ -703,7 +738,7 @@ function buildListingPayload(row, video) {
     building: row.building,
     unit: row.unit,
     roomNumber: row.roomNumber,
-    contact: row.contact || '公司统一维护',
+    contact: '公司统一维护',
     rent: row.rent,
     layout: row.layout,
     rentMode: row.rentMode,
@@ -715,8 +750,8 @@ function buildListingPayload(row, video) {
     features: row.tags,
     companyListing: true,
     source: '公司房源',
-    videoUrl: video.videoUrl,
-    videoKey: video.videoKey
+    videoUrl: video.videoUrl || '',
+    videoKey: video.videoKey || ''
   }
 }
 
@@ -726,11 +761,14 @@ function attachFeishuFields(listing, row, material, video) {
   listing.feishuMatchKey = row.matchKey
   listing.feishuRowNumber = row.rowNumber
   listing.feishuStatusText = row.statusText
-  listing.sourceMaterialToken = material.token || ''
-  listing.sourceMaterialName = material.name || ''
-  listing.sourceMaterialPath = material.sourcePath || ''
-  listing.sourceMaterialUrl = video.materialUrl || material.url || ''
-  listing.syncStatus = '已同步飞书'
+  const hasMaterial = Boolean(material)
+  listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
+  listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''
+  listing.sourceMaterialPath = hasMaterial ? (material.sourcePath || '') : ''
+  listing.sourceMaterialUrl = hasMaterial ? (video.materialUrl || material.url || '') : ''
+  listing.syncStatus = hasMaterial ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
+  listing.videoMaterialStatus = hasMaterial ? '已匹配视频素材' : MISSING_VIDEO_MATERIAL_STATUS
+  listing.missingVideoMaterial = !hasMaterial
   listing.syncedAt = nowText()
   listing.status = '在租'
   listing.lifecycleStatus = 'active'
@@ -760,6 +798,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     updated: 0,
     down: 0,
     skippedNoMaterial: 0,
+    missingVideoMaterial: 0,
     skippedInvalid: 0,
     failed: 0,
     messages: []
@@ -779,23 +818,24 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       continue
     }
 
-    const material = matcher(row)
-    if (!material) {
-      result.skippedNoMaterial += 1
-      if (result.messages.length < 20) {
-        result.messages.push(`第 ${row.rowNumber} 行未匹配素材：${[row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey}`)
-      }
-      if (existing && downListing(db, existing, '飞书素材库未匹配素材，自动下架', adminId)) result.down += 1
-      continue
-    }
     if (!row.community || !row.building || !row.roomNumber || !row.rent || !row.layout) {
       result.skippedInvalid += 1
       result.messages.push(`第 ${row.rowNumber} 行字段不完整，需小区、几栋、房间号、租金、户型`)
       continue
     }
+    const material = matcher(row)
+    if (!material) {
+      result.skippedNoMaterial += 1
+      result.missingVideoMaterial += 1
+      if (result.messages.length < 20) {
+        result.messages.push(`第 ${row.rowNumber} 行未匹配素材，已标记缺视频素材：${[row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey}`)
+      }
+    }
 
     try {
-      const video = await ensureMaterialVideo(options.feishuToken || '', material, options)
+      const video = material
+        ? await ensureMaterialVideo(options.feishuToken || '', material, options)
+        : { videoKey: '', videoUrl: '', materialUrl: '' }
       const payload = buildListingPayload(row, video)
       if (existing) {
         if (existing.lifecycleStatus === 'expired' || existing.status === '已下架') {
@@ -903,6 +943,7 @@ function status(db = {}) {
     sheetSnapshotUpdatedAt: db.companySheetSnapshot ? (db.companySheetSnapshot.cachedAt || db.companySheetSnapshot.updatedAt || '') : '',
     sheetSnapshotRowCount: db.companySheetSnapshot ? (db.companySheetSnapshot.rowCount || 0) : 0,
     lastLog: (db.feishuSyncLogs || [])[0] || null,
+    missingVideoMaterialCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.missingVideoMaterial && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length,
     feishuListingCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length
   }
 }
@@ -914,5 +955,6 @@ module.exports = {
   cachedSheetSnapshot,
   refreshSheetSnapshot,
   normalizeRecord,
-  applySync
+  applySync,
+  sanitizeSheetSnapshot
 }

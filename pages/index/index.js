@@ -169,7 +169,6 @@ const sheetDisplayColumns = [
   { title: '户型分类', aliases: ['户型分类', '户型', '格局', '分类', 'category', 'layoutCategory'], minWidth: 170, maxWidth: 230 },
   { title: '押一付一', aliases: ['押一付一', '押一', '月租', '租金', '价格', 'rent', 'price'], minWidth: 140, maxWidth: 180 },
   { title: '押二付一', aliases: ['押二付一', '押二', '押二付一价格', '押二价格'], minWidth: 140, maxWidth: 180 },
-  { title: '看房方式密码', aliases: ['看房方式密码', '看房方式', '看房密码', '密码', '门锁密码', 'doorCode', 'viewingPassword'], minWidth: 220, maxWidth: 320 },
   { title: '备注', aliases: ['备注', '说明', '备注说明', '水电', 'note', 'remark'], minWidth: 240, maxWidth: 360 }
 ]
 

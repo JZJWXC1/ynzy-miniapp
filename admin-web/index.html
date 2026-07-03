@@ -1118,7 +1118,7 @@
               <button id="runFeishuSync">立即同步</button>
               <button class="ghost-button" id="dryRunFeishuSync">预演同步</button>
             </div>
-            <div class="hint">同步规则：房源表为最终状态源；素材库命中视频才会上架；飞书下架、缺素材或房源表删除时，小程序公司房源会自动进入废房源池。</div>
+            <div class="hint">同步规则：房源表为最终状态源；素材库按房号匹配视频。飞书下架或房源表删除会进入废房源池，缺素材会在后台标记“缺视频素材”。</div>
           </div>
           <div class="config-card">
             <h3>最近结果</h3>
@@ -2760,7 +2760,9 @@
         { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: status.folderToken || '素材库 Folder Token / 本地素材文件' },
         { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
         { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
-        { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' }
+        { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },
+        { name: '缺视频素材', value: status.missingVideoMaterialCount || 0, note: '后台标记缺视频素材，不再因素材缺失自动下架' },
+        { name: '最近执行', value: lastLog && lastLog.finishedAt ? lastLog.finishedAt : '暂无', note: lastLog ? `新增 ${lastLog.created || 0} / 更新 ${lastLog.updated || 0} / 下架 ${lastLog.down || 0}` : '点击立即同步后返回本次结果' }
       ].map((item) => `
         <tr><td>${item.name}</td><td>${item.value}</td><td>${item.note || ''}</td></tr>
       `).join('');
@@ -2775,6 +2777,7 @@
           updated: lastLog.updated,
           down: lastLog.down,
           skippedNoMaterial: lastLog.skippedNoMaterial,
+          missingVideoMaterial: lastLog.missingVideoMaterial,
           skippedInvalid: lastLog.skippedInvalid,
           failed: lastLog.failed,
           messages: lastLog.messages || []
@@ -2792,7 +2795,7 @@
         alert('请通过后端地址打开后台后再执行飞书同步：/admin-web/');
         return;
       }
-      if (!dryRun && !window.confirm('确认按飞书房源表和素材库同步小程序公司房源？缺素材、已下架或表中删除的公司房源会进入废房源池。')) return;
+      if (!dryRun && !window.confirm('确认按飞书房源表和素材库同步小程序公司房源？已下架或表中删除的公司房源会进入废房源池，缺素材房源会在后台标记。')) return;
       document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在预演飞书同步...' : '正在执行飞书同步...';
       const result = await adminRequest('/admin/feishu-sync/run', {
         method: 'POST',

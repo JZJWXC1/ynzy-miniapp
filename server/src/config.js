@@ -109,7 +109,7 @@ module.exports = {
     recordsFile: process.env.FEISHU_RECORDS_FILE || '',
     materialsFile: process.env.FEISHU_MATERIALS_FILE || '',
     uploadToOss: boolFromEnv('FEISHU_UPLOAD_TO_OSS', true),
-    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 1440)
+    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 60)
   },
   wechatPay: {
     enabled: process.env.RECHARGE_PAYMENT_MODE === 'wechat',
