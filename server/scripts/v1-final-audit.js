@@ -274,6 +274,14 @@ function checkDistrictMappingConfig() {
   return '三区与余杭小区覆盖表、飞书同步、存量回填共用统一映射入口'
 }
 
+function checkHomeSnapshotBranding() {
+  const indexWxml = readText('pages/index/index.wxml')
+  assertOk(indexWxml.includes('寓你住一起房源表'), '首页快照标题必须保留寓你住一起房源表')
+  assertOk(!/飞书实时房源表截图/.test(indexWxml), '首页快照标题不能出现飞书实时房源表截图')
+  assertOk(!/同步飞书/.test(indexWxml), '首页快照空态不能暴露飞书来源')
+  return '首页快照标题只保留寓你住一起房源表'
+}
+
 function checkV1DocsMaintenanceRule() {
   const files = [
     '需求.md',
@@ -339,6 +347,7 @@ const checks = [
   ['语音实时 ASR 链路配置完整', checkVoiceAsrRealtimeChain],
   ['房源筛选栏共用组件', checkSharedListingFilterComponent],
   ['区域映射配置可扩展', checkDistrictMappingConfig],
+  ['首页快照标题不暴露飞书来源', checkHomeSnapshotBranding],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]

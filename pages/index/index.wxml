@@ -68,7 +68,6 @@
       <view class="company-sheet-head">
         <view>
           <view class="company-kicker">寓你住一起房源表</view>
-          <view class="company-title">飞书实时房源表截图</view>
         </view>
         <view class="company-count">{{companySheetSnapshot.rowCount || 0}} 行内容</view>
       </view>
@@ -105,7 +104,7 @@
         </scroll-view>
         <view wx:else class="sheet-snapshot-empty">
           <view class="sheet-snapshot-empty-title">{{sheetSnapshotStatus}}</view>
-          <view class="sheet-snapshot-empty-desc">同步飞书后会自动截取有内容的单元格区域。</view>
+          <view class="sheet-snapshot-empty-desc">同步后会自动截取有内容的单元格区域。</view>
         </view>
       </view>
       <view wx:if="{{sheetPreview && sheetPreview.rows.length}}" class="sheet-preview-note">
