@@ -343,14 +343,7 @@ function companySheetPublicListings(db = {}) {
 }
 
 function publicListings(db) {
-  const rows = activeListings(db).filter(isFrontendEffectiveListing)
-  const seen = new Set(rows.map((listing) => String(listing.id || '')))
-  companySheetPublicListings(db).forEach((listing) => {
-    if (!listing.id || seen.has(String(listing.id))) return
-    seen.add(String(listing.id))
-    rows.push(listing)
-  })
-  return rows
+  return activeListings(db).filter(isFrontendEffectiveListing)
 }
 
 function assertListingActive(listing) {
