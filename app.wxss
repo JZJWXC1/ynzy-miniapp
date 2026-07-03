@@ -1,8 +1,17 @@
 /**app.wxss**/
 page {
+  --brand-green: #2E6B4E;
+  --brand-green-dark: #174331;
+  --brand-cream: #FBF5EA;
+  --brand-orange: #F7A64A;
+  --brand-blue: #8FD0E8;
+  --brand-yellow: #F8D06B;
+  --brand-line: #DDE7DA;
+  --brand-muted: #6E8174;
+  --brand-card: #FFFFFF;
   min-height: 100vh;
-  color: #17342e;
-  background: #f7fbf8;
+  color: var(--brand-green-dark);
+  background: var(--brand-cream);
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
@@ -47,7 +56,7 @@ button::after {
   min-height: 100%;
   padding: 24rpx 28rpx 44rpx;
   background:
-    linear-gradient(180deg, #eef8f3 0%, #f7fbf8 360rpx, #f7fbf8 100%);
+    linear-gradient(180deg, #fffaf1 0%, var(--brand-cream) 360rpx, var(--brand-cream) 100%);
 }
 
 .section-title {
@@ -58,23 +67,23 @@ button::after {
 }
 
 .section-title-main {
-  color: #153f36;
+  color: var(--brand-green-dark);
   font-size: 34rpx;
   font-weight: 900;
   letter-spacing: 0;
 }
 
 .section-title-action {
-  color: #2f6f60;
+  color: var(--brand-green);
   font-size: 24rpx;
   font-weight: 800;
 }
 
 .soft-card {
-  background: #ffffff;
-  border: 1rpx solid #dce9e3;
-  border-radius: 32rpx;
-  box-shadow: 0 16rpx 38rpx rgba(31, 81, 68, 0.08);
+  background: var(--brand-card);
+  border: 1rpx solid var(--brand-line);
+  border-radius: 24rpx;
+  box-shadow: 0 16rpx 36rpx rgba(46, 107, 78, 0.08);
 }
 
 .brand-button {
@@ -86,17 +95,17 @@ button::after {
   color: #ffffff;
   font-size: 26rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: var(--brand-green);
   border-radius: 22rpx;
 }
 
 .sun-button {
-  color: #153f36;
-  background: #f6bd36;
+  color: var(--brand-green-dark);
+  background: var(--brand-yellow);
 }
 
 .muted-text {
-  color: #78918a;
+  color: var(--brand-muted);
 }
 
 .listing-feature-row {
@@ -113,20 +122,20 @@ button::after {
   display: inline-flex;
   align-items: center;
   padding: 0 14rpx;
-  color: #2f6f60;
+  color: var(--brand-green);
   font-size: 20rpx;
   font-weight: 900;
   line-height: 42rpx;
-  background: #e9f5f0;
+  background: rgba(46, 107, 78, 0.1);
   border-radius: 14rpx;
 }
 
 .listing-maintenance-tag {
-  color: #8a5b00;
-  background: #fff3cf;
+  color: #8A5B00;
+  background: rgba(248, 208, 107, 0.3);
 }
 
 .listing-relevance-tag {
-  color: #153f36;
-  background: #f6bd36;
+  color: var(--brand-green-dark);
+  background: var(--brand-yellow);
 }
