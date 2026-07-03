@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $tempDir = Join-Path $env:TEMP "ynzy-miniapp-deploy-$stamp"
-$zipPath = Join-Path $env:TEMP "ynzy-miniapp-deploy-$stamp.zip"
+$archivePath = Join-Path $env:TEMP "ynzy-miniapp-deploy-$stamp.tar.gz"
 
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $tempDir "server") | Out-Null
@@ -41,10 +41,13 @@ if ($IncludeEnv) {
   Write-Host "server/.env and .env.* files are not included by default. Remote .env will be preserved during deploy."
 }
 
-if (Test-Path $zipPath) {
-  Remove-Item -LiteralPath $zipPath -Force
+if (Test-Path $archivePath) {
+  Remove-Item -LiteralPath $archivePath -Force
 }
-Compress-Archive -Path (Join-Path $tempDir "*") -DestinationPath $zipPath
+tar -czf $archivePath -C $tempDir .
+if ($LASTEXITCODE -ne 0) {
+  throw "Archive failed: tar exited with code $LASTEXITCODE"
+}
 
 $sshTarget = "$User@$HostName"
 $sshArgs = @()
@@ -52,7 +55,7 @@ if ($KeyFile) {
   $sshArgs += @("-i", $KeyFile)
 }
 
-scp @sshArgs $zipPath "${sshTarget}:/tmp/ynzy-miniapp.zip"
+scp @sshArgs $archivePath "${sshTarget}:/tmp/ynzy-miniapp.tar.gz"
 if ($LASTEXITCODE -ne 0) {
   throw "Upload failed: scp exited with code $LASTEXITCODE"
 }
@@ -87,7 +90,7 @@ for file in "`$REMOTE_DIR"/lark-*.json; do
   fi
 done
 
-unzip -oq /tmp/ynzy-miniapp.zip -d "`$STAGE_DIR"
+tar -xzf /tmp/ynzy-miniapp.tar.gz -C "`$STAGE_DIR"
 mkdir -p "`$REMOTE_DIR/server" "`$REMOTE_DIR/utils"
 
 rm -rf "`$REMOTE_DIR/server/src" "`$REMOTE_DIR/server/scripts" "`$REMOTE_DIR/admin-web" "`$REMOTE_DIR/deploy"
@@ -132,6 +135,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Remove-Item -LiteralPath $tempDir -Recurse -Force
-Remove-Item -LiteralPath $zipPath -Force
+Remove-Item -LiteralPath $archivePath -Force
 
 Write-Host "Deploy finished: http://$HostName/admin-web/"
