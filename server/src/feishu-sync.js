@@ -286,8 +286,16 @@ function parseLayoutDescription(fields) {
   }
 }
 
+const CONTACT_FIELD_ALIASES = ['联系方式', '联系电话', '房东联系方式', '房东电话', '联系人电话', '手机号', '手机', '电话', '微信', 'contact', 'phone', 'mobile', 'wechat']
+const VIEWING_PASSWORD_FIELD_ALIASES = ['看房方式密码', '看房密码', '门锁密码', '密码', 'viewingPassword', 'showingPassword', 'password']
+const REMARK_FIELD_ALIASES = ['备注', '说明', '备注说明', '水电', 'note', 'remark', 'memo']
+
+function roomAddressFromParts(parts = {}) {
+  return [parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('-')
+}
+
 function normalizeRecord(rawRecord, index) {
-  const fields = stripSensitiveFields(rawRecord.fields || rawRecord)
+  const fields = rawRecord.fields || rawRecord
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
   const location = normalizeLocationFields(fields)
   const roomParts = parseRoomParts(fields)
@@ -303,6 +311,9 @@ function normalizeRecord(rawRecord, index) {
   const hall = firstField(fields, ['厅', 'hall', 'livingRoom']) || inferHall(layoutText)
   const bath = firstField(fields, ['卫', 'bath', 'bathroom']) || inferBath(layoutText)
   const featureText = firstField(fields, ['标签', '房源特点', '特点', 'featureTags', 'features'])
+  const contact = firstField(fields, CONTACT_FIELD_ALIASES)
+  const viewingPassword = firstField(fields, VIEWING_PASSWORD_FIELD_ALIASES)
+  const remark = firstField(fields, REMARK_FIELD_ALIASES)
   const video = rawRecord.video || fields.video || fields.视频 || null
   return {
     raw: rawRecord,
@@ -316,7 +327,11 @@ function normalizeRecord(rawRecord, index) {
     building: roomParts.building,
     unit: roomParts.unit,
     roomNumber: roomParts.roomNumber,
-    contact: '公司统一维护',
+    roomAddress: roomAddressFromParts(roomParts),
+    contact: contact || '公司统一维护',
+    viewingPassword,
+    showingPassword: viewingPassword,
+    remark,
     rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
     layout: layoutText || [room, hall, bath].filter(Boolean).join(''),
     rentMode,
@@ -499,6 +514,57 @@ function isSheetHeaderRow(row = []) {
 
 const defaultSheetHeaders = ['区域', '小区', '房号', '户型描述', '户型分类', '押一付一', '押二付一', '看房方式密码', '备注']
 
+function snapshotColumnIndex(header = [], matcher) {
+  return (header || []).findIndex((item) => matcher(normalizeText(item)))
+}
+
+function normalizeSnapshotRows(rows = []) {
+  const sourceRows = (Array.isArray(rows) ? rows : [])
+    .map((row) => (Array.isArray(row) ? row : []))
+  const columnCount = Math.max(0, ...sourceRows.map((row) => row.length))
+  if (!columnCount) return []
+
+  const paddedRows = sourceRows.map((row) => {
+    return Array.from({ length: columnCount }).map((_, index) => normalizeText(row[index]))
+  })
+  const headerIndex = paddedRows.findIndex(isSheetHeaderRow)
+  if (headerIndex < 0) return paddedRows
+
+  const header = paddedRows[headerIndex] || []
+  const areaIndex = snapshotColumnIndex(header, (text) => text === '区域' || text === '区' || /片区|商圈/.test(text))
+  const communityIndex = snapshotColumnIndex(header, (text) => /小区|楼盘|社区/.test(text))
+  let lastArea = ''
+  let lastCommunity = ''
+
+  return paddedRows.map((row, index) => {
+    if (index <= headerIndex) return row
+    const next = row.slice()
+    const hasRowValue = next.some((cell) => normalizeText(cell))
+    if (!hasRowValue) return next
+    const hasListingValue = next.some((cell, colIndex) => {
+      if (colIndex === areaIndex || colIndex === communityIndex) return false
+      return Boolean(normalizeText(cell))
+    })
+
+    if (areaIndex >= 0) {
+      if (next[areaIndex]) {
+        lastArea = next[areaIndex]
+        if (!hasListingValue) lastCommunity = ''
+      } else if (lastArea && hasListingValue) {
+        next[areaIndex] = lastArea
+      }
+    }
+    if (communityIndex >= 0) {
+      if (next[communityIndex]) {
+        lastCommunity = next[communityIndex]
+      } else if (lastCommunity && hasListingValue) {
+        next[communityIndex] = lastCommunity
+      }
+    }
+    return next
+  })
+}
+
 function sheetContactFromIntro(rows = []) {
   const text = rows.map((row) => (row || []).map((item) => normalizeText(item)).join(' ')).join(' ')
   const matched = text.match(/(?:联系方式|电话|联系)[:：]?\s*([0-9/\-\s]{8,})/)
@@ -533,17 +599,19 @@ function sheetRowsToRecords(values = []) {
 
     const currentArea = normalizeText(fields[areaHeader])
     const currentCommunity = normalizeText(fields[communityHeader])
-    if (!hasListingValue) return
-    if (currentArea) lastArea = currentArea
+    if (currentArea) {
+      lastArea = currentArea
+      if (!hasListingValue) lastCommunity = ''
+    }
     if (currentCommunity) lastCommunity = currentCommunity
+    if (!hasListingValue) return
     if (!currentArea && lastArea) fields[areaHeader] = lastArea
     if (!currentCommunity && lastCommunity) fields[communityHeader] = lastCommunity
-    const safeFields = stripSensitiveFields(fields)
     const explicitRecordId = firstField(fields, ['房源编号', '编号', 'ID', 'id'])
     records.push({
       record_id: explicitRecordId,
       rowNumber: (hasHeader ? headerIndex + 2 : 1) + index,
-      fields: safeFields
+      fields
     })
   })
   return records
@@ -589,25 +657,25 @@ function trimSheetValues(values = []) {
     const cells = Array.isArray(row) ? row : []
     return Array.from({ length: columnCount }).map((_, index) => normalizeText(cells[minCol + index]))
   })
-  const safeRows = stripSensitiveSheetRows(trimmedRows)
+  const normalizedRows = normalizeSnapshotRows(trimmedRows)
 
   return {
-    rows: safeRows,
+    rows: normalizedRows,
     startRow: minRow + 1,
     startCol: minCol + 1,
-    rowCount: safeRows.length,
-    columnCount: safeRows[0] ? safeRows[0].length : 0
+    rowCount: normalizedRows.length,
+    columnCount: normalizedRows[0] ? normalizedRows[0].length : 0
   }
 }
 
 function sanitizeSheetSnapshot(snapshot = {}) {
-  const rows = stripSensitiveSheetRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
+  const rows = normalizeSnapshotRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
   return {
     ...snapshot,
     rows,
     rowCount: rows.length,
     columnCount: rows[0] ? rows[0].length : 0,
-    sensitiveStripped: true
+    sensitiveStripped: false
   }
 }
 
@@ -780,7 +848,8 @@ function buildListingPayload(row, video) {
     building: row.building,
     unit: row.unit,
     roomNumber: row.roomNumber,
-    contact: '公司统一维护',
+    roomAddress: row.roomAddress,
+    contact: row.contact || '公司统一维护',
     rent: row.rent,
     layout: row.layout,
     rentMode: row.rentMode,
@@ -793,7 +862,11 @@ function buildListingPayload(row, video) {
     companyListing: true,
     source: '公司房源',
     videoUrl: video.videoUrl || '',
-    videoKey: video.videoKey || ''
+    videoKey: video.videoKey || '',
+    viewingPassword: row.viewingPassword || '',
+    showingPassword: row.showingPassword || row.viewingPassword || '',
+    remark: row.remark || '',
+    note: row.remark || ''
   }
 }
 
@@ -803,6 +876,13 @@ function attachFeishuFields(listing, row, material, video) {
   listing.feishuMatchKey = row.matchKey
   listing.feishuRowNumber = row.rowNumber
   listing.feishuStatusText = row.statusText
+  listing.landlordPhone = row.contact || listing.landlordPhone || ''
+  listing.contact = row.contact || listing.contact || listing.landlordPhone || ''
+  listing.viewingPassword = row.viewingPassword || ''
+  listing.showingPassword = row.showingPassword || row.viewingPassword || ''
+  listing.remark = row.remark || ''
+  listing.note = row.remark || ''
+  listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
   const hasMaterial = Boolean(material)
   listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
   listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''

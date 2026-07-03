@@ -221,6 +221,25 @@ function projectSheetRow(cells, header) {
   })
 }
 
+function sheetColumnSizing(title) {
+  const matched = sheetDisplayColumns.find((column) => {
+    return column.title === title || columnIndexByAliases([title], column.aliases) >= 0
+  })
+  if (matched) return matched
+  if (/户型|描述|备注|说明/.test(title)) return { minWidth: 220, maxWidth: 440 }
+  if (/密码|联系|电话|微信/.test(title)) return { minWidth: 180, maxWidth: 280 }
+  return { minWidth: 132, maxWidth: 240 }
+}
+
+function buildColumnWidths(model) {
+  const rows = [model.header].concat(model.dataRows.map((row) => row.cells))
+  return model.header.map((title, colIndex) => {
+    const maxWeight = Math.max(...rows.map((row) => textWeight(row[colIndex])))
+    const column = sheetColumnSizing(title)
+    return Math.min(column.maxWidth || 260, Math.max(column.minWidth || 132, maxWeight * 10 + 42))
+  })
+}
+
 function makeSpan(rows, colIndex, keyBuilder) {
   const spans = []
   let current = null
@@ -270,17 +289,18 @@ function buildSheetModel(snapshot) {
     const text = String(sourceHeader[sourceIndex] || '').trim()
     return text || `字段${index + 1}`
   })
-  const header = sheetDisplayColumns.map((column) => column.title)
+  const header = baseHeader
   const areaCol = header.findIndex(isAreaHeader)
   const communityCol = header.findIndex(isCommunityHeader)
   let lastArea = ''
   let lastCommunity = ''
   const dataRows = sourceDataRows.map((sourceRow) => {
-    const baseCells = columnIndexes.map((sourceIndex) => String(sourceRow[sourceIndex] || '').trim())
-    const cells = projectSheetRow(baseCells, baseHeader)
-    const hasRoom = Boolean(cells[2])
-    const hasListingValue = cells.slice(2).some((cell) => String(cell || '').trim())
-    const sectionText = !hasRoom && !hasListingValue ? longestText(baseCells) : ''
+    const cells = columnIndexes.map((sourceIndex) => String(sourceRow[sourceIndex] || '').trim())
+    const hasListingValue = cells.some((cell, index) => {
+      if (index === areaCol || index === communityCol) return false
+      return Boolean(String(cell || '').trim())
+    })
+    const sectionText = !hasListingValue ? longestText(cells) : ''
     if (sectionText) {
       return {
         area: '',
@@ -335,13 +355,7 @@ function buildSheetModel(snapshot) {
 
 function buildSnapshotMetrics(snapshot) {
   const model = buildSheetModel(snapshot)
-  const rows = [model.header].concat(model.dataRows.map((row) => row.cells))
-  const columnCount = model.header.length
-  const widths = Array.from({ length: columnCount }).map((_, colIndex) => {
-    const maxWeight = Math.max(...rows.map((row) => textWeight(row[colIndex])))
-    const column = sheetDisplayColumns[colIndex] || {}
-    return Math.min(column.maxWidth || 260, Math.max(column.minWidth || 132, maxWeight * 10 + 42))
-  })
+  const widths = buildColumnWidths(model)
   const maxImageWidth = 5200
   const baseWidth = widths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2
   const scale = baseWidth > maxImageWidth ? (maxImageWidth - snapshotCanvasPadding * 2) / (baseWidth - snapshotCanvasPadding * 2) : 1
@@ -362,7 +376,7 @@ function buildSnapshotMetrics(snapshot) {
 
 function buildSheetPreview(snapshot) {
   const model = buildSheetModel(snapshot)
-  const widths = [132, 150, 126, 420, 152, 132, 132, 200, 184]
+  const widths = buildColumnWidths(model)
   const header = model.header.map((title, index) => ({
     id: `h${index}`,
     title,

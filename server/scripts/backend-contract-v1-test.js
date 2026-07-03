@@ -92,6 +92,13 @@ function assertNoPublicSensitiveFields(row, context) {
   assert.ok(text.indexOf('13900000001') === -1, `${context} 不能返回上传人电话`)
 }
 
+function assertCompanySheetPublicFields(row, context) {
+  assert.ok(Object.prototype.hasOwnProperty.call(row, 'roomNumber'), `${context} 应返回公司房号字段`)
+  assert.ok(Object.prototype.hasOwnProperty.call(row, 'roomAddress'), `${context} 应返回公司房号地址字段`)
+  assert.ok(Object.prototype.hasOwnProperty.call(row, 'viewingPassword'), `${context} 应返回看房密码字段`)
+  assert.ok(Object.prototype.hasOwnProperty.call(row, 'remark'), `${context} 应返回备注字段`)
+}
+
 function run() {
   const db = createDb()
 
@@ -202,12 +209,17 @@ function run() {
   const sheetKnownCoordinate = sheetCompanyRows.find((item) => item.community === '京漾东韵府')
   assert.ok(sheetKnownCoordinate, '飞书快照公司房源无视频也应进入公司房源列表')
   assert.ok(sheetCompanyRows.some((item) => item.community === '无坐标测试小区'), '无坐标飞书公司房源可进入普通公司列表')
-  sheetCompanyRows.forEach((item) => assertNoPublicSensitiveFields(item, '飞书公司房源列表'))
+  sheetCompanyRows.forEach((item) => assertCompanySheetPublicFields(item, '飞书公司房源列表'))
+  assert.strictEqual(sheetKnownCoordinate.roomNumber, '4-2-601D', '飞书公司房源列表应返回房号')
+  assert.strictEqual(sheetKnownCoordinate.viewingPassword, '336699#', '飞书公司房源列表应返回看房密码')
+  assert.strictEqual(sheetKnownCoordinate.remark, '水30/月', '飞书公司房源列表应返回备注')
   const sheetDetail = domain.listingDetail(db, sheetKnownCoordinate.id)
   assert.ok(sheetDetail, '飞书快照公司房源应可打开前台详情')
   assert.strictEqual(sheetDetail.noCommission, true, '飞书快照公司房源详情必须展示无分佣')
   assert.strictEqual(sheetDetail.videoUrl, '', '飞书快照公司房源无视频时详情不能伪造视频')
-  assertNoPublicSensitiveFields(sheetDetail, '飞书公司房源详情')
+  assertCompanySheetPublicFields(sheetDetail, '飞书公司房源详情')
+  assert.strictEqual(sheetDetail.roomNumber, '4-2-601D', '飞书公司房源详情应返回房号')
+  assert.strictEqual(sheetDetail.viewingPassword, '336699#', '飞书公司房源详情应返回看房密码')
   const sheetMapPins = domain.mapPins(db, { sourceType: '公司房源' })
   assert.ok(sheetMapPins.some((item) => item.community === '京漾东韵府'), '飞书快照公司房源命中真实小区坐标时应进入地图')
   assert.ok(!sheetMapPins.some((item) => item.community === '无坐标测试小区'), '飞书快照公司房源无真实坐标时不能进入地图')

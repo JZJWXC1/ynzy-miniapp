@@ -74,7 +74,9 @@ function seedDb() {
         noCommission: true,
         videoUrl: '',
         videoKey: '',
-        landlordPhone: '13922223333'
+        landlordPhone: '13922223333',
+        viewingPassword: '246810#',
+        remark: '水电自理'
       }),
       listing({
         id: 'GUEST_PARTNER',
@@ -208,10 +210,9 @@ async function run() {
 
     const sheetSnapshot = await request('GET', '/mini/company-sheet-snapshot')
     assert.strictEqual(sheetSnapshot.statusCode, 200, '匿名飞书快照接口应返回 200')
-    assert.strictEqual(dataOf(sheetSnapshot).guestSanitized, true, '匿名飞书快照必须标记为脱敏版本')
     const sheetText = JSON.stringify(dataOf(sheetSnapshot))
-    assert.ok(!sheetText.includes('1-1-101'), '匿名飞书快照不能返回房号')
-    assert.ok(!sheetText.includes('246810#'), '匿名飞书快照不能返回看房密码')
+    assert.ok(sheetText.includes('1-1-101'), '匿名飞书快照应返回公司房号')
+    assert.ok(sheetText.includes('246810#'), '匿名飞书快照应返回看房密码')
 
     const guestPins = await request('GET', '/mini/map/pins')
     assert.strictEqual(guestPins.statusCode, 200, '匿名地图接口应返回 200')
@@ -222,7 +223,8 @@ async function run() {
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
     assert.strictEqual(companyDetail.statusCode, 200, '匿名公司房源详情应返回 200')
     assert.strictEqual(dataOf(companyDetail).companyListing, true, '匿名详情只能打开公司房源')
-    assert.ok(!JSON.stringify(dataOf(companyDetail)).includes('13922223333'), '匿名公司房源详情不能返回房东电话')
+    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('13922223333'), '匿名公司房源详情应返回公司联系方式')
+    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('246810#'), '匿名公司房源详情应返回公司看房密码')
 
     const partnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER')
     assert.strictEqual(partnerDetail.statusCode, 401, '匿名请求合作房源详情必须返回 401')
@@ -254,6 +256,12 @@ async function run() {
     const login = await request('POST', '/mini/auth/login', { phone: '13900000001' })
     assert.strictEqual(login.statusCode, 200, '登录应返回 200')
     assert.ok(dataOf(login).token, '登录必须返回小程序 token')
+    const loggedSheetSnapshot = await request('GET', '/mini/company-sheet-snapshot', null, {
+      Authorization: `Bearer ${dataOf(login).token}`
+    })
+    assert.strictEqual(loggedSheetSnapshot.statusCode, 200, '登录飞书快照接口应返回 200')
+    assert.deepStrictEqual(dataOf(sheetSnapshot).rows, dataOf(loggedSheetSnapshot).rows, '匿名与登录快照列和数据必须一致')
+    assert.ok(JSON.stringify(dataOf(loggedSheetSnapshot)).includes('看房方式密码'), '登录快照应包含看房方式密码列')
     const loggedPartnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER', null, {
       Authorization: `Bearer ${dataOf(login).token}`
     })

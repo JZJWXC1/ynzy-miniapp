@@ -38,9 +38,10 @@ async function main() {
   const missing = db.listings[0]
   assert.strictEqual(missing.syncStatus, '缺视频素材', '后台应标记缺视频素材')
   assert.strictEqual(missing.videoMaterialStatus, '缺视频素材', '视频素材状态应标记缺失')
-  assert.strictEqual(missing.landlordPhone, '公司统一维护', '飞书联系电话不能入库')
-  assert.ok(!JSON.stringify(missing).includes('13900001111'), '同步房源不能保留飞书联系电话')
-  assert.ok(!JSON.stringify(missing).includes('336699'), '同步房源不能保留看房密码')
+  assert.strictEqual(missing.landlordPhone, '13900001111', '公司房源应保留飞书联系电话')
+  assert.strictEqual(missing.viewingPassword, '336699#', '公司房源应保留看房方式密码')
+  assert.ok(JSON.stringify(missing).includes('13900001111'), '同步房源应保留飞书联系电话')
+  assert.ok(JSON.stringify(missing).includes('336699'), '同步房源应保留看房密码')
 
   const matched = await feishuSync.applySync(db, [
     row({
@@ -71,10 +72,11 @@ async function main() {
     ]
   })
   const snapshotText = JSON.stringify(snapshot)
-  assert.ok(!snapshotText.includes('联系电话'), '快照不能保留联系电话列')
-  assert.ok(!snapshotText.includes('13900001111'), '快照不能保留联系电话内容')
-  assert.ok(!snapshotText.includes('看房方式密码'), '快照不能保留看房密码列')
-  assert.ok(!snapshotText.includes('336699'), '快照不能保留看房密码内容')
+  assert.ok(snapshotText.includes('联系电话'), '公司房源快照应保留联系电话列')
+  assert.ok(snapshotText.includes('13900001111'), '公司房源快照应保留联系电话内容')
+  assert.ok(snapshotText.includes('看房方式密码'), '公司房源快照应保留看房密码列')
+  assert.ok(snapshotText.includes('336699'), '公司房源快照应保留看房密码内容')
+  assert.strictEqual(snapshot.columnCount, 7, '快照表头与数据行列数应一致')
 
   const parsedWholeRent = feishuSync.normalizeRecord(row({
     区域: '闸弄口',

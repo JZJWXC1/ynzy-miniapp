@@ -797,11 +797,11 @@ async function handleMini(req, res, pathname, searchParams) {
     const guest = isGuestUser(userId)
     if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot', 30)
     const cached = feishuSync.cachedSheetSnapshot(db)
-    if (cached) return sendJson(res, guest ? guestCompanySheetSnapshot(cached) : cached)
+    if (cached) return sendJson(res, cached)
     const nextDb = dbStore.readDb()
     const snapshot = await feishuSync.refreshSheetSnapshot(nextDb, { reason: 'mini-request' })
     dbStore.writeDb(nextDb)
-    return sendJson(res, guest ? guestCompanySheetSnapshot(snapshot) : snapshot)
+    return sendJson(res, snapshot)
   }
 
   if (method === 'GET' && pathname === '/mini/listings') {

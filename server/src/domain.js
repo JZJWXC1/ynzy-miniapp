@@ -241,6 +241,10 @@ function companySheetPublicListings(db = {}) {
   const categoryIndex = snapshotColumnIndex(header, ['户型分类', '户型', '格局', '分类'])
   const rentIndex = snapshotColumnIndex(header, ['押一付一', '押一', '月租', '租金', '价格'])
   const fallbackRentIndex = snapshotColumnIndex(header, ['押二付一', '押二', '押二付一价格', '押二价格'])
+  const roomIndex = snapshotColumnIndex(header, ['房号', '房间号', '门牌号', '室号', '房源房号'])
+  const contactIndex = snapshotColumnIndex(header, ['联系方式', '联系电话', '房东联系方式', '房东电话', '联系人电话', '手机号', '手机', '电话', '微信'])
+  const passwordIndex = snapshotColumnIndex(header, ['看房方式密码', '看房密码', '门锁密码', '密码'])
+  const remarkIndex = snapshotColumnIndex(header, ['备注', '说明', '备注说明', '水电'])
   const updatedAt = snapshot.cachedAt || snapshot.updatedAt || nowText()
   const result = []
   let currentArea = ''
@@ -253,6 +257,10 @@ function companySheetPublicListings(db = {}) {
     const layout = snapshotCell(cells, layoutIndex)
     const category = snapshotCell(cells, categoryIndex)
     const rent = numberFromSnapshot(snapshotCell(cells, rentIndex)) || numberFromSnapshot(snapshotCell(cells, fallbackRentIndex))
+    const roomNumber = snapshotCell(cells, roomIndex)
+    const contact = snapshotCell(cells, contactIndex)
+    const viewingPassword = snapshotCell(cells, passwordIndex)
+    const remark = snapshotCell(cells, remarkIndex)
 
     if (area && !community && !layout && !category && !rent) {
       currentArea = area
@@ -283,8 +291,15 @@ function companySheetPublicListings(db = {}) {
       area: safeArea,
       block: safeArea,
       community: currentCommunity,
-      address: `${safeArea}${currentCommunity}`,
-      landlordPhone: '',
+      roomNumber,
+      roomAddress: roomNumber,
+      address: `${safeArea}${currentCommunity}${roomNumber ? roomNumber : ''}`,
+      landlordPhone: contact,
+      contact,
+      viewingPassword,
+      showingPassword: viewingPassword,
+      remark,
+      note: remark,
       commissionRate: 0,
       videoLabel: '飞书房源表',
       videoUrl: '',
@@ -1007,6 +1022,7 @@ function formatHomeListing(db, listing) {
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing)
+  const companyPublic = companyPublicListingFields(listing)
   const publicTitle = publicListingTitle(listing, location)
   const companyListing = isCompanyListing(listing)
   const mediaText = hasListingVideo(listing) ? '仅视频' : (companyListing ? '公司房源表' : '待补视频')
@@ -1023,7 +1039,8 @@ function formatHomeListing(db, listing) {
     rentMode: listing.rentMode || listing.type || '',
     type: listing.type || listing.rentMode || '',
     ...display,
-    ...location
+    ...location,
+    ...companyPublic
   }
 }
 
@@ -1176,6 +1193,7 @@ function listingDetail(db, listingId) {
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing)
+  const companyPublic = companyPublicListingFields(listing)
   return {
     id: listing.id,
     title: publicListingTitle(listing, location),
@@ -1184,8 +1202,8 @@ function listingDetail(db, listingId) {
     layout: listing.layout,
     ...location,
     areaText: `${location.city} · ${location.area}`,
-    address: '确认留痕后可查看',
-    sensitiveLocked: true,
+    address: companyPublic.address || '确认留痕后可查看',
+    sensitiveLocked: !display.companyListing,
     commissionRate: display.noCommission ? 0 : commissionRateForListing(listing),
     commissionText: display.commissionText,
     noCommission: display.noCommission,
@@ -1200,7 +1218,8 @@ function listingDetail(db, listingId) {
     hall: listing.hall || '',
     bath: listing.bath || '',
     status: listing.status,
-    ...display
+    ...display,
+    ...companyPublic
   }
 }
 
@@ -3065,6 +3084,28 @@ function publicListingLocationFields(listing = {}) {
     block: listing.block || area || '待板块',
     community: listing.community || '',
     locationSummary: structuredLocation({ ...listing, city, area })
+  }
+}
+
+function companyPublicListingFields(listing = {}) {
+  if (!isCompanyListing(listing)) return {}
+  const location = listingLocationFields(listing)
+  const contact = firstText(listing.contact, listing.feishuContact, listing.landlordPhone)
+  const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
+  const remark = firstText(listing.remark, listing.note, listing.memo)
+  const room = firstText(listing.roomAddress, location.roomAddress)
+  const address = firstText(listing.address, [location.city, location.area, location.community, room].filter(Boolean).join(''))
+  return {
+    building: location.building,
+    unit: location.unit,
+    roomNumber: location.roomNumber,
+    roomAddress: room,
+    address,
+    contact,
+    landlordPhone: contact,
+    viewingPassword,
+    showingPassword: viewingPassword,
+    remark
   }
 }
 
