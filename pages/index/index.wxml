@@ -8,8 +8,8 @@
           <image class="ai-logo" src="/assets/logo.png" mode="aspectFit"></image>
         </view>
         <view class="ai-head-text">
-          <view class="ai-title">寓你找房助手</view>
-          <view class="ai-subtitle">先识别需求，确认字段后再匹配房源</view>
+          <view class="ai-title">Yooni小助手</view>
+          <view class="ai-subtitle">一句话告诉我需要找什么房子</view>
         </view>
       </view>
       <view class="assistant-input-row">

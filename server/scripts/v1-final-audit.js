@@ -279,7 +279,9 @@ function checkHomeSnapshotBranding() {
   assertOk(indexWxml.includes('寓你住一起房源表'), '首页快照标题必须保留寓你住一起房源表')
   assertOk(!/飞书实时房源表截图/.test(indexWxml), '首页快照标题不能出现飞书实时房源表截图')
   assertOk(!/同步飞书/.test(indexWxml), '首页快照空态不能暴露飞书来源')
-  return '首页快照标题只保留寓你住一起房源表'
+  assertOk(indexWxml.includes('Yooni小助手'), '首页助手必须更名为 Yooni小助手')
+  assertOk(indexWxml.includes('一句话告诉我需要找什么房子'), '首页助手简介必须使用指定文案')
+  return '首页快照标题只保留寓你住一起房源表，首页助手已更名为 Yooni小助手'
 }
 
 function checkV1DocsMaintenanceRule() {
