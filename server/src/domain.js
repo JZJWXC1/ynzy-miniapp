@@ -1069,6 +1069,25 @@ function isCompanyOnlyFilter(filter = {}) {
   return /公司房源|company/.test(text)
 }
 
+function roomCountFromLayoutText(value = '') {
+  const text = String(value || '')
+  const matched = text.match(/([一二两三四五六七八九]|\d+)\s*室/)
+  if (!matched) return 0
+  const map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+  return map[matched[1]] || Number(matched[1]) || 0
+}
+
+function matchesLayoutFilter(listing = {}, layoutFilter = '') {
+  const filter = String(layoutFilter || '').trim()
+  if (!filter || filter === '不限') return true
+  const roomCount = roomCountFromLayoutText([listing.layout, listing.room, listing.type, listing.rentMode].join(' '))
+  if (filter === '一室') return roomCount === 1
+  if (filter === '两室' || filter === '二室') return roomCount === 2
+  if (filter === '三室') return roomCount === 3
+  if (filter === '三室以上') return roomCount >= 3
+  return String(listing.layout || '').indexOf(filter) !== -1
+}
+
 function filterListings(db, filter = {}) {
   const companyOnly = isCompanyOnlyFilter(filter)
   const districtFilter = String(filter.district || '').trim()
@@ -1081,7 +1100,7 @@ function filterListings(db, filter = {}) {
       if (filter.area && locationText.indexOf(filter.area) === -1) return false
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
-      if (filter.layout && String(listing.layout || '').indexOf(filter.layout) === -1) return false
+      if (!matchesLayoutFilter(listing, filter.layout)) return false
       if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
       if (filter.rentMin && Number(listing.rent || 0) < Number(filter.rentMin)) return false
       if (filter.rentMax && Number(listing.rent || 0) > Number(filter.rentMax)) return false

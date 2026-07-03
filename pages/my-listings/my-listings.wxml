@@ -9,6 +9,45 @@
       <button wx:if="{{!isCompanyMode}}" class="owner-button" bindtap="upload">上传</button>
     </view>
 
+    <view wx:if="{{isCompanyMode}}" class="company-filter-panel">
+      <view class="filter-section">
+        <view class="filter-label">区域</view>
+        <view class="filter-tabs">
+          <view class="filter-chip {{companyFilters.district === '拱墅区' ? 'active' : ''}}" data-district="拱墅区" bindtap="selectCompanyDistrict">拱墅区</view>
+          <view class="filter-chip {{companyFilters.district === '上城区' ? 'active' : ''}}" data-district="上城区" bindtap="selectCompanyDistrict">上城区</view>
+          <view class="filter-chip {{!companyFilters.district ? 'active' : ''}}" data-district="" bindtap="selectCompanyDistrict">不限</view>
+        </view>
+      </view>
+      <view class="filter-section">
+        <view class="filter-label">板块</view>
+        <view class="filter-tabs block-tabs">
+          <view class="filter-chip {{!companyFilters.block ? 'active' : ''}}" data-block="" bindtap="selectCompanyBlock">不限</view>
+          <view wx:for="{{companyBlockOptions}}" wx:key="*this" class="filter-chip {{companyFilters.block === item ? 'active' : ''}}" data-block="{{item}}" bindtap="selectCompanyBlock">{{item}}</view>
+        </view>
+      </view>
+      <view class="filter-section">
+        <view class="filter-label">小区</view>
+        <view class="community-combobox">
+          <input class="filter-input" value="{{companyFilters.community}}" data-field="community" bindfocus="focusCompanyCommunity" bindinput="updateCompanyFilter" placeholder="输入小区名称" />
+          <view wx:if="{{showCompanyCommunityOptions && visibleCompanyCommunities.length}}" class="community-options">
+            <view wx:for="{{visibleCompanyCommunities}}" wx:key="*this" class="community-option" data-community="{{item}}" bindtap="selectCompanyCommunity">{{item}}</view>
+          </view>
+        </view>
+      </view>
+      <view class="filter-section">
+        <view class="filter-label">户型</view>
+        <view class="filter-tabs">
+          <view wx:for="{{layoutOptions}}" wx:key="*this" class="filter-chip {{(!companyFilters.layout && item === '不限') || companyFilters.layout === item ? 'active' : ''}}" data-layout="{{item}}" bindtap="selectCompanyLayout">{{item}}</view>
+        </view>
+      </view>
+      <view class="price-filter-row">
+        <input class="filter-input price-input" value="{{companyFilters.rentMin}}" data-field="rentMin" bindinput="updateCompanyFilter" type="number" placeholder="最低租金" />
+        <view class="price-divider"></view>
+        <input class="filter-input price-input" value="{{companyFilters.rentMax}}" data-field="rentMax" bindinput="updateCompanyFilter" type="number" placeholder="最高租金" />
+        <button class="filter-reset-button" bindtap="resetCompanyFilters">重置</button>
+      </view>
+    </view>
+
     <view class="stat-grid">
       <view wx:for="{{stats}}" wx:key="label" class="stat-card">
         <view class="stat-value">{{item.value}}</view>

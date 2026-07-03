@@ -35,6 +35,131 @@ page {
   background: #153f36;
 }
 
+.company-filter-panel {
+  margin-top: 22rpx;
+  padding: 22rpx;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 24rpx;
+  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+}
+
+.filter-section {
+  margin-bottom: 18rpx;
+}
+
+.filter-label {
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 10rpx;
+}
+
+.block-tabs {
+  max-height: 184rpx;
+  overflow: hidden;
+}
+
+.filter-chip {
+  min-height: 56rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18rpx;
+  color: #2f6f60;
+  font-size: 23rpx;
+  font-weight: 900;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 16rpx;
+}
+
+.filter-chip.active {
+  color: #ffffff;
+  background: #2f6f60;
+  border-color: #2f6f60;
+}
+
+.community-combobox {
+  position: relative;
+  margin-top: 10rpx;
+}
+
+.filter-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 70rpx;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 800;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+}
+
+.community-options {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 78rpx;
+  z-index: 8;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 18rpx;
+  box-shadow: 0 16rpx 32rpx rgba(31, 81, 68, 0.12);
+}
+
+.community-option {
+  min-height: 62rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 800;
+  border-bottom: 1rpx solid #edf4f1;
+}
+
+.community-option:last-child {
+  border-bottom: 0;
+}
+
+.price-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.price-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.price-divider {
+  flex: 0 0 18rpx;
+  height: 2rpx;
+  background: #aac3bb;
+  border-radius: 999rpx;
+}
+
+.filter-reset-button {
+  flex: 0 0 104rpx;
+  height: 70rpx;
+  color: #2f6f60;
+  font-size: 24rpx;
+  font-weight: 900;
+  background: #e9f5f0;
+  border-radius: 18rpx;
+}
+
 .owner-button {
   min-width: 118rpx;
   height: 72rpx;

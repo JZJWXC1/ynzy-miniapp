@@ -149,6 +149,58 @@ function run() {
   }))
   const terraceRaw = db.listings.find((item) => item.id === terraceListing.id)
   assert.ok(terraceRaw.features.indexOf('带露台（阁楼）') !== -1, '新特点带露台（阁楼）应可写入房源')
+  function markSyncedCompanyListing(detail) {
+    const listing = db.listings.find((item) => item.id === detail.id)
+    listing.status = '在租'
+    listing.reviewStatus = '无需审核'
+    listing.communityMatched = true
+    listing.communityMatchStatus = '已匹配'
+    listing.requiresManualReview = false
+    return listing
+  }
+  const dongxinyuanListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
+    district: '拱墅区',
+    area: '拱墅区',
+    block: '东新园',
+    communityName: '东新园测试小区',
+    community: '东新园测试小区',
+    roomNo: '204',
+    roomNumber: '204',
+    address: '杭州拱墅区东新园测试小区2幢1单元204室',
+    rent: 4200,
+    layout: '整租两室一厅一卫',
+    source: '公司房源',
+    companyListing: true,
+    requiresManualReview: false,
+    videoKey: ''
+  }), { admin: true })
+  markSyncedCompanyListing(dongxinyuanListing)
+  const fourRoomListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
+    district: '拱墅区',
+    area: '拱墅区',
+    block: '东新园',
+    communityName: '东新园测试小区',
+    community: '东新园测试小区',
+    roomNo: '404',
+    roomNumber: '404',
+    address: '杭州拱墅区东新园测试小区4幢1单元404室',
+    rent: 6200,
+    layout: '整租四室两厅两卫',
+    source: '公司房源',
+    companyListing: true,
+    requiresManualReview: false,
+    videoKey: ''
+  }), { admin: true })
+  markSyncedCompanyListing(fourRoomListing)
+  assert.ok(domain.filterListings(db, {
+    district: '拱墅区',
+    block: '东新园',
+    layout: '两室',
+    rentMin: 3000,
+    rentMax: 5000
+  }).some((item) => item.id === dongxinyuanListing.id), '前台列表应支持拱墅区+东新园+两室+3000-5000 组合筛选')
+  assert.ok(domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === fourRoomListing.id), '三室以上应包含四室及更多户型')
+  assert.ok(!domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === dongxinyuanListing.id), '三室以上不应包含两室')
 
   const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     communityName: '半山家苑',
