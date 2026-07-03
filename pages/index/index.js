@@ -622,8 +622,13 @@ Page({
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
-    this.loadTodayTasks();
-    this.loadCompanySheetSnapshot();
+    // 节流：任务与飞书快照 60 秒内切回首页不重复拉取（快照还伴随 canvas 重绘，开销大）
+    const now = Date.now();
+    if (!this._heavyLoadedAt || now - this._heavyLoadedAt > 60000) {
+      this._heavyLoadedAt = now;
+      this.loadTodayTasks();
+      this.loadCompanySheetSnapshot();
+    }
     apiService.getHomeListings().then((listings) => {
       this.setData({ listings })
     }).catch(() => {

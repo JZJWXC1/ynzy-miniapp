@@ -243,12 +243,17 @@ Page({
 
   loadCommunities(options) {
     const loadOptions = options || {}
+    // 请求竞态守卫：快速连续切换筛选时，只采纳最后一次请求的响应
+    this._mapRequestSeq = (this._mapRequestSeq || 0) + 1
+    const requestSeq = this._mapRequestSeq
     this.setData({ loading: true })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
+      if (requestSeq !== this._mapRequestSeq) return
       const communities = (items || []).map(normalizeCommunity).filter(validCommunity)
       this.applyCommunities(communities, loadOptions.recenter)
       this.setData({ loading: false })
     }).catch(() => {
+      if (requestSeq !== this._mapRequestSeq) return
       wx.showToast({ title: '地图房源加载失败', icon: 'none' })
       this.applyCommunities([], false)
       this.setData({ loading: false })
@@ -314,7 +319,8 @@ Page({
       rentMax: option.rentMax
     }
     this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
-    this.loadCommunities({ recenter: true })
+    // 保持用户当前视野，只刷新点位与套数，不再跳回第一个小区
+    this.loadCommunities({ recenter: false })
   },
 
   changeFilter(event) {
@@ -325,7 +331,7 @@ Page({
       [type]: value === '全部' ? '' : value
     }
     this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
-    this.loadCommunities({ recenter: true })
+    this.loadCommunities({ recenter: false })
   },
 
   handleRegionChange(event) {

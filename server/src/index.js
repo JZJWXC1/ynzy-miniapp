@@ -690,6 +690,18 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.userDealRows(db, userId))
   }
 
+  // 第一版历史接口拦截：开启 V1_DISABLE_LEGACY_ROUTES 后，积分/房源群等历史能力统一下线
+  const legacyMiniRoute =
+    pathname === '/mini/points/recharge' ||
+    pathname === '/mini/groups' ||
+    /^\/mini\/groups\//.test(pathname) ||
+    pathname === '/mini/uploads/group-screenshot-policy'
+  if (config.disableLegacyRoutes && legacyMiniRoute) {
+    const legacyError = new Error('该历史功能已在第一版下线')
+    legacyError.statusCode = 404
+    return sendError(res, legacyError)
+  }
+
   if (method === 'POST' && pathname === '/mini/points/recharge') {
     const body = await parseBody(req)
     const count = Math.max(1, Math.floor(Number(body.points) || 1))

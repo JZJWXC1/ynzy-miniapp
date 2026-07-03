@@ -1,5 +1,6 @@
 const { clone } = require('./db')
 const { coordinateByCommunity } = require('./community-coordinates')
+const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const {
   refreshRecommendationProfile,
   clearRecommendationProfile
@@ -17,6 +18,8 @@ const {
 const VERIFY_REMINDER_DAYS = [3, 5]
 const VERIFY_STALE_DAYS = 7
 const V1_MAP_STALE_DAYS = VERIFY_STALE_DAYS
+// 足迹留痕保留上限：可用环境变量 FOOTPRINT_MAX_ROWS 按审计留存要求调整；生产长期运行建议迁移真实数据库
+const MAX_FOOTPRINT_ROWS = Math.max(1000, Number(process.env.FOOTPRINT_MAX_ROWS) || 5000)
 const FIXED_LISTING_COMMISSION_RATE = 20
 const UPLOADER_COMMISSION_RATE = 20
 const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算'
@@ -56,6 +59,16 @@ function defaultListingMaintenanceRule() {
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
+}
+
+// 统一的足迹写入入口：unshift 后按上限截断，防止 db.json 无限膨胀
+function pushFootprint(db, record) {
+  db.footprints = db.footprints || []
+  db.footprints.unshift(record)
+  if (db.footprints.length > MAX_FOOTPRINT_ROWS) {
+    db.footprints = db.footprints.slice(0, MAX_FOOTPRINT_ROWS)
+  }
+  return record
 }
 
 function id(prefix) {
@@ -517,8 +530,7 @@ function expireListing(db, listing, reason) {
   listing.expiredStaleDays = freshness.staleDays
   listing.updatedAt = now
   clearListingRecommendationProfile(listing, 'expired')
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
+  pushFootprint(db, {
     id: id('F'),
     listingId: listing.id,
     viewerId: 'system',
@@ -1707,8 +1719,7 @@ function restoreExpiredListing(db, adminId, listingId) {
   delete listing.expiredStaleDays
   syncListingRecommendationProfile(listing)
 
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
+  pushFootprint(db, {
     id: id('F'),
     listingId,
     viewerId: adminId || 'system',
@@ -1880,8 +1891,7 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
   const purposePayload = normalizePurposePayload(payload)
   const access = assertSensitiveViewAllowed(db, userId, listing, purposePayload)
 
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
+  pushFootprint(db, {
     id: id('F'),
     listingId,
     viewerId: userId,
@@ -1929,8 +1939,7 @@ function recordVideoShare(db, userId, listingId, payload = {}) {
   const title = publicListingTitle(listing, location) || listing.shortTitle || '房源视频'
   const sharePath = String(payload.sharePath || '').trim() || `/pages/shared-video/shared-video?id=${encodeURIComponent(listingId)}&source=tenant-video-share`
   const shareTitle = String(payload.shareTitle || '').trim() || `推荐你看这套房：${title}`
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
+  pushFootprint(db, {
     id: id('F'),
     listingId,
     viewerId: userId,
@@ -2038,8 +2047,7 @@ function reviewShowingUpload(db, adminId, showingId, payload = {}) {
     showing.rewardGranted = true
     showing.rewardDateKey = todayKey()
     showing.rewardCount = Number(showing.rewardCount || 1)
-    db.footprints = db.footprints || []
-    db.footprints.unshift({
+    pushFootprint(db, {
       id: id('F'),
       listingId: showing.listingId,
       viewerId: showing.userId,
@@ -2802,7 +2810,7 @@ function firstOwnValue(source = {}, fields = []) {
   return field ? source[field] : undefined
 }
 
-function normalizeListingForm(form = {}, current = {}) {
+function normalizeListingForm(form = {}, current = {}, options = {}) {
   const locationFields = [
     'city',
     'district',
@@ -2878,17 +2886,47 @@ function normalizeListingForm(form = {}, current = {}) {
   }).filter((item) => noCommission || item !== NO_COMMISSION_FEATURE)
   const communityMatchedInput = firstOwnValue(form, ['communityMatched', 'isCommunityMatched'])
   const manualReviewInput = firstOwnValue(form, ['requiresManualReview', 'manualReviewRequired'])
-  const communityMatchStatusInput = firstText(form.communityMatchStatus, current.communityMatchStatus)
-  const hasCommunityReviewInput = communityMatchedInput !== undefined || manualReviewInput !== undefined || Object.prototype.hasOwnProperty.call(form, 'communityMatchStatus')
+  const formMatchStatus = firstText(form.communityMatchStatus)
+  const isAdminCaller = Boolean(options.admin || (options.user && options.user.isAdmin))
   const currentCommunityMatched = current.communityMatched !== undefined
     ? truthyFlag(current.communityMatched)
     : (current.communityMatchStatus ? current.communityMatchStatus !== '未匹配' : true)
-  const communityMatched = communityMatchedInput !== undefined
-    ? truthyFlag(communityMatchedInput)
-    : (communityMatchStatusInput ? communityMatchStatusInput !== '未匹配' : currentCommunityMatched)
-  const requiresManualReview = manualReviewInput !== undefined
-    ? truthyFlag(manualReviewInput)
-    : (hasCommunityReviewInput ? !communityMatched : truthyFlag(current.requiresManualReview))
+  // 服务端复核：小区名未变更时沿用历史判定（兼容飞书导入等历史房源）
+  const communityUnchanged = normalizeCommunityKey(community) === normalizeCommunityKey(current.community)
+  const serverKnownCommunity = isKnownCommunity(community)
+  const grandfatheredMatched = communityUnchanged && currentCommunityMatched
+  const explicitMatchedClaim = communityMatchedInput !== undefined
+  const clientClaimsUnmatched = (explicitMatchedClaim && !truthyFlag(communityMatchedInput)) || formMatchStatus === '未匹配'
+  const clientClaimsMatched = (explicitMatchedClaim && truthyFlag(communityMatchedInput)) || (Boolean(formMatchStatus) && formMatchStatus !== '未匹配')
+  let communityMatched
+  if (clientClaimsUnmatched) {
+    // 客户端主动申报未匹配：采纳（只允许收紧）
+    communityMatched = false
+  } else if (serverKnownCommunity) {
+    // 命中服务端小区库：以服务端为准
+    communityMatched = true
+  } else if (clientClaimsMatched) {
+    // 库外小区却声明“已匹配”：不采信，仅在小区名未变且历史已匹配时沿用
+    communityMatched = grandfatheredMatched
+  } else {
+    // 无任何声明：以服务端小区库为权威。命中库即已匹配；
+    // 编辑且小区名未变时沿用历史判定（兼容飞书导入存量）；
+    // 其余（含新建库外小区）一律未匹配，进入人工审核后才能上架
+    communityMatched = serverKnownCommunity || grandfatheredMatched
+  }
+  const hasCommunityReviewInput = explicitMatchedClaim || manualReviewInput !== undefined || Object.prototype.hasOwnProperty.call(form, 'communityMatchStatus')
+  let requiresManualReview
+  if (manualReviewInput !== undefined) {
+    const requestedReview = truthyFlag(manualReviewInput)
+    // 申请进入审核任何人可以；显式豁免审核只有管理员生效
+    requiresManualReview = requestedReview
+      ? true
+      : (isAdminCaller ? false : (!communityMatched || truthyFlag(current.requiresManualReview)))
+  } else if (hasCommunityReviewInput) {
+    requiresManualReview = !communityMatched
+  } else {
+    requiresManualReview = !communityMatched ? true : truthyFlag(current.requiresManualReview)
+  }
   const manualReviewReasonInput = firstText(form.manualReviewReason, current.manualReviewReason)
   const manualReviewReason = requiresManualReview
     ? (manualReviewReasonInput || (!communityMatched ? '小区名称未匹配小区库' : '房源信息需人工审核'))
@@ -3000,8 +3038,8 @@ function assertNoDuplicateActiveListing(db, fields, currentListingId = '') {
 }
 
 function addNormalListing(db, userId, form = {}, options = {}) {
-  const fields = normalizeListingForm(form)
   const user = assertKnownUser(db, userId)
+  const fields = normalizeListingForm(form, {}, { admin: options.admin, user })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields)
 
@@ -3136,7 +3174,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
     throw error
   }
 
-  const fields = normalizeListingForm(form, listing)
+  const fields = normalizeListingForm(form, listing, { admin: options.admin, user })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields, listingId)
   const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
@@ -3242,8 +3280,7 @@ function verifyListingAvailability(db, userId, listingId, options = {}) {
   listing.lastVerifiedAt = nowText()
   listing.updatedAt = listing.lastVerifiedAt
   syncListingRecommendationProfile(listing)
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
+  pushFootprint(db, {
     id: id('F'),
     listingId,
     viewerId: userId,

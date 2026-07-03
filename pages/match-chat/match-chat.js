@@ -286,6 +286,12 @@ Page({
     scrollTarget: 'bottom-anchor'
   },
 
+  // 增量追加消息：按索引路径 setData，避免消息越多整表序列化越慢
+  appendMessage(message, extra) {
+    const index = this.data.messages.length
+    this.setData(Object.assign({ [`messages[${index}]`]: message }, extra || {}))
+  },
+
   onLoad(options) {
     this.initVoiceInput()
     const text = decodeOption(options.text)
@@ -477,11 +483,7 @@ Page({
       empty: false
     }
     this.pendingNeed = result.need || {}
-    this.setData({
-      messages: this.data.messages.concat(assistantMessage),
-      loading: false,
-      scrollTarget: assistantMessage.id
-    })
+    this.appendMessage(assistantMessage, { loading: false, scrollTarget: assistantMessage.id })
   },
 
   appendAssistantResult(matchResult) {
@@ -519,11 +521,7 @@ Page({
       feedbackLoading: false,
       feedbackSent: false
     }
-    this.setData({
-      messages: this.data.messages.concat(assistantMessage),
-      loading: false,
-      scrollTarget: assistantMessage.id
-    })
+    this.appendMessage(assistantMessage, { loading: false, scrollTarget: assistantMessage.id })
   },
 
   retryLastNeed() {
@@ -651,12 +649,7 @@ Page({
       text: `按修正文本重新识别：${text}`
     }
     this.lastRecognizePayload = payload
-    this.setData({
-      messages: this.data.messages.concat(userMessage),
-      needHistory: [text],
-      loading: true,
-      scrollTarget: 'typing-row'
-    })
+    this.appendMessage(userMessage, { needHistory: [text], loading: true, scrollTarget: 'typing-row' })
     this.executeRecognize(payload)
   },
 
@@ -688,11 +681,7 @@ Page({
       role: 'user',
       text: '确认这些条件，开始匹配。'
     }
-    this.setData({
-      messages: this.data.messages.concat(userMessage),
-      loading: true,
-      scrollTarget: 'typing-row'
-    })
+    this.appendMessage(userMessage, { loading: true, scrollTarget: 'typing-row' })
     this.createNeedAndMatch(payload, message)
   },
 

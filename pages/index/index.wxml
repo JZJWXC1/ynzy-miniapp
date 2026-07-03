@@ -1,5 +1,5 @@
 <!--index.wxml-->
-<navigation-bar title="寓你住一起" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="寓你住一起" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell home-page">
     <view class="ai-card">
@@ -136,7 +136,7 @@
         <view class="empty-title">暂无推荐房源</view>
         <view class="empty-desc">员工上传真实房源后，这里会自动显示可配房源。</view>
       </view>
-      <view wx:for="{{listings}}" wx:key="title" class="listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
+      <view wx:for="{{listings}}" wx:key="id" class="listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
         <view class="listing-photo">
           <view class="video-badge">视频</view>
           <view class="photo-window"></view>

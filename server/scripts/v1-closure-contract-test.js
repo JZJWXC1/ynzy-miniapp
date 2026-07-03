@@ -26,15 +26,15 @@ function listingPayload(overrides = {}) {
     district: '滨江区',
     area: '滨江区',
     block: '长河',
-    communityName: '闭环测试小区',
-    community: '闭环测试小区',
+    communityName: '城北天邑国际',
+    community: '城北天邑国际',
     buildingNo: '1',
     building: '1',
     unitNo: '2',
     unit: '2',
     roomNo: '301',
     roomNumber: '301',
-    address: '杭州市滨江区闭环测试小区1幢2单元301室',
+    address: '杭州市滨江区城北天邑国际1幢2单元301室',
     contact: '13911112222',
     rent: 4200,
     layout: '整租两室一厅一卫',
@@ -168,8 +168,8 @@ function run() {
   const deal = db.dealRecords.find((item) => item.id === dealResult.deal.id)
   assert.strictEqual(deal.needId, need.id, '签单必须继承 report.needId')
   assert.strictEqual(deal.uploaderId, 'U1', '签单必须冻结成交时上传人')
-  assert.strictEqual(deal.listingTitle, '闭环测试小区', '签单必须保存房源标题快照')
-  assert.strictEqual(deal.community, '闭环测试小区', '签单必须保存小区快照')
+  assert.strictEqual(deal.listingTitle, '城北天邑国际', '签单必须保存房源标题快照')
+  assert.strictEqual(deal.community, '城北天邑国际', '签单必须保存小区快照')
   assert.strictEqual(deal.rentFen, 430000, '签单必须保存成交时房源租金分值快照')
   assert.strictEqual(deal.commissionRule.rate, 20, '签单快照必须保存固定 20% 规则')
   assert.ok(deal.snapshotAt, '签单必须保存快照时间')

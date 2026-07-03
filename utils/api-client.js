@@ -109,13 +109,14 @@ function uploadFile(options) {
   }
 
   return new Promise((resolve, reject) => {
-    wx.uploadFile({
+    // 大文件上传允许调用方覆盖超时（默认沿用全局 15s 会导致视频弱网必超时）
+    const uploadTask = wx.uploadFile({
       url: options.url,
       filePath: options.filePath,
       name: options.name || 'file',
       formData: options.formData || {},
       header: options.header || {},
-      timeout: config.timeout,
+      timeout: options.timeout || config.timeout,
       success(res) {
         if (res.statusCode < 200 || res.statusCode >= 300) {
           reject(new Error(`文件上传失败：${res.statusCode}`))
@@ -134,6 +135,12 @@ function uploadFile(options) {
         reject(new Error(error.errMsg || '文件上传失败'))
       }
     })
+    // 透传上传进度（0-100），供页面展示百分比
+    if (typeof options.onProgress === 'function' && uploadTask && uploadTask.onProgressUpdate) {
+      uploadTask.onProgressUpdate((event) => {
+        options.onProgress(event.progress || 0, event)
+      })
+    }
   })
 }
 

@@ -10,6 +10,7 @@ const {
 
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
 const PLATFORM_COMMISSION_TEXT = '签单后按平台规则计算'
+const FALLBACK_MAX_VIDEO_MB = 300 // 与服务端 OSS 策略默认上限对齐的前端预检兜底值
 
 const defaultForm = {
   city: '杭州',
@@ -130,7 +131,6 @@ Page({
     videoFile: null,
     existingVideoUrl: '',
     existingVideoKey: '',
-    points: 2,
     submitting: false
   },
 
@@ -290,9 +290,23 @@ Page({
       count: 1,
       mediaType: ['video'],
       sourceType: ['album', 'camera'],
+      // 相册视频交给微信转码压缩，弱网上传成功率更高；仅约束拍摄时长
+      sizeType: ['compressed'],
+      maxDuration: 60,
       success: (res) => {
         const file = res.tempFiles && res.tempFiles[0]
         const tempFilePath = file ? file.tempFilePath : ''
+        // 大小预检：超过上限直接拦下，避免弱网白传几分钟后失败
+        const maxBytes = FALLBACK_MAX_VIDEO_MB * 1024 * 1024
+        if (file && file.size > maxBytes) {
+          const sizeMB = Math.round(file.size / 1024 / 1024)
+          wx.showModal({
+            title: '视频过大',
+            content: `所选视频约 ${sizeMB}MB，超过 ${FALLBACK_MAX_VIDEO_MB}MB 上限。请截取关键片段或压缩后再上传。`,
+            showCancel: false
+          })
+          return
+        }
         const fileName = tempFilePath ? tempFilePath.split('/').pop() : 'listing-video.mp4'
         this.setData({
           videoPath: tempFilePath,
@@ -459,7 +473,21 @@ Page({
       if (this.data.videoPath && this.data.videoFile) {
         wx.showLoading({ title: '正在上传视频' })
         const policy = await apiService.createVideoUploadPolicy(this.data.videoFile)
-        video = await apiService.uploadVideo(this.data.videoPath, policy)
+        // 以服务端策略返回的上限为准做二次校验
+        if (policy && policy.maxSize && this.data.videoFile.size > policy.maxSize) {
+          const limitMB = Math.round(policy.maxSize / 1024 / 1024)
+          throw new Error(`视频超过服务端 ${limitMB}MB 上限，请压缩后重试`)
+        }
+        let lastShownPercent = -5
+        video = await apiService.uploadVideo(this.data.videoPath, policy, {
+          onProgress: (percent) => {
+            // 每 5% 刷新一次进度文案，避免 loading 高频闪烁
+            if (percent - lastShownPercent >= 5 || percent >= 100) {
+              lastShownPercent = percent
+              wx.showLoading({ title: `上传视频 ${percent}%` })
+            }
+          }
+        })
       }
 
       wx.showLoading({ title: this.data.mode === 'edit' ? '正在保存修改' : '正在提交房源' })

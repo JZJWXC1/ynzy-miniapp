@@ -1,5 +1,6 @@
 param(
-  [switch]$IncludeEnv
+  [switch]$IncludeEnv,
+  [switch]$IncludeData
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +20,12 @@ New-Item -ItemType Directory -Path (Join-Path $stageDir "utils") | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stageDir "deploy") | Out-Null
 
 Copy-Item -Path (Join-Path $root "server\src") -Destination (Join-Path $stageDir "server\src") -Recurse
-Copy-Item -Path (Join-Path $root "server\data") -Destination (Join-Path $stageDir "server\data") -Recurse
+if ($IncludeData) {
+  Copy-Item -Path (Join-Path $root "server\data") -Destination (Join-Path $stageDir "server\data") -Recurse
+  Write-Host "Included server/data (contains real broker phone numbers). Handle this zip as sensitive."
+} else {
+  Write-Host "server/data is not included by default (contains real phone numbers). Pass -IncludeData only for first-time seeding."
+}
 Copy-Item -Path (Join-Path $root "server\scripts") -Destination (Join-Path $stageDir "server\scripts") -Recurse
 Copy-Item -Path (Join-Path $root "server\package.json") -Destination (Join-Path $stageDir "server\package.json")
 Copy-Item -Path (Join-Path $root "server\README.md") -Destination (Join-Path $stageDir "server\README.md")

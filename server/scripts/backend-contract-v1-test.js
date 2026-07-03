@@ -39,15 +39,15 @@ function listingPayload(overrides = {}) {
     district: '滨江区',
     area: '滨江区',
     block: '滨江区',
-    communityName: '后端契约测试小区',
-    community: '后端契约测试小区',
+    communityName: '半山家苑',
+    community: '半山家苑',
     buildingNo: '1',
     building: '1',
     unitNo: '1',
     unit: '1',
     roomNo: '101',
     roomNumber: '101',
-    address: '杭州滨江区后端契约测试小区1幢1单元101室',
+    address: '杭州滨江区半山家苑1幢1单元101室',
     contact: '13911112222',
     rent: 3500,
     layout: '整租两室一厅一卫',
@@ -105,7 +105,7 @@ function run() {
   assert.strictEqual(createdRaw.coordinateSource, 'pending-map-coordinate', '无可靠小区坐标时不能写入默认地图坐标')
 
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
-  const matchRow = domain.matchListings(db, { area: '后端契约测试小区' }).listings.find((item) => item.id === created.id)
+  const matchRow = domain.matchListings(db, { area: '半山家苑' }).listings.find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
   assert.ok(listRow && matchRow && detailRow, '前台列表、匹配和详情应返回有效房源')
   assertNoPublicSensitiveFields(listRow, '前台列表')
@@ -128,8 +128,8 @@ function run() {
   ;(realPin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '地图房源摘要'))
 
   const clientCoordinateListing = domain.addNormalListing(db, 'U1', listingPayload({
-    communityName: '客户端手填坐标小区',
-    community: '客户端手填坐标小区',
+    communityName: '北海公园',
+    community: '北海公园',
     mapLatitude: 30.22,
     mapLongitude: 120.22,
     latitude: 30.22,
@@ -149,7 +149,7 @@ function run() {
     rent: 3000,
     layout: '整租一室',
     area: '滨江区',
-    community: '默认中心点小区',
+    community: '财富壹号',
     address: '默认中心点地址',
     landlordPhone: '13911116666',
     commissionRate: 20,
@@ -171,7 +171,7 @@ function run() {
     rent: 3000,
     layout: '整租一室',
     area: '滨江区',
-    community: '旧偏移小区',
+    community: '城市风景',
     address: '旧偏移地址',
     landlordPhone: '13911117777',
     commissionRate: 20,
@@ -195,7 +195,7 @@ function run() {
     rent: 3000,
     layout: '整租一室',
     area: '滨江区',
-    community: '历史小区',
+    community: '浜河部落',
     address: '历史地址',
     landlordPhone: '13911113333',
     commissionRate: 20,
@@ -205,7 +205,7 @@ function run() {
     createdAt: daysAgo(1)
   })
   assert.ok(!domain.filterListings(db).some((item) => item.id === 'LEGACY_NO_VIDEO'), '前台列表必须排除无视频历史房源')
-  assert.ok(!domain.matchListings(db, { area: '历史小区' }).listings.some((item) => item.id === 'LEGACY_NO_VIDEO'), '匹配必须排除无视频历史房源')
+  assert.ok(!domain.matchListings(db, { area: '浜河部落' }).listings.some((item) => item.id === 'LEGACY_NO_VIDEO'), '匹配必须排除无视频历史房源')
   assert.strictEqual(domain.listingDetail(db, 'LEGACY_NO_VIDEO'), null, '前台详情必须排除无视频历史房源')
 
   db.listings.unshift({
@@ -216,7 +216,7 @@ function run() {
     rent: 3000,
     layout: '整租一室',
     area: '滨江区',
-    community: '提醒小区',
+    community: '保利香槟国际',
     address: '提醒地址',
     landlordPhone: '13911114444',
     commissionRate: 20,
@@ -237,7 +237,7 @@ function run() {
     rent: 3000,
     layout: '整租一室',
     area: '滨江区',
-    community: '失效小区',
+    community: '北景园水镜苑',
     address: '失效地址',
     landlordPhone: '13911115555',
     commissionRate: 20,
@@ -299,6 +299,42 @@ function run() {
   assert.strictEqual(confirmResult.commissionRecord.landlordCommissionFen, 500000, '正式分佣记录必须保留房东实付佣金分值')
   assert.strictEqual(db.listings.find((item) => item.id === created.id).lifecycleStatus, 'sold', '确认签单后房源应退出前台有效池')
   assert.ok(!domain.filterListings(db).some((item) => item.id === created.id), '已成交房源不能继续在前台展示')
+
+  // 回归用例（2026-07-02 P1 修复）：库外小区裸提交（不带任何匹配/审核字段）
+  // 必须由服务端小区库判定为 未匹配 + 待审核，且不得进入首页/前台列表/地图
+  const outsidePayload = listingPayload({
+    communityName: '库外未知小区ABC',
+    community: '库外未知小区ABC',
+    roomNumber: '9901',
+    videoKey: 'house-videos/contract/outside-community.mp4'
+  })
+  ;[
+    'communityMatched',
+    'isCommunityMatched',
+    'communityMatchStatus',
+    'requiresManualReview',
+    'manualReviewRequired'
+  ].forEach((field) => {
+    assert.ok(!Object.prototype.hasOwnProperty.call(outsidePayload, field), `库外裸提交不得预置 ${field}`)
+  })
+  const outsideListing = domain.addNormalListing(db, 'U1', outsidePayload)
+  const outsideRow = db.listings.find((item) => item.id === outsideListing.id)
+  assert.strictEqual(outsideRow.communityMatched, false, '库外小区必须判定为未匹配')
+  assert.strictEqual(outsideRow.communityMatchStatus, '未匹配', '库外小区匹配状态必须为未匹配')
+  assert.strictEqual(outsideRow.requiresManualReview, true, '库外小区必须进入人工审核')
+  assert.strictEqual(outsideRow.status, '待审核', '库外小区业务状态必须为待审核')
+  assert.strictEqual(outsideRow.reviewStatus, '待审核', '库外小区审核状态必须为待审核')
+  assert.ok(/未匹配/.test(outsideRow.manualReviewReason || ''), '库外小区必须记录未匹配审核原因')
+  assert.ok(!domain.homeListings(db).some((item) => item.id === outsideListing.id), '待审核房源不得出现在首页')
+  assert.ok(!domain.filterListings(db).some((item) => item.id === outsideListing.id), '待审核房源不得出现在前台列表')
+  assert.ok(!domain.mapCommunities(db, {}).some((item) => (item.listings || []).some((row) => row.id === outsideListing.id)), '待审核房源不得出现在地图')
+  // 管理员审核通过后方可进入前台
+  domain.reviewOwnerListing(db, 'ADMIN', outsideListing.id, { action: 'approve' })
+  assert.strictEqual(outsideRow.reviewStatus, '已通过', '审核通过后审核状态应为已通过')
+  assert.strictEqual(outsideRow.status, '待确认', '审核通过后业务状态应回到待确认')
+  assert.ok(domain.homeListings(db).some((item) => item.id === outsideListing.id), '审核通过后房源应进入首页候选')
+  assert.ok(domain.filterListings(db).some((item) => item.id === outsideListing.id), '审核通过后房源应进入前台列表')
+  assert.ok(!domain.mapCommunities(db, {}).some((item) => (item.listings || []).some((row) => row.id === outsideListing.id)), '库外小区无可靠坐标，审核通过后仍不得进入地图')
 
   console.log('backend-contract-v1-test passed')
 }

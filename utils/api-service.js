@@ -839,8 +839,9 @@ function createRealtimeAsrSocket() {
   })
 }
 
-function uploadVideo(filePath, policy) {
-  return uploadOssFile(filePath, policy, '视频上传配置不完整')
+function uploadVideo(filePath, policy, options) {
+  // 视频体积大，默认放宽到 5 分钟超时，避免弱网 15 秒必超时
+  return uploadOssFile(filePath, policy, '视频上传配置不完整', Object.assign({ timeout: 300000 }, options || {}))
 }
 
 function uploadGroupScreenshot(filePath, policy) {
@@ -851,7 +852,7 @@ function uploadShowingPhoto(filePath, policy) {
   return uploadOssFile(filePath, policy, '带看照片上传配置不完整')
 }
 
-function uploadOssFile(filePath, policy, missingMessage) {
+function uploadOssFile(filePath, policy, missingMessage, options) {
   const uploadPolicy = policy || {}
   if (uploadPolicy.uploadMode === 'mock') {
     return Promise.resolve({
@@ -864,12 +865,15 @@ function uploadOssFile(filePath, policy, missingMessage) {
     return Promise.reject(new Error(uploadPolicy.note || missingMessage || '文件上传配置不完整'))
   }
 
+  const uploadOptions = options || {}
   return apiClient.uploadFile({
     url: uploadPolicy.uploadUrl,
     filePath,
     name: 'file',
     formData: uploadPolicy.formData || {},
     header: uploadPolicy.headers || {},
+    timeout: uploadOptions.timeout,
+    onProgress: uploadOptions.onProgress,
     mock: () => ({
       fileUrl: uploadPolicy.fileUrl || filePath,
       objectKey: uploadPolicy.objectKey || ''
