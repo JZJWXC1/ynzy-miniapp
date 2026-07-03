@@ -78,6 +78,30 @@ page {
   border-radius: 20rpx;
 }
 
+.account-actions {
+  flex: 0 0 148rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.account-actions .login-button,
+.logout-button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.logout-button {
+  height: 64rpx;
+  color: #C0392B;
+  font-size: 23rpx;
+  font-weight: 900;
+  background: rgba(192, 57, 43, 0.08);
+  border: 1rpx solid rgba(192, 57, 43, 0.22);
+  border-radius: 18rpx;
+}
+
 .source-stats {
   display: flex;
   flex-wrap: wrap;

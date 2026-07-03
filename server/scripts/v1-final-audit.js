@@ -370,6 +370,15 @@ function checkMapCoordinateGrading() {
   return '地图支持 verified/approximate/block-center 分级上图，腾讯地理编码脚本与后台人工修正入口存在'
 }
 
+function checkProfileLogout() {
+  const profileJs = readText('pages/profile/profile.js')
+  const profileWxml = readText('pages/profile/profile.wxml')
+  assertOk(profileWxml.includes('退出登录'), '我的页面必须提供退出登录按钮')
+  assertOk(profileJs.includes('app.logout()'), '退出登录必须调用 app.logout 清除 token')
+  assertOk(profileJs.includes("wx.switchTab({ url: '/pages/index/index' })"), '退出登录后必须跳回找房首页')
+  return '我的页面退出登录会清除本地 token 并回到找房首页'
+}
+
 function checkRunnableV1Scripts() {
   return criticalScripts.map((script) => `${script} => ${runNodeScript(script)}`).join('；')
 }
@@ -388,6 +397,7 @@ const checks = [
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图坐标分级链路存在', checkMapCoordinateGrading],
+  ['我的页面退出登录存在', checkProfileLogout],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
 

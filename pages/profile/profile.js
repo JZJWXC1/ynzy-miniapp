@@ -116,6 +116,13 @@ Page({
     })
   },
 
+  logout() {
+    const app = typeof getApp === 'function' ? getApp() : null
+    if (app && typeof app.logout === 'function') app.logout()
+    wx.showToast({ title: '已退出登录', icon: 'none' })
+    wx.switchTab({ url: '/pages/index/index' })
+  },
+
   handleTap(event) {
     const name = event.currentTarget.dataset.name || '功能';
     const url = event.currentTarget.dataset.url;

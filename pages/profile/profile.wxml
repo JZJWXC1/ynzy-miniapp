@@ -11,7 +11,10 @@
         <view class="user-role">{{user.role}}</view>
         <view class="auth-tag">{{user.authed}}</view>
       </view>
-      <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+      <view class="account-actions">
+        <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+        <button wx:if="{{user.id}}" class="logout-button" bindtap="logout">退出登录</button>
+      </view>
     </view>
 
     <view class="source-stats">
