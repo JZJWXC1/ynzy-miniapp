@@ -915,7 +915,7 @@ function sanitizeListing(item, group) {
     rent,
     price: rent ? `¥${rent}/月` : (listing.price || ''),
     meta: [listing.area || listing.district, listing.block, listing.layout].filter(Boolean).join(' · '),
-    sub: '管理员确认签单后，上传人按房东实付佣金的 20% 结算',
+    sub: '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手',
     features: unique(parseFeatureInput(listing.features).concat(parseFeatureInput(listing.rawFeatures))).slice(0, 8),
     maintenanceText: listing.maintenanceText || '',
     matchGroup: group,

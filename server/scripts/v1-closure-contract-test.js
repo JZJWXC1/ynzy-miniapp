@@ -171,14 +171,20 @@ function run() {
   assert.strictEqual(deal.listingTitle, '城北天邑国际', '签单必须保存房源标题快照')
   assert.strictEqual(deal.community, '城北天邑国际', '签单必须保存小区快照')
   assert.strictEqual(deal.rentFen, 430000, '签单必须保存成交时房源租金分值快照')
-  assert.strictEqual(deal.commissionRule.rate, 15, '二房东签单快照必须保存固定 15% 规则')
+  assert.strictEqual(deal.commissionRule.rate, 20, '二房东签单快照必须保存成交总比例 20% 规则')
+  assert.strictEqual(deal.commissionRule.uploaderRate, 15, '二房东签单快照必须保存上传人 15% 规则')
+  assert.strictEqual(deal.commissionRule.platformRate, 5, '二房东签单快照必须保存平台 5% 规则')
   assert.ok(deal.snapshotAt, '签单必须保存快照时间')
-  assert.deepStrictEqual(deal.dealSnapshot.commissionRule, { rate: 15 }, '签单必须保存不可变快照对象')
+  assert.deepStrictEqual(deal.dealSnapshot.commissionRule, { rate: 20, uploaderRate: 15, platformRate: 5 }, '签单必须保存不可变快照对象')
 
   rawListing.uploaderId = 'U3'
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(confirmResult.commissionRecord.uploaderId, 'U1', '确认分佣必须使用 deal.uploaderId，而不是当前 listing.uploaderId')
+  assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东成交总比例必须固定 20%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 15, '二房东上传人到手比例必须固定 15%')
+  assert.strictEqual(confirmResult.commissionRecord.platformRate, 5, '二房东平台留存比例必须固定 5%')
   assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 90000, '二房东上传人分佣必须按房东实付佣金 15% 计算')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 30000, '二房东平台留存必须按房东实付佣金 5% 计算')
   assert.strictEqual(confirmResult.commissionRecord.needId, need.id, '正式分佣记录应保留 needId')
 
   console.log('v1-closure-contract-test passed')

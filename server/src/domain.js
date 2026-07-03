@@ -22,8 +22,9 @@ const V1_MAP_STALE_DAYS = VERIFY_STALE_DAYS
 const MAX_FOOTPRINT_ROWS = Math.max(1000, Number(process.env.FOOTPRINT_MAX_ROWS) || 5000)
 const SECOND_LANDLORD_COMMISSION_RATE = 15
 const OWNER_COMMISSION_RATE = 20
+const TOTAL_DEAL_COMMISSION_RATE = 20
 const UPLOADER_COMMISSION_RATE = OWNER_COMMISSION_RATE
-const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，二房东房源按房东实付佣金的 15%，业主房源按 20% 结算'
+const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算；二房东上传人 15%、平台 5%，业主上传人 20%'
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
 const SECOND_LANDLORD_SOURCE = '二房东房源'
@@ -455,8 +456,28 @@ function commissionRateForListing(listing = {}) {
   return commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE)
 }
 
-function commissionRuleForListing(listing = {}) {
-  return { rate: commissionRateForListing(listing) }
+function isAdminUser(user = {}) {
+  return Boolean(user.isAdmin || /管理员/.test(String(user.role || '')))
+}
+
+function commissionRuleForListing(listing = {}, db = {}, uploaderId = '') {
+  if (isCompanyListing(listing)) {
+    return {
+      rate: 0,
+      uploaderRate: 0,
+      platformRate: 0
+    }
+  }
+  const uploader = userById(db, uploaderId || listing.uploaderId) || {}
+  const uploaderRate = isAdminUser(uploader)
+    ? 0
+    : commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE)
+  const platformRate = Math.max(0, TOTAL_DEAL_COMMISSION_RATE - uploaderRate)
+  return {
+    rate: TOTAL_DEAL_COMMISSION_RATE,
+    uploaderRate,
+    platformRate
+  }
 }
 
 function isLegacyRentInventory(listing = {}) {
@@ -1954,13 +1975,17 @@ function commissionRows(db) {
       listing: listing.shortTitle,
       uploader: (userById(db, item.uploaderId) || {}).name,
       dealer: (userById(db, item.dealUserId) || {}).name,
-      rate: `${item.rate || UPLOADER_COMMISSION_RATE}%`,
+      rate: `${item.rate || TOTAL_DEAL_COMMISSION_RATE}%`,
+      uploaderRate: item.uploaderRate === undefined ? item.rate || UPLOADER_COMMISSION_RATE : item.uploaderRate,
+      platformRate: item.platformRate === undefined ? 0 : item.platformRate,
       dealMonthlyRentFen: item.dealMonthlyRentFen || 0,
       landlordCommissionFen: item.landlordCommissionFen || 0,
       uploaderCommissionFen: item.uploaderCommissionFen || 0,
+      platformCommissionFen: item.platformCommissionFen || 0,
       dealMonthlyRent: item.dealMonthlyRentFen ? fenToYuanText(item.dealMonthlyRentFen) : '',
       landlordCommission: item.landlordCommissionFen ? fenToYuanText(item.landlordCommissionFen) : '',
-      uploaderCommission: item.uploaderCommissionFen ? fenToYuanText(item.uploaderCommissionFen) : '',
+      uploaderCommission: fenToYuanText(item.uploaderCommissionFen || 0),
+      platformCommission: fenToYuanText(item.platformCommissionFen || 0),
       status: item.status,
       time: item.time
     }
@@ -1982,13 +2007,17 @@ function userCommissionRows(db, userId) {
         role: item.uploaderId === userId ? '我是上传人' : '我是成交人',
         uploader: uploader.name || '未知',
         dealer: dealer.name || '未知',
-        rate: `${item.rate || UPLOADER_COMMISSION_RATE}%`,
+        rate: `${item.rate || TOTAL_DEAL_COMMISSION_RATE}%`,
+        uploaderRate: item.uploaderRate === undefined ? item.rate || UPLOADER_COMMISSION_RATE : item.uploaderRate,
+        platformRate: item.platformRate === undefined ? 0 : item.platformRate,
         dealMonthlyRentFen: item.dealMonthlyRentFen || 0,
         landlordCommissionFen: item.landlordCommissionFen || 0,
         uploaderCommissionFen: item.uploaderCommissionFen || 0,
+        platformCommissionFen: item.platformCommissionFen || 0,
         dealMonthlyRent: item.dealMonthlyRentFen ? fenToYuanText(item.dealMonthlyRentFen) : '',
         landlordCommission: item.landlordCommissionFen ? fenToYuanText(item.landlordCommissionFen) : '',
-        uploaderCommission: item.uploaderCommissionFen ? fenToYuanText(item.uploaderCommissionFen) : '',
+        uploaderCommission: fenToYuanText(item.uploaderCommissionFen || 0),
+        platformCommission: fenToYuanText(item.platformCommissionFen || 0),
         status: item.status,
         time: item.time
       }
@@ -2400,8 +2429,14 @@ function formatDealRecord(db, deal = {}) {
   const report = reportById(db, deal.reportId) || {}
   const broker = userById(db, deal.brokerId) || {}
   const uploader = userById(db, deal.uploaderId) || {}
-  const rate = Number((deal.commissionRule || {}).rate ?? commissionRateForListing(listing))
-  const expectedUploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * rate / 100)
+  const baseCommissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
+  const savedCommissionRule = deal.commissionRule || {}
+  const rate = Number(baseCommissionRule.rate || 0)
+  const uploaderRate = Number(savedCommissionRule.uploaderRate ?? (rate ? (savedCommissionRule.rate ?? baseCommissionRule.uploaderRate) : 0))
+  const platformRate = Number(savedCommissionRule.platformRate ?? Math.max(0, rate - uploaderRate))
+  const commissionRule = { rate, uploaderRate, platformRate }
+  const expectedUploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * uploaderRate / 100)
+  const expectedPlatformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * platformRate / 100)
   return {
     id: deal.id,
     reportId: deal.reportId,
@@ -2418,16 +2453,22 @@ function formatDealRecord(db, deal = {}) {
     landlordCommissionFen: deal.landlordCommissionFen,
     landlordCommission: fenToYuanText(deal.landlordCommissionFen),
     uploaderCommissionRate: rate,
+    uploaderRate,
+    platformRate,
     expectedUploaderCommissionFen,
     expectedUploaderCommission: fenToYuanText(expectedUploaderCommissionFen),
+    expectedPlatformCommissionFen,
+    expectedPlatformCommission: fenToYuanText(expectedPlatformCommissionFen),
     uploaderCommissionFen: deal.uploaderCommissionFen || 0,
     uploaderCommission: fenToYuanText(deal.uploaderCommissionFen || 0),
+    platformCommissionFen: deal.platformCommissionFen || 0,
+    platformCommission: fenToYuanText(deal.platformCommissionFen || 0),
     commissionRecordId: deal.commissionRecordId || '',
     rentFen: deal.rentFen || 0,
     rentAtDeal: deal.rentAtDeal || '',
     ownerType: deal.ownerType || '',
     source: deal.source || '',
-    commissionRule: clone(deal.commissionRule || { rate }),
+    commissionRule: clone(commissionRule),
     snapshotAt: deal.snapshotAt || '',
     dealSnapshot: clone(deal.dealSnapshot || {}),
     status: deal.status,
@@ -2492,7 +2533,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   const rentFen = Math.round(Number(listing.rent || 0) * 100)
   const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
   const source = listing.source || listingSourceFields(listing).sourceLabel || ''
-  const commissionRule = commissionRuleForListing({ ...listing, ownerType, source })
+  const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId)
   const dealSnapshot = {
     needId: report.needId || '',
     listingId: report.listingId,
@@ -2563,28 +2604,30 @@ function confirmDeal(db, adminId, dealId) {
   }
 
   const existingRecord = (db.commissionRecords || []).find((record) => record.dealId === deal.id)
-  const commissionRate = commissionRateForListing(listing)
+  const commissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
   if (deal.status === '已确认') {
     return {
       message: '签单已确认',
       deal: formatDealRecord(db, deal),
       commissionRecord: existingRecord ? clone(existingRecord) : null,
-      noCommission: commissionRate === 0
+      noCommission: commissionRule.rate === 0
     }
   }
 
   const now = nowText()
-  const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRate / 100)
-  deal.commissionRule = { rate: commissionRate }
+  const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.uploaderRate / 100)
+  const platformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.platformRate / 100)
+  deal.commissionRule = clone(commissionRule)
   deal.dealSnapshot = {
     ...(deal.dealSnapshot || {}),
-    commissionRule: { rate: commissionRate }
+    commissionRule: clone(commissionRule)
   }
-  if (commissionRate <= 0) {
+  if (commissionRule.rate <= 0) {
     deal.status = '已确认'
     deal.confirmedAt = now
     deal.confirmedBy = adminId || 'admin'
     deal.uploaderCommissionFen = 0
+    deal.platformCommissionFen = 0
     deal.commissionRecordId = ''
     deal.updatedAt = now
 
@@ -2616,10 +2659,13 @@ function confirmDeal(db, adminId, dealId) {
     listingId: deal.listingId,
     uploaderId: deal.uploaderId,
     dealUserId: deal.brokerId,
-    rate: commissionRate,
+    rate: commissionRule.rate,
+    uploaderRate: commissionRule.uploaderRate,
+    platformRate: commissionRule.platformRate,
     dealMonthlyRentFen: deal.dealMonthlyRentFen,
     landlordCommissionFen: deal.landlordCommissionFen,
     uploaderCommissionFen,
+    platformCommissionFen,
     status: '已确认',
     confirmedBy: adminId || 'admin',
     confirmedAt: now,
@@ -2632,6 +2678,7 @@ function confirmDeal(db, adminId, dealId) {
   deal.confirmedAt = now
   deal.confirmedBy = adminId || 'admin'
   deal.uploaderCommissionFen = uploaderCommissionFen
+  deal.platformCommissionFen = platformCommissionFen
   deal.commissionRecordId = record.id
   deal.updatedAt = now
 

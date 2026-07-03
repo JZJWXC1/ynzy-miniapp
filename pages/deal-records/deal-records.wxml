@@ -5,7 +5,7 @@
       <view>
         <view class="hero-kicker">成交跟进</view>
         <view class="hero-title">每一笔签单都从报备记录发起。</view>
-        <view class="hero-desc">管理员确认后生成正式分佣记录，金额按分保存。</view>
+        <view class="hero-desc">管理员确认后按成交总比例 20% 计算，金额按分保存。</view>
       </view>
       <view class="hero-mark">签</view>
     </view>
@@ -45,6 +45,10 @@
           <view>
             <view class="money-label">房东实付佣金</view>
             <view class="money-value">{{item.landlordCommissionText}}</view>
+          </view>
+          <view>
+            <view class="money-label">分佣口径</view>
+            <view class="money-value">{{item.commissionRateText}}</view>
           </view>
         </view>
         <view class="remark-row">

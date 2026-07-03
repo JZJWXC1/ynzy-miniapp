@@ -125,6 +125,24 @@ function run() {
   assert.strictEqual(createdRaw.videoKey, 'house-videos/backend-contract/test.mp4', '只有 videoKey 也应视为有真实视频')
   assert.strictEqual(createdRaw.coordinateSource, 'pending-map-coordinate', '无可靠小区坐标时不能写入默认地图坐标')
 
+  const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNo: '777',
+    roomNumber: '777',
+    address: '杭州滨江区半山家苑1幢1单元777室',
+    contact: '13911117777',
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    source: '二房东房源',
+    videoKey: 'house-videos/backend-contract/admin-second-landlord.mp4'
+  }), { admin: true })
+  const adminSecondLandlordRaw = db.listings.find((item) => item.id === adminSecondLandlordListing.id)
+  assert.strictEqual(adminSecondLandlordRaw.uploaderId, 'ADMIN', '管理员上传二房东房源时上传人必须来自服务端当前管理员')
+  assert.strictEqual(adminSecondLandlordRaw.ownerType, '二房东房源', '管理员必须允许上传二房东房源')
+  assert.strictEqual(adminSecondLandlordRaw.companyListing, false, '管理员上传二房东房源不能被强制标记为公司房源')
+  assert.strictEqual(adminSecondLandlordRaw.commissionRate, 15, '管理员上传二房东房源仍按二房东类型记录上传人到手比例')
+
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
   const matchRow = domain.matchListings(db, { area: '半山家苑' }).listings.find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
@@ -343,8 +361,11 @@ function run() {
 
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(db.commissionRecords.length, 1, '管理员确认后必须生成正式分佣记录')
-  assert.strictEqual(confirmResult.commissionRecord.rate, 15, '二房东房源正式分佣比例必须固定 15%')
+  assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东房源成交总比例必须固定 20%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 15, '二房东房源上传人到手比例必须固定 15%')
+  assert.strictEqual(confirmResult.commissionRecord.platformRate, 5, '二房东房源平台留存比例必须固定 5%')
   assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 75000, '二房东房源上传人分佣必须等于房东实际支付佣金的 15%')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 25000, '二房东房源平台留存必须等于房东实际支付佣金的 5%')
   assert.strictEqual(confirmResult.commissionRecord.landlordCommissionFen, 500000, '正式分佣记录必须保留房东实付佣金分值')
   assert.strictEqual(db.listings.find((item) => item.id === created.id).lifecycleStatus, 'sold', '确认签单后房源应退出前台有效池')
   assert.ok(!domain.filterListings(db).some((item) => item.id === created.id), '已成交房源不能继续在前台展示')
@@ -377,8 +398,11 @@ function run() {
   const ownerDeal = db.dealRecords.find((item) => item.id === ownerDealResult.deal.id)
   assert.ok(!Object.prototype.hasOwnProperty.call(ownerDeal, 'commissionRate'), '业主签单不能保存客户端 commissionRate')
   const ownerConfirm = domain.confirmDeal(db, 'ADMIN', ownerDeal.id)
-  assert.strictEqual(ownerConfirm.commissionRecord.rate, 20, '业主房源正式分佣比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.rate, 20, '业主房源成交总比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.uploaderRate, 20, '业主房源上传人到手比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 0, '业主房源平台留存比例必须固定 0%')
   assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于房东实际支付佣金的 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 0, '业主房源平台留存必须为 0')
 
   const beforeCompanyCommissionCount = db.commissionRecords.length
   const companyReportResult = domain.createClientReport(db, 'U2', companyNoVideo.id, {
@@ -392,10 +416,33 @@ function run() {
     commissionRate: 99
   })
   const companyDeal = db.dealRecords.find((item) => item.id === companyDealResult.deal.id)
-  assert.deepStrictEqual(companyDeal.commissionRule, { rate: 0 }, '公司房源签单快照必须记录不分佣')
+  assert.deepStrictEqual(companyDeal.commissionRule, { rate: 0, uploaderRate: 0, platformRate: 0 }, '公司房源签单快照必须记录不分佣')
   const companyConfirm = domain.confirmDeal(db, 'ADMIN', companyDeal.id)
   assert.strictEqual(companyConfirm.commissionRecord, null, '公司房源确认签单不能生成分佣记录')
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
+
+  const beforeAdminUploadCommissionCount = db.commissionRecords.length
+  const adminUploadReportResult = domain.createClientReport(db, 'U2', adminSecondLandlordListing.id, {
+    needId: 'N1',
+    customerPhone: '13800004444'
+  })
+  const adminUploadReport = db.clientReports.find((item) => item.id === adminUploadReportResult.report.id)
+  const adminUploadDealResult = domain.createDealFromReport(db, 'U2', adminUploadReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000,
+    commissionRate: 99,
+    uploaderRate: 99,
+    platformRate: 99
+  })
+  const adminUploadDeal = db.dealRecords.find((item) => item.id === adminUploadDealResult.deal.id)
+  assert.ok(!Object.prototype.hasOwnProperty.call(adminUploadDeal, 'commissionRate'), '管理员上传二房东签单不能保存客户端 commissionRate')
+  const adminUploadConfirm = domain.confirmDeal(db, 'ADMIN', adminUploadDeal.id)
+  assert.strictEqual(db.commissionRecords.length, beforeAdminUploadCommissionCount + 1, '管理员上传的二房东房源成交后必须生成平台留存记录')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.rate, 20, '管理员上传二房东房源成交总比例必须固定 20%')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.uploaderRate, 0, '管理员上传二房东房源不生成个人分佣比例')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.platformRate, 20, '管理员上传二房东房源平台留存比例必须固定 20%')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.uploaderCommissionFen, 0, '管理员上传二房东房源上传人分佣必须为 0')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.platformCommissionFen, 100000, '管理员上传二房东房源平台留存必须等于房东实付佣金的 20%')
 
   // 回归用例（2026-07-02 P1 修复）：库外小区裸提交（不带任何匹配/审核字段）
   // 必须由服务端小区库判定为 未匹配 + 待审核，且不得进入首页/前台列表/地图

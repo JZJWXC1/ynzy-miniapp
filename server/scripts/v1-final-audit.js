@@ -186,15 +186,17 @@ function checkAdminReportDealContract() {
     'function confirmDeal',
     'const SECOND_LANDLORD_COMMISSION_RATE = 15',
     'const OWNER_COMMISSION_RATE = 20',
+    'const TOTAL_DEAL_COMMISSION_RATE = 20',
     'function commissionRateForListing',
     'landlordCommissionFen',
-    'uploaderCommissionFen'
+    'uploaderCommissionFen',
+    'platformCommissionFen'
   ]
   const missingIndex = requiredIndexFragments.filter((fragment) => !indexSource.includes(fragment))
   const missingDomain = requiredDomainFragments.filter((fragment) => !domainSource.includes(fragment))
   assertOk(!missingIndex.length, `server/src/index.js 缺少接口片段：${missingIndex.join('、')}`)
   assertOk(!missingDomain.length, `server/src/domain.js 缺少契约片段：${missingDomain.join('、')}`)
-  return '报备、签单、后台确认与 15%/20% 分档分佣契约存在'
+  return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在'
 }
 
 function checkRunnableV1Scripts() {

@@ -11,7 +11,7 @@
   var NO_COMMISSION_FEATURE = '不分佣';
   var DEPOSIT_FREE_FEATURE = '免押金';
   var COMPANY_SOURCE = '公司房源';
-  var V1_COMMISSION_TEXT = '管理员确认签单后，上传人按房东实付佣金的 20% 结算';
+  var V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手';
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var BROKER_ROLE = '中介';
@@ -1490,7 +1490,12 @@
         listing: listing.shortTitle,
         uploader: (getUser(item.uploaderId) || {}).name,
         dealer: (getUser(item.dealUserId) || {}).name,
-        rate: V1_COMMISSION_TEXT,
+        rate: (item.rate || 20) + '%',
+        uploaderRate: item.uploaderRate === undefined ? 20 : item.uploaderRate,
+        platformRate: item.platformRate || 0,
+        landlordCommissionFen: item.landlordCommissionFen || 0,
+        uploaderCommissionFen: item.uploaderCommissionFen || 0,
+        platformCommissionFen: item.platformCommissionFen || 0,
         status: item.status,
         time: item.time
       };

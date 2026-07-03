@@ -1080,7 +1080,7 @@
 
       <section class="panel" id="deals">
         <div class="deal-summary" id="dealSummary"></div>
-        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。上传人分佣由后端固定按房东实付佣金的 20% 计算，后台不可修改上传人或分佣比例。</div>
+        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。成交总比例由后端固定按房东实付佣金的 20% 计算，上传人与平台留存按房源类型和上传人身份拆分。</div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
@@ -1093,7 +1093,7 @@
       <section class="panel" id="commissions">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>成交房源</th><th>上传人</th><th>成交人</th><th>分佣比例</th><th>房东实付佣金</th><th>上传人分佣</th><th>状态</th><th>时间</th></tr></thead>
+            <thead><tr><th>成交房源</th><th>上传人</th><th>成交人</th><th>总比例</th><th>上传人比例</th><th>房东实付佣金</th><th>上传人分佣</th><th>平台留存</th><th>状态</th><th>时间</th></tr></thead>
             <tbody id="commissionRows"></tbody>
           </table>
         </div>
@@ -1486,7 +1486,7 @@
 	    function expectedUploaderCommissionFen(item) {
 	      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
 	      if (saved > 0) return saved;
-	      return Math.round(Number(item.landlordCommissionFen || 0) * 20 / 100);
+	      return Math.round(Number(item.landlordCommissionFen || 0) * Number(item.uploaderRate === undefined ? 20 : item.uploaderRate) / 100);
 	    }
 
 	    function needIdText(item) {
@@ -1525,8 +1525,9 @@
 	        roleFallback
 	      ) || '-';
 	      const rate = pickText(
-	        item.uploaderCommissionRate,
+	        item.rate,
 	        item.commissionRate,
+	        snapshot.rate,
 	        snapshot.uploaderCommissionRate,
 	        snapshot.commissionRate,
 	        20
@@ -1540,7 +1541,7 @@
 	        item.community,
 	        item.listingId
 	      ) || '-';
-	      return `上传人 ${uploader} · 成交人 ${dealer} · 固定 ${rate}% · 房源快照 ${listing}`;
+	      return `上传人 ${uploader} · 成交人 ${dealer} · 成交总比例 ${rate}% · 房源快照 ${listing}`;
 	    }
 
     async function getAdminData(path, fallback) {
@@ -1624,7 +1625,7 @@
 	        { value: tasks.pendingReportCount, label: '待跟进报备<br>未发起签单或待补充' },
 	        { value: tasks.pendingDealCount, label: '待确认签单<br>管理员确认后生成分佣' },
 	        { value: tasks.todaySensitiveViews, label: `今日敏感查看<br>需复盘 ${tasks.todaySensitiveViews} 次` },
-	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端固定 20%' }
+	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端按规则拆分' }
 	      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
 
 	      document.getElementById('riskRows').innerHTML = [
@@ -1633,7 +1634,7 @@
 	        { title: '报备记录待跟进', object: '报备记录', status: tasks.pendingReportCount > 0 ? '待联系核对' : '正常', time: '今日任务' },
 	        { title: '签单审核待管理员确认', object: '签单审核', status: tasks.pendingDealCount > 0 ? '待确认' : '正常', time: '今日任务' },
 	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '后端固定20%' }
+	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，后端拆分' }
 	      ].map((item) => `
 	        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
 	      `).join('');
@@ -2103,7 +2104,9 @@
           customerPhoneMasked: '',
           expectedUploaderCommissionFen: expectedFen,
           expectedUploaderCommission: (expectedFen / 100).toFixed(2),
-          uploaderCommissionRate: 20
+          uploaderCommissionRate: 20,
+          uploaderRate: 20,
+          platformRate: 0
         }, item, confirmed ? {
           status: '已确认',
           uploaderCommissionFen: expectedFen,
@@ -2171,7 +2174,7 @@
             </td>
             <td>
               <span class="money-strong">${safeText(commissionText)}</span>
-              <span class="sub-cell">上传人 ${safeText(item.uploader)} · 固定 ${safeText(item.uploaderCommissionRate || 20)}%</span>
+              <span class="sub-cell">成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%</span>
             </td>
             <td><span class="${pillClass(item.status)}">${safeText(item.status || '待管理员确认')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
             <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
@@ -2190,8 +2193,10 @@
           <td>${item.uploader}</td>
           <td>${item.dealer}</td>
           <td>${item.rate}</td>
+          <td>${safeText(item.uploaderRate === undefined ? '-' : item.uploaderRate + '%')}</td>
           <td>${moneyText(item.landlordCommission, item.landlordCommissionFen)}</td>
           <td>${moneyText(item.uploaderCommission, item.uploaderCommissionFen)}</td>
+          <td>${moneyText(item.platformCommission, item.platformCommissionFen, true)}</td>
           <td><span class="${pillClass(item.status)}">${item.status}</span></td>
           <td>${item.time}</td>
         </tr>
@@ -2710,7 +2715,7 @@
 
     async function confirmAdminDeal(id) {
       if (!id) return;
-      if (!window.confirm('确认该签单真实有效，并由后端按固定 20% 生成上传人正式分佣记录？')) return;
+      if (!window.confirm('确认该签单真实有效，并由后端按总比例 20% 计算、按房源类型拆分上传人与平台留存？')) return;
 
       if (!canUseAdminApi()) {
         localConfirmedDeals[id] = new Date().toLocaleString('zh-CN', { hour12: false });
