@@ -1,0 +1,9 @@
+[Unit]
+Description=Ynzy Miniapp DB Backup
+
+[Service]
+Type=oneshot
+Environment=APP_DIR=/opt/ynzy-miniapp
+Environment=BACKUP_DIR=/opt/ynzy-miniapp-backups/db
+Environment=KEEP=48
+ExecStart=/usr/bin/env bash /opt/ynzy-miniapp/deploy/backup-db.sh

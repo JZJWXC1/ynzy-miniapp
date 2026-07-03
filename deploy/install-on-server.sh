@@ -103,8 +103,11 @@ install_nginx_config() {
 }
 
 cp "$APP_DIR/deploy/ynzy-miniapp.service" /etc/systemd/system/ynzy-miniapp.service
+cp "$APP_DIR/deploy/ynzy-db-backup.service" /etc/systemd/system/ynzy-db-backup.service
+cp "$APP_DIR/deploy/ynzy-db-backup.timer" /etc/systemd/system/ynzy-db-backup.timer
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
+systemctl enable --now ynzy-db-backup.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
