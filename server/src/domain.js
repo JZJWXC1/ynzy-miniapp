@@ -110,13 +110,24 @@ function hasListingVideo(listing = {}) {
   return looksLikeVideoPath(videoKey) || looksLikeVideoPath(videoUrl)
 }
 
+function isCompanySheetListing(listing = {}) {
+  return listing.externalSource === 'feishu-sheet-snapshot' || listing.source === COMPANY_SOURCE || isCompanyListing(listing)
+}
+
+function requiresListingVideo(listing = {}) {
+  return !isCompanySheetListing(listing)
+}
+
 function isSoldListing(listing = {}) {
   const status = String(listing.status || '')
   return listing.lifecycleStatus === 'sold' || /\u6210\u4ea4|\u7b7e\u5355/.test(status)
 }
 
 function isFrontendEffectiveListing(listing = {}) {
-  return !isExpiredListing(listing) && !isSoldListing(listing) && hasListingVideo(listing) && !isPendingOwnerReview(listing)
+  return !isExpiredListing(listing) &&
+    !isSoldListing(listing) &&
+    (!requiresListingVideo(listing) || hasListingVideo(listing)) &&
+    !isPendingOwnerReview(listing)
 }
 
 function normalizeOwnerType(value, fallback = SECOND_LANDLORD_SOURCE) {
@@ -171,8 +182,156 @@ function activeListings(db) {
   return rawActiveListings(db)
 }
 
+function snapshotCellText(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
+}
+
+function snapshotHeaderIndex(rows = []) {
+  return rows.findIndex((row) => {
+    const text = (row || []).map(snapshotCellText).join('|')
+    return /区域/.test(text) && /小区/.test(text)
+  })
+}
+
+function snapshotColumnIndex(header = [], aliases = []) {
+  const normalizedHeader = header.map((cell) => snapshotCellText(cell).replace(/\s+/g, ''))
+  return aliases.reduce((matched, alias) => {
+    if (matched !== -1) return matched
+    const key = String(alias || '').replace(/\s+/g, '')
+    return normalizedHeader.findIndex((cell) => cell === key || cell.indexOf(key) !== -1)
+  }, -1)
+}
+
+function snapshotCell(row = [], index) {
+  if (index < 0) return ''
+  return snapshotCellText(row[index])
+}
+
+function numberFromSnapshot(value) {
+  const matched = String(value || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)
+  return matched ? Number(matched[0]) : 0
+}
+
+function inferSnapshotRentMode(layout = '') {
+  if (/合租|单间|主卧|次卧/.test(layout)) return '合租'
+  return '整租'
+}
+
+function stableCompanySheetId(value = '') {
+  const text = String(value || '')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 31) + text.charCodeAt(index)) >>> 0
+  }
+  return `CS${hash.toString(36)}`
+}
+
+function companySheetPublicListings(db = {}) {
+  const snapshot = db.companySheetSnapshot || {}
+  const rows = Array.isArray(snapshot.rows) ? snapshot.rows : []
+  const headerIndex = snapshotHeaderIndex(rows)
+  if (headerIndex < 0) return []
+
+  const header = rows[headerIndex] || []
+  const areaIndex = snapshotColumnIndex(header, ['区域', '区', '片区', '商圈'])
+  const communityIndex = snapshotColumnIndex(header, ['小区', '小区名称', '楼盘', '社区'])
+  const layoutIndex = snapshotColumnIndex(header, ['户型描述', '描述', '房源描述', '户型信息'])
+  const categoryIndex = snapshotColumnIndex(header, ['户型分类', '户型', '格局', '分类'])
+  const rentIndex = snapshotColumnIndex(header, ['押一付一', '押一', '月租', '租金', '价格'])
+  const fallbackRentIndex = snapshotColumnIndex(header, ['押二付一', '押二', '押二付一价格', '押二价格'])
+  const updatedAt = snapshot.cachedAt || snapshot.updatedAt || nowText()
+  const result = []
+  let currentArea = ''
+  let currentCommunity = ''
+
+  rows.slice(headerIndex + 1).forEach((row, index) => {
+    const cells = Array.isArray(row) ? row : []
+    const area = snapshotCell(cells, areaIndex)
+    const community = snapshotCell(cells, communityIndex)
+    const layout = snapshotCell(cells, layoutIndex)
+    const category = snapshotCell(cells, categoryIndex)
+    const rent = numberFromSnapshot(snapshotCell(cells, rentIndex)) || numberFromSnapshot(snapshotCell(cells, fallbackRentIndex))
+
+    if (area && !community && !layout && !category && !rent) {
+      currentArea = area
+      return
+    }
+    if (area) currentArea = area
+    if (community) currentCommunity = community
+    if (!currentCommunity || !rent || !(layout || category)) return
+
+    const listingKey = [
+      currentArea,
+      currentCommunity,
+      layout,
+      category,
+      rent,
+      index
+    ].join('|')
+    const safeArea = normalizeDistrict(currentArea || '杭州')
+    const listing = {
+      id: stableCompanySheetId(listingKey),
+      title: `${currentCommunity} · ${layout || category}`,
+      shortTitle: currentCommunity,
+      uploaderId: '',
+      rent,
+      layout: layout || category,
+      city: '杭州',
+      district: safeArea,
+      area: safeArea,
+      block: safeArea,
+      community: currentCommunity,
+      address: `${safeArea}${currentCommunity}`,
+      landlordPhone: '',
+      commissionRate: 0,
+      videoLabel: '飞书房源表',
+      videoUrl: '',
+      videoKey: '',
+      status: '在租',
+      reviewStatus: '无需审核',
+      communityMatched: true,
+      communityMatchStatus: '已匹配',
+      requiresManualReview: false,
+      lifecycleStatus: 'active',
+      ownerType: COMPANY_SOURCE,
+      houseSourceType: COMPANY_SOURCE,
+      type: inferSnapshotRentMode(`${layout}${category}`),
+      rentMode: inferSnapshotRentMode(`${layout}${category}`),
+      room: category || '',
+      hall: '',
+      bath: '',
+      features: [COMPANY_SOURCE],
+      source: COMPANY_SOURCE,
+      companyListing: true,
+      isCompanyListing: true,
+      noCommission: true,
+      externalSource: 'feishu-sheet-snapshot',
+      createdAt: updatedAt,
+      lastVerifiedAt: updatedAt
+    }
+    const coordinate = coordinateByCommunity(currentCommunity)
+    if (coordinate) {
+      listing.mapLatitude = coordinate.latitude
+      listing.mapLongitude = coordinate.longitude
+      listing.coordinateSource = coordinate.source || 'community-coordinate'
+      listing.coordinateVerified = true
+      listing.coordinateStatus = '已确认小区坐标'
+    }
+    result.push(listing)
+  })
+
+  return result
+}
+
 function publicListings(db) {
-  return activeListings(db).filter(isFrontendEffectiveListing)
+  const rows = activeListings(db).filter(isFrontendEffectiveListing)
+  const seen = new Set(rows.map((listing) => String(listing.id || '')))
+  companySheetPublicListings(db).forEach((listing) => {
+    if (!listing.id || seen.has(String(listing.id))) return
+    seen.add(String(listing.id))
+    rows.push(listing)
+  })
+  return rows
 }
 
 function assertListingActive(listing) {
@@ -194,7 +353,7 @@ function assertFrontendListingAvailable(listing) {
     error.statusCode = 404
     throw error
   }
-  if (!hasListingVideo(listing)) {
+  if (requiresListingVideo(listing) && !hasListingVideo(listing)) {
     const error = new Error('该房源缺少真实视频，暂不能在前台展示或发起业务')
     error.statusCode = 404
     throw error
@@ -368,6 +527,7 @@ function listingSourceFields(listing = {}) {
   const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
+  const noCommission = companyListing || truthyFlag(listing.noCommission)
   return {
     companyListing,
     isCompanyListing: companyListing,
@@ -378,10 +538,10 @@ function listingSourceFields(listing = {}) {
     manualReviewReason: listing.manualReviewReason || '',
     communityMatched: listing.communityMatched !== undefined ? truthyFlag(listing.communityMatched) : listing.communityMatchStatus !== '未匹配',
     communityMatchStatus: listing.communityMatchStatus || (listing.communityMatched === false ? '未匹配' : '已匹配'),
-    noCommission: false,
+    noCommission,
     sourceLabel,
-    commissionText: PUBLIC_COMMISSION_TEXT,
-    commissionBadge: '固定20%'
+    commissionText: noCommission ? '公司房源无分佣' : PUBLIC_COMMISSION_TEXT,
+    commissionBadge: noCommission ? '公司房源' : '固定20%'
   }
 }
 
@@ -812,13 +972,16 @@ function formatHomeListing(db, listing) {
   const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing)
   const publicTitle = publicListingTitle(listing, location)
+  const companyListing = isCompanyListing(listing)
+  const mediaText = hasListingVideo(listing) ? '仅视频' : (companyListing ? '公司房源表' : '待补视频')
+  const commissionText = companyListing ? '公司房源无分佣' : PUBLIC_COMMISSION_TEXT
   return {
     id: listing.id,
     title: publicTitle,
-    meta: `${location.locationSummary || location.area} · ${listing.layout} · 仅视频`,
-    sub: `${display.sourceLabel} · ${PUBLIC_COMMISSION_TEXT} · 上传人 ${uploader.name || '未知'}`,
+    meta: `${location.locationSummary || location.area} · ${listing.layout} · ${mediaText}`,
+    sub: `${display.sourceLabel} · ${commissionText} · 上传人 ${uploader.name || '平台'}`,
     price: `¥${listing.rent}/月`,
-    tag: '固定20%',
+    tag: companyListing ? '公司房源' : '固定20%',
     videoUrl: listing.videoUrl || '',
     ...display,
     ...location
@@ -863,9 +1026,9 @@ function filterListings(db, filter = {}) {
         source: listing.source || '',
         status: listing.status || '',
         companyListing: row.companyListing,
-        noCommission: false,
+        noCommission: Boolean(row.noCommission),
         sourceLabel: row.sourceLabel,
-        commissionText: PUBLIC_COMMISSION_TEXT
+        commissionText: row.commissionText
       }
     })
 }
@@ -951,7 +1114,7 @@ function matchListings(db, condition = {}) {
 
 function listingDetail(db, listingId) {
   autoExpireOverdueListings(db)
-  const listing = listingById(db, listingId)
+  const listing = listingById(db, listingId) || publicListings(db).find((item) => item.id === listingId)
   if (!listing) return null
   if (!isFrontendEffectiveListing(listing)) return null
   const uploader = userById(db, listing.uploaderId) || {}
@@ -2971,12 +3134,16 @@ function validateListingFields(fields, user = {}, options = {}) {
     !fields.contact ||
     !fields.rent ||
     !fields.layout ||
-    !hasListingVideo(fields) ||
     !fields.rawCommunity ||
     !fields.building ||
     !fields.roomNumber
   ) {
-    const error = new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填')
+    const error = new Error('城市、区域、小区、几栋、房间号、联系方式、租金和户型必填')
+    error.statusCode = 400
+    throw error
+  }
+  if (requiresListingVideo(fields) && !hasListingVideo(fields)) {
+    const error = new Error('二房东房源和业主房源必须上传真实视频，公司房源可不上传视频')
     error.statusCode = 400
     throw error
   }

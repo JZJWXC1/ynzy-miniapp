@@ -120,8 +120,8 @@
       <view class="video-upload" bindtap="chooseVideo">
         <view class="video-icon">▶</view>
         <view>
-          <view class="video-title">{{videoPath ? '已选择新房源视频' : (existingVideoUrl ? '保留原房源视频' : '上传房源视频')}}</view>
-          <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : '仅允许视频，不支持图片上传。')}}</view>
+          <view class="video-title">{{videoPath ? '已选择新房源视频' : (existingVideoUrl ? '保留原房源视频' : (form.companyListing ? '可选上传公司房源视频' : '上传房源视频'))}}</view>
+          <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : (form.companyListing ? '公司房源可不上传视频；上传后可用于转发。' : '仅允许视频，不支持图片上传。'))}}</view>
         </view>
       </view>
       <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.ownerType === '业主房源' ? '提交审核' : '提交房源')}}</button>

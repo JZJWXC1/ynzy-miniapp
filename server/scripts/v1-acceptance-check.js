@@ -184,13 +184,15 @@ check('第一版隐藏入口不在可见工作台', () => {
   assertNoHiddenKeyword(readFile('pages/my-listings/my-listings.wxml'), '我的房源页')
 })
 
-check('上传房源必须走视频选择和视频上传策略', () => {
+check('上传房源按类型执行视频要求和上传策略', () => {
   const uploadJs = readFile('pages/upload/upload.js')
   const uploadWxml = readFile('pages/upload/upload.wxml')
   assertMatches(uploadJs, /mediaType:\s*\[\s*['"]video['"]\s*\]/, '上传页必须只选择视频媒体')
   assert.ok(!/mediaType:\s*\[[^\]]*['"]image['"]/.test(uploadJs), '上传页不能选择图片作为房源素材')
   assertIncludes(uploadJs, 'createVideoUploadPolicy', '上传页必须申请视频上传策略')
   assertIncludes(uploadJs, '房源视频', '上传页校验必须包含房源视频必填')
+  assertIncludes(uploadJs, 'requiresUploadVideo', '上传页必须按房源类型判断是否强制视频')
+  assertIncludes(uploadWxml, '公司房源可不上传视频', '上传页必须提示公司房源视频可选')
   assertIncludes(uploadWxml, '仅允许视频，不支持图片上传。', '上传页需要明确展示仅允许视频')
 })
 
@@ -277,10 +279,36 @@ check('地图只展示确认小区坐标并显示筛选后套数', () => {
 check('报备、签单、管理员确认和 20% 分佣契约正确', () => {
   const db = createDb()
   assertRejects(
-    () => domain.addNormalListing(db, 'U1', listingPayload({ videoKey: '', videoUrl: '' })),
+    () => domain.addNormalListing(db, 'U1', listingPayload({
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '二房东房源',
+      videoKey: '',
+      videoUrl: ''
+    })),
     (error) => error.statusCode === 400 && /视频/.test(error.message),
-    '后端必须拒绝无视频房源'
+    '后端必须拒绝无视频二房东房源'
   )
+  const companyNoVideo = domain.addNormalListing(db, 'ADMIN', listingPayload({
+    communityName: '京漾东韵府',
+    community: '京漾东韵府',
+    buildingNo: '8',
+    building: '8',
+    unitNo: '1',
+    unit: '1',
+    roomNo: '801',
+    roomNumber: '801',
+    address: '杭州市上城区京漾东韵府8幢1单元801室',
+    source: '公司房源',
+    companyListing: true,
+    videoKey: '',
+    videoUrl: ''
+  }), { admin: true })
+  assert.ok(domain.filterListings(db, { category: '公司房源' }).some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入公司房源列表')
+  assert.ok(domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '有真实小区坐标的公司房源无视频必须进入地图')
+  assert.ok(domain.matchListings(db, { area: '京漾东韵府' }).listings.some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入匹配候选')
+  assert.ok(domain.listingDetail(db, companyNoVideo.id), '公司房源无视频必须可打开详情')
+
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const rawListing = db.listings.find((item) => item.id === created.id)
   assert.strictEqual(rawListing.uploaderId, 'U1', '上传人必须来自服务端当前用户')

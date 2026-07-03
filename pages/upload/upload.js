@@ -61,6 +61,10 @@ function isBlank(value) {
   return String(value === undefined || value === null ? '' : value).trim() === ''
 }
 
+function requiresUploadVideo(form = {}) {
+  return !form.companyListing
+}
+
 function normalizeUploadFeatures(features) {
   const next = normalizeListingFeatures(features)
     .filter((item) => item !== NO_COMMISSION_FEATURE && item !== DEPOSIT_FREE_FEATURE)
@@ -378,6 +382,7 @@ Page({
     const hasNewVideo = Boolean(this.data.videoPath && this.data.videoFile)
     const hasExistingVideo = this.data.mode === 'edit' && Boolean(this.data.existingVideoUrl)
     const hasVideo = hasNewVideo || hasExistingVideo
+    const videoRequired = requiresUploadVideo(form)
     const missingFields = []
     if (isBlank(community)) missingFields.push('小区名称')
     if (isBlank(building)) missingFields.push('几栋')
@@ -385,7 +390,7 @@ Page({
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(contact)) missingFields.push('房东联系方式')
     if (isBlank(rent)) missingFields.push('租金')
-    if (!hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
+    if (videoRequired && !hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
     if (missingFields.length) {
       return {
         ok: false,

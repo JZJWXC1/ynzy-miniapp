@@ -80,6 +80,10 @@ function assertNoPublicSensitiveFields(row, context) {
   assert.ok(text.indexOf('1幢') === -1, `${context} 不能返回楼栋`)
   assert.ok(text.indexOf('1单元') === -1, `${context} 不能返回单元`)
   assert.ok(text.indexOf('101室') === -1, `${context} 不能返回房号`)
+  assert.ok(text.indexOf('4-2-601D') === -1, `${context} 不能返回飞书房号`)
+  assert.ok(text.indexOf('1-1-101') === -1, `${context} 不能返回飞书房号`)
+  assert.ok(text.indexOf('336699#') === -1, `${context} 不能返回看房密码`)
+  assert.ok(text.indexOf('123456#') === -1, `${context} 不能返回看房密码`)
   assert.ok(text.indexOf('13911112222') === -1, `${context} 不能返回房东电话`)
   assert.ok(text.indexOf('13900000001') === -1, `${context} 不能返回上传人电话`)
 }
@@ -96,6 +100,23 @@ function run() {
     (error) => error.statusCode === 400 && /视频/.test(error.message),
     '新增房源必须要求 videoUrl 或 videoKey'
   )
+
+  const companyNoVideo = domain.addNormalListing(db, 'ADMIN', listingPayload({
+    communityName: '京漾东韵府',
+    community: '京漾东韵府',
+    roomNo: '102',
+    roomNumber: '102',
+    address: '杭州上城区京漾东韵府1幢1单元102室',
+    source: '公司房源',
+    companyListing: true,
+    videoKey: '',
+    videoUrl: ''
+  }), { admin: true })
+  assert.ok(domain.filterListings(db, { category: '公司房源' }).some((item) => item.id === companyNoVideo.id), '公司房源允许无视频进入前台列表')
+  const companyNoVideoDetail = domain.listingDetail(db, companyNoVideo.id)
+  assert.ok(companyNoVideoDetail, '公司房源无视频也应可打开前台详情')
+  assert.strictEqual(companyNoVideoDetail.noCommission, true, '公司房源详情必须展示无分佣')
+  assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)
@@ -126,6 +147,34 @@ function run() {
   assert.ok(realPin.listingCount >= 1, '地图点应按小区聚合房源')
   assertNoPublicSensitiveFields(realPin, '地图小区点')
   ;(realPin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '地图房源摘要'))
+
+  db.companySheetSnapshot = {
+    rows: [
+      ['区域', '小区', '房号', '户型描述', '户型分类', '押一付一', '押二付一', '看房方式密码', '备注'],
+      ['闸弄口', '京漾东韵府', '4-2-601D', '一室朝南带阳台单间', '一室', '1700', '1400', '336699#', '水30/月'],
+      ['闸弄口', '无坐标测试小区', '1-1-101', '一室', '一室', '1200', '1100', '123456#', '水电自理']
+    ],
+    updatedAt: daysAgo(0),
+    cachedAt: daysAgo(0)
+  }
+  const sheetCompanyRows = domain.filterListings(db, { category: '公司房源' })
+    .filter((item) => String(item.id || '').indexOf('CS') === 0)
+  const sheetKnownCoordinate = sheetCompanyRows.find((item) => item.community === '京漾东韵府')
+  assert.ok(sheetKnownCoordinate, '飞书快照公司房源无视频也应进入公司房源列表')
+  assert.ok(sheetCompanyRows.some((item) => item.community === '无坐标测试小区'), '无坐标飞书公司房源可进入普通公司列表')
+  sheetCompanyRows.forEach((item) => assertNoPublicSensitiveFields(item, '飞书公司房源列表'))
+  const sheetDetail = domain.listingDetail(db, sheetKnownCoordinate.id)
+  assert.ok(sheetDetail, '飞书快照公司房源应可打开前台详情')
+  assert.strictEqual(sheetDetail.noCommission, true, '飞书快照公司房源详情必须展示无分佣')
+  assert.strictEqual(sheetDetail.videoUrl, '', '飞书快照公司房源无视频时详情不能伪造视频')
+  assertNoPublicSensitiveFields(sheetDetail, '飞书公司房源详情')
+  const sheetMapPins = domain.mapPins(db, { sourceType: '公司房源' })
+  assert.ok(sheetMapPins.some((item) => item.community === '京漾东韵府'), '飞书快照公司房源命中真实小区坐标时应进入地图')
+  assert.ok(!sheetMapPins.some((item) => item.community === '无坐标测试小区'), '飞书快照公司房源无真实坐标时不能进入地图')
+  sheetMapPins.forEach((pin) => {
+    assertNoPublicSensitiveFields(pin, '飞书公司房源地图点')
+    ;(pin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '飞书公司房源地图摘要'))
+  })
 
   const clientCoordinateListing = domain.addNormalListing(db, 'U1', listingPayload({
     communityName: '北海公园',

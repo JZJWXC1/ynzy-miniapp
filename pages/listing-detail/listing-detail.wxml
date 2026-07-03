@@ -1,37 +1,33 @@
 <navigation-bar title="房源详情" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell detail-page">
-    <view class="video-card">
-      <video
-        wx:if="{{listing.videoUrl}}"
-        class="listing-video"
-        src="{{listing.videoUrl}}"
-        controls
-        show-center-play-btn
-        object-fit="cover"
-      ></video>
-      <view wx:else class="video-placeholder">
-        <view class="play">▶</view>
-        <view class="video-title">{{listing.videoLabel}}</view>
-        <view class="video-sub">普通房源只允许视频上传</view>
+    <block wx:if="{{listing.videoUrl}}">
+      <view class="video-card">
+        <video
+          class="listing-video"
+          src="{{listing.videoUrl}}"
+          controls
+          show-center-play-btn
+          object-fit="cover"
+        ></video>
       </view>
-    </view>
 
-    <view class="video-share-card">
-      <view class="video-share-copy">
-        <view class="video-share-title">转发房间视频给租客</view>
-        <view class="video-share-sub">{{shareStateText}}</view>
+      <view class="video-share-card">
+        <view class="video-share-copy">
+          <view class="video-share-title">转发房间视频给租客</view>
+          <view class="video-share-sub">{{shareStateText}}</view>
+        </view>
+        <button
+          class="video-share-button"
+          open-type="share"
+          data-share-type="tenant-video"
+          bindtap="prepareVideoShare"
+          disabled="{{!canShareVideo}}"
+        >
+          一键转发
+        </button>
       </view>
-      <button
-        class="video-share-button"
-        open-type="share"
-        data-share-type="tenant-video"
-        bindtap="prepareVideoShare"
-        disabled="{{!canShareVideo}}"
-      >
-        一键转发
-      </button>
-    </view>
+    </block>
 
     <view class="detail-card soft-card">
       <view class="detail-head">
