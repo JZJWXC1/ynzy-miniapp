@@ -56,7 +56,76 @@ scp @sshArgs $zipPath "${sshTarget}:/tmp/ynzy-miniapp.zip"
 if ($LASTEXITCODE -ne 0) {
   throw "Upload failed: scp exited with code $LASTEXITCODE"
 }
-ssh @sshArgs $sshTarget "BACKUP_DIR=/tmp/ynzy-miniapp-backup-`$(date +%s) && mkdir -p `$BACKUP_DIR/server && if [ -f $RemoteDir/server/.env ]; then cp $RemoteDir/server/.env `$BACKUP_DIR/server/.env; fi && if [ -d $RemoteDir/server/data ]; then mkdir -p `$BACKUP_DIR/server && cp -a $RemoteDir/server/data `$BACKUP_DIR/server/data; fi && if [ -d $RemoteDir/server/certs ]; then cp -a $RemoteDir/server/certs `$BACKUP_DIR/server/certs; fi && for file in $RemoteDir/lark-*.json; do if [ -f `"`$file`" ]; then cp `"`$file`" `$BACKUP_DIR/; fi; done && mkdir -p $RemoteDir && rm -rf $RemoteDir/* && unzip -o /tmp/ynzy-miniapp.zip -d $RemoteDir && if [ -f `$BACKUP_DIR/server/.env ]; then cp `$BACKUP_DIR/server/.env $RemoteDir/server/.env; fi && if [ -d `$BACKUP_DIR/server/data ]; then mkdir -p $RemoteDir/server && rm -rf $RemoteDir/server/data && cp -a `$BACKUP_DIR/server/data $RemoteDir/server/data; fi && if [ -d `$BACKUP_DIR/server/certs ]; then mkdir -p $RemoteDir/server && rm -rf $RemoteDir/server/certs && cp -a `$BACKUP_DIR/server/certs $RemoteDir/server/certs; fi && for file in `$BACKUP_DIR/lark-*.json; do if [ -f `"`$file`" ]; then cp `"`$file`" $RemoteDir/; fi; done && chmod +x $RemoteDir/deploy/install-on-server.sh && APP_DIR=$RemoteDir $RemoteDir/deploy/install-on-server.sh"
+
+$remoteScript = @"
+set -euo pipefail
+
+REMOTE_DIR="$RemoteDir"
+case "`$REMOTE_DIR" in
+  ""|"/"|"/opt"|"/opt/")
+    echo "Refuse unsafe REMOTE_DIR=`$REMOTE_DIR" >&2
+    exit 1
+    ;;
+esac
+
+BACKUP_DIR="/tmp/ynzy-miniapp-backup-`$(date +%s)"
+STAGE_DIR="/tmp/ynzy-miniapp-release-`$(date +%s)"
+mkdir -p "`$BACKUP_DIR/server" "`$STAGE_DIR"
+
+if [ -f "`$REMOTE_DIR/server/.env" ]; then
+  cp "`$REMOTE_DIR/server/.env" "`$BACKUP_DIR/server/.env"
+fi
+if [ -d "`$REMOTE_DIR/server/data" ]; then
+  cp -a "`$REMOTE_DIR/server/data" "`$BACKUP_DIR/server/data"
+fi
+if [ -d "`$REMOTE_DIR/server/certs" ]; then
+  cp -a "`$REMOTE_DIR/server/certs" "`$BACKUP_DIR/server/certs"
+fi
+for file in "`$REMOTE_DIR"/lark-*.json; do
+  if [ -f "`$file" ]; then
+    cp "`$file" "`$BACKUP_DIR/"
+  fi
+done
+
+unzip -oq /tmp/ynzy-miniapp.zip -d "`$STAGE_DIR"
+mkdir -p "`$REMOTE_DIR/server" "`$REMOTE_DIR/utils"
+
+rm -rf "`$REMOTE_DIR/server/src" "`$REMOTE_DIR/server/scripts" "`$REMOTE_DIR/admin-web" "`$REMOTE_DIR/deploy"
+cp -a "`$STAGE_DIR/server/src" "`$REMOTE_DIR/server/src"
+cp -a "`$STAGE_DIR/server/scripts" "`$REMOTE_DIR/server/scripts"
+cp -a "`$STAGE_DIR/admin-web" "`$REMOTE_DIR/admin-web"
+cp -a "`$STAGE_DIR/deploy" "`$REMOTE_DIR/deploy"
+cp "`$STAGE_DIR/server/package.json" "`$REMOTE_DIR/server/package.json"
+cp "`$STAGE_DIR/server/README.md" "`$REMOTE_DIR/server/README.md"
+cp "`$STAGE_DIR/utils/mock-data.js" "`$REMOTE_DIR/utils/mock-data.js"
+
+if [ -f "`$STAGE_DIR/server/.env" ]; then
+  cp "`$STAGE_DIR/server/.env" "`$REMOTE_DIR/server/.env"
+elif [ -f "`$BACKUP_DIR/server/.env" ] && [ ! -f "`$REMOTE_DIR/server/.env" ]; then
+  cp "`$BACKUP_DIR/server/.env" "`$REMOTE_DIR/server/.env"
+fi
+if [ -d "`$STAGE_DIR/server/data" ]; then
+  rm -rf "`$REMOTE_DIR/server/data"
+  cp -a "`$STAGE_DIR/server/data" "`$REMOTE_DIR/server/data"
+elif [ -d "`$BACKUP_DIR/server/data" ] && [ ! -d "`$REMOTE_DIR/server/data" ]; then
+  cp -a "`$BACKUP_DIR/server/data" "`$REMOTE_DIR/server/data"
+fi
+if [ -d "`$BACKUP_DIR/server/certs" ] && [ ! -d "`$REMOTE_DIR/server/certs" ]; then
+  cp -a "`$BACKUP_DIR/server/certs" "`$REMOTE_DIR/server/certs"
+fi
+for file in "`$BACKUP_DIR"/lark-*.json; do
+  if [ -f "`$file" ] && [ ! -f "`$REMOTE_DIR/`$(basename "`$file")" ]; then
+    cp "`$file" "`$REMOTE_DIR/"
+  fi
+done
+
+rm -rf "`$STAGE_DIR"
+chmod +x "`$REMOTE_DIR/deploy/install-on-server.sh"
+APP_DIR="`$REMOTE_DIR" "`$REMOTE_DIR/deploy/install-on-server.sh"
+echo "Backup kept at `$BACKUP_DIR"
+"@
+
+$remoteScript | ssh @sshArgs $sshTarget "bash -s"
 if ($LASTEXITCODE -ne 0) {
   throw "Remote deploy failed: ssh exited with code $LASTEXITCODE"
 }
