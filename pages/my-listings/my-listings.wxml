@@ -63,6 +63,32 @@
         <view class="empty-title">{{emptyTitle}}</view>
         <view class="empty-desc">{{emptyDesc}}</view>
       </view>
+      <block wx:if="{{isCompanyMode}}">
+        <view wx:for="{{listings}}" wx:key="id" class="company-listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
+          <view class="company-listing-media">
+            <view class="company-video-badge">{{item.videoUrl || item.videoKey || item.video || item.hasVideo ? '视频' : '缺视频'}}</view>
+            <image wx:if="{{item.coverUrl || item.videoCoverUrl || item.thumbnailUrl || item.coverImage}}" class="company-media-image" src="{{item.coverUrl || item.videoCoverUrl || item.thumbnailUrl || item.coverImage}}" mode="aspectFill"></image>
+            <view wx:else class="company-media-window"></view>
+          </view>
+          <view class="company-listing-body">
+            <view class="company-title-row">
+              <text wx:if="{{item.rentMode === '整租'}}" class="company-rent-mode-badge">整</text>
+              <text class="company-listing-title">{{item.title}}</text>
+            </view>
+            <view class="company-listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber || item.block}}</view>
+            <view class="company-listing-sub">{{item.layout}} · {{item.sourceLabel || '公司房源'}} · {{item.status}}</view>
+            <view wx:if="{{item.features}}" class="listing-feature-row">
+              <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+              <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+            </view>
+            <view class="company-listing-bottom">
+              <view class="company-price">{{item.displayRentText}}</view>
+              <view class="company-commission">{{item.tag || item.sourceLabel || '公司房源'}}</view>
+            </view>
+          </view>
+        </view>
+      </block>
+      <block wx:else>
       <view wx:for="{{listings}}" wx:key="id" class="owner-listing soft-card" bindtap="openListing" data-id="{{item.id}}">
         <view class="listing-info">
           <view class="listing-title">{{item.title}}</view>
@@ -86,6 +112,7 @@
           <view class="arrow">›</view>
         </view>
       </view>
+      </block>
     </view>
   </view>
 </scroll-view>

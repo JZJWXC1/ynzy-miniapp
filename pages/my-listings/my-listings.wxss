@@ -233,6 +233,119 @@ page {
   flex-wrap: wrap;
 }
 
+.company-listing-card {
+  display: flex;
+  align-items: stretch;
+  gap: 18rpx;
+  padding: 18rpx;
+}
+
+.company-listing-media {
+  flex: 0 0 190rpx;
+  min-height: 168rpx;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #d8f4f8, #fff6d8);
+  border-radius: 18rpx;
+}
+
+.company-media-image {
+  width: 100%;
+  height: 100%;
+  min-height: 168rpx;
+}
+
+.company-media-window {
+  position: absolute;
+  inset: 42rpx 28rpx 24rpx;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1rpx solid rgba(47, 111, 96, 0.18);
+  border-radius: 16rpx;
+}
+
+.company-video-badge {
+  position: absolute;
+  left: 14rpx;
+  top: 14rpx;
+  z-index: 1;
+  padding: 6rpx 12rpx;
+  color: #153f36;
+  font-size: 20rpx;
+  font-weight: 900;
+  background: #f6bd36;
+  border-radius: 999rpx;
+}
+
+.company-listing-body {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.company-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10rpx;
+}
+
+.company-rent-mode-badge {
+  flex: 0 0 34rpx;
+  width: 34rpx;
+  height: 34rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2rpx;
+  color: #ffffff;
+  font-size: 22rpx;
+  font-weight: 900;
+  line-height: 1;
+  background: #c0392b;
+  border-radius: 6rpx;
+}
+
+.company-listing-title {
+  min-width: 0;
+  color: #153f36;
+  font-size: 30rpx;
+  font-weight: 900;
+  line-height: 1.28;
+}
+
+.company-listing-meta,
+.company-listing-sub {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 23rpx;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.company-listing-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.company-price {
+  color: #153f36;
+  font-size: 30rpx;
+  font-weight: 900;
+}
+
+.company-commission {
+  min-height: 46rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 14rpx;
+  color: #2f6f60;
+  font-size: 21rpx;
+  font-weight: 900;
+  background: #e9f5f0;
+  border-radius: 999rpx;
+}
+
 .listing-info {
   flex: 1 1 100%;
   min-width: 0;
