@@ -6,8 +6,8 @@ const PENDING_LISTING_FILTERS_KEY = 'ynzy_pending_listing_filters'
 const LISTING_TAB_URL = '/pages/listings/listings'
 
 const DEFAULT_CENTER = {
-  latitude: 30.3192,
-  longitude: 120.1694
+  latitude: 30.308325,
+  longitude: 120.175849
 }
 
 const RENT_FILTERS = [
@@ -188,7 +188,7 @@ Page({
       this.loadCommunities({ recenter: true })
       return
     }
-    this.loadCommunities({ recenter: !this.data.communities.length })
+    this.loadCommunities({ recenter: false })
   },
 
   setTabBarSelected() {
@@ -395,15 +395,40 @@ Page({
   },
 
   resetCenter() {
-    const center = this.data.communities.length
-      ? { latitude: this.data.communities[0].latitude, longitude: this.data.communities[0].longitude }
-      : DEFAULT_CENTER
     this.setData({
       selectedCommunityId: '',
       selectedCommunity: null,
-      mapCenter: center,
-      mapScale: this.data.communities.length ? 14 : 13,
+      mapCenter: DEFAULT_CENTER,
+      mapScale: 13,
       showSearchCurrentArea: false
+    })
+  },
+
+  locateToMe() {
+    wx.getLocation({
+      type: 'gcj02',
+      success: (res) => {
+        this.setData({
+          selectedCommunityId: '',
+          selectedCommunity: null,
+          mapCenter: {
+            latitude: Number(res.latitude),
+            longitude: Number(res.longitude)
+          },
+          mapScale: 15,
+          showSearchCurrentArea: false
+        })
+      },
+      fail: () => {
+        this.setData({
+          selectedCommunityId: '',
+          selectedCommunity: null,
+          mapCenter: DEFAULT_CENTER,
+          mapScale: 13,
+          showSearchCurrentArea: false
+        })
+        wx.showToast({ title: '未获得定位权限，已停留在默认位置', icon: 'none' })
+      }
     })
   },
 

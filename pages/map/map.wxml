@@ -48,6 +48,7 @@
       bindcallouttap="handleMarkerTap"
     >
       <cover-view wx:if="{{showSearchCurrentArea}}" class="search-area" bindtap="searchCurrentRegion">搜索当前区域</cover-view>
+      <cover-view class="locate-me" bindtap="locateToMe">我的位置</cover-view>
       <cover-view class="reset-map" bindtap="resetCenter">重置</cover-view>
     </map>
     <view wx:if="{{!loading && !communities.length}}" class="map-empty">{{emptyText}}</view>
