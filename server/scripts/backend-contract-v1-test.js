@@ -144,6 +144,8 @@ function run() {
   assert.strictEqual(adminSecondLandlordRaw.commissionRate, 15, '管理员上传二房东房源仍按二房东类型记录上传人到手比例')
 
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
+  assert.ok(domain.filterListings(db, { rentMode: '整租' }).some((item) => item.id === created.id), '前台列表应支持整租筛选')
+  assert.ok(!domain.filterListings(db, { rentMode: '合租' }).some((item) => item.id === created.id), '整租房源不应出现在合租筛选结果')
   const matchRow = domain.matchListings(db, { area: '半山家苑' }).listings.find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
   assert.ok(listRow && matchRow && detailRow, '前台列表、匹配和详情应返回有效房源')

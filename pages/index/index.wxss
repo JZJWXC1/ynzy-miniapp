@@ -958,7 +958,30 @@ page {
   flex: 1 1 auto;
 }
 
+.listing-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10rpx;
+}
+
+.rent-mode-badge {
+  flex: 0 0 34rpx;
+  width: 34rpx;
+  height: 34rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2rpx;
+  color: #ffffff;
+  font-size: 22rpx;
+  font-weight: 900;
+  line-height: 1;
+  background: #c0392b;
+  border-radius: 6rpx;
+}
+
 .listing-title {
+  min-width: 0;
   color: #153f36;
   font-size: 29rpx;
   font-weight: 900;

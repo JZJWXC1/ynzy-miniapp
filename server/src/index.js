@@ -811,6 +811,8 @@ async function handleMini(req, res, pathname, searchParams) {
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',
       layout: searchParams.get('layout') || '',
+      rentMode: searchParams.get('rentMode') || '',
+      rentMin: searchParams.get('rentMin') || '',
       rentMax: searchParams.get('rentMax') || ''
     }
     if (isGuestUser(userId)) {

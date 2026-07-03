@@ -246,17 +246,35 @@ function inferRentMode(fields, layoutText) {
   return '整租'
 }
 
+function parseLayoutDescription(fields) {
+  const description = firstField(fields, ['户型描述', '描述', '房源描述', '户型信息', '房源信息', '房源详情', 'layoutDescription', 'description'])
+  const fallback = firstField(fields, ['户型', '格局', 'layout', 'category']) || firstField(fields, ['备注', 'remark'])
+  const source = description || fallback
+  const wholeRentPrefix = /^\s*[（(]\s*整\s*[）)]\s*/
+  if (description) {
+    return {
+      layoutText: source.replace(wholeRentPrefix, '').trim(),
+      rentMode: wholeRentPrefix.test(source) ? '整租' : '合租'
+    }
+  }
+  return {
+    layoutText: source,
+    rentMode: inferRentMode(fields, source)
+  }
+}
+
 function normalizeRecord(rawRecord, index) {
   const fields = stripSensitiveFields(rawRecord.fields || rawRecord)
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
   const roomParts = parseRoomParts(fields)
   const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
   const externalId = firstField(fields, ['房源编号', '唯一编号', '编号', 'ID', 'id', 'importKey', 'record_id']) || rawRecord.record_id || fallbackKey
-  const layoutText = firstField(fields, ['户型', '格局', 'layout', 'category']) || firstField(fields, ['备注', 'remark'])
+  const parsedLayout = parseLayoutDescription(fields)
+  const layoutText = parsedLayout.layoutText
   const statusText = firstField(fields, ['状态', '房源状态', '出租状态', '上下架', '是否上架', '是否下架', 'status'])
   const upFlagText = firstField(fields, ['是否上架', '上架'])
   const downFlagText = firstField(fields, ['是否下架', '下架'])
-  const rentMode = inferRentMode(fields, layoutText)
+  const rentMode = parsedLayout.rentMode
   const room = firstField(fields, ['室', '卧室', 'room', 'bedroom']) || inferRoom(layoutText)
   const hall = firstField(fields, ['厅', 'hall', 'livingRoom']) || inferHall(layoutText)
   const bath = firstField(fields, ['卫', 'bath', 'bathroom']) || inferBath(layoutText)
@@ -276,7 +294,7 @@ function normalizeRecord(rawRecord, index) {
     roomNumber: roomParts.roomNumber,
     contact: '公司统一维护',
     rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
-    layout: [rentMode, room, hall, bath].filter(Boolean).join(''),
+    layout: layoutText || [room, hall, bath].filter(Boolean).join(''),
     rentMode,
     room,
     hall,

@@ -75,6 +75,29 @@ async function main() {
   assert.ok(!snapshotText.includes('13900001111'), '快照不能保留联系电话内容')
   assert.ok(!snapshotText.includes('看房方式密码'), '快照不能保留看房密码列')
   assert.ok(!snapshotText.includes('336699'), '快照不能保留看房密码内容')
+
+  const parsedWholeRent = feishuSync.normalizeRecord(row({
+    区域: '闸弄口',
+    小区: '京漾东韵府',
+    几栋: '1',
+    几单元: '2',
+    房号: '602',
+    户型描述: '（整）一室一厅一卫',
+    押一付一: '3000'
+  }), 0)
+  assert.strictEqual(parsedWholeRent.rentMode, '整租', '户型描述以（整）开头应解析为整租')
+  assert.strictEqual(parsedWholeRent.layout, '一室一厅一卫', '整租前缀不应写入户型净值')
+
+  const parsedSharedRent = feishuSync.normalizeRecord(row({
+    区域: '闸弄口',
+    小区: '京漾东韵府',
+    几栋: '1',
+    几单元: '2',
+    房号: '603A',
+    户型描述: '朝南单间带独卫',
+    押一付一: '1800'
+  }), 1)
+  assert.strictEqual(parsedSharedRent.rentMode, '合租', '户型描述没有（整）前缀应解析为合租')
 }
 
 main().then(() => {

@@ -65,6 +65,48 @@
   flex-basis: 100%;
 }
 
+.filter-segment {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-top: 16rpx;
+}
+
+.filter-segment-label {
+  flex: 0 0 auto;
+  color: #153f36;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.rent-mode-tabs {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 10rpx;
+}
+
+.rent-mode-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 58rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2f6f60;
+  font-size: 23rpx;
+  font-weight: 900;
+  background: #f7fbf8;
+  border: 1rpx solid #dce9e3;
+  border-radius: 16rpx;
+}
+
+.rent-mode-tab.active {
+  color: #ffffff;
+  background: #2f6f60;
+  border-color: #2f6f60;
+}
+
 .filter-actions {
   display: flex;
   gap: 14rpx;
@@ -148,7 +190,30 @@
   min-width: 0;
 }
 
+.listing-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10rpx;
+}
+
+.rent-mode-badge {
+  flex: 0 0 34rpx;
+  width: 34rpx;
+  height: 34rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2rpx;
+  color: #ffffff;
+  font-size: 22rpx;
+  font-weight: 900;
+  line-height: 1;
+  background: #c0392b;
+  border-radius: 6rpx;
+}
+
 .listing-title {
+  min-width: 0;
   color: #153f36;
   font-size: 30rpx;
   font-weight: 900;

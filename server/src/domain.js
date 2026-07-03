@@ -1019,6 +1019,9 @@ function formatHomeListing(db, listing) {
     price: `¥${listing.rent}/月`,
     tag: companyListing ? '公司房源' : `${commissionRateForListing(listing)}%`,
     videoUrl: listing.videoUrl || '',
+    layout: listing.layout || '',
+    rentMode: listing.rentMode || listing.type || '',
+    type: listing.type || listing.rentMode || '',
     ...display,
     ...location
   }
@@ -1058,6 +1061,8 @@ function filterListings(db, filter = {}) {
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
       if (filter.layout && String(listing.layout || '').indexOf(filter.layout) === -1) return false
+      if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
+      if (filter.rentMin && Number(listing.rent || 0) < Number(filter.rentMin)) return false
       if (filter.rentMax && Number(listing.rent || 0) > Number(filter.rentMax)) return false
       return true
     })

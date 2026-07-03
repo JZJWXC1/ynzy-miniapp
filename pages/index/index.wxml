@@ -142,7 +142,10 @@
           <view class="photo-window"></view>
         </view>
         <view class="listing-content">
-          <view class="listing-title">{{item.title}}</view>
+          <view class="listing-title-row">
+            <text wx:if="{{item.rentMode === '整租'}}" class="rent-mode-badge">整</text>
+            <text class="listing-title">{{item.title}}</text>
+          </view>
           <view class="listing-meta">{{item.meta}}</view>
           <view class="listing-sub">{{item.sub}}</view>
           <view wx:if="{{item.features}}" class="listing-feature-row">

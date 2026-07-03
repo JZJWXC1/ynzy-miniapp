@@ -373,7 +373,7 @@ Page({
 
   validateForm() {
     const form = this.data.form
-    const { community, building, unit, roomNumber, contact, rent } = form
+    const { community, building, unit, roomNumber, contact, rent, rentMode } = form
     const address = buildAddress(form)
     const layout = buildLayout(form)
     const communityMatched = isCommunityMatched(community)
@@ -388,6 +388,7 @@ Page({
     if (isBlank(building)) missingFields.push('几栋')
     if (isBlank(unit)) missingFields.push('几单元')
     if (isBlank(roomNumber)) missingFields.push('房间号')
+    if (isBlank(rentMode)) missingFields.push('租法')
     if (isBlank(contact)) missingFields.push('房东联系方式')
     if (isBlank(rent)) missingFields.push('租金')
     if (videoRequired && !hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')

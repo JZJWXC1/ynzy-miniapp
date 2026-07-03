@@ -2,18 +2,24 @@ const apiService = require('../../utils/api-service')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const categories = ['全部', '整租', '合租', '业主房源', '公寓']
+const rentModeFilters = ['不限', '整租', '合租']
 const emptyFilters = {
   needId: '',
   area: '',
   block: '',
   community: '',
   layout: '',
+  rentMode: '',
   rentMax: ''
 }
 
 function cleanFilterValue(value) {
   if (value === undefined || value === null) return ''
   return String(value)
+}
+
+function normalizeRentModeFilter(value) {
+  return value === '整租' || value === '合租' ? value : ''
 }
 
 function normalizeListingState(input = {}) {
@@ -28,6 +34,7 @@ function normalizeListingState(input = {}) {
       block: cleanFilterValue(sourceFilters.block),
       community: cleanFilterValue(sourceFilters.community),
       layout: cleanFilterValue(sourceFilters.layout),
+      rentMode: normalizeRentModeFilter(sourceFilters.rentMode),
       rentMax: cleanFilterValue(sourceFilters.rentMax),
       needId: cleanFilterValue(sourceFilters.needId || sourceFilters.rentalNeedId || sourceFilters.clientNeedId)
     }
@@ -42,6 +49,7 @@ function normalizeOptions(options = {}) {
       block: options.block ? decodeURIComponent(options.block) : '',
       community: options.community ? decodeURIComponent(options.community) : '',
       layout: options.layout ? decodeURIComponent(options.layout) : '',
+      rentMode: options.rentMode ? decodeURIComponent(options.rentMode) : '',
       rentMax: options.rentMax || '',
       needId: options.needId ? decodeURIComponent(options.needId) : ''
     }
@@ -51,6 +59,7 @@ function normalizeOptions(options = {}) {
 Page({
   data: {
     categories,
+    rentModeFilters,
     category: '全部',
     filters: {
       needId: '',
@@ -58,6 +67,7 @@ Page({
       block: '',
       community: '',
       layout: '',
+      rentMode: '',
       rentMax: ''
     },
     listings: [],
@@ -116,6 +126,13 @@ Page({
     this.setData({ category }, () => this.loadListings())
   },
 
+  switchRentMode(event) {
+    const mode = event.currentTarget.dataset.mode || ''
+    this.setData({
+      'filters.rentMode': mode === '不限' ? '' : mode
+    }, () => this.loadListings())
+  },
+
   applyFilters() {
     this.loadListings()
   },
@@ -128,6 +145,7 @@ Page({
         block: '',
         community: '',
         layout: '',
+        rentMode: '',
         rentMax: ''
       }
     }, () => this.loadListings())
