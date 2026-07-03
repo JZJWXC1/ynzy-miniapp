@@ -125,6 +125,7 @@ APP_DIR="`$REMOTE_DIR" "`$REMOTE_DIR/deploy/install-on-server.sh"
 echo "Backup kept at `$BACKUP_DIR"
 "@
 
+$remoteScript = $remoteScript -replace "`r`n", "`n"
 $remoteScript | ssh @sshArgs $sshTarget "bash -s"
 if ($LASTEXITCODE -ne 0) {
   throw "Remote deploy failed: ssh exited with code $LASTEXITCODE"
