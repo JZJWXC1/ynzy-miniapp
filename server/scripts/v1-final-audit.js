@@ -306,6 +306,7 @@ function checkAdminReportDealContract() {
   const domainSource = readText('server/src/domain.js')
   const detailWxml = readText('pages/listing-detail/listing-detail.wxml')
   const listingDisplaySource = readText('utils/listing-display.js')
+  const configSource = readText('server/src/config.js')
   const requiredIndexFragments = [
     "pathname === '/mini/reports'",
     "pathname === '/mini/deals'",
@@ -338,6 +339,12 @@ function checkAdminReportDealContract() {
   assertOk(domainSource.includes('commissionRecord: null'), '公司房源确认签单必须返回空分佣记录')
   assertOk(listingDisplaySource.includes('COMPANY_COMMISSION_TEXT'), '前端房源归一化必须保留公司房源分佣文案')
   assertOk(detailWxml.includes("listing.noCommission ? 'no-commission' : ''"), '详情页黄条必须按 noCommission 区分样式')
+  assertOk(configSource.includes('COMPANY_CONTACT_PHONES'), '公司看房电话必须来自服务端配置')
+  assertOk(domainSource.includes('companyContactPhones') && domainSource.includes('companyContactPhoneText'), '公司房源详情必须下发公司看房电话')
+  assertOk(domainSource.includes('sensitiveLocked: !display.companyListing'), '公司房源详情必须直接公开地址电话')
+  assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="need-bind-row'), '公司房源详情必须隐藏需求单提示')
+  assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="primary-button"'), '公司房源详情必须隐藏查看地址电话按钮')
+  assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="showing-action-card'), '公司房源详情必须隐藏水印拍照区块')
   return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在，公司房源不生成分佣记录'
 }
 

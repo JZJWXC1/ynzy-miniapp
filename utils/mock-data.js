@@ -13,6 +13,7 @@
   var COMPANY_SOURCE = '公司房源';
   var V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
+  var COMPANY_CONTACT_PHONES = ['19941091943', '18758141785', '13282125992'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var BROKER_ROLE = '中介';
@@ -937,6 +938,8 @@
     if (isExpiredListing(listing) || isPendingOwnerReview(listing)) return null;
     var uploader = getUser(listing.uploaderId) || {};
     var location = listingLocationFields(listing);
+    var companyListing = isCompanyListing(listing);
+    var companyContactText = COMPANY_CONTACT_PHONES.join('/');
     return Object.assign({
       id: listing.id,
       title: listing.title,
@@ -954,9 +957,12 @@
       roomNumber: location.roomNumber,
       locationSummary: location.locationSummary,
       roomAddress: location.roomAddress,
-      address: '确认留痕后可查看',
-      landlordPhone: '确认留痕后可查看',
-      sensitiveLocked: true,
+      address: companyListing ? (listing.address || [location.locationSummary, location.roomAddress].filter(Boolean).join('')) : '确认留痕后可查看',
+      landlordPhone: companyListing ? companyContactText : '确认留痕后可查看',
+      contact: companyListing ? companyContactText : '',
+      companyContactPhones: companyListing ? COMPANY_CONTACT_PHONES.slice() : [],
+      companyContactPhoneText: companyListing ? companyContactText : '',
+      sensitiveLocked: !companyListing,
       commissionRate: listing.commissionRate,
       videoLabel: listing.videoLabel,
       videoUrl: listing.videoUrl || '',

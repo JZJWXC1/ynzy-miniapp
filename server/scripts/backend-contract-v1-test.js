@@ -125,6 +125,9 @@ function run() {
   assert.strictEqual(companyNoVideoDetail.noCommission, true, '公司房源详情必须展示无分佣')
   assert.strictEqual(companyNoVideoDetail.commissionText, '公司房源成交不抽佣，带看中介全佣', '公司房源详情必须展示带看中介全佣文案')
   assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
+  assert.strictEqual(companyNoVideoDetail.sensitiveLocked, false, '公司房源详情地址电话必须直接公开')
+  assert.deepStrictEqual(companyNoVideoDetail.companyContactPhones, ['19941091943', '18758141785', '13282125992'], '公司房源详情必须下发服务端配置电话')
+  assert.strictEqual(companyNoVideoDetail.landlordPhone, '19941091943/18758141785/13282125992', '公司房源详情电话必须使用公司看房电话')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)

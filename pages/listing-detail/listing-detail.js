@@ -163,12 +163,13 @@ Page({
         String(user.role || '').indexOf('中介') !== -1
       )
       const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
+      const companyListing = Boolean(listing && listing.companyListing)
       this.setData({
         listing,
         logs,
-        sensitiveVisible: false,
+        sensitiveVisible: companyListing,
         isVerified: canTrySensitive,
-        sensitiveAuthLabel: canTrySensitive ? '可查看' : '需实名',
+        sensitiveAuthLabel: companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名'),
         canShareVideo,
         shareBrokerName: user.name || '',
         shareStateText: canShareVideo

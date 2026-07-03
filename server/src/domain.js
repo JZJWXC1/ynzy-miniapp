@@ -1,4 +1,5 @@
 const { clone } = require('./db')
+const config = require('./config')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const locationMap = require('./location-map')
@@ -3107,7 +3108,11 @@ function publicListingLocationFields(listing = {}) {
 function companyPublicListingFields(listing = {}) {
   if (!isCompanyListing(listing)) return {}
   const location = listingLocationFields(listing)
-  const contact = firstText(listing.contact, listing.feishuContact, listing.landlordPhone)
+  const companyPhones = ((config.company && config.company.contactPhones) || [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  const companyPhoneText = companyPhones.join('/')
+  const contact = companyPhoneText || firstText(listing.contact, listing.feishuContact, listing.landlordPhone)
   const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
   const remark = firstText(listing.remark, listing.note, listing.memo)
   const room = firstText(listing.roomAddress, location.roomAddress)
@@ -3120,6 +3125,8 @@ function companyPublicListingFields(listing = {}) {
     address,
     contact,
     landlordPhone: contact,
+    companyContactPhones: companyPhones,
+    companyContactPhoneText: contact,
     viewingPassword,
     showingPassword: viewingPassword,
     remark

@@ -223,7 +223,7 @@ async function run() {
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
     assert.strictEqual(companyDetail.statusCode, 200, '匿名公司房源详情应返回 200')
     assert.strictEqual(dataOf(companyDetail).companyListing, true, '匿名详情只能打开公司房源')
-    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('13922223333'), '匿名公司房源详情应返回公司联系方式')
+    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('19941091943/18758141785/13282125992'), '匿名公司房源详情应返回公司看房电话')
     assert.ok(JSON.stringify(dataOf(companyDetail)).includes('246810#'), '匿名公司房源详情应返回公司看房密码')
 
     const partnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER')

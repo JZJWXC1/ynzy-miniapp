@@ -38,6 +38,16 @@ function boolFromEnv(name, fallback = false) {
   return /^(1|true|yes|on|是)$/i.test(String(value).trim())
 }
 
+function listFromEnv(name, fallback = []) {
+  const value = process.env[name]
+  const source = value === undefined || value === ''
+    ? fallback
+    : String(value).split(/[,\s/|，、]+/)
+  return source
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+}
+
 function jsonValue(filePath, key) {
   if (!fs.existsSync(filePath)) return ''
   try {
@@ -111,6 +121,9 @@ module.exports = {
     uploadDomain: process.env.MINI_UPLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com',
     socketDomain: process.env.MINI_SOCKET_DOMAIN || process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
     downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
+  },
+  company: {
+    contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', ['19941091943', '18758141785', '13282125992'])
   },
   location: {
     districtBlocks,
