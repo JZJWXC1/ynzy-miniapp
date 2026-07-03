@@ -149,6 +149,57 @@ function checkFrontendVerifyRule() {
   return '前端与 Mock 房态自动失效均为 7 天'
 }
 
+function checkMiniProgramDataSources() {
+  const appSource = readText('app.js')
+  const deploySource = readText('utils/deploy-config.js')
+  assertOk(
+    /systemInfo\.platform\s*===\s*'devtools'\s*&&\s*deployConfig\.useLocalInDevtools/.test(appSource),
+    'app.js 开发者工具本地源必须由 deployConfig.useLocalInDevtools 显式控制'
+  )
+  assertOk(
+    !/systemInfo\.platform\s*===\s*'devtools'\s*\)\s*\{\s*next\.env\s*=\s*'local'/m.test(appSource),
+    'app.js 不能在开发者工具中无条件切到本机接口'
+  )
+  assertOk(/env:\s*'prod'/.test(deploySource), 'utils/deploy-config.js 默认环境必须为 prod')
+  assertOk(/baseUrl:\s*'https:\/\/zf-api\.ynzyqbot\.cn'/.test(deploySource), 'utils/deploy-config.js 默认必须指向生产 HTTPS 接口')
+  assertOk(/useLocalInDevtools:\s*false/.test(deploySource), 'utils/deploy-config.js 不能默认打开开发者工具本地源')
+
+  const pageFiles = [
+    'pages/index/index.js',
+    'pages/my-listings/my-listings.js',
+    'pages/listings/listings.js',
+    'pages/map/map.js',
+    'pages/match-chat/match-chat.js',
+    'pages/match/match.js',
+    'pages/listing-detail/listing-detail.js'
+  ]
+  const directMockPages = pageFiles.filter((file) => /mock-data|mockData|dataCenter/.test(readText(file)))
+  assertOk(!directMockPages.length, `小程序核心找房页面不能直接读取 mock 源：${directMockPages.join('、')}`)
+
+  const sourceContracts = [
+    ['首页推荐', 'pages/index/index.js', 'apiService.getHomeListings('],
+    ['公司房源专区', 'pages/my-listings/my-listings.js', 'apiService.getListings(query)'],
+    ['全部房源', 'pages/listings/listings.js', 'apiService.getListings('],
+    ['地图', 'pages/map/map.js', 'apiService.getMapCommunities('],
+    ['找房助手候选', 'pages/match-chat/match-chat.js', 'llmService.chatAssistant('],
+    ['找房助手确认匹配', 'pages/match/match.js', 'llmService.matchRentalNeed('],
+    ['房源详情', 'pages/listing-detail/listing-detail.js', 'apiService.getListingDetail(id)']
+  ]
+  const missingContracts = sourceContracts
+    .filter(([, file, fragment]) => !readText(file).includes(fragment))
+    .map(([name]) => name)
+  assertOk(!missingContracts.length, `以下页面未命中同步库接口调用契约：${missingContracts.join('、')}`)
+
+  const llmSource = readText('utils/llm-service.js')
+  assertOk(llmSource.includes("path: '/mini/assistant/chat'"), '找房助手对话必须调用后端 /mini/assistant/chat')
+  assertOk(llmSource.includes("path: '/mini/llm/match'"), '找房助手候选必须调用后端 /mini/llm/match')
+  assertOk(
+    /function shouldUseLocalFallbackAfterError\(\)\s*\{\s*return shouldUseMock\(getRuntimeConfig\(\)\)\s*\}/.test(llmSource),
+    '找房助手网络失败后只能在 mock 环境使用本地候选兜底'
+  )
+  return '核心找房页面均经统一 API 读取同步库，mock 仅在 env=mock 时启用'
+}
+
 function checkV1DocsMaintenanceRule() {
   const files = [
     '需求.md',
@@ -210,6 +261,7 @@ const checks = [
   ['关键 V1 脚本存在', checkCriticalScriptsExist],
   ['第一版可见入口不暴露历史关键词', checkLegacyVisibleEntryKeywords],
   ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
+  ['小程序核心找房页面读取同步库', checkMiniProgramDataSources],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]

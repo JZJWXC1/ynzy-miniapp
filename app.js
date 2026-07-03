@@ -6,9 +6,9 @@ function resolveRuntimeApiConfig() {
   const next = Object.assign({}, DEFAULT_API_CONFIG, deployConfig)
   try {
     const systemInfo = wx.getSystemInfoSync ? wx.getSystemInfoSync() : {}
-    if (systemInfo.platform === 'devtools') {
-      next.env = 'local'
-      next.baseUrl = 'http://127.0.0.1:3000'
+    if (systemInfo.platform === 'devtools' && deployConfig.useLocalInDevtools) {
+      next.env = deployConfig.devtoolsEnv || 'local'
+      next.baseUrl = deployConfig.devtoolsBaseUrl || 'http://127.0.0.1:3000'
     }
   } catch (error) {}
   return next
