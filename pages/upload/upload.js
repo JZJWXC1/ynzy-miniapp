@@ -121,8 +121,8 @@ Page({
     hallOptions: ['0厅', '1厅', '2厅', '3厅', '4厅', '5厅', '6厅'],
     bathOptions: ['公卫', '1卫', '2卫', '3卫', '4卫', '5卫', '6卫'],
     ownerTypeOptions: [
-      { value: '二房东房源', title: '二房东房源', desc: '普通上架，按房态规则维护' },
-      { value: '业主房源', title: '业主房源', desc: '提交后需管理员审核通过才上架' }
+      { value: '二房东房源', title: '二房东房源', desc: '合作房源，可按房态规则维护' },
+      { value: '业主房源', title: '业主房源', desc: '合作房源，提交后需管理员审核通过才上架' }
     ],
     featureOptions: buildFeatureOptions(defaultForm.features),
     communitySuggestions: [],
@@ -533,7 +533,7 @@ Page({
         })
         wx.showModal({
           title: '上传成功',
-          content: '房源已提交。若小区或业主房源需要审核，通过后会展示给中介找房使用。',
+          content: '房源已提交。若小区或业主合作房源需要审核，通过后会展示给中介找房使用。',
           cancelText: '继续上传',
           confirmText: '查看房源',
           success: (res) => {
@@ -573,10 +573,10 @@ Page({
       if (this.data.form.ownerType === '业主房源') reviewReasons.push('业主房源需管理员审核通过后才上架')
       if (validation.needsManualReview) reviewReasons.push('小区未匹配小区库，需管理员审核通过后才上架')
     }
-    const normalTip = this.data.mode === 'edit' ? '保存后将更新该房源展示信息。' : '提交后进入普通房源库。'
+    const normalTip = this.data.mode === 'edit' ? '保存后将更新该房源展示信息。' : '提交后进入合作房源库。'
     const listingTip = this.data.form.companyListing
       ? '公司房源仅管理员维护。'
-      : `${this.data.form.ownerType || '二房东房源'}，${reviewReasons.length ? `${reviewReasons.join('；')}。` : normalTip}`
+      : `合作房源 / ${this.data.form.ownerType || '二房东房源'}，${reviewReasons.length ? `${reviewReasons.join('；')}。` : normalTip}`
 
     wx.showModal({
       title: this.data.mode === 'edit' ? '确认修改房源' : '确认上传房源',

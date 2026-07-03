@@ -9,8 +9,7 @@ const LISTING_FEATURE_OPTIONS = [
   '独卫',
   '朝南',
   '带阳台',
-  '可带看',
-  '急租',
+  '带露台（阁楼）',
   '可短租',
   '可月付',
   '干湿分离',
@@ -23,6 +22,8 @@ const LISTING_FEATURE_OPTIONS = [
 const LEGACY_LISTING_FEATURE_OPTIONS = [
   '整租',
   '合租',
+  '可带看',
+  '急租',
   DEPOSIT_FREE_FEATURE,
   NO_COMMISSION_FEATURE
 ]

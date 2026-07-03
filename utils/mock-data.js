@@ -23,8 +23,7 @@
     { name: '带阳台', pattern: /阳台/ },
     { name: '干湿分离', pattern: /干湿分离/ },
     { name: '燃气', pattern: /燃气|天然气|煤气/ },
-    { name: '阁楼', pattern: /阁楼/ },
-    { name: '露台', pattern: /露台/ },
+    { name: '带露台（阁楼）', pattern: /阁楼|露台|带露台/ },
     { name: '花园', pattern: /花园/ },
     { name: '近地铁', pattern: /近地铁|地铁口|地铁站|号线/ },
     { name: '朝南', pattern: /朝南|南向/ },
@@ -36,6 +35,7 @@
   ];
   var LISTING_FEATURE_OPTIONS = [
     '带阳台',
+    '带露台（阁楼）',
     '干湿分离',
     '燃气',
     '阁楼',

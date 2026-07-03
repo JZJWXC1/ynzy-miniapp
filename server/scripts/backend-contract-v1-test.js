@@ -1,6 +1,10 @@
 const assert = require('assert')
 const domain = require('../src/domain')
-const { NO_FEATURE } = require('../src/listing-features')
+const {
+  NO_FEATURE,
+  LISTING_FEATURE_OPTIONS,
+  normalizeListingFeatures
+} = require('../src/listing-features')
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -124,6 +128,20 @@ function run() {
   assert.strictEqual(createdRaw.commissionRate, 15, '客户端 commissionRate 不能覆盖二房东固定 15%')
   assert.strictEqual(createdRaw.videoKey, 'house-videos/backend-contract/test.mp4', '只有 videoKey 也应视为有真实视频')
   assert.strictEqual(createdRaw.coordinateSource, 'pending-map-coordinate', '无可靠小区坐标时不能写入默认地图坐标')
+  assert.ok(LISTING_FEATURE_OPTIONS.indexOf('带露台（阁楼）') !== -1, '上传特点必须允许选择带露台（阁楼）')
+  assert.strictEqual(LISTING_FEATURE_OPTIONS.indexOf('可带看'), -1, '上传特点必须停止新选可带看')
+  assert.strictEqual(LISTING_FEATURE_OPTIONS.indexOf('急租'), -1, '上传特点必须停止新选急租')
+  assert.ok(normalizeListingFeatures(['可带看', '急租']).indexOf('可带看') !== -1, '存量可带看标签应兼容保留')
+  assert.ok(normalizeListingFeatures(['可带看', '急租']).indexOf('急租') !== -1, '存量急租标签应兼容保留')
+  const terraceListing = domain.addNormalListing(db, 'U1', listingPayload({
+    roomNo: '103',
+    roomNumber: '103',
+    address: '杭州滨江区半山家苑1幢1单元103室',
+    features: ['带露台（阁楼）'],
+    videoKey: 'house-videos/backend-contract/terrace.mp4'
+  }))
+  const terraceRaw = db.listings.find((item) => item.id === terraceListing.id)
+  assert.ok(terraceRaw.features.indexOf('带露台（阁楼）') !== -1, '新特点带露台（阁楼）应可写入房源')
 
   const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     communityName: '半山家苑',

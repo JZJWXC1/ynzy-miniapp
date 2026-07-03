@@ -2,8 +2,8 @@
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell upload-page">
     <view class="upload-hero">
-      <view class="upload-title">{{mode === 'edit' ? '修改已上传房源' : (form.companyListing ? '上传公司房源' : form.ownerType)}}</view>
-      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、标签和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，由管理员维护。' : (form.ownerType === '业主房源' ? '业主房源提交后进入管理员审核，通过后才会在小程序上架。' : '按位置、户型、租金、标签和视频快速录入，签单后按平台规则计算。'))}}</view>
+      <view class="upload-title">{{mode === 'edit' ? '修改已上传房源' : (form.companyListing ? '上传公司房源' : '上传合作房源')}}</view>
+      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、标签和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，由管理员维护。' : (form.ownerType === '业主房源' ? '合作房源 / 业主房源，提交后进入管理员审核，通过后才会在小程序上架。' : '合作房源 / 二房东房源，按位置、户型、租金、标签和视频快速录入。'))}}</view>
     </view>
 
     <view class="form-card soft-card">
@@ -11,17 +11,17 @@
         <view class="section-label">房源归属</view>
         <view wx:if="{{isAdmin}}" class="source-row">
           <view class="source-chip {{!form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="0">
-            <view class="source-title">普通房源</view>
-            <view class="source-desc">签单后按平台规则计算</view>
+            <view class="source-title">合作房源</view>
+            <view class="source-desc">继续选择二房东或业主</view>
           </view>
           <view class="source-chip company {{form.companyListing ? 'active' : ''}}" bindtap="selectListingSource" data-company="1">
             <view class="source-title">公司房源</view>
             <view class="source-desc">管理员维护</view>
           </view>
         </view>
-        <view wx:else class="source-lock">普通员工只能上传普通房源；公司房源请由管理员上传。</view>
+        <view wx:else class="source-lock">当前账号默认上传合作房源；公司房源仅管理员可选。</view>
         <view wx:if="{{!form.companyListing}}" class="owner-source-block">
-          <view class="sub-section-label">普通房源类型</view>
+          <view class="sub-section-label">合作房源类型</view>
           <view class="source-row">
             <view wx:for="{{ownerTypeOptions}}" wx:key="value" class="source-chip {{item.value === form.ownerType ? 'active' : ''}}" bindtap="selectOwnerType" data-value="{{item.value}}">
               <view class="source-title">{{item.title}}</view>
@@ -120,11 +120,11 @@
       <view class="video-upload" bindtap="chooseVideo">
         <view class="video-icon">▶</view>
         <view>
-          <view class="video-title">{{videoPath ? '已选择新房源视频' : (existingVideoUrl ? '保留原房源视频' : (form.companyListing ? '可选上传公司房源视频' : '上传房源视频'))}}</view>
-          <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : (form.companyListing ? '公司房源可不上传视频；上传后可用于转发。' : '仅允许视频，不支持图片上传。'))}}</view>
+          <view class="video-title">{{videoPath ? '已选择新房源视频' : (existingVideoUrl ? '保留原房源视频' : (form.companyListing ? '可选上传公司房源视频' : '上传合作房源视频'))}}</view>
+          <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : (form.companyListing ? '公司房源可不上传视频；上传后可用于转发。' : '合作房源必须上传视频，仅允许视频，不支持图片上传。'))}}</view>
         </view>
       </view>
-      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.ownerType === '业主房源' ? '提交审核' : '提交房源')}}</button>
+      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.companyListing ? '提交公司房源' : (form.ownerType === '业主房源' ? '提交审核' : '提交合作房源'))}}</button>
     </view>
   </view>
 </scroll-view>
