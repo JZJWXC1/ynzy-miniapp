@@ -73,6 +73,9 @@ else
   printf '\nPORT=3101\n' >> "$APP_DIR/server/.env"
 fi
 
+cd "$APP_DIR/server"
+npm install --omit=dev
+
 install_nginx_config() {
   local nginx_conf_dir="/etc/nginx/conf.d"
   local nginx_conf="$nginx_conf_dir/ynzy-miniapp.conf"
