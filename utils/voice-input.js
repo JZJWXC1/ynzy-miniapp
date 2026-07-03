@@ -58,6 +58,71 @@ const RECORD_OPTIONS = {
 
 const FINAL_WAIT_MS = 2200
 
+function createVoiceError(message, detail, code) {
+  const cleanMessage = String(message || '语音识别失败').trim()
+  const cleanDetail = String(detail || '').trim()
+  const error = new Error(cleanDetail && cleanMessage.indexOf(cleanDetail) === -1
+    ? `${cleanMessage}：${cleanDetail}`
+    : cleanMessage)
+  error.code = code || ''
+  error.detail = cleanDetail
+  return error
+}
+
+function errorMessage(error, fallback) {
+  const parts = [
+    error && error.message,
+    error && error.errMsg,
+    error && error.detail
+  ].map((item) => String(item || '').trim()).filter(Boolean)
+  return parts[0] || fallback || '语音识别失败'
+}
+
+function getSupportStatus() {
+  if (typeof wx === 'undefined') {
+    return { ok: false, message: '当前环境没有 wx 对象，无法调用录音能力' }
+  }
+  if (!wx.getRecorderManager) {
+    return { ok: false, message: '当前基础库缺少 wx.getRecorderManager' }
+  }
+  const recorder = getRecorderManager()
+  if (!recorder) {
+    return { ok: false, message: 'wx.getRecorderManager 初始化失败' }
+  }
+  if (typeof recorder.onFrameRecorded !== 'function') {
+    return { ok: false, message: '当前基础库不支持 onFrameRecorded 实时录音帧' }
+  }
+  return { ok: true, message: 'wx.getRecorderManager 可用' }
+}
+
+function ensureRecordAuthorized(done) {
+  if (typeof wx === 'undefined' || !wx.getSetting || !wx.authorize) {
+    done()
+    return
+  }
+  wx.getSetting({
+    success(res) {
+      const authSetting = (res && res.authSetting) || {}
+      if (authSetting['scope.record'] === true) {
+        done()
+        return
+      }
+      wx.authorize({
+        scope: 'scope.record',
+        success() {
+          done()
+        },
+        fail(error) {
+          done(createVoiceError('录音授权被拒绝，请在微信设置中允许麦克风权限', errorMessage(error), 'record-auth-denied'))
+        }
+      })
+    },
+    fail(error) {
+      done(createVoiceError('读取录音授权状态失败', errorMessage(error), 'record-auth-check-failed'))
+    }
+  })
+}
+
 function normalizeLayout(value) {
   return String(value || '')
     .replace('1室', '一室')
@@ -120,10 +185,12 @@ function closeSocket(socketTask) {
 }
 
 function createController(handlers = {}) {
+  const support = getSupportStatus()
+  if (!support.ok) return null
   const recorder = getRecorderManager()
   if (!recorder) return null
-  if (typeof recorder.onFrameRecorded !== 'function') return null
 
+  let starting = false
   let listening = false
   let transcribing = false
   let socketTask = null
@@ -173,11 +240,12 @@ function createController(handlers = {}) {
   function failRealtime(error) {
     socketFailed = true
     cancelled = true
+    starting = false
     transcribing = false
     clearFinalTimer()
     closeSocket(socketTask)
     stopRecorderQuietly()
-    safeCall(handlers.onError, error)
+    safeCall(handlers.onError, createVoiceError(errorMessage(error), '', error && error.code))
   }
 
   function flushFrames() {
@@ -254,7 +322,8 @@ function createController(handlers = {}) {
     })
     socketTask.onMessage(handleSocketMessage)
     socketTask.onError((error) => {
-      failRealtime(error)
+      const url = socketTask && socketTask.realtimeAsrUrl ? `WebSocket ${socketTask.realtimeAsrUrl}` : 'WebSocket'
+      failRealtime(createVoiceError(`${url} 连接失败`, errorMessage(error), 'asr-socket-error'))
     })
     socketTask.onClose(() => {
       socketReady = false
@@ -268,6 +337,7 @@ function createController(handlers = {}) {
   }
 
   recorder.onStart(() => {
+    starting = false
     listening = true
     transcribing = false
     cancelled = false
@@ -296,29 +366,45 @@ function createController(handlers = {}) {
   })
 
   recorder.onError((error) => {
+    starting = false
     listening = false
     transcribing = false
     cancelled = true
     clearFinalTimer()
     closeSocket(socketTask)
-    safeCall(handlers.onError, error)
+    safeCall(handlers.onError, createVoiceError('录音器报错', errorMessage(error), 'recorder-error'))
   })
 
   return {
     start() {
-      if (listening || transcribing) return
-      if (!openRealtimeSocket()) {
-        safeCall(handlers.onError, new Error('当前环境暂不支持实时语音识别'))
-        return
-      }
-      recorder.start(RECORD_OPTIONS)
+      if (starting || listening || transcribing) return
+      starting = true
+      ensureRecordAuthorized((authError) => {
+        if (authError) {
+          starting = false
+          safeCall(handlers.onError, authError)
+          return
+        }
+        if (!openRealtimeSocket()) {
+          starting = false
+          safeCall(handlers.onError, createVoiceError('当前环境暂不支持实时语音识别', '', 'asr-socket-unavailable'))
+          return
+        }
+        try {
+          recorder.start(RECORD_OPTIONS)
+        } catch (error) {
+          starting = false
+          closeSocket(socketTask)
+          safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
+        }
+      })
     },
     stop() {
       if (!listening) return
       recorder.stop()
     },
     isBusy() {
-      return listening || transcribing
+      return starting || listening || transcribing
     }
   }
 }
@@ -326,8 +412,12 @@ function createController(handlers = {}) {
 module.exports = {
   parseNeedText,
   createController,
+  getSupportStatus,
+  errorMessage,
   _internal: {
     RECORD_OPTIONS,
-    FINAL_WAIT_MS
+    FINAL_WAIT_MS,
+    ensureRecordAuthorized,
+    createVoiceError
   }
 }

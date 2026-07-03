@@ -827,10 +827,13 @@ function buildRealtimeAsrUrl() {
 function createRealtimeAsrSocket() {
   const config = getRuntimeConfig()
   if (shouldUseMock(config) || typeof wx === 'undefined' || !wx.connectSocket) return null
-  return wx.connectSocket({
-    url: buildRealtimeAsrUrl(),
+  const url = buildRealtimeAsrUrl()
+  const socketTask = wx.connectSocket({
+    url,
     header: apiClient.authHeader(config)
   })
+  if (socketTask) socketTask.realtimeAsrUrl = url
+  return socketTask
 }
 
 function uploadVideo(filePath, policy, options) {

@@ -50,6 +50,9 @@
   "permission": {
     "scope.userLocation": {
       "desc": "用于带看水印照片记录现场位置"
+    },
+    "scope.record": {
+      "desc": "用于语音输入找房需求并转写成文字"
     }
   },
   "requiredPrivateInfos": [

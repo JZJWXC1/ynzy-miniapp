@@ -119,6 +119,7 @@ Page({
   },
 
   initVoiceInput() {
+    const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
         this.setData({
@@ -143,19 +144,23 @@ Page({
         }
         this.applyVoiceNeed(text, true)
       },
-      onError: () => {
+      onError: (error) => {
         this.setData({
           isVoiceListening: false,
-          voiceTip: '语音识别失败，请重试或手动输入'
+          voiceTip: voiceInput.errorMessage(error, '语音识别失败，请重试或手动输入')
         })
-        wx.showToast({ title: '语音识别失败', icon: 'none' })
+        wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
     })
+    if (!this.voiceController && support && support.message) {
+      this.voiceUnavailableMessage = support.message
+      this.setData({ voiceTip: support.message })
+    }
   },
 
   toggleVoiceInput() {
     if (!this.voiceController) {
-      wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' })
+      wx.showToast({ title: this.voiceUnavailableMessage || '当前环境暂不支持语音输入', icon: 'none' })
       return
     }
     try {
@@ -166,7 +171,7 @@ Page({
       this.voiceController.start()
     } catch (error) {
       this.setData({ isVoiceListening: false })
-      wx.showToast({ title: '语音输入启动失败', icon: 'none' })
+      wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' })
     }
   },
 

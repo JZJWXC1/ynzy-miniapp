@@ -200,6 +200,35 @@ function checkMiniProgramDataSources() {
   return '核心找房页面均经统一 API 读取同步库，mock 仅在 env=mock 时启用'
 }
 
+function checkVoiceAsrRealtimeChain() {
+  const appJson = readJson('app.json')
+  const permission = appJson.permission || {}
+  assertOk(
+    permission['scope.record'] && /语音|麦克风|录音/.test(permission['scope.record'].desc || ''),
+    'app.json 必须声明 scope.record 录音权限说明'
+  )
+
+  const voiceSource = readText('utils/voice-input.js')
+  const apiServiceSource = readText('utils/api-service.js')
+  const nginxSource = readText('deploy/nginx-zf-api-miniapp.conf')
+  const asrRealtimeSource = readText('server/src/asr-realtime.js')
+  const packageSource = readText('server/package.json')
+
+  assertOk(voiceSource.includes('ensureRecordAuthorized'), '语音输入必须在启动录音前检查 scope.record 授权')
+  assertOk(voiceSource.includes('wx.authorize'), '语音输入必须主动触发录音授权')
+  assertOk(voiceSource.includes('getSupportStatus'), '语音输入必须暴露录音器支持状态用于真机诊断')
+  assertOk(voiceSource.includes('asr-socket-error'), '语音输入必须区分实时 ASR WebSocket 错误')
+  assertOk(apiServiceSource.includes('realtimeAsrUrl'), '实时 ASR socket task 必须保留 wss URL 便于诊断')
+  assertOk(packageSource.includes('"ws"'), '后端必须依赖 ws 支持实时 ASR 代理')
+  assertOk(asrRealtimeSource.includes("CLIENT_PATH = '/mini/asr/realtime'"), '后端实时 ASR 路径必须为 /mini/asr/realtime')
+  assertOk(asrRealtimeSource.includes('server.on(\'upgrade\''), '后端必须监听 HTTP upgrade 事件')
+  assertOk(nginxSource.includes('server_name zf-api.ynzyqbot.cn'), 'Nginx 模板必须覆盖 zf-api API 域名')
+  assertOk(nginxSource.includes('location = /mini/asr/realtime'), 'Nginx 模板必须单独配置实时 ASR 路径')
+  assertOk(nginxSource.includes('proxy_set_header Upgrade $http_upgrade'), 'Nginx 模板必须转发 WebSocket Upgrade 头')
+  assertOk(nginxSource.includes('proxy_set_header Connection "upgrade"'), 'Nginx 模板必须转发 WebSocket Connection upgrade')
+  return '录音授权、前端诊断、后端 upgrade 监听与 zf-api Nginx Upgrade 模板均存在'
+}
+
 function checkV1DocsMaintenanceRule() {
   const files = [
     '需求.md',
@@ -262,6 +291,7 @@ const checks = [
   ['第一版可见入口不暴露历史关键词', checkLegacyVisibleEntryKeywords],
   ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
   ['小程序核心找房页面读取同步库', checkMiniProgramDataSources],
+  ['语音实时 ASR 链路配置完整', checkVoiceAsrRealtimeChain],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
