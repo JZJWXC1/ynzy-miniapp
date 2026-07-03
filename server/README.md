@@ -1,75 +1,275 @@
-# 寓你住一起后端接口说明
+# 寓你住一起后端说明
 
-## 当前数据落点
+本文档以当前代码为唯一事实来源，覆盖 `server/src`、`deploy`、`utils/deploy-config.js` 和现行 V1 验收脚本。历史入口仍保留在代码中时，会在文档里明确标注为“历史预留，第一版不生效”。
 
-第一版后端已使用本地 JSON 文件模拟正式数据库：
+## 当前范围
 
-- 用户数据：`server/data/db.json` 的 `users`
-- 普通房源：`server/data/db.json` 的 `listings`
-- 敏感查看足迹：`server/data/db.json` 的 `footprints`
-- 历史积分流水：`server/data/db.json` 的 `pointLogs`，第一版入口隐藏
-- 历史充值账单：`server/data/db.json` 的 `rechargeBills`，第一版入口隐藏
-- 历史群聊上传记录：`server/data/db.json` 的 `groupUploads`，第一版入口隐藏
-- 管理员账号：`server/data/db.json` 的 `adminAccounts`
-- LLM 配置：`server/data/db.json` 的 `llmConfig`
-- 视频上传记录：`server/data/db.json` 的 `uploadRecords`
+第一版只面向内部中介使用，底部导航固定为找房、房源、地图、我的。租客端、房东端、房源群、积分充值、换群和微信支付入口第一版不开放。
 
-正式上线时，这些表建议迁移到 MySQL、PostgreSQL 或微信云开发数据库。
+地图找房仍是核心能力，但地图只展示真实且经过确认的小区坐标。无可靠坐标的房源可以进入普通列表，不能进入地图；禁止用随机坐标、散列坐标、区域估算坐标或默认中心点冒充真实位置。
 
-## 启动方式
+## 运行与端口
+
+本地运行：
 
 ```bash
 cd server
 npm start
 ```
 
-默认服务地址：
+本地默认端口来自 `server/src/config.js`：`PORT` 环境变量优先，未设置时为 `3000`。
 
-- 小程序接口：`http://127.0.0.1:3000/mini/...`
-- 管理后台：`http://127.0.0.1:3000/admin-web/`
+生产部署端口以 `deploy/install-on-server.sh` 为准：安装脚本会强制把服务器 `server/.env` 写为 `PORT=3101`，并用 `http://127.0.0.1:3101/healthz` 做本机探活。公网访问统一走正式 HTTPS 域名：
 
-小程序联调时，`utils/deploy-config.js` 默认请求 `http://127.0.0.1:3000`。拿到正式 HTTPS API 域名后，可在项目根目录运行：
-
-```bash
-node scripts/set-miniapp-api.js https://你的API域名
+```text
+https://zf-api.ynzyqbot.cn
 ```
 
-本地联调切回：
+健康检查：
 
-```bash
-node scripts/set-miniapp-api.js --local
+- `GET /healthz`：进程探活，正常返回 `ok: true`。
+- `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`。
+
+HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或 IP 直连方式做体验版验收；小程序端当前配置见 `utils/deploy-config.js`，默认请求 `https://zf-api.ynzyqbot.cn`。
+
+## 数据文件与备份
+
+当前仍使用 JSON 文件模拟正式数据表，默认路径为 `server/data/db.json`，也可以通过 `DATA_FILE` 指向其他文件。
+
+主要数据结构：
+
+- `users`：中介用户。
+- `listings`：房源。
+- `rentalNeeds`：需求单。
+- `clientReports`：报备记录。
+- `dealRecords`：签单记录。
+- `commissionRecords`：分佣记录。
+- `footprints`：敏感信息查看、视频转发、房态核验等留痕。
+- `adminAccounts`：管理后台账号。
+- `llmConfig`：LLM 配置。
+- `uploadRecords`：上传记录。
+- `companySheetSnapshot`：飞书公司房源表快照缓存。
+
+生产部署包含 `db.json` 定时备份：
+
+- `deploy/ynzy-db-backup.timer`：开机 5 分钟后首次执行，之后每 30 分钟执行一次。
+- `deploy/ynzy-db-backup.service`：调用 `deploy/backup-db.sh`。
+- 默认备份目录：`/opt/ynzy-miniapp-backups/db`。
+- 默认保留数量：最近 `48` 份。
+- `latest.json` 是指向最新备份的软链。
+- 备份前会先用 Node 解析 JSON，避免把损坏文件当成有效备份。
+
+足迹留痕写入统一经过后端截断。代码默认 `FOOTPRINT_MAX_ROWS=5000`，最低不会低于 `1000`；生产 systemd 服务显式设置为：
+
+```ini
+Environment=FOOTPRINT_MAX_ROWS=30000
 ```
 
-暂时没有正式 HTTPS 域名、只做公司内部功能测试时，可先使用阿里云 HTTP 公网地址：
+## 小程序端鉴权
 
-```bash
-node scripts/set-miniapp-api.js --internal-http http://公网入口地址
+小程序登录接口：
+
+```http
+POST /mini/auth/login
+POST /mini/auth/register
 ```
 
-写入小程序前，建议先体检公网接口：
+登录成功后，后端签发小程序 token，并返回 `token` 与 `tokenExpiresAt`。小程序请求需使用：
 
-```bash
-node scripts/verify-api.js http://公网入口地址
+```http
+Authorization: Bearer <token>
 ```
 
-这种方式需要在微信开发者工具里勾选“不校验合法域名、web-view（业务域名）、TLS 版本以及 HTTPS 证书”，只用于内部开发测试。正式版和体验版仍建议准备 HTTPS 域名并在微信后台配置合法域名。
-
-## 阿里 OSS 视频存储
-
-你提供的视频存储入口已作为默认地址写入配置：
+鉴权密钥只来自服务端环境变量：
 
 ```env
-ALI_OSS_HOME_URL=https://bj33856.apps.aliyunfile.com/disk/admin/home
+AUTH_TOKEN_SECRET=
 ```
 
-当前后端已提供上传凭证接口：
+token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在或被禁用都会返回 `401`。
+
+`X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id` 的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端以 token 内的真实用户为准，忽略伪造请求头。
+
+游客模式边界：
+
+- 匿名用户可以访问首页、公司房源列表、公司房源详情、地图公司房源点位、公司房源表快照和助手匹配中的公司房源结果。
+- 公司房源对匿名与登录中介全量公开，包含房号、完整地址、联系方式、看房方式密码、备注等公司公开字段。
+- 匿名用户只能看到公司房源；访问二房东房源或业主房源详情返回 `401`。
+- 合作房源的完整地址、房东电话等敏感信息仍走登录、实名/需求单校验和留痕机制。
+- 上传、我的房源、需求单、报备、签单、分佣、足迹、视频上传策略等操作接口仍强制登录。
+
+## 房源类型、视频与可见性
+
+房源分为：
+
+- 公司房源：公司自营或飞书同步房源，`companyListing=true` 或来源文本包含公司房源。
+- 二房东房源：合作房源，`ownerType=二房东房源`。
+- 业主房源：合作房源，`ownerType=业主房源`。
+
+视频规则：
+
+- 公司房源免视频，允许无视频进入公司房源列表和详情。
+- 二房东房源、业主房源必须带真实视频，`videoUrl` 或 `videoKey` 至少有一个。
+- 视频文件本体不进 `db.json`，房源只保存访问地址或 OSS 对象 Key。
+- 有 `videoKey` 时，详情接口会生成短期签名播放地址，默认有效期由 `ALI_OSS_READ_URL_EXPIRE_SECONDS` 控制，当前默认 `900` 秒。
+
+房源可见性：
+
+- 前台有效房源会排除已失效、已下架、已成交和待审核未通过房源。
+- 公司房源公开完整字段。
+- 合作房源列表与详情不直接公开完整地址和房东电话；敏感查看必须登录并留痕。
+- 地图只按小区聚合展示，不展示具体楼栋、单元、房号、房东电话或看房密码。
+
+房态规则固定为第 3 天提醒、第 5 天再次提醒、第 7 天未更新自动失效。失效房源保留在后台资产池，可由管理员恢复。
+
+## 分佣规则
+
+分佣由服务端固定计算，客户端提交的 `brokerId`、`uploaderId`、`commissionRate` 或同名字段不能影响结果。
+
+现行规则：
+
+- 成交后按房东实际支付佣金总扣 `20%`。
+- 二房东房源：上传人 `15%`，平台 `5%`。
+- 业主房源：上传人 `20%`，平台 `0%`。
+- 公司房源：不分佣，不生成分佣记录。
+- 管理员上传的合作房源：仍记录房源类型，但上传人是管理员；确认签单时上传人分佣为 `0%`，平台拿到总扣 `20%`。
+
+签单只能从报备记录发起。中介提交签单时只填写成交月租、房东实际支付佣金和可选备注；管理员确认后才生成正式分佣记录。金额统一按分存储，避免小数误差。
+
+## 上传房源
+
+小程序端上传房源使用：
+
+```http
+POST /mini/listings
+PUT /mini/my/listings/:id
+```
+
+必填字段由服务端校验：城市、区域、小区、楼栋、房号、联系方式、租金、户型和特点标签。非公司房源还必须有真实视频。
+
+公司房源只能由管理员上传或标记；普通中介不能把合作房源伪装成公司房源。
+
+特点标签现行可新选白名单：
+
+```text
+近地铁、电梯、燃气、独卫、朝南、带阳台、带露台（阁楼）、可短租、可月付、干湿分离、采光好、首次出租、民水民电、无
+```
+
+历史兼容标签：
+
+```text
+整租、合租、可带看、急租、免押金、不分佣
+```
+
+历史兼容标签只为存量展示与数据兼容保留，不作为新上传可选项；`不分佣` 不能作为客户端控制分佣的开关。
+
+## 列表与地图筛选
+
+公司房源列表和 `/mini/listings` 支持组合筛选。现行参数名以 `block` 为准，不再使用 `board`。
+
+常用参数：
+
+| 参数 | 含义 | 示例 |
+| --- | --- | --- |
+| `district` | 行政区 | `拱墅区`、`上城区` |
+| `block` | 板块/商圈 | `东新园`、`闸弄口` |
+| `community` | 小区名模糊匹配 | `长浜龙吟轩` |
+| `rentMode` | 租赁方式 | `整租`、`合租` |
+| `layout` | 户型 | `一室`、`两室`、`三室`、`三室以上` |
+| `rentMin` | 最低租金 | `3000` |
+| `rentMax` | 最高租金 | `5000` |
+
+示例：
+
+```http
+GET /mini/listings?district=上城区&block=闸弄口&rentMode=整租
+GET /mini/listings?district=拱墅区&block=东新园&layout=两室&rentMin=3000&rentMax=5000
+```
+
+区域和板块配置来自 `server/src/config.js`：
+
+- 拱墅区：万达、北部软件园、城北万象城、石桥、华丰、永佳、半山、东新园、杭氧、新天地。
+- 上城区：闸弄口、新塘、元宝塘、东站。
+
+飞书同步、快照房源和前台筛选都使用同一套板块到行政区映射，后续扩展行政区时优先改服务端配置。
+
+地图接口：
+
+```http
+GET /mini/map/communities
+GET /mini/map/pins
+```
+
+地图筛选复用区域、板块、租金、户型和租赁方式等参数，但只返回可靠小区坐标。
+
+## 公司房源表快照
+
+小程序端快照接口：
+
+```http
+GET /mini/company-sheet-snapshot
+```
+
+快照接口按飞书表头动态返回列，不再要求前端硬编码表头。后端会修正区域合并单元格的向下填充，并保证表头与数据行列数一致。当前公司房源快照不做游客双视图，匿名与登录中介看到同一份完整公司房源表，包含 `看房方式密码` 等公司公开字段。
+
+原表头行不会混入数据行；前端应按接口返回的 `rows[0]` 渲染列。
+
+## 飞书公司房源同步
+
+管理后台接口：
+
+```http
+GET /admin/feishu-sync/status
+POST /admin/feishu-sync/run
+```
+
+同步间隔默认值来自 `server/src/config.js`，当前默认 `60` 分钟；服务器可通过环境变量覆盖：
+
+```env
+FEISHU_SYNC_INTERVAL_MINUTES=60
+```
+
+同步规则：
+
+- 房源表和视频素材库按房号/楼栋单元房号等 Key 对齐。
+- 飞书表仍在架的公司房源会写入或更新本地房源，并标记 `companyListing=true`、`noCommission=true`。
+- 飞书表删除、下架、关闭、已租等状态会让对应公司房源自动下架，进入后台资产池。
+- 素材缺失的飞书房源不会被静默丢弃，会在后台标记 `missingVideoMaterial=true` 和 `缺视频素材`。
+- 公司房源即使缺视频，也可进入普通公司房源列表；地图仍要求真实小区坐标。
+- `户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，并去掉前缀保存净户型；否则按合租处理。
+- 板块到行政区映射由服务端配置决定：闸弄口、新塘、元宝塘、东站归上城区，其余现有板块归拱墅区。
+
+常用飞书环境变量：
+
+```env
+FEISHU_API_BASE_URL=https://open.feishu.cn/open-apis
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_SHEET_URL=
+FEISHU_SHEET_TOKEN=
+FEISHU_SHEET_ID=
+FEISHU_SHEET_RANGE=A1:ZZ1000
+FEISHU_BITABLE_APP_TOKEN=
+FEISHU_BITABLE_TABLE_ID=
+FEISHU_MATERIAL_FOLDER_TOKEN=
+FEISHU_UPLOAD_TO_OSS=true
+FEISHU_SYNC_INTERVAL_MINUTES=60
+```
+
+小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。
+
+## OSS 与上传策略
+
+小程序端通过后端获取上传策略：
 
 ```http
 POST /mini/uploads/video-policy
-POST /mini/uploads/group-screenshot-policy
+POST /mini/uploads/showing-photo-policy
 ```
 
-正式直传 OSS 还需要补齐：
+历史群截图上传策略默认被 V1 历史路由拦截，不作为第一版入口。
+
+常用 OSS 环境变量：
 
 ```env
 ALI_OSS_BUCKET=
@@ -78,120 +278,73 @@ ALI_OSS_ACCESS_KEY_ID=
 ALI_OSS_ACCESS_KEY_SECRET=
 ALI_OSS_SECURITY_TOKEN=
 ALI_OSS_PUBLIC_BASE_URL=
-ADMIN_TOKEN_SECRET=
+ALI_OSS_UPLOAD_DIR=house-videos
+ALI_OSS_MAX_VIDEO_MB=300
+ALI_OSS_POLICY_EXPIRE_SECONDS=900
+ALI_OSS_READ_URL_EXPIRE_SECONDS=900
 ```
 
-这些 `ALI_OSS_ACCESS_KEY_*` 建议使用 RAM 子账号，不要使用主账号 AccessKey。RAM Policy 第一版可见上传链路只需要允许访问 `ynzy-house-videos-bj` 下的 `house-videos/*`，用于房源视频上传；`group-screenshots/*` 仅用于历史群聊截图能力保留，第一版不作为可见入口。小程序端不保存 AccessKey，只从后端获取上传策略和短期读取签名。
+不要把 AccessKey、Token、私钥或 `.env` 写入仓库。
 
-上线建议：
+## 管理后台
 
-- 小程序先请求 `/mini/uploads/video-policy`
-- 后端生成 OSS POST Policy
-- 小程序用 `wx.uploadFile` 直传 OSS
-- 上传成功后，把 `videoUrl`、`videoKey` 随普通房源提交到 `/mini/listings`
-- 普通房源提交和编辑必须带房源视频；无视频房源不能进入前台有效房源、匹配或地图。
-- 普通房源提交和编辑必须带 `features` 数组；第一版可见标签以居住特征为主，例如 `带阳台、干湿分离、燃气、阁楼、露台、花园、近地铁、朝南、独卫、电梯、整租、合租、无`，选择 `无` 时不能和其他标签混用；`免押金`、`不分佣` 仅作为旧数据或内部同步兼容标签，不作为中介上传时的分佣开关。
-- 中介上传时不能提交或调整分佣比例；签单经管理员确认后，后端固定按房东实际支付佣金的 20% 计算上传人分佣。
-- 数据库只保存视频地址和对象 Key，不保存视频文件本身
-- Bucket 建议保持私有。房源详情接口会根据 `videoKey` 生成短期签名播放地址，默认有效期为 `ALI_OSS_READ_URL_EXPIRE_SECONDS=900` 秒。
-- 地图只展示真实且经过确认的小区坐标；无可靠坐标的房源可以进入普通列表，但不能进入地图。
-- `/mini/uploads/group-screenshot-policy`、`/mini/groups/listings`、`/admin/groups/uploads/:id/review`、`/mini/points/recharge`、`/admin/recharges/:id/review` 和微信支付接口均为历史或后续预留能力，第一版不开放房源群、积分、充值、换群、微信支付入口。
+后台入口：
 
-## 管理后台鉴权和房态核验
+```text
+https://zf-api.ynzyqbot.cn/admin-web/
+```
 
-- 后台登录接口：`POST /admin/auth/login`。
-- 除登录外，所有 `/admin/*` 接口都需要 `Authorization: Bearer <token>`。
-- 管理员可调用 `POST /admin/accounts` 创建后台账号，调用 `POST /admin/accounts/:id/password` 修改密码，调用 `POST /admin/accounts/:id/status` 启用/禁用账号。
-- 后台账号新密码会加密存储，不能继续使用内测默认密码。
-- 管理员可调用 `GET /admin/data/export` 导出当前 JSON 数据备份。
-- 管理员可调用 `GET /admin/env-template` 查看缺失环境变量模板，不返回 Secret 明文。
-- 上线检查接口：`GET /admin/launch-check`，用于检查 OSS、后台密钥、默认管理员密码、LLM 和微信域名待办。
-- 部署探活：`GET /healthz`；上线就绪检查：`GET /readyz`。
-- 普通员工账号无法进入后台，只有 `adminAccounts` 里的启用账号可登录。
-- 房态规则固定为第 3 天提醒、第 5 天再次提醒、第 7 天未更新自动失效，失效房源进入后台资产池。
-- 上传人可调用 `POST /mini/my/listings/:id/verify` 核验自己的房源。
-- 管理员可在后台调用 `POST /admin/listings/:id/verify` 核验任意房源，并同步写入足迹。
-- 管理员可调用 `POST /admin/expired-listings/:id/restore` 将废房源池里的房源重新上架。
-
-`/admin/launch-check` 只返回配置是否齐全，不返回任何 AccessKey Secret 或 LLM 密钥明文。
-
-## LLM 配置
-
-后台通过：
+后台登录：
 
 ```http
-GET /admin/llm-config
-PUT /admin/llm-config
-POST /admin/llm-config/test
+POST /admin/auth/login
 ```
 
-保存和测试模型配置。密钥只读取服务端环境变量，例如：
+除登录外，`/admin/*` 都需要：
+
+```http
+Authorization: Bearer <admin-token>
+```
+
+后台 token 由 `ADMIN_TOKEN_SECRET` 签发，有效期 8 小时。
+
+常用管理接口：
+
+- `GET /admin/dashboard`
+- `GET /admin/launch-check`
+- `GET /admin/env-template`
+- `GET /admin/listings`
+- `GET /admin/expired-listings`
+- `POST /admin/expired-listings/:id/restore`
+- `GET /admin/footprints`
+- `GET /admin/reports`
+- `GET /admin/deals`
+- `POST /admin/deals/:id/confirm`
+- `GET /admin/data/export`
+
+`/admin/env-template` 只返回缺失环境变量模板，不返回 Secret 明文。
+
+## 历史接口与充值/支付配置
+
+`V1_DISABLE_LEGACY_ROUTES` 默认开启：
 
 ```env
-LLM_API_KEY=
-DEEPSEEK_API_KEY=
-QWEN_API_KEY=
-ZHIPU_API_KEY=
+V1_DISABLE_LEGACY_ROUTES=1
 ```
 
-小程序只调用：
+未显式设置时也等同开启。开启后，以下历史接口默认返回 `404`：
 
-```http
-POST /mini/llm/match
-```
+- `POST /mini/points/recharge`
+- `GET /mini/groups`
+- `/mini/groups/*`
+- `POST /mini/uploads/group-screenshot-policy`
 
-由后端读取房源库和 LLM 配置后统一返回匹配结果。请求可带 `text`、`voiceText` 和 `form.features`；返回房源会带 `relevanceScore`、`relevancePercent`、`relevanceReasons`、`features` 和 `maintenanceText`，列表已按相关性从高到低排序。
+充值、积分、房源群、换群、微信群截图审核、微信支付相关代码均为历史预留，第一版不生效。相关后台接口和配置只用于保留历史数据或后续版本，不作为当前验收入口。
 
-## 飞书公司房源同步
-
-公司房源状态以飞书房源表和素材库为准。后台新增：
-
-```http
-GET /admin/feishu-sync/status
-POST /admin/feishu-sync/run
-```
-
-该同步属于内部房源数据维护能力，不新增房东端、租客端或其他角色入口，也不作为中介上传时的分佣设置入口。第一版中介上传和签单分佣仍按后端固定 20% 规则执行。
-
-同步规则：
-- 房源表中仍为在租/上架，且素材库匹配到视频素材：同步到小程序公司房源，自动标记公司房源、免押金、不分佣。
-- 房源表新增但素材库没有匹配素材：不在小程序上架。
-- 房源表已下架、已租、关闭，或表中不再返回该房源：小程序对应飞书公司房源自动下架，进入后台废房源池。
-- 已同步房源后续房租、户型、小区、视频素材变化：再次同步时会更新小程序房源。
-
-服务端环境变量：
-
-```env
-FEISHU_API_BASE_URL=https://open.feishu.cn/open-apis
-FEISHU_APP_ID=
-FEISHU_APP_SECRET=
-FEISHU_SHEET_URL=https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl
-FEISHU_SHEET_TOKEN=H7f8sxOrUhYCK8tev29cwSimnsl
-FEISHU_SHEET_ID=
-FEISHU_SHEET_RANGE=A1:Z1000
-FEISHU_BITABLE_APP_TOKEN=
-FEISHU_BITABLE_TABLE_ID=
-FEISHU_MATERIAL_FOLDER_TOKEN=
-FEISHU_UPLOAD_TO_OSS=true
-FEISHU_SYNC_INTERVAL_MINUTES=60
-```
-
-当前默认房源表为 `https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl`，`FEISHU_SYNC_INTERVAL_MINUTES=60` 表示每小时自动同步 1 次。`FEISHU_UPLOAD_TO_OSS=true` 时，服务端会把飞书素材视频保存到 OSS 后再写入房源；小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。没有正式接飞书开放平台前，也可以用 `FEISHU_RECORDS_FILE` 和 `FEISHU_MATERIALS_FILE` 指向导出的 JSON 文件先预演同步。
-
-## 历史保留：积分充值与微信支付
-
-第一版不开放积分、充值、换群或微信支付入口。以下配置和接口仅用于历史代码保留或后续版本预留，不能作为第一版验收入口。历史人工确认模式配置为：
+历史预留配置示例：
 
 ```env
 RECHARGE_PAYMENT_MODE=manual
-```
-
-历史充值链路中，员工在小程序提交积分充值申请后，管理员在 Web 后台“充值账单”里确认到账，系统再写入积分流水。第一版应隐藏该入口。
-
-后续有正式 HTTPS 域名并准备启用微信支付时，再切换为：
-
-```env
-RECHARGE_PAYMENT_MODE=wechat
 WECHAT_APP_ID=
 WECHAT_APP_SECRET=
 WECHAT_PAY_MCH_ID=
@@ -203,42 +356,89 @@ WECHAT_PAY_PLATFORM_CERT_SERIAL_NO=
 WECHAT_PAY_NOTIFY_URL=
 ```
 
-微信支付模式下，小程序调用 `/mini/points/recharge` 后会拿到 `wx.requestPayment` 参数；微信支付回调 `/wechat/pay/notify` 确认成功后，系统写入积分流水。回调处理会先校验微信支付通知签名，再解密通知资源；签名不通过不会加积分。第一版不启用该链路。
+即使切到 `RECHARGE_PAYMENT_MODE=wechat`，也不代表第一版开放微信支付入口；必须先关闭历史路由拦截并完成单独验收。
 
-## 第一版上线自检
+## LLM 与助手
 
-## 阿里云公网内部测试部署
+小程序找房助手入口：
 
-当前公网 IP `114.55.168.97` 的 80 和 22 端口可访问，但 3000 端口不可访问，且 `http://114.55.168.97/healthz` 还不是本项目后端。可使用根目录脚本部署：
+```http
+POST /mini/assistant/chat
+POST /mini/llm/match
+POST /mini/asr/transcribe
+POST /mini/assistant/feedback
+```
+
+游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
+
+模型密钥只从服务端环境变量读取：
+
+```env
+LLM_API_KEY=
+DEEPSEEK_API_KEY=
+QWEN_API_KEY=
+ZHIPU_API_KEY=
+```
+
+后台可查看和测试 LLM 配置：
+
+```http
+GET /admin/llm-config
+PUT /admin/llm-config
+POST /admin/llm-config/test
+```
+
+## 上线自检
+
+V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，仍保留但不要作为当前 V1 验收主线。
+
+当前 V1 验收脚本为以下五个：
+
+```bash
+cd server
+node scripts/map-v1-test.js
+node scripts/assistant-v1-test.js
+node scripts/backend-contract-v1-test.js
+node scripts/guest-mode-v1-test.js
+node scripts/auth-token-v1-test.js
+```
+
+其中覆盖：
+
+- 地图真实坐标与敏感字段边界。
+- 助手需求解析与匹配。
+- 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签、报备/签单。
+- 游客模式：匿名公司房源可见、合作房源详情 `401`。
+- Bearer token 鉴权、7 天有效期、伪造 `X-User-Id` 无效。
+
+可选汇总审计脚本：
+
+```bash
+cd server
+node scripts/v1-final-audit.js
+```
+
+该脚本会检查关键 V1 脚本存在并运行其中的核心脚本，同时确认 `server/scripts/smoke-test.js` 未被修改。
+
+## 部署包与提交红线
+
+部署包脚本：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy-ecs.ps1 -HostName 114.55.168.97 -User root
+powershell -ExecutionPolicy Bypass -File scripts/package-deploy.ps1
 ```
 
-脚本会把 `server/`、`admin-web/`、`utils/mock-data.js` 和部署配置上传到服务器 `/opt/ynzy-miniapp`，创建 `ynzy-miniapp` systemd 服务，并把 Nginx 80 端口反代到本机 `3000`。
-服务器端脚本会自动安装 `curl`、`unzip`、`nginx` 和 Node.js 20；如果服务器已有 Node.js 18+，会直接复用。
+部署包应排除：
 
-部署成功后，先运行：
+- `server/.env`
+- `server/data/`
+- `server/certs/`
+- 飞书本地参数文件
+- 私钥、证书、Token、Secret
 
-```bash
-node scripts/verify-api.js http://114.55.168.97
-node scripts/set-miniapp-api.js --internal-http http://114.55.168.97
-```
+提交红线：
 
-然后用微信开发者工具预览小程序即可内部测试。
-
-部署或改配置后，先运行：
-
-```bash
-npm run smoke
-```
-
-该命令会临时备份 `server/data/db.json`，自动验证探活、后台登录、首页/列表/地图、登录注册、防跳单、房源上传校验、OSS 上传策略和成交分佣，结束后恢复原数据。脚本中如仍覆盖群聊审核、换群扣积分、充值人工审核等历史保留链路，不代表这些入口进入第一版验收范围。
-
-上线前还需要确认：
-
-- 小程序接口域名必须是正式 HTTPS 域名，不能使用 `127.0.0.1`。
-- 微信小程序后台需要配置 request 合法域名为后端 API 域名。
-- 微信小程序后台需要配置 uploadFile/downloadFile 合法域名为 OSS 域名。
-- Web 后台请通过 `https://你的API域名/admin-web/` 访问。
-- 后续版本正式启用微信支付时，支付回调地址为 `https://你的API域名/wechat/pay/notify`。
+- 不提交 `.env`、密钥、证书、生产数据。
+- 不修改 `server/scripts/smoke-test.js`。
+- 不把客户端字段当作分佣、上传人或登录身份的可信来源。
+- 不在日志中输出完整客户手机号、房东电话、微信号或身份证信息。
