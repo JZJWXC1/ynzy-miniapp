@@ -17,6 +17,10 @@ function safeText(value) {
   return String(value || '').trim()
 }
 
+function isAuthError(error) {
+  return error && (error.statusCode === 401 || error.statusCode === 403)
+}
+
 function decodeOption(value) {
   if (!value) return ''
   try {
@@ -91,7 +95,7 @@ function getImageInfo(filePath) {
 
 Page({
   data: {
-    isVerified: true,
+    isVerified: false,
     sensitiveAuthLabel: '可查看',
     sensitiveVisible: false,
     listing: {},
@@ -146,7 +150,10 @@ Page({
     Promise.all([
       apiService.getListingDetail(id),
       apiService.getListingLogs(id).catch(() => []),
-      apiService.getProfileState()
+      apiService.getProfileState().catch((error) => {
+        if (isAuthError(error)) return { user: {} }
+        return Promise.reject(error)
+      })
     ]).then(([listing, logs, profile]) => {
       const user = profile && profile.user ? profile.user : {}
       const canTrySensitive = Boolean(
@@ -168,12 +175,28 @@ Page({
           ? '只转发视频和公开摘要，不包含地址、房东电话、楼栋单元房号。'
           : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
-    }).catch(() => {
+    }).catch((error) => {
+      if (isAuthError(error)) {
+        this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
+        return
+      }
       wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
     });
   },
 
   noop() {},
+
+  promptLoginGuide(title, content) {
+    wx.showModal({
+      title: title || '需要登录',
+      content: content || '该操作需要登录内部中介账号后继续。',
+      cancelText: '先看看',
+      confirmText: '去登录',
+      success: (res) => {
+        if (res.confirm) wx.navigateTo({ url: '/pages/auth/auth' })
+      }
+    })
+  },
 
   shareVideoPath() {
     const listing = this.data.listing || {}
@@ -228,6 +251,10 @@ Page({
       wx.showToast({ title: '已解锁地址和电话', icon: 'none' })
       return;
     }
+    if (!this.data.isVerified) {
+      this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+      return
+    }
     if (!this.data.needId) {
       wx.showModal({
         title: '先绑定需求单',
@@ -270,6 +297,10 @@ Page({
   },
 
   createMinimalNeedForListing() {
+    if (!this.data.isVerified) {
+      this.promptLoginGuide('登录后绑定需求', '创建需求单、报备和查看敏感信息都需要先登录内部中介账号。')
+      return Promise.reject(new Error('请先登录内部中介账号'))
+    }
     const listing = this.data.listing || {}
     if (!listing.id) return Promise.reject(new Error('请选择房源'))
     const community = listing.community || listing.shortTitle || listing.title || ''
@@ -351,6 +382,10 @@ Page({
     }).catch((error) => {
       this.setData({ sensitiveSubmitting: false })
       const message = error && error.message ? error.message : '足迹记录失败'
+      if (isAuthError(error)) {
+        this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+        return
+      }
       if (error && error.data && error.data.quotaExceeded) {
         wx.showModal({
           title: '今日额度已用完',
@@ -390,6 +425,10 @@ Page({
 
   recordShowing() {
     if (this.data.showingSubmitting) return
+    if (!this.data.isVerified) {
+      this.promptLoginGuide('登录后记录带看', '带看水印照片会进入后台审核，需要先登录内部中介账号。')
+      return
+    }
     wx.showModal({
       title: '拍摄带看水印照片',
       content: '请现场拍摄带时间和地点水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
@@ -547,6 +586,10 @@ Page({
   },
 
   startReportDeal() {
+    if (!this.data.isVerified) {
+      this.promptLoginGuide('登录后报备签单', '报备客户和提交签单需要先登录内部中介账号。')
+      return
+    }
     const listing = this.data.listing || {}
     this.setData({
       reportModalVisible: true,
@@ -581,6 +624,10 @@ Page({
   },
 
   submitClientReport() {
+    if (!this.data.isVerified) {
+      this.promptLoginGuide('登录后报备客户', '报备客户需要先登录内部中介账号。')
+      return
+    }
     const listing = this.data.listing || {}
     const form = this.data.reportForm || {}
     const customerPhone = safeText(form.customerPhone)

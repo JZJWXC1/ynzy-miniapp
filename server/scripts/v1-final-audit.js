@@ -13,7 +13,8 @@ const hiddenV1EntryKeywords = ['房源群', '积分', '充值', '换群', '微�
 const criticalScripts = [
   'server/scripts/map-v1-test.js',
   'server/scripts/assistant-v1-test.js',
-  'server/scripts/backend-contract-v1-test.js'
+  'server/scripts/backend-contract-v1-test.js',
+  'server/scripts/guest-mode-v1-test.js'
 ]
 
 function repoPath(relativePath) {

@@ -1017,10 +1017,23 @@ function matchesCategory(listing, category) {
   return type.indexOf(category) !== -1
 }
 
+function isCompanyOnlyFilter(filter = {}) {
+  if (filter.companyOnly === true || filter.companyOnly === 'true' || filter.companyOnly === '1') return true
+  const text = [
+    filter.category,
+    filter.sourceType,
+    filter.ownerType,
+    filter.source
+  ].map((item) => String(item || '')).join(' ')
+  return /公司房源|company/.test(text)
+}
+
 function filterListings(db, filter = {}) {
+  const companyOnly = isCompanyOnlyFilter(filter)
   return publicListings(db)
     .filter((listing) => {
       const locationText = publicLocationSearchText(listing)
+      if (companyOnly && !isCompanyListing(listing)) return false
       if (!matchesCategory(listing, filter.category)) return false
       if (filter.area && locationText.indexOf(filter.area) === -1) return false
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
@@ -1057,8 +1070,10 @@ function matchListings(db, condition = {}) {
   const requestedFeatures = parseFeatureInput(condition.features)
     .filter((item) => item !== NO_FEATURE)
   const hasCondition = Boolean(budget || area || layout || requestedFeatures.length)
+  const companyOnly = isCompanyOnlyFilter(condition)
 
   const availableListings = publicListings(db)
+    .filter((listing) => !companyOnly || isCompanyListing(listing))
   let scored = availableListings.map((listing) => {
     let score = 40
     const reasons = []
@@ -3527,6 +3542,7 @@ module.exports = {
   filterListings,
   matchListings,
   listingDetail,
+  isCompanyListing,
   listingLogs,
   recordVideoShare,
   footprintRecords,

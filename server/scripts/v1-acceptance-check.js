@@ -737,6 +737,33 @@ check('assistant no-result eval contract', () => {
   assertIncludes(assistantEvalRunnerSource, '无合适房源时不能返回接近房源乱推', 'no-result eval must prevent unsafe relaxed recommendation')
 })
 
+check('游客模式仅开放公司房源脱敏浏览', () => {
+  const appSource = readFile('app.js')
+  const dbSource = readFile('server/src/db.js')
+  const domainSource = readFile('server/src/domain.js')
+  const serverIndex = readFile('server/src/index.js')
+  const detailPageSource = readFile('pages/listing-detail/listing-detail.js')
+  const finalAuditSource = readFile('server/scripts/v1-final-audit.js')
+  const guestModeTestSource = readFile('server/scripts/guest-mode-v1-test.js')
+
+  assert.ok(!appSource.includes("storedUserId || 'U001'"), '小程序启动不能给游客默认塞入 U001')
+  assertIncludes(dbSource, "return fromHeader || ''", '服务端当前用户只能来自请求头，不能回落到 db.currentUserId')
+  assertIncludes(domainSource, 'function isCompanyOnlyFilter', '领域层必须支持公司房源专用过滤')
+  assertIncludes(domainSource, 'companyOnly && !isCompanyListing', '匿名过滤必须排除非公司房源')
+  assertIncludes(serverIndex, 'function assertMiniLogin', '受保护接口必须有统一登录拦截')
+  assertIncludes(serverIndex, 'function assertGuestRateLimit', '匿名 GET/助手接口必须限频')
+  assertIncludes(serverIndex, 'function guestListingFilter', '匿名列表和地图必须强制公司房源过滤')
+  assertIncludes(serverIndex, 'function guestCompanySheetSnapshot', '匿名飞书快照必须返回脱敏版本')
+  assertIncludes(serverIndex, 'assistantService.chat(companyOnlyDb(nextDb)', '匿名找房助手候选必须只来自公司房源')
+  assertIncludes(serverIndex, 'assertGuestListingAllowed(detail)', '匿名详情必须拦截合作房源')
+  assertIncludes(detailPageSource, "promptLoginGuide('登录后查看合作房源'", '前端触碰合作房源详情必须弹登录引导')
+  assertIncludes(guestModeTestSource, '匿名列表接口应返回 200', '游客模式测试必须覆盖匿名列表')
+  assertIncludes(guestModeTestSource, '匿名飞书快照不能返回看房密码', '游客模式测试必须覆盖飞书快照脱敏')
+  assertIncludes(guestModeTestSource, '匿名请求合作房源详情必须返回 401', '游客模式测试必须覆盖合作房源详情 401')
+  assertIncludes(guestModeTestSource, '匿名不可调用敏感查看', '游客模式测试必须覆盖匿名敏感查看 401')
+  assertIncludes(finalAuditSource, 'server/scripts/guest-mode-v1-test.js', '终审脚本必须运行游客模式真实路由测试')
+})
+
 console.log('')
 console.log(`第一版微信开发者工具轻量验收检查完成：通过 ${passed.length} 项，失败 ${failed.length} 项。`)
 

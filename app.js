@@ -19,7 +19,7 @@ const runtimeApiConfig = resolveRuntimeApiConfig()
 App({
   onLaunch() {
     const storedUserId = wx.getStorageSync('ynzy_user_id')
-    this.globalData.userId = storedUserId || 'U001'
+    this.globalData.userId = storedUserId || ''
     if (this.globalData.apiConfig.paymentMode === 'wechat') {
       this.bindWechatOpenid()
     }

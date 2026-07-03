@@ -27,6 +27,11 @@ const contentTypes = {
   '.ico': 'image/x-icon'
 }
 
+const COMPANY_SOURCE = '公司房源'
+const GUEST_RATE_WINDOW_MS = 60 * 1000
+const GUEST_RATE_LIMIT = 80
+const guestRateBuckets = new Map()
+
 function sendJson(res, data, statusCode = 200) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -112,6 +117,123 @@ function mapQueryFilter(searchParams) {
     sourceType: searchParams.get('sourceType') || '',
     area: searchParams.get('area') || searchParams.get('region') || '',
     listingIds: searchParamValues(searchParams, ['listingIds', 'listingIds[]'])
+  }
+}
+
+function requestClientKey(req) {
+  const forwarded = String((req.headers && req.headers['x-forwarded-for']) || '').split(',')[0].trim()
+  return forwarded || (req.socket && req.socket.remoteAddress) || 'unknown'
+}
+
+function assertGuestRateLimit(req, scope, limit = GUEST_RATE_LIMIT) {
+  const now = Date.now()
+  const key = `${scope}:${requestClientKey(req)}`
+  const bucket = guestRateBuckets.get(key) || { startedAt: now, count: 0 }
+  if (now - bucket.startedAt >= GUEST_RATE_WINDOW_MS) {
+    bucket.startedAt = now
+    bucket.count = 0
+  }
+  bucket.count += 1
+  guestRateBuckets.set(key, bucket)
+  if (bucket.count <= limit) return
+  const error = new Error('游客访问过于频繁，请稍后再试')
+  error.statusCode = 429
+  throw error
+}
+
+function assertMiniLogin(userId) {
+  if (String(userId || '').trim()) return
+  const error = new Error('请先登录内部中介账号')
+  error.statusCode = 401
+  throw error
+}
+
+function isGuestUser(userId) {
+  return !String(userId || '').trim()
+}
+
+function guestListingFilter(filter = {}) {
+  return {
+    ...filter,
+    category: COMPANY_SOURCE,
+    sourceType: COMPANY_SOURCE,
+    companyOnly: true
+  }
+}
+
+function companyOnlyDb(db = {}) {
+  return {
+    ...db,
+    listings: (db.listings || []).filter((listing) => domain.isCompanyListing(listing))
+  }
+}
+
+function assertGuestListingAllowed(detail) {
+  if (detail && detail.companyListing) return
+  const error = new Error('游客仅可查看公司房源，请登录后查看合作房源')
+  error.statusCode = 401
+  throw error
+}
+
+function sheetCellText(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
+}
+
+function findCompanySheetHeaderIndex(rows = []) {
+  return rows.findIndex((row) => {
+    const text = (row || []).map(sheetCellText).join('|')
+    return /区域/.test(text) && /小区/.test(text)
+  })
+}
+
+function sheetColumnIndex(header = [], aliases = []) {
+  const normalizedHeader = header.map((cell) => sheetCellText(cell).replace(/\s+/g, ''))
+  return aliases.reduce((matched, alias) => {
+    if (matched !== -1) return matched
+    const key = String(alias || '').replace(/\s+/g, '')
+    return normalizedHeader.findIndex((cell) => cell === key || cell.indexOf(key) !== -1)
+  }, -1)
+}
+
+function guestCompanySheetSnapshot(snapshot = {}) {
+  const rows = Array.isArray(snapshot.rows) ? snapshot.rows : []
+  const headerIndex = findCompanySheetHeaderIndex(rows)
+  if (headerIndex < 0) {
+    return {
+      ...snapshot,
+      rows: [],
+      rowCount: 0,
+      columnCount: 0,
+      guestSanitized: true
+    }
+  }
+
+  const sourceHeader = rows[headerIndex] || []
+  const columns = [
+    { title: '区域', aliases: ['区域', '区', '片区', '商圈', 'district', 'area'] },
+    { title: '小区', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'] },
+    { title: '户型描述', aliases: ['户型描述', '描述', '房源描述', '户型信息', '房源信息', '房源详情', 'layoutDescription', 'description'] },
+    { title: '户型分类', aliases: ['户型分类', '户型', '格局', '分类', 'category', 'layoutCategory'] },
+    { title: '押一付一', aliases: ['押一付一', '押一', '月租', '租金', '价格', 'rent', 'price'] },
+    { title: '押二付一', aliases: ['押二付一', '押二', '押二付一价格', '押二价格'] }
+  ].map((column) => ({
+    ...column,
+    index: sheetColumnIndex(sourceHeader, column.aliases)
+  }))
+
+  const sanitizedRows = [
+    columns.map((column) => column.title),
+    ...rows.slice(headerIndex + 1)
+      .map((row) => columns.map((column) => (column.index >= 0 ? sheetCellText((row || [])[column.index]) : '')))
+      .filter((row) => row.some(Boolean))
+  ]
+
+  return {
+    ...snapshot,
+    rows: sanitizedRows,
+    rowCount: Math.max(0, sanitizedRows.length - 1),
+    columnCount: columns.length,
+    guestSanitized: true
   }
 }
 
@@ -555,6 +677,7 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'POST' && pathname === '/mini/auth/wechat-openid') {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     if (!body.code) {
       const error = new Error('缺少微信登录 code')
@@ -577,43 +700,69 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'GET' && pathname === '/mini/home/listings') {
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-home-listings')
+      return sendJson(res, domain.filterListings(db, guestListingFilter()).slice(0, 3))
+    }
     return sendJson(res, domain.homeListings(db))
   }
 
   if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
+    const guest = isGuestUser(userId)
+    if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot', 30)
     const cached = feishuSync.cachedSheetSnapshot(db)
-    if (cached) return sendJson(res, cached)
+    if (cached) return sendJson(res, guest ? guestCompanySheetSnapshot(cached) : cached)
     const nextDb = dbStore.readDb()
     const snapshot = await feishuSync.refreshSheetSnapshot(nextDb, { reason: 'mini-request' })
     dbStore.writeDb(nextDb)
-    return sendJson(res, snapshot)
+    return sendJson(res, guest ? guestCompanySheetSnapshot(snapshot) : snapshot)
   }
 
   if (method === 'GET' && pathname === '/mini/listings') {
-    return sendJson(res, domain.filterListings(db, {
+    const filter = {
       category: searchParams.get('category') || '',
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',
       layout: searchParams.get('layout') || '',
       rentMax: searchParams.get('rentMax') || ''
-    }))
+    }
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-listings')
+      return sendJson(res, domain.filterListings(db, guestListingFilter(filter)))
+    }
+    return sendJson(res, domain.filterListings(db, filter))
   }
 
   if (method === 'POST' && pathname === '/mini/listings/match') {
-    return sendJson(res, domain.matchListings(db, await parseBody(req)))
+    const body = await parseBody(req)
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-listings-match')
+      return sendJson(res, domain.matchListings(db, guestListingFilter(body)))
+    }
+    return sendJson(res, domain.matchListings(db, body))
   }
 
   if (method === 'POST' && pathname === '/mini/llm/match') {
-    return sendJson(res, await llm.matchRentalNeed(db, await parseBody(req)))
+    const body = await parseBody(req)
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-llm-match')
+      return sendJson(res, await llm.matchRentalNeed(companyOnlyDb(db), guestListingFilter(body)))
+    }
+    return sendJson(res, await llm.matchRentalNeed(db, body))
   }
 
   if (method === 'POST' && pathname === '/mini/assistant/chat') {
     const body = await parseBody(req)
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-assistant-chat', 30)
+      return sendJson(res, await dbStore.updateDbAsync((nextDb) => assistantService.chat(companyOnlyDb(nextDb), body, { userId: '' })))
+    }
     return sendJson(res, await dbStore.updateDbAsync((nextDb) => assistantService.chat(nextDb, body, { userId })))
   }
 
   if (method === 'POST' && pathname === '/mini/asr/transcribe') {
+    if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-asr-transcribe', 20)
     const form = await parseMultipartForm(req, { maxBytes: asrService.MAX_AUDIO_BYTES })
     const file = (form.files || []).find((item) => item.name === 'file' || item.name === 'audio') || form.file
     return sendJson(res, await asrService.transcribeAudio(db, file, {
@@ -624,46 +773,64 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/assistant/feedback') {
     const body = await parseBody(req)
+    if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-assistant-feedback', 30)
     return sendJson(res, dbStore.updateDb((nextDb) => assistantService.feedback(nextDb, body, { userId })))
   }
 
   if (method === 'GET' && pathname === '/mini/map/communities') {
-    return sendJson(res, domain.mapCommunities(db, mapQueryFilter(searchParams)))
+    const filter = mapQueryFilter(searchParams)
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-map-communities')
+      return sendJson(res, domain.mapCommunities(db, guestListingFilter(filter)))
+    }
+    return sendJson(res, domain.mapCommunities(db, filter))
   }
 
   if (method === 'GET' && pathname === '/mini/map/pins') {
-    return sendJson(res, domain.mapPins(db, mapQueryFilter(searchParams)))
+    const filter = mapQueryFilter(searchParams)
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-map-pins')
+      return sendJson(res, domain.mapPins(db, guestListingFilter(filter)))
+    }
+    return sendJson(res, domain.mapPins(db, filter))
   }
 
   if (method === 'GET' && pathname === '/mini/footprints') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.footprintRecords(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/rental-needs') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.userRentalNeeds(db, userId))
   }
 
   if (method === 'POST' && pathname === '/mini/rental-needs') {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.createRentalNeed(nextDb, userId, body)))
   }
 
   if (method === 'GET' && pathname === '/mini/my/listings') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.ownedListings(db, userId))
   }
 
   const myListingEditMatch = pathname.match(/^\/mini\/my\/listings\/([^/]+)$/)
   if (method === 'GET' && myListingEditMatch) {
+    assertMiniLogin(userId)
     return sendJson(res, withSignedVideoUrl(domain.editableListingDetail(db, userId, myListingEditMatch[1])))
   }
 
   if (method === 'PUT' && myListingEditMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, withSignedVideoUrl(dbStore.updateDb((nextDb) => domain.updateNormalListing(nextDb, userId, myListingEditMatch[1], body))))
   }
 
   const myListingVerifyMatch = pathname.match(/^\/mini\/my\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && myListingVerifyMatch) {
+    assertMiniLogin(userId)
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.verifyListingAvailability(nextDb, userId, myListingVerifyMatch[1])
       return domain.ownedListings(nextDb, userId)
@@ -671,22 +838,27 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'GET' && pathname === '/mini/profile') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.profileState(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/today-tasks') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.todayTasks(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/commissions') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.userCommissionRows(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/reports') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.userReportRows(db, userId))
   }
 
   if (method === 'GET' && pathname === '/mini/deals') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.userDealRows(db, userId))
   }
 
@@ -703,6 +875,7 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'POST' && pathname === '/mini/points/recharge') {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     const count = Math.max(1, Math.floor(Number(body.points) || 1))
     const amount = count * 20
@@ -753,32 +926,39 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'GET' && pathname === '/mini/groups') {
+    assertMiniLogin(userId)
     return sendJson(res, domain.groupState(db, userId))
   }
 
   if (method === 'POST' && pathname === '/mini/groups/listings') {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.uploadGroupListing(nextDb, userId, body)))
   }
 
   const unlockMatch = pathname.match(/^\/mini\/groups\/([^/]+)\/unlock$/)
   if (method === 'POST' && unlockMatch) {
+    assertMiniLogin(userId)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.unlockGroup(nextDb, userId, unlockMatch[1])))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/video-policy') {
+    assertMiniLogin(userId)
     return sendJson(res, oss.createVideoUploadPolicy(await parseBody(req)))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/group-screenshot-policy') {
+    assertMiniLogin(userId)
     return sendJson(res, oss.createGroupScreenshotUploadPolicy(await parseBody(req)))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/showing-photo-policy') {
+    assertMiniLogin(userId)
     return sendJson(res, oss.createShowingPhotoUploadPolicy(await parseBody(req)))
   }
 
   if (method === 'POST' && pathname === '/mini/listings') {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.addNormalListing(nextDb, userId, body)))
   }
@@ -791,16 +971,22 @@ async function handleMini(req, res, pathname, searchParams) {
       error.statusCode = 404
       throw error
     }
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-listing-detail')
+      assertGuestListingAllowed(detail)
+    }
     return sendJson(res, withSignedVideoUrl(detail))
   }
 
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
   if (method === 'GET' && listingLogsMatch) {
+    assertMiniLogin(userId)
     return sendJson(res, domain.listingLogs(db, listingLogsMatch[1], userId))
   }
 
   const videoShareMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/video-share$/)
   if (method === 'POST' && videoShareMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.recordVideoShare(nextDb, userId, videoShareMatch[1], {
       channel: body.channel,
@@ -815,29 +1001,34 @@ async function handleMini(req, res, pathname, searchParams) {
 
   const reportMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/reports$/)
   if (method === 'POST' && reportMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.createClientReport(nextDb, userId, reportMatch[1], body)))
   }
 
   const reportDealMatch = pathname.match(/^\/mini\/reports\/([^/]+)\/deals$/)
   if (method === 'POST' && reportDealMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.createDealFromReport(nextDb, userId, reportDealMatch[1], body)))
   }
 
   const showingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/showings$/)
   if (method === 'POST' && showingMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.recordShowing(nextDb, userId, showingMatch[1], body)))
   }
 
   const dealMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/deals$/)
   if (method === 'POST' && dealMatch) {
+    assertMiniLogin(userId)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.registerDeal(nextDb, userId, dealMatch[1])))
   }
 
   const sensitiveMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/sensitive-view$/)
   if (method === 'POST' && sensitiveMatch) {
+    assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.addSensitiveFootprint(nextDb, userId, sensitiveMatch[1], {
       action: body.action,

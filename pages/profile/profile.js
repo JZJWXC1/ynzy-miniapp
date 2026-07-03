@@ -16,6 +16,10 @@ function filterVisibleReminders(reminders = []) {
   return reminders.filter((item) => isV1VisibleText(item.title) && isV1VisibleText(item.value))
 }
 
+function isAuthError(error) {
+  return error && (error.statusCode === 401 || error.statusCode === 403)
+}
+
 function findStatValue(stats = [], keywords = [], fallback = 0) {
   const item = stats.find((stat) => {
     const label = String(stat.label || stat.title || '')
@@ -91,9 +95,25 @@ Page({
         workbench: this.buildWorkbench(profile, footprints.length),
         dealWorkbench: buildDealWorkbench((reports || []).length, (deals || []).length)
       });
-    }).catch(() => {
+    }).catch((error) => {
+      if (isAuthError(error)) {
+        this.promptLoginGuide()
+        return
+      }
       wx.showToast({ title: '我的信息加载失败', icon: 'none' })
     });
+  },
+
+  promptLoginGuide() {
+    wx.showModal({
+      title: '登录后进入我的',
+      content: '我的房源、足迹、报备、签单和分佣记录需要登录内部中介账号后查看。',
+      cancelText: '先看看',
+      confirmText: '去登录',
+      success: (res) => {
+        if (res.confirm) wx.navigateTo({ url: '/pages/auth/auth' })
+      }
+    })
   },
 
   handleTap(event) {

@@ -46,7 +46,7 @@ async function updateDbAsync(mutator) {
 
 function getCurrentUserId(req, db) {
   const fromHeader = req && req.headers ? req.headers['x-user-id'] : ''
-  return fromHeader || (db && db.currentUserId) || ''
+  return fromHeader || ''
 }
 
 module.exports = {
