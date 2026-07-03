@@ -29,7 +29,6 @@ if ($IncludeData) {
 Copy-Item -Path (Join-Path $root "server\scripts") -Destination (Join-Path $stageDir "server\scripts") -Recurse
 Copy-Item -Path (Join-Path $root "server\package.json") -Destination (Join-Path $stageDir "server\package.json")
 Copy-Item -Path (Join-Path $root "server\README.md") -Destination (Join-Path $stageDir "server\README.md")
-Copy-Item -Path (Join-Path $root "server\.env.example") -Destination (Join-Path $stageDir "server\.env.example")
 Copy-Item -Path (Join-Path $root "admin-web\*") -Destination (Join-Path $stageDir "admin-web") -Recurse
 Copy-Item -Path (Join-Path $root "utils\mock-data.js") -Destination (Join-Path $stageDir "utils\mock-data.js")
 Copy-Item -Path (Join-Path $root "deploy\*") -Destination (Join-Path $stageDir "deploy") -Recurse
@@ -38,7 +37,7 @@ if ($IncludeEnv) {
   Copy-Item -Path (Join-Path $root "server\.env") -Destination (Join-Path $stageDir "server\.env")
   Write-Host "Included server/.env. This zip contains secrets; use only for your server."
 } else {
-  Write-Host "server/.env is not included. Add it on the server before production-like testing."
+  Write-Host "server/.env and .env.* files are not included. Add server/.env on the server before production-like testing."
 }
 
 if (Test-Path $zipPath) {

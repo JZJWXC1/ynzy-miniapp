@@ -63,8 +63,8 @@ install_packages
 install_node
 
 if [ ! -f "$APP_DIR/server/.env" ]; then
-  cp "$APP_DIR/server/.env.example" "$APP_DIR/server/.env"
-  echo "Created server/.env from example. Fill real secrets before testing uploads or LLM."
+  echo "server/.env is required on the server; deployment packages intentionally exclude .env files."
+  exit 1
 fi
 
 if grep -q '^PORT=' "$APP_DIR/server/.env"; then
