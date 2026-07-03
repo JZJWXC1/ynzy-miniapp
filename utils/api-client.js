@@ -17,21 +17,77 @@ function buildUrl(baseUrl, path) {
   return `${base}${target}`
 }
 
-function getCurrentUserId() {
+let authRedirecting = false
+
+function getAuthToken(config) {
   try {
     if (typeof getApp === 'function') {
       const app = getApp()
-      if (app && app.globalData && app.globalData.userId) {
-        return app.globalData.userId
+      if (app && app.globalData && app.globalData.authToken) {
+        return app.globalData.authToken
       }
     }
+    if (config && config.token) return config.token
     if (typeof wx !== 'undefined' && wx.getStorageSync) {
-      return wx.getStorageSync('ynzy_user_id') || ''
+      return wx.getStorageSync('ynzy_auth_token') || ''
     }
   } catch (error) {
     return ''
   }
   return ''
+}
+
+function authHeader(config) {
+  const token = getAuthToken(config)
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+function clearAuthState() {
+  try {
+    if (typeof getApp === 'function') {
+      const app = getApp()
+      if (app && typeof app.logout === 'function') {
+        app.logout({ silent: true })
+        return
+      }
+      if (app && app.globalData) {
+        app.globalData.user = null
+        app.globalData.userId = ''
+        app.globalData.authToken = ''
+        if (app.globalData.apiConfig) app.globalData.apiConfig.token = ''
+      }
+    }
+    if (typeof wx !== 'undefined') {
+      if (wx.removeStorageSync) wx.removeStorageSync('ynzy_auth_token')
+      if (wx.removeStorageSync) wx.removeStorageSync('ynzy_user_id')
+    }
+  } catch (error) {}
+}
+
+function redirectToAuth() {
+  if (typeof wx === 'undefined' || !wx.navigateTo || authRedirecting) return
+  let currentRoute = ''
+  try {
+    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+    const current = pages[pages.length - 1]
+    currentRoute = current && current.route ? current.route : ''
+  } catch (error) {}
+  if (currentRoute === 'pages/auth/auth') return
+  authRedirecting = true
+  wx.navigateTo({
+    url: '/pages/auth/auth',
+    complete() {
+      setTimeout(() => {
+        authRedirecting = false
+      }, 500)
+    }
+  })
+}
+
+function handleUnauthorized(error) {
+  if (!error || Number(error.statusCode) !== 401) return
+  clearAuthState()
+  redirectToAuth()
 }
 
 function request(options) {
@@ -60,8 +116,7 @@ function request(options) {
       timeout: config.timeout,
       header: {
         'content-type': 'application/json',
-        Authorization: config.token ? `Bearer ${config.token}` : '',
-        'X-User-Id': getCurrentUserId()
+        ...authHeader(config)
       },
       success(res) {
         const body = normalizeResponse(res.data)
@@ -69,6 +124,7 @@ function request(options) {
           const error = new Error(body.message || `接口请求失败：${res.statusCode}`)
           error.statusCode = res.statusCode
           error.data = body.data || null
+          handleUnauthorized(error)
           reject(error)
           return
         }
@@ -76,6 +132,7 @@ function request(options) {
           const error = new Error(body.message || '接口业务失败')
           error.statusCode = res.statusCode
           error.data = body.data || null
+          handleUnauthorized(error)
           reject(error)
           return
         }
@@ -148,5 +205,8 @@ module.exports = {
   request,
   call,
   buildUrl,
-  uploadFile
+  uploadFile,
+  getAuthToken,
+  authHeader,
+  handleUnauthorized
 }

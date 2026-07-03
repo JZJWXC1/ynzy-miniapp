@@ -14,7 +14,8 @@ const criticalScripts = [
   'server/scripts/map-v1-test.js',
   'server/scripts/assistant-v1-test.js',
   'server/scripts/backend-contract-v1-test.js',
-  'server/scripts/guest-mode-v1-test.js'
+  'server/scripts/guest-mode-v1-test.js',
+  'server/scripts/auth-token-v1-test.js'
 ]
 
 function repoPath(relativePath) {

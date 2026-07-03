@@ -44,16 +44,10 @@ async function updateDbAsync(mutator) {
   return result
 }
 
-function getCurrentUserId(req, db) {
-  const fromHeader = req && req.headers ? req.headers['x-user-id'] : ''
-  return fromHeader || ''
-}
-
 module.exports = {
   clone,
   readDb,
   writeDb,
   updateDb,
-  updateDbAsync,
-  getCurrentUserId
+  updateDbAsync
 }

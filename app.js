@@ -19,21 +19,36 @@ const runtimeApiConfig = resolveRuntimeApiConfig()
 App({
   onLaunch() {
     const storedUserId = wx.getStorageSync('ynzy_user_id')
+    const storedToken = wx.getStorageSync('ynzy_auth_token')
     this.globalData.userId = storedUserId || ''
-    if (this.globalData.apiConfig.paymentMode === 'wechat') {
+    this.globalData.authToken = storedToken || ''
+    this.globalData.apiConfig.token = storedToken || ''
+    if (storedToken && this.globalData.apiConfig.paymentMode === 'wechat') {
       this.bindWechatOpenid()
     }
   },
 
   setCurrentUser(user) {
     if (!user || !user.id) return
-    this.globalData.user = user
+    const profile = Object.assign({}, user)
+    const token = profile.token || ''
+    const tokenExpiresAt = profile.tokenExpiresAt || ''
+    delete profile.token
+    delete profile.tokenExpiresAt
+    this.globalData.user = profile
     this.globalData.userId = user.id
+    if (token) {
+      this.globalData.authToken = token
+      this.globalData.apiConfig.token = token
+      wx.setStorageSync('ynzy_auth_token', token)
+      if (tokenExpiresAt) wx.setStorageSync('ynzy_auth_token_expires_at', tokenExpiresAt)
+    }
     wx.setStorageSync('ynzy_user_id', user.id)
   },
 
   bindWechatOpenid() {
     if (!wx.login) return
+    if (!this.globalData.authToken) return
     wx.login({
       success: (res) => {
         if (!res.code) return
@@ -49,12 +64,17 @@ App({
   logout() {
     this.globalData.user = null
     this.globalData.userId = ''
+    this.globalData.authToken = ''
+    this.globalData.apiConfig.token = ''
     wx.removeStorageSync('ynzy_user_id')
+    wx.removeStorageSync('ynzy_auth_token')
+    wx.removeStorageSync('ynzy_auth_token_expires_at')
   },
 
   globalData: {
     apiConfig: runtimeApiConfig,
     userId: '',
+    authToken: '',
     user: null
   }
 })

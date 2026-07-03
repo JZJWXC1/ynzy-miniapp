@@ -30,13 +30,14 @@ const contentTypes = {
 const COMPANY_SOURCE = '公司房源'
 const GUEST_RATE_WINDOW_MS = 60 * 1000
 const GUEST_RATE_LIMIT = 80
+const MINI_AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const guestRateBuckets = new Map()
 
 function sendJson(res, data, statusCode = 200) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-User-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
   })
   res.end(JSON.stringify({ code: 0, message: 'ok', data }))
@@ -47,7 +48,7 @@ function sendError(res, error) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-User-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
   })
   res.end(JSON.stringify({ code: statusCode, message: error.message || '服务异常', data: error.data || null }))
@@ -58,7 +59,7 @@ function sendJsonDownload(res, filename, data) {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Disposition': `attachment; filename="${filename}"`,
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-User-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
   })
   res.end(JSON.stringify(data, null, 2))
@@ -255,7 +256,7 @@ function parseRawBody(req) {
 function sendOptions(res) {
   res.writeHead(204, {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-User-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
   })
   res.end()
@@ -306,6 +307,82 @@ function verifyAdminToken(token) {
     return payload
   } catch (error) {
     return null
+  }
+}
+
+function miniAuthTokenSecret() {
+  const secret = String(process.env.AUTH_TOKEN_SECRET || '').trim()
+  if (secret) return secret
+  const error = new Error('小程序登录 Token 密钥未配置')
+  error.statusCode = 503
+  throw error
+}
+
+function signMiniAuthPayload(payload) {
+  const encoded = base64url(JSON.stringify(payload))
+  const signature = crypto.createHmac('sha256', miniAuthTokenSecret()).update(encoded).digest('base64url')
+  return `${encoded}.${signature}`
+}
+
+function issueMiniAuthToken(userId) {
+  const tokenExpiresAt = Date.now() + MINI_AUTH_TOKEN_TTL_MS
+  return {
+    token: signMiniAuthPayload({ userId, exp: tokenExpiresAt }),
+    tokenExpiresAt
+  }
+}
+
+function miniAuthError(message = '登录已过期，请重新登录') {
+  const error = new Error(message)
+  error.statusCode = 401
+  return error
+}
+
+function bearerTokenFromRequest(req) {
+  const header = String((req.headers && req.headers.authorization) || '').trim()
+  const match = header.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1].trim() : ''
+}
+
+function verifyMiniAuthToken(token) {
+  const parts = String(token || '').trim().split('.')
+  if (parts.length !== 2 || !parts[0] || !parts[1]) throw miniAuthError()
+
+  const expected = crypto.createHmac('sha256', miniAuthTokenSecret()).update(parts[0]).digest('base64url')
+  const actualBuffer = Buffer.from(parts[1])
+  const expectedBuffer = Buffer.from(expected)
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
+    throw miniAuthError()
+  }
+
+  let payload
+  try {
+    payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'))
+  } catch (error) {
+    throw miniAuthError()
+  }
+
+  const userId = String(payload.userId || '').trim()
+  const exp = Number(payload.exp || 0)
+  if (!userId || !Number.isFinite(exp) || exp <= Date.now()) throw miniAuthError()
+  return { userId, exp }
+}
+
+function miniUserIdFromRequest(req, db) {
+  const token = bearerTokenFromRequest(req)
+  if (!token) return ''
+  const payload = verifyMiniAuthToken(token)
+  const user = (db.users || []).find((item) => item.id === payload.userId && item.status !== '禁用')
+  if (!user) throw miniAuthError('登录用户不存在或已停用')
+  return user.id
+}
+
+function miniAuthResponse(user) {
+  const auth = issueMiniAuthToken(user.id)
+  return {
+    ...user,
+    token: auth.token,
+    tokenExpiresAt: auth.tokenExpiresAt
   }
 }
 
@@ -512,6 +589,12 @@ function buildLaunchCheck(db) {
       process.env.ADMIN_TOKEN_SECRET ? '上线后定期轮换密钥' : '在服务器环境变量中设置强随机 ADMIN_TOKEN_SECRET'
     ),
     launchCheckItem(
+      '小程序登录 Token 密钥',
+      process.env.AUTH_TOKEN_SECRET ? '通过' : '需处理',
+      process.env.AUTH_TOKEN_SECRET ? 'AUTH_TOKEN_SECRET 已由服务端环境变量提供' : '缺少小程序登录签名密钥',
+      process.env.AUTH_TOKEN_SECRET ? '上线后定期轮换密钥' : '在服务器环境变量中设置强随机 AUTH_TOKEN_SECRET'
+    ),
+    launchCheckItem(
       '管理员初始密码',
       weakAdmins.length ? '需处理' : '通过',
       weakAdmins.length ? `${weakAdmins.length} 个管理员仍使用内测默认密码或明文密码` : '管理员账号已使用加密密码',
@@ -574,6 +657,7 @@ function buildMissingEnvTemplate(db) {
   const asrStatus = asrService.configStatus(db)
   const names = []
   if (!process.env.ADMIN_TOKEN_SECRET) names.push('ADMIN_TOKEN_SECRET')
+  if (!process.env.AUTH_TOKEN_SECRET) names.push('AUTH_TOKEN_SECRET')
   if (!config.oss.bucket) names.push('ALI_OSS_BUCKET')
   if (!config.oss.region) names.push('ALI_OSS_REGION')
   if (!config.oss.accessKeyId) names.push('ALI_OSS_ACCESS_KEY_ID')
@@ -660,20 +744,22 @@ function readDbForRequest() {
 async function handleMini(req, res, pathname, searchParams) {
   const method = req.method
   const db = readDbForRequest()
-  const userId = dbStore.getCurrentUserId(req, db)
-
-  if (method === 'GET' && pathname === '/mini/auth/me') {
-    return sendJson(res, domain.currentUser(db, userId))
-  }
 
   if (method === 'POST' && pathname === '/mini/auth/login') {
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.loginByPhone(nextDb, body.phone)))
+    return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.loginByPhone(nextDb, body.phone))))
   }
 
   if (method === 'POST' && pathname === '/mini/auth/register') {
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.registerUser(nextDb, body)))
+    return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.registerUser(nextDb, body))))
+  }
+
+  const userId = miniUserIdFromRequest(req, db)
+
+  if (method === 'GET' && pathname === '/mini/auth/me') {
+    assertMiniLogin(userId)
+    return sendJson(res, domain.currentUser(db, userId))
   }
 
   if (method === 'POST' && pathname === '/mini/auth/wechat-openid') {

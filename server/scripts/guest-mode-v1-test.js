@@ -181,7 +181,8 @@ async function run() {
       ...process.env,
       PORT: String(port),
       DATA_FILE: dataFile,
-      V1_DISABLE_LEGACY_ROUTES: '1'
+      V1_DISABLE_LEGACY_ROUTES: '1',
+      AUTH_TOKEN_SECRET: 'guest-mode-test-secret'
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -250,7 +251,12 @@ async function run() {
     const profile = await request('GET', '/mini/profile')
     assert.strictEqual(profile.statusCode, 401, '匿名访问我的必须返回 401')
 
-    const loggedPartnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER', null, { 'X-User-Id': 'U1' })
+    const login = await request('POST', '/mini/auth/login', { phone: '13900000001' })
+    assert.strictEqual(login.statusCode, 200, '登录应返回 200')
+    assert.ok(dataOf(login).token, '登录必须返回小程序 token')
+    const loggedPartnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER', null, {
+      Authorization: `Bearer ${dataOf(login).token}`
+    })
     assert.strictEqual(loggedPartnerDetail.statusCode, 200, '登录后可查看合作房源脱敏详情')
   } finally {
     server.kill()

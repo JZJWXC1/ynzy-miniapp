@@ -804,7 +804,6 @@ function loginByPhone(db, phone) {
     error.statusCode = 403
     throw error
   }
-  db.currentUserId = user.id
   return clone(user)
 }
 
@@ -829,7 +828,6 @@ function registerUser(db, payload = {}) {
 
   const existed = userByPhone(db, phone)
   if (existed) {
-    db.currentUserId = existed.id
     return clone(existed)
   }
 

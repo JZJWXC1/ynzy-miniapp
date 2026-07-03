@@ -401,13 +401,21 @@ function getCompanySheetSnapshot() {
   })
 }
 
+function normalizeAuthUser(result) {
+  if (!result || !result.user) return result
+  return Object.assign({}, result.user, {
+    token: result.token,
+    tokenExpiresAt: result.tokenExpiresAt
+  })
+}
+
 function loginByPhone(phone) {
   return apiClient.call({
     path: '/mini/auth/login',
     method: 'POST',
     data: { phone },
     mock: () => mockData.loginByPhone(phone)
-  })
+  }).then(normalizeAuthUser)
 }
 
 function registerUser(form) {
@@ -416,7 +424,7 @@ function registerUser(form) {
     method: 'POST',
     data: form,
     mock: () => mockData.loginByPhone(form && form.phone)
-  })
+  }).then(normalizeAuthUser)
 }
 
 function getCurrentUser() {
@@ -800,10 +808,7 @@ function transcribeVoice(filePath, metadata) {
       format: info.format || 'mp3',
       context: info.context || '找房小程序中介语音输入'
     },
-    header: {
-      Authorization: config.token ? `Bearer ${config.token}` : '',
-      'X-User-Id': (typeof wx !== 'undefined' && wx.getStorageSync) ? (wx.getStorageSync('ynzy_user_id') || '') : ''
-    },
+    header: apiClient.authHeader(config),
     mock: () => ({
       text: info.mockText || '拱墅万达附近2000左右的单间',
       provider: 'mock-asr',
@@ -819,23 +824,12 @@ function buildRealtimeAsrUrl() {
   return httpUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
 }
 
-function currentUserId() {
-  try {
-    return (typeof wx !== 'undefined' && wx.getStorageSync) ? (wx.getStorageSync('ynzy_user_id') || '') : ''
-  } catch (error) {
-    return ''
-  }
-}
-
 function createRealtimeAsrSocket() {
   const config = getRuntimeConfig()
   if (shouldUseMock(config) || typeof wx === 'undefined' || !wx.connectSocket) return null
   return wx.connectSocket({
     url: buildRealtimeAsrUrl(),
-    header: {
-      Authorization: config.token ? `Bearer ${config.token}` : '',
-      'X-User-Id': currentUserId()
-    }
+    header: apiClient.authHeader(config)
   })
 }
 
