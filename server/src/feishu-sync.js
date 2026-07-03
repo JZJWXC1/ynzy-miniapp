@@ -128,6 +128,29 @@ function unique(values) {
   })
 }
 
+function configuredDistrictName(value) {
+  const text = normalizeText(value)
+  if (!text) return ''
+  const districts = Object.keys((config.location && config.location.districtBlocks) || {})
+  return districts.find((district) => district === text || district.replace(/区$/, '') === text.replace(/区$/, '')) || ''
+}
+
+function districtForBlock(block, fallback) {
+  const matchedDistrict = configuredDistrictName(fallback) || configuredDistrictName(block)
+  if (matchedDistrict) return matchedDistrict
+  const blockMap = (config.location && config.location.blockDistrictMap) || {}
+  return blockMap[normalizeText(block)] || fallback || '待分区'
+}
+
+function normalizeLocationFields(fields = {}) {
+  const explicitDistrict = firstField(fields, ['行政区', '城区', '城市区域', 'districtName'])
+  const block = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
+  return {
+    area: districtForBlock(block, explicitDistrict),
+    block
+  }
+}
+
 function isSensitiveFeishuField(name) {
   return SENSITIVE_FEISHU_FIELD_PATTERN.test(normalizeText(name).replace(/\s+/g, ''))
 }
@@ -266,6 +289,7 @@ function parseLayoutDescription(fields) {
 function normalizeRecord(rawRecord, index) {
   const fields = stripSensitiveFields(rawRecord.fields || rawRecord)
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
+  const location = normalizeLocationFields(fields)
   const roomParts = parseRoomParts(fields)
   const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
   const externalId = firstField(fields, ['房源编号', '唯一编号', '编号', 'ID', 'id', 'importKey', 'record_id']) || rawRecord.record_id || fallbackKey
@@ -286,8 +310,8 @@ function normalizeRecord(rawRecord, index) {
     externalId,
     matchKey: externalId || fallbackKey,
     city: firstField(fields, ['城市', 'city']) || '杭州',
-    area: firstField(fields, ['区域', '区', 'district', 'area']) || '待分区',
-    block: firstField(fields, ['板块', '商圈', 'block']) || firstField(fields, ['区域', '区', 'district', 'area']) || '待板块',
+    area: location.area,
+    block: location.block,
     community,
     building: roomParts.building,
     unit: roomParts.unit,

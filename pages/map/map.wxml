@@ -10,6 +10,12 @@
     <view class="filter-row">
       <view wx:for="{{rentFilters}}" wx:key="key" class="filter-chip {{filters.rentKey === item.key ? 'active' : ''}}" bindtap="changeRentFilter" data-key="{{item.key}}">{{item.label}}</view>
     </view>
+    <view class="custom-rent-row">
+      <input value="{{filters.rentMin}}" data-field="rentMin" bindinput="updateRentInput" type="number" placeholder="最低租金" />
+      <text>-</text>
+      <input value="{{filters.rentMax}}" data-field="rentMax" bindinput="updateRentInput" type="number" placeholder="最高租金" />
+      <button bindtap="applyCustomRentRange">应用</button>
+    </view>
     <view class="filter-row">
       <view wx:for="{{layoutFilters}}" wx:key="*this" class="filter-chip {{(!filters.layout && item === '全部') || filters.layout === item ? 'active' : ''}}" bindtap="changeFilter" data-type="layout" data-value="{{item}}">{{item}}</view>
     </view>

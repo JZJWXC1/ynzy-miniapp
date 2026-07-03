@@ -64,6 +64,16 @@ const feishuFolderTokenFile = path.resolve(rootDir, '..', 'lark-folder-params.js
 const feishuSheetTokenFile = path.resolve(rootDir, '..', 'lark-sheet-params.json')
 const configuredSheetUrl = process.env.FEISHU_SHEET_URL || jsonValue(feishuSheetTokenFile, 'sheet_url')
 const configuredSheetToken = process.env.FEISHU_SHEET_TOKEN || jsonValue(feishuSheetTokenFile, 'spreadsheet_token') || extractSheetToken(configuredSheetUrl)
+const districtBlocks = {
+  '拱墅区': ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'],
+  '上城区': ['闸弄口', '新塘', '元宝塘', '东站']
+}
+const blockDistrictMap = Object.keys(districtBlocks).reduce((map, district) => {
+  districtBlocks[district].forEach((block) => {
+    map[block] = district
+  })
+  return map
+}, {})
 
 module.exports = {
   rootDir,
@@ -92,6 +102,10 @@ module.exports = {
     uploadDomain: process.env.MINI_UPLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com',
     socketDomain: process.env.MINI_SOCKET_DOMAIN || process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
     downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
+  },
+  location: {
+    districtBlocks,
+    blockDistrictMap
   },
   feishu: {
     baseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn/open-apis',

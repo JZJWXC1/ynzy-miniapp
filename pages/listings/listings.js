@@ -3,6 +3,10 @@ const apiService = require('../../utils/api-service')
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const categories = ['全部', '整租', '合租', '业主房源', '公寓']
 const rentModeFilters = ['不限', '整租', '合租']
+const regionOptions = [
+  { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
+  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] }
+]
 const emptyFilters = {
   needId: '',
   area: '',
@@ -10,6 +14,7 @@ const emptyFilters = {
   community: '',
   layout: '',
   rentMode: '',
+  rentMin: '',
   rentMax: ''
 }
 
@@ -20,6 +25,11 @@ function cleanFilterValue(value) {
 
 function normalizeRentModeFilter(value) {
   return value === '整租' || value === '合租' ? value : ''
+}
+
+function blocksForArea(area) {
+  const matched = regionOptions.find((item) => item.name === area)
+  return matched ? matched.blocks : []
 }
 
 function normalizeListingState(input = {}) {
@@ -35,6 +45,7 @@ function normalizeListingState(input = {}) {
       community: cleanFilterValue(sourceFilters.community),
       layout: cleanFilterValue(sourceFilters.layout),
       rentMode: normalizeRentModeFilter(sourceFilters.rentMode),
+      rentMin: cleanFilterValue(sourceFilters.rentMin),
       rentMax: cleanFilterValue(sourceFilters.rentMax),
       needId: cleanFilterValue(sourceFilters.needId || sourceFilters.rentalNeedId || sourceFilters.clientNeedId)
     }
@@ -50,6 +61,7 @@ function normalizeOptions(options = {}) {
       community: options.community ? decodeURIComponent(options.community) : '',
       layout: options.layout ? decodeURIComponent(options.layout) : '',
       rentMode: options.rentMode ? decodeURIComponent(options.rentMode) : '',
+      rentMin: options.rentMin || '',
       rentMax: options.rentMax || '',
       needId: options.needId ? decodeURIComponent(options.needId) : ''
     }
@@ -60,6 +72,8 @@ Page({
   data: {
     categories,
     rentModeFilters,
+    regionOptions,
+    blockOptions: [],
     category: '全部',
     filters: {
       needId: '',
@@ -68,6 +82,7 @@ Page({
       community: '',
       layout: '',
       rentMode: '',
+      rentMin: '',
       rentMax: ''
     },
     listings: [],
@@ -88,9 +103,13 @@ Page({
   },
 
   setListingState(nextState, callback) {
+    const filters = Object.assign({}, emptyFilters, nextState.filters)
+    const blockOptions = blocksForArea(filters.area)
+    if (filters.block && blockOptions.indexOf(filters.block) === -1) filters.block = ''
     this.setData({
       category: nextState.category,
-      filters: Object.assign({}, emptyFilters, nextState.filters)
+      filters,
+      blockOptions
     }, callback)
   },
 
@@ -133,6 +152,22 @@ Page({
     }, () => this.loadListings())
   },
 
+  selectArea(event) {
+    const area = event.currentTarget.dataset.area || ''
+    this.setData({
+      'filters.area': area,
+      'filters.block': '',
+      blockOptions: blocksForArea(area)
+    }, () => this.loadListings())
+  },
+
+  selectBlock(event) {
+    const block = event.currentTarget.dataset.block || ''
+    this.setData({
+      'filters.block': block
+    }, () => this.loadListings())
+  },
+
   applyFilters() {
     this.loadListings()
   },
@@ -146,8 +181,10 @@ Page({
         community: '',
         layout: '',
         rentMode: '',
+        rentMin: '',
         rentMax: ''
-      }
+      },
+      blockOptions: []
     }, () => this.loadListings())
   },
 

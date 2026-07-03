@@ -72,6 +72,46 @@ page {
   border-color: #2f6f60;
 }
 
+.custom-rent-row {
+  min-height: 62rpx;
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.custom-rent-row input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 62rpx;
+  padding: 0 18rpx;
+  color: #153f36;
+  font-size: 23rpx;
+  font-weight: 800;
+  background: #ffffff;
+  border: 1rpx solid #dce9e3;
+  border-radius: 16rpx;
+  box-sizing: border-box;
+}
+
+.custom-rent-row text {
+  color: #78918a;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.custom-rent-row button {
+  flex: 0 0 112rpx;
+  height: 62rpx;
+  margin: 0;
+  padding: 0;
+  color: #ffffff;
+  font-size: 23rpx;
+  font-weight: 900;
+  line-height: 62rpx;
+  background: #2f6f60;
+  border-radius: 16rpx;
+}
+
 .map-summary {
   display: flex;
   align-items: center;

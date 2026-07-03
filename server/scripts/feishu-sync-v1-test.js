@@ -87,6 +87,8 @@ async function main() {
   }), 0)
   assert.strictEqual(parsedWholeRent.rentMode, '整租', '户型描述以（整）开头应解析为整租')
   assert.strictEqual(parsedWholeRent.layout, '一室一厅一卫', '整租前缀不应写入户型净值')
+  assert.strictEqual(parsedWholeRent.area, '上城区', '闸弄口板块应自动归入上城区')
+  assert.strictEqual(parsedWholeRent.block, '闸弄口', '飞书区域列应作为板块保留')
 
   const parsedSharedRent = feishuSync.normalizeRecord(row({
     区域: '闸弄口',
@@ -98,6 +100,17 @@ async function main() {
     押一付一: '1800'
   }), 1)
   assert.strictEqual(parsedSharedRent.rentMode, '合租', '户型描述没有（整）前缀应解析为合租')
+
+  const parsedGongshuBlock = feishuSync.normalizeRecord(row({
+    区域: '万达',
+    小区: '拱墅万达公寓',
+    几栋: '1',
+    几单元: '1',
+    房号: '801',
+    户型描述: '朝南单间',
+    押一付一: '1800'
+  }), 2)
+  assert.strictEqual(parsedGongshuBlock.area, '拱墅区', '非上城配置板块应自动归入拱墅区')
 }
 
 main().then(() => {

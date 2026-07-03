@@ -6,11 +6,36 @@
     </view>
 
     <view class="filter-panel">
+      <view class="filter-section">
+        <view class="filter-segment-label">区域</view>
+        <view class="region-tabs">
+          <view class="region-tab {{!filters.area ? 'active' : ''}}" data-area="" bindtap="selectArea">不限</view>
+          <view
+            wx:for="{{regionOptions}}"
+            wx:key="name"
+            class="region-tab {{filters.area === item.name ? 'active' : ''}}"
+            data-area="{{item.name}}"
+            bindtap="selectArea"
+          >{{item.name}}</view>
+        </view>
+      </view>
+      <view wx:if="{{blockOptions.length}}" class="filter-section">
+        <view class="filter-segment-label">板块</view>
+        <view class="block-tabs">
+          <view class="block-tab {{!filters.block ? 'active' : ''}}" data-block="" bindtap="selectBlock">不限</view>
+          <view
+            wx:for="{{blockOptions}}"
+            wx:key="*this"
+            class="block-tab {{filters.block === item ? 'active' : ''}}"
+            data-block="{{item}}"
+            bindtap="selectBlock"
+          >{{item}}</view>
+        </view>
+      </view>
       <view class="filter-grid">
-        <input value="{{filters.area}}" data-field="area" bindinput="updateFilter" placeholder="区域" />
-        <input value="{{filters.block}}" data-field="block" bindinput="updateFilter" placeholder="板块 / 地铁" />
         <input value="{{filters.community}}" data-field="community" bindinput="updateFilter" placeholder="小区名称" />
         <input value="{{filters.layout}}" data-field="layout" bindinput="updateFilter" placeholder="户型" />
+        <input value="{{filters.rentMin}}" data-field="rentMin" bindinput="updateFilter" type="number" placeholder="最低租金" />
         <input value="{{filters.rentMax}}" data-field="rentMax" bindinput="updateFilter" type="number" placeholder="最高租金" />
       </view>
       <view class="filter-segment">

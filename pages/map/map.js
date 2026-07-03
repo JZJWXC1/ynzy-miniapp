@@ -334,6 +334,23 @@ Page({
     this.loadCommunities({ recenter: false })
   },
 
+  updateRentInput(event) {
+    const field = event.currentTarget.dataset.field
+    const value = numberValue(event.detail.value)
+    this.setData({
+      [`filters.${field}`]: value,
+      'filters.rentKey': 'custom'
+    })
+  },
+
+  applyCustomRentRange() {
+    this.setData({
+      selectedCommunityId: '',
+      selectedCommunity: null
+    })
+    this.loadCommunities({ recenter: false })
+  },
+
   handleRegionChange(event) {
     if (event.type !== 'end') return
     this.setData({ showSearchCurrentArea: true })
@@ -411,6 +428,8 @@ Page({
         block: '',
         community: selectedCommunity ? selectedCommunity.community : '',
         layout: filters.layout || '',
+        rentMode: filters.rentMode || '',
+        rentMin: filters.rentMin || '',
         rentMax: filters.rentMax || ''
       }
     }

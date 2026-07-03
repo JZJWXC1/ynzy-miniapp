@@ -146,6 +146,8 @@ function run() {
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
   assert.ok(domain.filterListings(db, { rentMode: '整租' }).some((item) => item.id === created.id), '前台列表应支持整租筛选')
   assert.ok(!domain.filterListings(db, { rentMode: '合租' }).some((item) => item.id === created.id), '整租房源不应出现在合租筛选结果')
+  assert.ok(domain.filterListings(db, { rentMin: 3000, rentMax: 3600 }).some((item) => item.id === created.id), '前台列表应支持自定义租金区间')
+  assert.ok(!domain.filterListings(db, { rentMin: 3601 }).some((item) => item.id === created.id), '低于自定义最低租金的房源应被过滤')
   const matchRow = domain.matchListings(db, { area: '半山家苑' }).listings.find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
   assert.ok(listRow && matchRow && detailRow, '前台列表、匹配和详情应返回有效房源')
