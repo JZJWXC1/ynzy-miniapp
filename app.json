@@ -51,5 +51,8 @@
     "scope.userLocation": {
       "desc": "用于带看水印照片记录现场位置"
     }
-  }
+  },
+  "requiredPrivateInfos": [
+    "getLocation"
+  ]
 }
