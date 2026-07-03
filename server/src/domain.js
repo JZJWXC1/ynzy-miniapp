@@ -26,6 +26,7 @@ const OWNER_COMMISSION_RATE = 20
 const TOTAL_DEAL_COMMISSION_RATE = 20
 const UPLOADER_COMMISSION_RATE = OWNER_COMMISSION_RATE
 const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算；二房东上传人 15%、平台 5%，业主上传人 20%'
+const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣'
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
 const SECOND_LANDLORD_SOURCE = '二房东房源'
@@ -588,7 +589,7 @@ function listingSourceFields(listing = {}) {
     communityMatchStatus: listing.communityMatchStatus || (listing.communityMatched === false ? '未匹配' : '已匹配'),
     noCommission,
     sourceLabel,
-    commissionText: noCommission ? '公司房源无分佣' : PUBLIC_COMMISSION_TEXT,
+    commissionText: noCommission ? COMPANY_COMMISSION_TEXT : PUBLIC_COMMISSION_TEXT,
     commissionBadge: noCommission ? '公司房源' : `${commissionRate}%`
   }
 }
@@ -1021,7 +1022,7 @@ function formatHomeListing(db, listing) {
   const publicTitle = publicListingTitle(listing, location)
   const companyListing = isCompanyListing(listing)
   const mediaText = hasListingVideo(listing) ? '仅视频' : (companyListing ? '公司房源表' : '待补视频')
-  const commissionText = companyListing ? '公司房源无分佣' : PUBLIC_COMMISSION_TEXT
+  const commissionText = companyListing ? COMPANY_COMMISSION_TEXT : PUBLIC_COMMISSION_TEXT
   return {
     id: listing.id,
     title: publicTitle,
@@ -2621,7 +2622,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   clearListingRecommendationProfile(listing, 'deal_pending')
 
   return {
-    message: '签单已提交，等待管理员确认',
+    message: commissionRule.rate <= 0 ? '签单已提交，公司房源成交不抽佣，等待管理员确认' : '签单已提交，等待管理员确认',
     deal: formatDealRecord(db, deal)
   }
 }

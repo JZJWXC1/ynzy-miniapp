@@ -123,6 +123,7 @@ function run() {
   const companyNoVideoDetail = domain.listingDetail(db, companyNoVideo.id)
   assert.ok(companyNoVideoDetail, '公司房源无视频也应可打开前台详情')
   assert.strictEqual(companyNoVideoDetail.noCommission, true, '公司房源详情必须展示无分佣')
+  assert.strictEqual(companyNoVideoDetail.commissionText, '公司房源成交不抽佣，带看中介全佣', '公司房源详情必须展示带看中介全佣文案')
   assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
@@ -520,6 +521,8 @@ function run() {
   assert.deepStrictEqual(companyDeal.commissionRule, { rate: 0, uploaderRate: 0, platformRate: 0 }, '公司房源签单快照必须记录不分佣')
   const companyConfirm = domain.confirmDeal(db, 'ADMIN', companyDeal.id)
   assert.strictEqual(companyConfirm.commissionRecord, null, '公司房源确认签单不能生成分佣记录')
+  assert.strictEqual(companyConfirm.noCommission, true, '公司房源确认签单必须标记不抽佣')
+  assert.strictEqual(db.dealRecords.find((item) => item.id === companyDeal.id).commissionRecordId, '', '公司房源签单不能挂载 commissionRecordId')
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
 
   const beforeAdminUploadCommissionCount = db.commissionRecords.length

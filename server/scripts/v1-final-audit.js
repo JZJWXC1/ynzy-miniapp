@@ -304,6 +304,8 @@ function checkV1DocsMaintenanceRule() {
 function checkAdminReportDealContract() {
   const indexSource = readText('server/src/index.js')
   const domainSource = readText('server/src/domain.js')
+  const detailWxml = readText('pages/listing-detail/listing-detail.wxml')
+  const listingDisplaySource = readText('utils/listing-display.js')
   const requiredIndexFragments = [
     "pathname === '/mini/reports'",
     "pathname === '/mini/deals'",
@@ -322,6 +324,7 @@ function checkAdminReportDealContract() {
     'const OWNER_COMMISSION_RATE = 20',
     'const TOTAL_DEAL_COMMISSION_RATE = 20',
     'function commissionRateForListing',
+    'COMPANY_COMMISSION_TEXT',
     'landlordCommissionFen',
     'uploaderCommissionFen',
     'platformCommissionFen'
@@ -330,7 +333,12 @@ function checkAdminReportDealContract() {
   const missingDomain = requiredDomainFragments.filter((fragment) => !domainSource.includes(fragment))
   assertOk(!missingIndex.length, `server/src/index.js 缺少接口片段：${missingIndex.join('、')}`)
   assertOk(!missingDomain.length, `server/src/domain.js 缺少契约片段：${missingDomain.join('、')}`)
-  return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在'
+  assertOk(domainSource.includes('公司房源成交不抽佣，带看中介全佣'), '后端必须提供公司房源带看中介全佣文案')
+  assertOk(domainSource.includes('commissionRule.rate <= 0'), 'confirmDeal 必须保留 no-commission 分支')
+  assertOk(domainSource.includes('commissionRecord: null'), '公司房源确认签单必须返回空分佣记录')
+  assertOk(listingDisplaySource.includes('COMPANY_COMMISSION_TEXT'), '前端房源归一化必须保留公司房源分佣文案')
+  assertOk(detailWxml.includes("listing.noCommission ? 'no-commission' : ''"), '详情页黄条必须按 noCommission 区分样式')
+  return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在，公司房源不生成分佣记录'
 }
 
 function checkRunnableV1Scripts() {

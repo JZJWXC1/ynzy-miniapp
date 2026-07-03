@@ -12,6 +12,7 @@
   var DEPOSIT_FREE_FEATURE = '免押金';
   var COMPANY_SOURCE = '公司房源';
   var V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手';
+  var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var BROKER_ROLE = '中介';
@@ -605,8 +606,8 @@
       communityMatched: data.communityMatched !== undefined ? truthyFlag(data.communityMatched) : data.communityMatchStatus !== '未匹配',
       communityMatchStatus: data.communityMatchStatus || (data.communityMatched === false ? '未匹配' : '已匹配'),
       sourceLabel: sourceLabel,
-      commissionText: V1_COMMISSION_TEXT,
-      commissionBadge: V1_COMMISSION_TEXT
+      commissionText: companyListing ? COMPANY_COMMISSION_TEXT : V1_COMMISSION_TEXT,
+      commissionBadge: companyListing ? COMPANY_COMMISSION_TEXT : V1_COMMISSION_TEXT
     };
   }
 
