@@ -807,6 +807,7 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'GET' && pathname === '/mini/listings') {
     const filter = {
       category: searchParams.get('category') || '',
+      district: searchParams.get('district') || '',
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',

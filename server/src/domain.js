@@ -1,6 +1,7 @@
 const { clone } = require('./db')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
+const locationMap = require('./location-map')
 const {
   refreshRecommendationProfile,
   clearRecommendationProfile
@@ -278,7 +279,8 @@ function companySheetPublicListings(db = {}) {
       rent,
       index
     ].join('|')
-    const safeArea = normalizeDistrict(currentArea || '杭州')
+    const block = currentArea || ''
+    const safeArea = normalizeDistrict(locationMap.districtForBlock(block, currentArea || ''))
     const listing = {
       id: stableCompanySheetId(listingKey),
       title: `${currentCommunity} · ${layout || category}`,
@@ -289,7 +291,7 @@ function companySheetPublicListings(db = {}) {
       city: '杭州',
       district: safeArea,
       area: safeArea,
-      block: safeArea,
+      block: block || safeArea,
       community: currentCommunity,
       roomNumber,
       roomAddress: roomNumber,
@@ -1069,11 +1071,13 @@ function isCompanyOnlyFilter(filter = {}) {
 
 function filterListings(db, filter = {}) {
   const companyOnly = isCompanyOnlyFilter(filter)
+  const districtFilter = String(filter.district || '').trim()
   return publicListings(db)
     .filter((listing) => {
       const locationText = publicLocationSearchText(listing)
       if (companyOnly && !isCompanyListing(listing)) return false
       if (!matchesCategory(listing, filter.category)) return false
+      if (districtFilter && [listing.district, listing.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
       if (filter.area && locationText.indexOf(filter.area) === -1) return false
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false

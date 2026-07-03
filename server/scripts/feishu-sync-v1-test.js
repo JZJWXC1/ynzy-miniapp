@@ -61,6 +61,24 @@ async function main() {
   assert.strictEqual(db.listings[0].syncStatus, '已同步飞书', '命中素材后应恢复正常同步状态')
   assert.strictEqual(db.listings[0].missingVideoMaterial, false, '命中素材后应清除缺素材标记')
 
+  const districtUpdated = await feishuSync.applySync(db, [
+    row({
+      区域: '东新园',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '601D',
+      户型: '一室一厅一卫',
+      押一付一: '2800'
+    })
+  ], [
+    { name: '601D.mp4', videoUrl: 'https://example.com/601D.mp4' }
+  ], 'A1', { dryRun: true })
+  assert.strictEqual(districtUpdated.updated, 1, '飞书更新应命中原房源')
+  assert.strictEqual(db.listings[0].district, '拱墅区', '飞书更新也应回写 district')
+  assert.strictEqual(db.listings[0].area, '拱墅区', '飞书更新也应回写 area')
+  assert.strictEqual(db.listings[0].block, '东新园', '飞书更新应保留板块')
+
   const removed = await feishuSync.applySync(db, [], [], 'A1', { dryRun: true })
   assert.strictEqual(removed.down, 1, '房源表删除后应自动下架')
   assert.strictEqual(db.listings[0].status, '已下架', '自动下架后状态应进入后台资产池')
@@ -91,6 +109,17 @@ async function main() {
   assert.strictEqual(parsedWholeRent.layout, '一室一厅一卫', '整租前缀不应写入户型净值')
   assert.strictEqual(parsedWholeRent.area, '上城区', '闸弄口板块应自动归入上城区')
   assert.strictEqual(parsedWholeRent.block, '闸弄口', '飞书区域列应作为板块保留')
+
+  const parsedMultiBlock = feishuSync.normalizeRecord(row({
+    区域: '闸弄口\n新塘\n元宝塘\n东站',
+    小区: '皋塘运都',
+    几栋: '1',
+    几单元: '1',
+    房号: '701',
+    户型描述: '（整）两室一厅',
+    押一付一: '4500'
+  }), 3)
+  assert.strictEqual(parsedMultiBlock.area, '上城区', '多行上城板块应自动归入上城区')
 
   const parsedSharedRent = feishuSync.normalizeRecord(row({
     区域: '闸弄口',

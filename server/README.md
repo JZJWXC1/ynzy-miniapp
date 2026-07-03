@@ -173,10 +173,10 @@ FEISHU_BITABLE_APP_TOKEN=
 FEISHU_BITABLE_TABLE_ID=
 FEISHU_MATERIAL_FOLDER_TOKEN=
 FEISHU_UPLOAD_TO_OSS=true
-FEISHU_SYNC_INTERVAL_MINUTES=480
+FEISHU_SYNC_INTERVAL_MINUTES=60
 ```
 
-当前默认房源表为 `https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl`，`FEISHU_SYNC_INTERVAL_MINUTES=480` 表示每天自动同步 3 次。`FEISHU_UPLOAD_TO_OSS=true` 时，服务端会把飞书素材视频保存到 OSS 后再写入房源；小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。没有正式接飞书开放平台前，也可以用 `FEISHU_RECORDS_FILE` 和 `FEISHU_MATERIALS_FILE` 指向导出的 JSON 文件先预演同步。
+当前默认房源表为 `https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl`，`FEISHU_SYNC_INTERVAL_MINUTES=60` 表示每小时自动同步 1 次。`FEISHU_UPLOAD_TO_OSS=true` 时，服务端会把飞书素材视频保存到 OSS 后再写入房源；小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。没有正式接飞书开放平台前，也可以用 `FEISHU_RECORDS_FILE` 和 `FEISHU_MATERIALS_FILE` 指向导出的 JSON 文件先预演同步。
 
 ## 历史保留：积分充值与微信支付
 

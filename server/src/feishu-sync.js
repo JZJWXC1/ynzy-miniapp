@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const config = require('./config')
 const domain = require('./domain')
+const locationMap = require('./location-map')
 const oss = require('./oss')
 
 const COMPANY_FEATURES = ['免押金', '不分佣']
@@ -128,25 +129,11 @@ function unique(values) {
   })
 }
 
-function configuredDistrictName(value) {
-  const text = normalizeText(value)
-  if (!text) return ''
-  const districts = Object.keys((config.location && config.location.districtBlocks) || {})
-  return districts.find((district) => district === text || district.replace(/区$/, '') === text.replace(/区$/, '')) || ''
-}
-
-function districtForBlock(block, fallback) {
-  const matchedDistrict = configuredDistrictName(fallback) || configuredDistrictName(block)
-  if (matchedDistrict) return matchedDistrict
-  const blockMap = (config.location && config.location.blockDistrictMap) || {}
-  return blockMap[normalizeText(block)] || fallback || '待分区'
-}
-
 function normalizeLocationFields(fields = {}) {
   const explicitDistrict = firstField(fields, ['行政区', '城区', '城市区域', 'districtName'])
   const block = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
   return {
-    area: districtForBlock(block, explicitDistrict),
+    area: locationMap.districtForBlock(block, explicitDistrict),
     block
   }
 }
