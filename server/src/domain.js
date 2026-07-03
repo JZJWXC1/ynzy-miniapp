@@ -35,6 +35,7 @@ const BROKER_ROLE = '中介'
 const BROKER_AUTHED = '手机号登录'
 const OWNER_DAILY_VIEW_LIMIT = 3
 const NORMAL_DAILY_VIEW_LIMIT = 15
+const MAP_COORDINATE_LEVELS = ['verified', 'approximate', 'block-center']
 
 const FEATURE_INFERENCE_RULES = [
   { name: '带阳台', pattern: /阳台/ },
@@ -336,7 +337,9 @@ function companySheetPublicListings(db = {}) {
       listing.mapLongitude = coordinate.longitude
       listing.coordinateSource = coordinate.source || 'community-coordinate'
       listing.coordinateVerified = true
-      listing.coordinateStatus = '已确认小区坐标'
+      listing.coordinateLevel = 'verified'
+      listing.coordinateAccuracy = 'verified'
+      listing.coordinateStatus = coordinateStatusText('verified')
     }
     result.push(listing)
   })
@@ -1579,11 +1582,55 @@ function isReliableListingCoordinateSource(source) {
   const text = String(source || '').trim()
   if (!text) return false
   if (/^estimated-|^legacy-|default-center|listing-coordinate|area|hash|random|pending/i.test(text)) return false
-  return /lianjia|amap|community-coordinate|admin-verified-coordinate/i.test(text)
+  return /lianjia|amap|community-coordinate|admin-verified-coordinate|manual-confirmed|tencent-geocode|qq-map-geocode|block-center/i.test(text)
 }
 
 function isUnsafeCoordinateSource(source) {
   return !isReliableListingCoordinateSource(source)
+}
+
+function normalizeCoordinateLevel(value) {
+  const text = String(value || '').trim().toLowerCase()
+  return MAP_COORDINATE_LEVELS.indexOf(text) !== -1 ? text : ''
+}
+
+function coordinateLevelFromFields(fields = {}) {
+  const explicit = normalizeCoordinateLevel(fields.coordinateLevel || fields.coordinateAccuracy)
+  if (explicit) return explicit
+  const source = String(fields.coordinateSource || fields.source || '').trim().toLowerCase()
+  if (/block-center/.test(source)) return 'block-center'
+  if (/tencent-geocode|qq-map-geocode|geocoder/.test(source)) return 'approximate'
+  if (truthyFlag(fields.coordinateVerified)) return 'verified'
+  return ''
+}
+
+function coordinateStatusText(level) {
+  if (level === 'verified') return '已确认小区坐标'
+  if (level === 'approximate') return '近似位置'
+  if (level === 'block-center') return '板块中心近似位置'
+  return '地图坐标待补充'
+}
+
+function coordinateSourceAllowedForLevel(source, level) {
+  const text = String(source || '').trim()
+  if (!level) return false
+  if (level === 'verified') return !isUnsafeCoordinateSource(text)
+  if (level === 'approximate') return /tencent-geocode|qq-map-geocode|geocoder/i.test(text)
+  if (level === 'block-center') return /block-center/i.test(text)
+  return false
+}
+
+function blockCenterForListing(listing = {}) {
+  const centers = config.location && config.location.blockCenters ? config.location.blockCenters : {}
+  const block = String(listing.block || '').trim()
+  if (block && centers[block]) return { ...centers[block], block }
+  const matchedBlock = Object.keys(centers).find((item) => {
+    const text = [listing.block, listing.community, listing.address, listing.locationSummary]
+      .map((value) => String(value || ''))
+      .join('')
+    return text.indexOf(item) !== -1
+  })
+  return matchedBlock ? { ...centers[matchedBlock], block: matchedBlock } : null
 }
 
 function pendingMapCoordinateFields() {
@@ -1592,6 +1639,8 @@ function pendingMapCoordinateFields() {
     mapLongitude: '',
     coordinateSource: 'pending-map-coordinate',
     coordinateVerified: false,
+    coordinateLevel: '',
+    coordinateAccuracy: '',
     coordinateStatus: '地图坐标待补充'
   }
 }
@@ -1604,7 +1653,11 @@ function mapCoordinateFromListing(listing = {}) {
       longitude: communityCoordinate.longitude,
       source: communityCoordinate.source || 'community-coordinate',
       community: communityCoordinate.community || listing.community,
-      coordinateVerified: true
+      coordinateVerified: true,
+      level: 'verified',
+      coordinateLevel: 'verified',
+      coordinateAccuracy: 'verified',
+      coordinateStatus: coordinateStatusText('verified')
     }
   }
 
@@ -1612,8 +1665,8 @@ function mapCoordinateFromListing(listing = {}) {
   const longitude = numericCoordinate(firstOwnValue(listing, ['mapLongitude', 'longitude']))
   const source = listing.coordinateSource || 'admin-verified-coordinate'
   if (!hasValidCoordinatePair(latitude, longitude)) return null
-  if (!truthyFlag(listing.coordinateVerified)) return null
-  if (isUnsafeCoordinateSource(source)) return null
+  const level = coordinateLevelFromFields(listing)
+  if (!coordinateSourceAllowedForLevel(source, level)) return null
   const community = String(listing.community || '').trim()
   if (!community || community === '待补充') return null
   return {
@@ -1621,7 +1674,11 @@ function mapCoordinateFromListing(listing = {}) {
     longitude,
     source,
     community,
-    coordinateVerified: true
+    coordinateVerified: level === 'verified',
+    level,
+    coordinateLevel: level,
+    coordinateAccuracy: level,
+    coordinateStatus: listing.coordinateStatus || coordinateStatusText(level)
   }
 }
 
@@ -1646,7 +1703,9 @@ function listingMapCoordinateFields(fields = {}, form = {}, current = {}, option
       mapLongitude: communityCoordinate.longitude,
       coordinateSource: communityCoordinate.source || 'community-coordinate',
       coordinateVerified: true,
-      coordinateStatus: '已确认小区坐标'
+      coordinateLevel: 'verified',
+      coordinateAccuracy: 'verified',
+      coordinateStatus: coordinateStatusText('verified')
     }
   }
 
@@ -1664,24 +1723,28 @@ function listingMapCoordinateFields(fields = {}, form = {}, current = {}, option
       mapLongitude: formCoordinate.longitude,
       coordinateSource: formSource,
       coordinateVerified: true,
-      coordinateStatus: '管理员已确认坐标'
+      coordinateLevel: 'verified',
+      coordinateAccuracy: 'verified',
+      coordinateStatus: coordinateStatusText('verified')
     }
   }
 
   const currentCoordinate = explicitCoordinateFromSource(current)
   const currentSource = currentCoordinate ? (currentCoordinate.source || 'admin-verified-coordinate') : ''
+  const currentLevel = coordinateLevelFromFields(current)
   if (
     currentCoordinate &&
-    truthyFlag(current.coordinateVerified) &&
     hasValidCoordinatePair(currentCoordinate.latitude, currentCoordinate.longitude) &&
-    !isUnsafeCoordinateSource(currentSource)
+    coordinateSourceAllowedForLevel(currentSource, currentLevel)
   ) {
     return {
       mapLatitude: currentCoordinate.latitude,
       mapLongitude: currentCoordinate.longitude,
       coordinateSource: currentSource,
-      coordinateVerified: true,
-      coordinateStatus: current.coordinateStatus || '管理员已确认坐标'
+      coordinateVerified: currentLevel === 'verified',
+      coordinateLevel: currentLevel,
+      coordinateAccuracy: currentLevel,
+      coordinateStatus: current.coordinateStatus || coordinateStatusText(currentLevel)
     }
   }
 
@@ -1695,7 +1758,9 @@ function applyCommunityMapCoordinate(listing = {}) {
   listing.mapLongitude = coordinate.longitude
   listing.coordinateSource = coordinate.source || 'community-coordinate'
   listing.coordinateVerified = true
-  listing.coordinateStatus = '已确认小区坐标'
+  listing.coordinateLevel = 'verified'
+  listing.coordinateAccuracy = 'verified'
+  listing.coordinateStatus = coordinateStatusText('verified')
   return coordinate
 }
 
@@ -1811,7 +1876,14 @@ function mapCommunities(db, filter = {}) {
         latitude: coordinate.latitude,
         longitude: coordinate.longitude,
         coordinateSource: coordinate.source || '',
-        coordinateVerified: true,
+        coordinateVerified: coordinate.level === 'verified',
+        coordinateLevel: coordinate.level || coordinate.coordinateLevel || 'verified',
+        coordinateAccuracy: coordinate.coordinateAccuracy || coordinate.level || 'verified',
+        coordinateStatus: coordinate.coordinateStatus || coordinateStatusText(coordinate.level || 'verified'),
+        coordinateLabel: coordinate.coordinateStatus || coordinateStatusText(coordinate.level || 'verified'),
+        coordinateCalloutNote: coordinate.level === 'approximate'
+          ? '近似位置'
+          : (coordinate.level === 'block-center' ? '板块中心近似位置' : ''),
         listingCount: 0,
         minRent: 0,
         maxRent: 0,
@@ -1869,7 +1941,14 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
     reviewNote: listing.reviewNote || '',
     manualReviewReason: display.manualReviewReason || listing.manualReviewReason || '',
     communityMatchStatus: display.communityMatchStatus || listing.communityMatchStatus || '',
-    expiredPool: listing.expiredPool || ''
+    expiredPool: listing.expiredPool || '',
+    mapLatitude: listing.mapLatitude || '',
+    mapLongitude: listing.mapLongitude || '',
+    coordinateSource: listing.coordinateSource || '',
+    coordinateVerified: truthyFlag(listing.coordinateVerified),
+    coordinateLevel: coordinateLevelFromFields(listing),
+    coordinateAccuracy: listing.coordinateAccuracy || coordinateLevelFromFields(listing),
+    coordinateStatus: listing.coordinateStatus || coordinateStatusText(coordinateLevelFromFields(listing))
   }
 }
 
@@ -1982,6 +2061,45 @@ function restoreExpiredListing(db, adminId, listingId) {
     action: '重新上架',
     time: now,
     sync: '管理员已从后台资产池重新上架'
+  })
+  return editableListingDetail(db, adminId, listingId, { admin: true })
+}
+
+function updateListingCoordinate(db, adminId, listingId, payload = {}) {
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  const latitude = numericCoordinate(payload.latitude !== undefined ? payload.latitude : payload.mapLatitude)
+  const longitude = numericCoordinate(payload.longitude !== undefined ? payload.longitude : payload.mapLongitude)
+  if (!hasValidCoordinatePair(latitude, longitude)) {
+    const error = new Error('请填写有效经纬度')
+    error.statusCode = 400
+    throw error
+  }
+
+  const now = nowText()
+  listing.mapLatitude = latitude
+  listing.mapLongitude = longitude
+  listing.coordinateSource = 'admin-verified-coordinate'
+  listing.coordinateVerified = true
+  listing.coordinateLevel = 'verified'
+  listing.coordinateAccuracy = 'verified'
+  listing.coordinateStatus = coordinateStatusText('verified')
+  listing.coordinateUpdatedAt = now
+  listing.coordinateUpdatedBy = adminId || ''
+  listing.updatedAt = now
+  syncListingRecommendationProfile(listing)
+
+  pushFootprint(db, {
+    id: id('F'),
+    listingId,
+    viewerId: adminId || 'system',
+    action: '修正地图坐标',
+    time: now,
+    sync: `管理员已将地图坐标修正为 ${latitude}, ${longitude}`
   })
   return editableListingDetail(db, adminId, listingId, { admin: true })
 }
@@ -3445,6 +3563,8 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     mapLongitude: mapCoordinate.mapLongitude,
     coordinateSource: mapCoordinate.coordinateSource,
     coordinateVerified: mapCoordinate.coordinateVerified,
+    coordinateLevel: mapCoordinate.coordinateLevel,
+    coordinateAccuracy: mapCoordinate.coordinateAccuracy,
     coordinateStatus: mapCoordinate.coordinateStatus,
     createdAt: nowText(),
     lastVerifiedAt: nowText()
@@ -3568,6 +3688,8 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.mapLongitude = mapCoordinate.mapLongitude
   listing.coordinateSource = mapCoordinate.coordinateSource
   listing.coordinateVerified = mapCoordinate.coordinateVerified
+  listing.coordinateLevel = mapCoordinate.coordinateLevel
+  listing.coordinateAccuracy = mapCoordinate.coordinateAccuracy
   listing.coordinateStatus = mapCoordinate.coordinateStatus
   const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
   if (needsReview) {
@@ -3673,6 +3795,8 @@ module.exports = {
   adminUsers,
   expiredListings,
   restoreExpiredListing,
+  updateListingCoordinate,
+  blockCenterForListing,
   adminLogs,
   userReportRows,
   adminReportRows,

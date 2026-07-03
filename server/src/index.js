@@ -1280,6 +1280,18 @@ async function handleAdmin(req, res, pathname, searchParams) {
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.updateNormalListing(nextDb, adminAccount.userId || adminAccount.id, adminListingEditMatch[1], body, { admin: true })))
   }
+  const adminListingCoordinateMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/coordinate$/)
+  if (method === 'POST' && adminListingCoordinateMatch) {
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      domain.updateListingCoordinate(nextDb, adminAccount.userId || adminAccount.id, adminListingCoordinateMatch[1], body)
+      return withSignedListingVideoUrls(domain.adminListings(nextDb, {
+        area: searchParams.get('area') || '',
+        block: searchParams.get('block') || '',
+        community: searchParams.get('community') || ''
+      }))
+    }))
+  }
   const adminListingVerifyMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && adminListingVerifyMatch) {
     return sendJson(res, dbStore.updateDb((nextDb) => {

@@ -88,6 +88,26 @@ function testDb() {
         rent: 2600
       }),
       listing({
+        id: 'L8A',
+        community: '腾讯近似小区',
+        mapLatitude: 30.318,
+        mapLongitude: 120.162,
+        coordinateSource: 'tencent-geocode',
+        coordinateVerified: false,
+        coordinateLevel: 'approximate',
+        coordinateStatus: '近似位置'
+      }),
+      listing({
+        id: 'L8B',
+        community: '板块中心小区',
+        mapLatitude: 30.333,
+        mapLongitude: 120.128,
+        coordinateSource: 'block-center:万达',
+        coordinateVerified: false,
+        coordinateLevel: 'block-center',
+        coordinateStatus: '板块中心近似位置'
+      }),
+      listing({
         id: 'L9',
         community: '管理员确认小区',
         rent: 4800,
@@ -156,6 +176,13 @@ assert(Object.entries(communityCoordinates).every(([, coordinate]) => (
   isReliableCoordinateSource(coordinate.source)
 )), '坐标库不能保留估算、散列、默认中心或待确认来源')
 assert(byCommunity(rows, '兴业杨家府'), '已补可靠 POI 坐标的小区应进入地图')
+const approximate = byCommunity(rows, '腾讯近似小区')
+assert(approximate, '腾讯地理编码近似坐标应进入地图')
+assert.strictEqual(approximate.coordinateLevel, 'approximate', '腾讯地理编码点应标记 approximate')
+assert.strictEqual(approximate.coordinateCalloutNote, '近似位置', '近似坐标 callout 应注明近似位置')
+const blockCenter = byCommunity(rows, '板块中心小区')
+assert(blockCenter, '地理编码失败后的板块中心兜底应进入地图')
+assert.strictEqual(blockCenter.coordinateLevel, 'block-center', '板块中心点应标记 block-center')
 assert(byCommunity(rows, '管理员确认小区'), 'coordinateVerified 为 true 的管理员坐标可以进入地图')
 assert(!byCommunity(rows, '待审核小区'), '待审核房源不会进入地图')
 assert(!byCommunity(rows, '已失效小区'), '已失效房源不会进入地图')

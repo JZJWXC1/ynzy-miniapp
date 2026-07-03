@@ -348,6 +348,26 @@ function checkAdminReportDealContract() {
   return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在，公司房源不生成分佣记录'
 }
 
+function checkMapCoordinateGrading() {
+  const configSource = readText('server/src/config.js')
+  const domainSource = readText('server/src/domain.js')
+  const indexSource = readText('server/src/index.js')
+  const mapJs = readText('pages/map/map.js')
+  const adminWeb = readText('admin-web/index.html')
+  const geocodeScript = readText('server/scripts/geocode-listing-communities.js')
+  assertOk(configSource.includes('QQ_MAP_WEBSERVICE_KEY'), '腾讯位置服务 WebService Key 必须从环境变量读取')
+  assertOk(configSource.includes('blockCenters'), '板块中心兜底坐标必须在服务端配置')
+  ;['verified', 'approximate', 'block-center'].forEach((level) => {
+    assertOk(domainSource.includes(level), `地图坐标等级缺少 ${level}`)
+    assertOk(mapJs.includes(level), `小程序地图缺少 ${level} 展示逻辑`)
+  })
+  assertOk(geocodeScript.includes('https://apis.map.qq.com/ws/geocoder/v1/'), '离线脚本必须调用腾讯地理编码 WebService')
+  assertOk(geocodeScript.includes('config.qqMap.webserviceKey'), '离线脚本必须读取服务端环境变量 Key')
+  assertOk(indexSource.includes('/coordinate'), '管理后台必须提供坐标修正接口')
+  assertOk(adminWeb.includes('coordinate-listing-button'), '管理后台必须提供坐标修正入口')
+  return '地图支持 verified/approximate/block-center 分级上图，腾讯地理编码脚本与后台人工修正入口存在'
+}
+
 function checkRunnableV1Scripts() {
   return criticalScripts.map((script) => `${script} => ${runNodeScript(script)}`).join('；')
 }
@@ -365,6 +385,7 @@ const checks = [
   ['首页快照标题不暴露飞书来源', checkHomeSnapshotBranding],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
+  ['地图坐标分级链路存在', checkMapCoordinateGrading],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
 

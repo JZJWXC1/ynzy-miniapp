@@ -1670,6 +1670,7 @@
         const reviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? ` · ${item.reviewStatus}` : '';
         const manualReviewText = item.manualReviewReason ? ` · ${item.manualReviewReason}` : '';
         const statusReviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? item.reviewStatus : '';
+        const coordinateText = item.coordinateStatus || item.coordinateLevel || item.coordinateSource || '坐标待补充';
         const canReview = item.reviewStatus === '待审核' || item.status === '待审核';
         return `
         <tr>
@@ -1683,10 +1684,11 @@
           <td>${item.commission}</td>
           <td><span class="pill">${item.video}</span></td>
           <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${statusReviewText}</span></td>
-          <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span></td>
+          <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span><span class="sub-cell">${coordinateText}</span></td>
           <td>
             <div class="row-actions">
               <button class="table-action verify-listing-button" data-id="${item.id}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
+              <button class="table-action coordinate-listing-button" data-id="${item.id}" data-title="${item.title || item.community || item.id}" data-latitude="${item.mapLatitude || ''}" data-longitude="${item.mapLongitude || ''}">坐标修正</button>
               <button class="table-action review-owner-listing-button" data-id="${item.id}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
               <button class="table-action reject review-owner-listing-button" data-id="${item.id}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
             </div>
@@ -2688,6 +2690,35 @@
       await renderAdminLogs();
     }
 
+    async function updateListingCoordinate(id, title, currentLatitude, currentLongitude) {
+      if (!id) return;
+      const latitude = window.prompt(`请输入 ${title || id} 的纬度`, currentLatitude || '');
+      if (latitude === null) return;
+      const longitude = window.prompt(`请输入 ${title || id} 的经度`, currentLongitude || '');
+      if (longitude === null) return;
+      const lat = Number(latitude);
+      const lng = Number(longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        alert('请填写有效经纬度');
+        return;
+      }
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再修正坐标：admin-web/');
+        return;
+      }
+      await adminRequest(`/admin/listings/${id}/coordinate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          latitude: lat,
+          longitude: lng
+        })
+      });
+      await renderListings();
+      await renderAdminLogs();
+      await renderDashboardStats();
+      alert('坐标已修正为已确认坐标');
+    }
+
     async function restoreExpiredListing(id) {
       if (!id) return;
       if (!window.confirm('确认已核对房态，并将该房源从废房源池重新上架？')) return;
@@ -3143,6 +3174,19 @@
       if (verifyButton && !verifyButton.disabled) {
         verifyAdminListing(verifyButton.dataset.id).catch((error) => {
           alert(error.message || '房态核验失败');
+        });
+        return;
+      }
+
+      const coordinateButton = event.target.closest('.coordinate-listing-button');
+      if (coordinateButton && !coordinateButton.disabled) {
+        updateListingCoordinate(
+          coordinateButton.dataset.id,
+          coordinateButton.dataset.title,
+          coordinateButton.dataset.latitude,
+          coordinateButton.dataset.longitude
+        ).catch((error) => {
+          alert(error.message || '坐标修正失败');
         });
         return;
       }

@@ -2,8 +2,8 @@
 <view class="map-page">
   <view class="map-header">
     <view class="map-kicker">地图找房</view>
-    <view class="map-title">已确认坐标小区</view>
-    <view class="map-desc">只展示真实且经过确认的小区级位置。</view>
+    <view class="map-title">可上图小区位置</view>
+    <view class="map-desc">已确认、近似定位和板块中心兜底会分级标注。</view>
   </view>
 
   <view class="filter-panel">
@@ -58,7 +58,7 @@
     <view class="sheet-head">
       <view>
         <view class="sheet-title">{{selectedCommunity.community}}</view>
-        <view class="sheet-sub">{{selectedCommunity.listingCount}} 套可租 · {{selectedCommunity.rentRangeText}}</view>
+        <view class="sheet-sub">{{selectedCommunity.listingCount}} 套可租 · {{selectedCommunity.rentRangeText}} · {{selectedCommunity.coordinateStatus || '已确认小区坐标'}}</view>
       </view>
       <button bindtap="openAreaListings">看列表</button>
     </view>

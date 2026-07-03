@@ -121,6 +121,9 @@ function normalizeCommunity(item, index) {
     longitude: Number(item.longitude),
     coordinateSource: item.coordinateSource || '',
     coordinateVerified: item.coordinateVerified !== false,
+    coordinateLevel: item.coordinateLevel || (item.coordinateVerified === false ? '' : 'verified'),
+    coordinateStatus: item.coordinateStatus || item.coordinateLabel || '',
+    coordinateCalloutNote: item.coordinateCalloutNote || '',
     listingCount: Number(item.listingCount || activeListingIds.length || fallbackListing.length || 0),
     minRent,
     maxRent,
@@ -133,7 +136,11 @@ function normalizeCommunity(item, index) {
 }
 
 function validCommunity(item) {
-  return Number.isFinite(item.latitude) && Number.isFinite(item.longitude) && item.coordinateVerified && item.listingCount > 0
+  const level = item.coordinateLevel || (item.coordinateVerified ? 'verified' : '')
+  return Number.isFinite(item.latitude) &&
+    Number.isFinite(item.longitude) &&
+    ['verified', 'approximate', 'block-center'].indexOf(level) !== -1 &&
+    item.listingCount > 0
 }
 
 function emptyFilters() {
@@ -169,8 +176,8 @@ Page({
     mapScale: 13,
     loading: false,
     showSearchCurrentArea: false,
-    emptyText: '当前区域暂无已确认坐标的有效房源，可切换列表找房。',
-    summaryText: '正在加载已确认坐标房源',
+    emptyText: '当前区域暂无可上图的有效房源，可切换列表找房。',
+    summaryText: '正在加载可上图房源',
     filters: emptyFilters(),
     rentFilters: RENT_FILTERS,
     layoutFilters: LAYOUT_FILTERS,
@@ -265,6 +272,11 @@ Page({
     const markers = (communities || []).map((community, index) => {
       const markerId = index + 1
       markerCommunityMap[markerId] = community.id
+      const coordinateNote = community.coordinateCalloutNote || (
+        community.coordinateLevel === 'approximate'
+          ? '近似位置'
+          : (community.coordinateLevel === 'block-center' ? '板块中心近似位置' : '')
+      )
       return {
         id: markerId,
         latitude: community.latitude,
@@ -273,7 +285,7 @@ Page({
         height: 28,
         zIndex: 20,
         callout: {
-          content: `${shortCommunityName(community.community)}\n${community.listingCount}套 | ${rentRangeText(community)}`,
+          content: `${shortCommunityName(community.community)}\n${community.listingCount}套 | ${rentRangeText(community)}${coordinateNote ? `\n${coordinateNote}` : ''}`,
           color: '#153f36',
           fontSize: 12,
           borderRadius: 8,
@@ -304,8 +316,8 @@ Page({
       mapScale: recenter && communities.length ? 14 : this.data.mapScale,
       showSearchCurrentArea: false,
       summaryText: communities.length
-        ? `共 ${communities.length} 个已确认坐标小区，筛选后 ${communities.reduce((sum, item) => sum + item.listingCount, 0)} 套有效房源`
-        : '当前区域暂无已确认坐标的有效房源'
+        ? `共 ${communities.length} 个可上图小区，筛选后 ${communities.reduce((sum, item) => sum + item.listingCount, 0)} 套有效房源`
+        : '当前区域暂无可上图的有效房源'
     })
   },
 

@@ -585,7 +585,7 @@ Page({
     quickActions: [
       {
         title: '地图找房',
-        desc: '查看已确认小区坐标的真实可租房源',
+        desc: '查看分级标注的小区级真实可租房源',
         icon: '图',
         url: '/pages/map/map'
       },

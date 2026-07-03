@@ -93,6 +93,23 @@ const communityDistrictOverrides = {
   '风雅乐府': '余杭区',
   '瑷颐湾': '余杭区'
 }
+const blockCenters = {
+  '万达': { latitude: 30.333, longitude: 120.128 },
+  '北部软件园': { latitude: 30.335, longitude: 120.121 },
+  '城北万象城': { latitude: 30.324, longitude: 120.127 },
+  '石桥': { latitude: 30.333, longitude: 120.191 },
+  '华丰': { latitude: 30.338, longitude: 120.2 },
+  '永佳': { latitude: 30.344, longitude: 120.189 },
+  '半山': { latitude: 30.358, longitude: 120.195 },
+  '东新园': { latitude: 30.303, longitude: 120.168 },
+  '杭氧': { latitude: 30.303, longitude: 120.171 },
+  '新天地': { latitude: 30.309, longitude: 120.181 },
+  '闸弄口': { latitude: 30.293, longitude: 120.196 },
+  '新塘': { latitude: 30.285, longitude: 120.206 },
+  '元宝塘': { latitude: 30.281, longitude: 120.217 },
+  '东站': { latitude: 30.29, longitude: 120.212 },
+  '祥符': { latitude: 30.342, longitude: 120.116 }
+}
 
 module.exports = {
   rootDir,
@@ -125,10 +142,14 @@ module.exports = {
   company: {
     contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', ['19941091943', '18758141785', '13282125992'])
   },
+  qqMap: {
+    webserviceKey: process.env.QQ_MAP_WEBSERVICE_KEY || process.env.QQ_MAP_KEY || ''
+  },
   location: {
     districtBlocks,
     blockDistrictMap,
-    communityDistrictOverrides
+    communityDistrictOverrides,
+    blockCenters
   },
   feishu: {
     baseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn/open-apis',
