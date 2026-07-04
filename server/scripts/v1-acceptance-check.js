@@ -768,7 +768,7 @@ check('游客模式仅开放公司房源脱敏浏览', () => {
   assertIncludes(serverIndex, 'function assertGuestRateLimit', '匿名 GET/助手接口必须限频')
   assertIncludes(serverIndex, 'function guestListingFilter', '匿名列表和地图必须强制公司房源过滤')
   assertIncludes(serverIndex, 'function guestCompanySheetSnapshot', '匿名飞书快照必须返回脱敏版本')
-  assertIncludes(serverIndex, 'assistantService.chat(companyOnlyDb(db)', '匿名找房助手候选必须只来自公司房源')
+  assertIncludes(serverIndex, 'assistantService.chat(companyOnlyDb(snapshot)', '匿名找房助手候选必须只来自公司房源（在 clone 的私有快照上）')
   assertIncludes(serverIndex, 'assertGuestListingAllowed(detail)', '匿名详情必须拦截合作房源')
   assertIncludes(detailPageSource, "promptLoginGuide('登录后查看合作房源'", '前端触碰合作房源详情必须弹登录引导')
   assertIncludes(guestModeTestSource, '匿名列表接口应返回 200', '游客模式测试必须覆盖匿名列表')

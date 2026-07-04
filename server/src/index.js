@@ -873,7 +873,10 @@ async function handleMini(req, res, pathname, searchParams) {
     if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot', 30)
     const cached = feishuSync.cachedSheetSnapshot(db)
     if (cached) return sendJson(res, cached)
-    const nextDb = dbStore.readDb()
+    // 在 clone 的私有副本上跑同步：readDb 现在命中缓存返回共享对象，若直接把它交给跨长 await
+    // 的 refreshSheetSnapshot 就地改，同步进行中所有并发读请求会看到改了一半的房源数据。
+    // 与下方 dry-run 路径的 dbStore.clone(db) 口径一致。
+    const nextDb = dbStore.clone(dbStore.readDb())
     const snapshot = await feishuSync.refreshSheetSnapshot(nextDb, { reason: 'mini-request' })
     dbStore.writeDb(nextDb)
     return sendJson(res, snapshot)
@@ -918,15 +921,17 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/assistant/chat') {
     const body = await parseBody(req)
-    // 助手对话的慢速 LLM 调用只在请求快照 db 上只读执行，不再用 updateDbAsync 把整个
-    // await 窗口罩进写事务；留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
+    // 慢速 LLM 调用在一份 clone 的私有请求快照上只读执行：readDb 命中缓存返回共享对象，直接
+    // 交给数秒级 await 的 graph 会让期间的并发写在共享对象上被这次请求读到（半成品状态）；
+    // clone 隔离之。留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
     // 消除“读快照→await 数秒→整库回写覆盖并发写入”的丢数据竞态。
+    const snapshot = dbStore.clone(db)
     const persistTrace = (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-assistant-chat', 30)
-      return sendJson(res, await assistantService.chat(companyOnlyDb(db), body, { userId: '', persistTrace }))
+      return sendJson(res, await assistantService.chat(companyOnlyDb(snapshot), body, { userId: '', persistTrace }))
     }
-    return sendJson(res, await assistantService.chat(db, body, { userId, persistTrace }))
+    return sendJson(res, await assistantService.chat(snapshot, body, { userId, persistTrace }))
   }
 
   if (method === 'POST' && pathname === '/mini/asr/transcribe') {
@@ -1321,7 +1326,8 @@ async function handleAdmin(req, res, pathname, searchParams) {
         status: feishuSync.status(previewDb)
       })
     }
-    const nextDb = dbStore.readDb()
+    // 在 clone 的私有副本上跑同步，避免共享缓存对象在长 await 期间被并发读看到半同步状态。
+    const nextDb = dbStore.clone(dbStore.readDb())
     const result = await feishuSync.sync(nextDb, adminAccount.userId || adminAccount.id, body)
     dbStore.writeDb(nextDb)
     return sendJson(res, {
@@ -1687,7 +1693,8 @@ async function runScheduledFeishuSync() {
   if (!feishuSync.status(currentDb).ready) return
   feishuSyncRunning = true
   try {
-    const nextDb = dbStore.readDb()
+    // 在 clone 的私有副本上跑同步，避免共享缓存对象在长 await 期间被并发读看到半同步状态。
+    const nextDb = dbStore.clone(dbStore.readDb())
     await feishuSync.sync(nextDb, 'system-feishu-sync', { scheduled: true })
     dbStore.writeDb(nextDb)
     console.log('飞书房源自动同步完成')

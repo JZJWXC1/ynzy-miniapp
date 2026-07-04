@@ -20,7 +20,9 @@ const criticalScripts = [
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',
   'server/scripts/video-share-v1-test.js',
-  'server/scripts/v1-acceptance-check.js'
+  'server/scripts/v1-acceptance-check.js',
+  // db.json 解析缓存/clone 隔离/写后刷新/抛异常回滚的契约（飞书同步与助手长 await 路径依赖）。
+  'server/scripts/db-cache-v1-test.js'
 ]
 
 function repoPath(relativePath) {
