@@ -94,6 +94,26 @@ function isIdObjectArray(value) {
 // - sync \u5220\u4E86\u67D0 id\uFF08base \u6709\u3001mutated \u65E0\uFF09\u2192 \u4ECE\u7ED3\u679C\u5254\u9664\uFF1B
 // - sync \u65B0\u589E\u67D0 id\uFF08mutated \u6709\u3001base \u65E0\uFF09\u2192 \u524D\u63D2\uFF08\u8D34\u5408 footprints/\u65E5\u5FD7 unshift \u7684\u201C\u65B0\u7684\u5728\u524D\u201D\uFF09\uFF1B
 // - fresh \u5E76\u53D1\u65B0\u589E\uFF08base/mutated \u90FD\u65E0\uFF09\u2192 \u4FDD\u7559\u3002
+// \u4E09\u65B9\u6309\u5B57\u6BB5\u5408\u5E76\uFF1Abase=\u5171\u540C\u7956\u5148\uFF0Cmutated=sync \u79C1\u6709\u526F\u672C\uFF0Cfresh=\u843D\u76D8\u65F6\u542B\u5E76\u53D1\u5199\u7684\u5F53\u524D\u503C\u3002
+// \u4EE5 fresh \u4E3A\u5E95\uFF0C\u53EA\u628A sync \u76F8\u5BF9 base \u771F\u6B63\u6539\u52A8\u8FC7\u7684\u5B57\u6BB5\u8986\u76D6\u4E0A\u53BB\uFF08sync \u5220\u9664\u7684\u5B57\u6BB5\u5219\u5220\u6389\uFF09\uFF0C\u4ECE\u800C
+// \u4FDD\u7559 fresh \u5BF9 sync \u672A\u78B0\u5B57\u6BB5\u7684\u5E76\u53D1\u6539\u52A8\u3002\u7528\u4E8E\u300C\u540C\u4E00\u5143\u7D20\u88AB sync \u4E0E\u5E76\u53D1\u5199\u540C\u65F6\u6539\u52A8\uFF08\u4E0D\u540C\u5B57\u6BB5\uFF09\u300D\uFF1A
+// \u5426\u5219\u300Csync \u52A8\u8FC7\u8BE5\u5143\u7D20\u5C31\u6574\u4EFD\u80DC\u51FA\u300D\u4F1A\u9759\u9ED8\u56DE\u6EDA\u5E76\u53D1\u5199\uFF08\u5982 sync \u5237 syncedAt \u7684\u540C\u65F6\u5E76\u53D1\u786E\u8BA4\u4E86\u6210\u4EA4\uFF09\u3002
+function mergeChangedFields(base, mutated, fresh) {
+  const safeBase = base || {}
+  const safeMutated = mutated || {}
+  const result = { ...fresh }
+  const keys = new Set([...Object.keys(safeBase), ...Object.keys(safeMutated)])
+  for (const key of keys) {
+    const inMutated = Object.prototype.hasOwnProperty.call(safeMutated, key)
+    const before = JSON.stringify(safeBase[key])
+    const after = inMutated ? JSON.stringify(safeMutated[key]) : undefined
+    if (before === after) continue // sync \u672A\u6539\u8BE5\u5B57\u6BB5 \u2192 \u4FDD\u7559 fresh \u7684\u503C\uFF08\u53EF\u80FD\u542B\u5E76\u53D1\u5199\uFF09
+    if (!inMutated) { delete result[key]; continue } // sync \u5220\u4E86\u8BE5\u5B57\u6BB5
+    result[key] = safeMutated[key] // sync \u6539\u4E86\u8BE5\u5B57\u6BB5 \u2192 \u53D6 sync \u503C\uFF08\u540C\u5B57\u6BB5\u51B2\u7A81\u4EE5 sync \u4E3A\u51C6\uFF09
+  }
+  return result
+}
+
 function mergeById(base, mutated, fresh) {
   const baseById = new Map(base.map((item) => [item.id, item]))
   const mutatedById = new Map(mutated.map((item) => [item.id, item]))
@@ -106,7 +126,16 @@ function mergeById(base, mutated, fresh) {
     const inMutated = mutatedById.has(item.id)
     if (inBase && !inMutated) continue // sync \u5220\u9664\u4E86\u8BE5\u5143\u7D20
     if (inMutated && JSON.stringify(baseById.get(item.id)) !== JSON.stringify(mutatedById.get(item.id))) {
-      kept.push(mutatedById.get(item.id)) // sync \u6539\u52A8\u4E86\u8BE5 id
+      // sync \u6539\u52A8\u4E86\u8BE5 id\u3002fresh\uFF08await \u7A97\u53E3\u5185\u5E76\u53D1\u5199\uFF09\u53EF\u80FD\u4E5F\u6539\u4E86\u540C\u4E00\u5143\u7D20\u7684\u5176\u5B83\u5B57\u6BB5\uFF1B\u76F4\u63A5\u53D6 sync
+      // \u6574\u4EFD\u526F\u672C\u4F1A\u9759\u9ED8\u56DE\u6EDA\u8FD9\u4E9B\u5E76\u53D1\u5199\u3002\u82E5 fresh \u76F8\u5BF9 base \u672A\u53D8\uFF0C\u65E0\u5E76\u53D1\u5199\u53EF\u4FDD\uFF0C\u76F4\u63A5\u53D6 sync \u7248\u672C\uFF1B
+      // \u5426\u5219\u6309\u5B57\u6BB5\u4E09\u65B9\u5408\u5E76\uFF0C\u53EA\u8986\u76D6 sync \u771F\u6B63\u6539\u8FC7\u7684\u5B57\u6BB5\u3001\u4FDD\u7559\u5E76\u53D1\u6539\u52A8\u7684\u5B57\u6BB5\u3002
+      const baseItem = baseById.get(item.id)
+      const mutatedItem = mutatedById.get(item.id)
+      if (JSON.stringify(baseItem) === JSON.stringify(item)) {
+        kept.push(mutatedItem)
+      } else {
+        kept.push(mergeChangedFields(baseItem, mutatedItem, item))
+      }
     } else {
       kept.push(item) // sync \u672A\u6539\uFF08\u6216 fresh \u5E76\u53D1\u65B0\u589E\uFF09\u2192 \u4FDD\u7559 fresh
     }

@@ -193,6 +193,32 @@ try {
   assert.ok(ebIds.includes('FS_USER'), '空基线下同步追加不得抹掉窗口内并发写（空数组边界回归锁）')
   assert.ok(ebIds.includes('FS_SYNC'), '空基线下同步自己的追加也必须落地')
 
+  // 12) 同一元素被同步与并发同时改动（不同字段）：同步刷 syncedAt 使该房源成为“同步改过的元素”，
+  //     窗口内并发确认成交改了同一房源的 status/lifecycleStatus。旧的“同步动过的元素整份胜出”会
+  //     静默回滚并发的成交状态（成交记录说已成交、房源却被改回在租重新上架，自相矛盾）。必须按
+  //     字段三方合并：只覆盖同步真正改动的字段（syncedAt/updatedAt），保留并发改动的字段——同一
+  //     元素丢写回归锁。
+  dbStore.writeDb({
+    listings: [{ id: 'FEISHU2', externalSource: 'feishu', status: '在租', lifecycleStatus: 'active', syncedAt: 'T0', updatedAt: 'T0' }],
+    dealRecords: []
+  })
+  const seBase = dbStore.clone(dbStore.readDb())
+  const seSync = dbStore.clone(seBase)
+  const seF = seSync.listings.find((item) => item.id === 'FEISHU2')
+  seF.syncedAt = 'T1'  // attachFeishuFields 对已在租房源只刷元数据、不动 status —— 真实行为
+  seF.updatedAt = 'T1'
+  dbStore.updateDb((db) => {                                    // 并发确认成交，改同一房源 FEISHU2
+    const f = db.listings.find((item) => item.id === 'FEISHU2')
+    f.status = '已成交'
+    f.lifecycleStatus = 'sold'
+    db.dealRecords.push({ id: 'DEAL2', listingId: 'FEISHU2' })
+  })
+  dbStore.commitDelta(seBase, seSync)
+  const seResult = dbStore.readDb().listings.find((item) => item.id === 'FEISHU2')
+  assert.strictEqual(seResult.status, '已成交', '同步刷元数据不得回滚窗口内并发对同一房源的成交状态（同元素丢写回归锁）')
+  assert.strictEqual(seResult.lifecycleStatus, 'sold', '同步不得回滚窗口内并发对同一房源的生命周期状态')
+  assert.strictEqual(seResult.syncedAt, 'T1', '同步对该房源真正改动的字段（syncedAt）必须落地')
+
   console.log('db-cache-v1-test passed')
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true })
