@@ -9,14 +9,20 @@ process.env.DATA_FILE = path.join(tempDir, 'db.json')
 process.env.AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'test-secret'
 
 const dbStore = require('../src/db')
+const domain = require('../src/domain')
 
 try {
   dbStore.writeDb({ listings: [{ id: 'L1', rent: 1000 }], counter: 1 })
 
-  // 1) 解析缓存命中：文件未变时连续 readDb 返回同一引用（缓存的设计前提）。
+  // 1) 解析缓存命中但对外隔离：文件未变时连续 readDb 不重复读盘，但必须返回不同副本。
   const a = dbStore.readDb()
   const b = dbStore.readDb()
-  assert.strictEqual(a, b, '文件未变时 readDb 应命中缓存返回同一对象')
+  assert.notStrictEqual(a, b, 'readDb 对外必须返回隔离副本，避免读路径污染共享缓存')
+  a.listings[0].rent = 99999
+  a.listings.push({ id: 'EVIL' })
+  const cleanRead = dbStore.readDb()
+  assert.strictEqual(cleanRead.listings[0].rent, 1000, 'readDb 返回对象上的字段改动不得污染后续读取')
+  assert.strictEqual(cleanRead.listings.length, 1, 'readDb 返回对象上新增的元素不得污染后续读取')
 
   // 2) clone 隔离：在 clone 的私有副本上就地改动，绝不污染共享缓存。
   //    飞书同步与助手对话的长 await 路径正是靠这条隔离，避免并发读看到半成品状态。
@@ -40,6 +46,35 @@ try {
   }
   assert.ok(threw, 'updateDb 的 mutator 抛异常必须向上传播')
   assert.strictEqual(dbStore.readDb().counter, 2, 'updateDb 抛异常后必须回滚，磁盘/缓存保持写入前的值')
+
+  // 4.1) 读路径副作用隔离：列表/地图会计算房态并可能在副本上触发自动下架，不能污染缓存后被无关写入带盘。
+  const oldTime = new Date(Date.now() - 9 * 86400000).toISOString()
+  dbStore.writeDb({
+    counter: 0,
+    footprints: [],
+    listings: [{
+      id: 'L_STALE_READ',
+      title: '读路径陈旧房源',
+      shortTitle: '读路径陈旧房源',
+      uploaderId: 'U1',
+      rent: 1000,
+      layout: '整租一室',
+      community: '读路径小区',
+      address: '读路径地址',
+      landlordPhone: '13800000000',
+      videoUrl: 'https://example.com/read-path.mp4',
+      status: '在租',
+      lifecycleStatus: 'active',
+      lastVerifiedAt: oldTime,
+      createdAt: oldTime
+    }]
+  })
+  domain.homeListings(dbStore.readDb())
+  dbStore.updateDb((db) => { db.counter = 1 })
+  const readSideEffectSafe = dbStore.readDb()
+  assert.strictEqual(readSideEffectSafe.counter, 1, '无关写入应正常落盘')
+  assert.strictEqual(readSideEffectSafe.listings[0].status, '在租', '读路径触发的自动下架不得污染缓存后被无关写入持久化')
+  assert.strictEqual(readSideEffectSafe.footprints.length, 0, '读路径生成的留痕不得污染缓存后被无关写入持久化')
 
   // 5) commitDelta 增量回写：飞书同步在私有副本上跑完，只回写它真正改动的顶层键，保住 await
   //    窗口内并发 updateDb 落盘的无关键（成交/反馈等），不被整库回写覆盖——丢写回归锁。
