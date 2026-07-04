@@ -1,6 +1,7 @@
 const NO_FEATURE = '无'
 const NO_COMMISSION_FEATURE = '不分佣'
 const DEPOSIT_FREE_FEATURE = '免押金'
+const ELEVATOR_FEATURE = '电梯'
 
 const LISTING_FEATURE_OPTIONS = [
   '近地铁',
@@ -67,6 +68,7 @@ module.exports = {
   NO_FEATURE,
   NO_COMMISSION_FEATURE,
   DEPOSIT_FREE_FEATURE,
+  ELEVATOR_FEATURE,
   LISTING_FEATURE_OPTIONS,
   parseFeatureInput,
   normalizeListingFeatures,

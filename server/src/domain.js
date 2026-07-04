@@ -11,6 +11,7 @@ const {
   NO_FEATURE,
   NO_COMMISSION_FEATURE,
   DEPOSIT_FREE_FEATURE,
+  ELEVATOR_FEATURE,
   parseFeatureInput,
   normalizeListingFeatures,
   invalidListingFeatures,
@@ -574,6 +575,10 @@ function featuresWithCompanyDefaults(value, listing = {}) {
   const features = featuresWithNoCommission(value, listing).filter((item) => item !== NO_FEATURE)
   if (companyListing && features.indexOf(DEPOSIT_FREE_FEATURE) === -1) {
     features.push(DEPOSIT_FREE_FEATURE)
+  }
+  // 公司房源一律默认带电梯房：与免押金同为公司房源固定特点，含存量、编辑去掉也会被补回。
+  if (companyListing && features.indexOf(ELEVATOR_FEATURE) === -1) {
+    features.push(ELEVATOR_FEATURE)
   }
   return features.length ? features : [NO_FEATURE]
 }
