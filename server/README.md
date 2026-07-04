@@ -194,8 +194,9 @@ GET /mini/listings?district=拱墅区&block=东新园&layout=两室&rentMin=3000
 
 - 拱墅区：万达、北部软件园、城北万象城、石桥、华丰、永佳、半山、东新园、杭氧、新天地。
 - 上城区：闸弄口、新塘、元宝塘、东站。
+- 余杭区：暂无固定板块，主要通过下面的小区级覆盖归属。
 
-飞书同步、快照房源和前台筛选都使用同一套板块到行政区映射，后续扩展行政区时优先改服务端配置。
+除板块映射外，`config.js` 还提供 `communityDistrictOverrides` 小区级覆盖表（小洋坝家园一/二/三区、大华海派风景、风雅乐府、瑷颐湾等归余杭区）。**小区级覆盖优先级高于板块映射**：命中覆盖表的小区直接按覆盖行政区归属，不再落回板块所属区。飞书同步、快照房源和前台筛选都使用同一套 `districtForLocation` 映射入口，后续扩展行政区时优先改服务端配置。
 
 地图接口：
 
@@ -206,6 +207,8 @@ GET /mini/map/pins
 
 地图筛选复用区域、板块、租金、户型和租赁方式等参数，但只返回可靠小区坐标。
 
+坐标分级（`verified`/`approximate`/`block-center` 三档，含板块中心兜底）与离线地理编码依赖腾讯位置服务：`QQ_MAP_WEBSERVICE_KEY`（兼容旧名 `QQ_MAP_KEY`）从环境变量读取，`server/scripts/geocode-listing-communities.js` 用它批量补小区坐标。
+
 ## 公司房源表快照
 
 小程序端快照接口：
@@ -214,7 +217,7 @@ GET /mini/map/pins
 GET /mini/company-sheet-snapshot
 ```
 
-快照接口按飞书表头动态返回列，不再要求前端硬编码表头。后端会修正区域合并单元格的向下填充，并保证表头与数据行列数一致。当前公司房源快照不做游客双视图，匿名与登录中介看到同一份完整公司房源表，包含 `看房方式密码` 等公司公开字段。
+快照接口按飞书表头动态返回列，不再要求前端硬编码表头。后端会修正区域合并单元格的向下填充，并保证表头与数据行列数一致。当前公司房源快照不做游客双视图，匿名与登录中介看到同一份完整公司房源表，包含 `看房方式密码` 等公司公开字段。公司房源详情下发的公司看房电话来自 `COMPANY_CONTACT_PHONES`（逗号分隔、服务端配置；缺省时回退到内置示例号码，生产应显式配置以免真实号码固化在版本库）。
 
 原表头行不会混入数据行；前端应按接口返回的 `rows[0]` 渲染列。
 
@@ -241,7 +244,7 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 - 素材缺失的飞书房源不会被静默丢弃，会在后台标记 `missingVideoMaterial=true` 和 `缺视频素材`。
 - 公司房源即使缺视频，也可进入普通公司房源列表；地图仍要求真实小区坐标。
 - `户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，并去掉前缀保存净户型；否则按合租处理。
-- 板块到行政区映射由服务端配置决定：闸弄口、新塘、元宝塘、东站归上城区，其余现有板块归拱墅区。
+- 板块到行政区映射由服务端配置决定：闸弄口、新塘、元宝塘、东站归上城区，其余现有板块归拱墅区；命中 `communityDistrictOverrides` 的小区（如小洋坝家园、大华海派风景、风雅乐府、瑷颐湾等）优先归余杭区。
 
 常用飞书环境变量：
 
@@ -345,6 +348,8 @@ V1_DISABLE_LEGACY_ROUTES=1
 
 充值、积分、房源群、换群、微信群截图审核、微信支付相关代码均为历史预留，第一版不生效。相关后台接口和配置只用于保留历史数据或后续版本，不作为当前验收入口。
 
+需注意：微信支付回调 `POST /wechat/pay/notify` 仍保留在路由表中，**不受 `V1_DISABLE_LEGACY_ROUTES` 拦截**。它依赖 `wxpay.js` 的签名校验：未配置支付证书/公钥时校验直接抛错拒绝，且 V1 下充值入口已被拦截、不会产生微信账单，因此实际不可被利用；但若生产 `.env` 残留支付密钥需留意。后续如需与"统一下线"承诺严格对齐，可让该路由同样受 `disableLegacyRoutes` 控制（V1 下直接 404）。
+
 历史预留配置示例：
 
 ```env
@@ -370,6 +375,7 @@ WECHAT_PAY_NOTIFY_URL=
 POST /mini/assistant/chat
 POST /mini/llm/match
 POST /mini/asr/transcribe
+WS   /mini/asr/realtime
 POST /mini/assistant/feedback
 ```
 
@@ -382,7 +388,11 @@ LLM_API_KEY=
 DEEPSEEK_API_KEY=
 QWEN_API_KEY=
 ZHIPU_API_KEY=
+ASR_API_KEY=
+DASHSCOPE_API_KEY=
 ```
+
+实时语音走 WebSocket：小程序连接 `wss://<域名>/mini/asr/realtime`，后端 `server/src/asr-realtime.js` 监听 HTTP `upgrade` 事件代理到 ASR 服务。密钥依次从 `ASR_API_KEY`、`DASHSCOPE_API_KEY`、`LLM_API_KEY` 读取；可选 `ASR_REALTIME_MODEL`、`ASR_REALTIME_URL`（或 `DASHSCOPE_ASR_REALTIME_URL`）覆盖模型与网关地址。生产 Nginx 必须为 `location = /mini/asr/realtime` 转发 `Upgrade`/`Connection` 头（见 `deploy/nginx-zf-api-miniapp.conf`）。
 
 后台可查看和测试 LLM 配置：
 
