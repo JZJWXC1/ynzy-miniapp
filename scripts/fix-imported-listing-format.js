@@ -6,9 +6,9 @@ const importDir = path.join(rootDir, '.tmp', 'feishu-import')
 const candidatesPath = path.join(importDir, 'candidates.json')
 const resultsPath = path.join(importDir, 'import-results.json')
 const baseUrl = process.env.YNZY_API_BASE || 'https://zf-api.ynzyqbot.cn'
-const adminAccount = process.env.YNZY_ADMIN_ACCOUNT || '19941091943'
-const adminPassword = process.env.YNZY_ADMIN_PASSWORD || 'WZJwzj123'
+const adminAccount = process.env.YNZY_ADMIN_ACCOUNT || 'admin'
 const dryRun = process.env.DRY_RUN === '1'
+const adminPassword = process.env.YNZY_ADMIN_PASSWORD || ''
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -168,6 +168,9 @@ async function main() {
   if (dryRun) {
     console.log(JSON.stringify({ dryRun: true, count: updates.length, previewPath }, null, 2))
     return
+  }
+  if (!adminPassword) {
+    throw new Error('请通过环境变量 YNZY_ADMIN_PASSWORD 提供后台密码')
   }
 
   const login = await request('/admin/auth/login', {
