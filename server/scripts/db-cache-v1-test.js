@@ -86,6 +86,54 @@ try {
     '手动同步必须与定时同步互斥（并发全量同步会先后整库互抹）'
   )
 
+  // 8) footprints 元素级合并：同步下架房源会往 footprints 追加下架留痕（footprints 成为“同步改过
+  //    的键”）。此时窗口内并发落盘的用户足迹不得被同步的下架留痕整块覆盖——footprints 丢写回归锁。
+  dbStore.writeDb({
+    footprints: [{ id: 'F_OLD', action: '旧足迹' }],
+    listings: [{ id: 'FL1', externalSource: 'feishu', status: '在租' }]
+  })
+  const fbBase = dbStore.clone(dbStore.readDb())
+  const fbSync = dbStore.clone(fbBase)
+  fbSync.listings[0].status = '已下架'                                   // 同步下架房源
+  fbSync.footprints.unshift({ id: 'F_SYNCDOWN', action: '飞书同步下架' }) // 同步追加下架留痕
+  dbStore.updateDb((db) => { db.footprints.unshift({ id: 'F_USERVIEW', action: '看房' }) }) // 并发用户足迹
+  dbStore.commitDelta(fbBase, fbSync)
+  const fbMerged = dbStore.readDb()
+  const fbIds = fbMerged.footprints.map((item) => item.id)
+  assert.ok(fbIds.includes('F_USERVIEW'), 'commitDelta 必须保住 await 窗口内并发落盘的用户足迹（footprints 丢写回归锁）')
+  assert.ok(fbIds.includes('F_SYNCDOWN'), 'commitDelta 必须回写同步追加的下架足迹')
+  assert.ok(fbIds.includes('F_OLD'), '原有足迹必须保留')
+  assert.strictEqual(fbMerged.listings[0].status, '已下架', '同步对房源的下架改动必须落地')
+
+  // 9) listings 元素级合并：同步只改自己的房源，窗口内并发成交确认改了另一套房源的状态。旧的整键
+  //    覆盖会把整个 listings 换成同步版本、回滚并发成交状态（重现“成交记录与房源展示自相矛盾”）；
+  //    元素级合并必须只覆盖同步动过的房源、保留并发改动的房源——跨键不一致回归锁。
+  dbStore.writeDb({
+    listings: [
+      { id: 'FEISHU1', externalSource: 'feishu', status: '在租' },
+      { id: 'PARTNER1', status: '在租' }
+    ],
+    dealRecords: []
+  })
+  const lsBase = dbStore.clone(dbStore.readDb())
+  const lsSync = dbStore.clone(lsBase)
+  lsSync.listings.find((item) => item.id === 'FEISHU1').syncedAt = 'sync-now' // 同步改动 FEISHU1
+  dbStore.updateDb((db) => {                                                   // 并发确认成交，改 PARTNER1
+    db.listings.find((item) => item.id === 'PARTNER1').status = '已成交'
+    db.dealRecords.push({ id: 'DEAL1' })
+  })
+  dbStore.commitDelta(lsBase, lsSync)
+  const lsMerged = dbStore.readDb()
+  assert.strictEqual(
+    lsMerged.listings.find((item) => item.id === 'PARTNER1').status, '已成交',
+    '同步不得回滚窗口内并发成交确认对未同步房源的状态改动（跨键不一致回归锁）'
+  )
+  assert.strictEqual(
+    lsMerged.listings.find((item) => item.id === 'FEISHU1').syncedAt, 'sync-now',
+    '同步对自己房源的改动必须落地'
+  )
+  assert.ok(lsMerged.dealRecords.some((deal) => deal.id === 'DEAL1'), '并发成交记录必须保留')
+
   console.log('db-cache-v1-test passed')
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true })

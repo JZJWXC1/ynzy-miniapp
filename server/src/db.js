@@ -74,24 +74,64 @@ function updateDb(mutator) {
   }
 }
 
-// \u589E\u91CF\u5408\u5E76\u56DE\u5199\uFF1A\u7528\u4E8E\u98DE\u4E66\u540C\u6B65\u8FD9\u7C7B\u300Cclone \u79C1\u6709\u526F\u672C \u2192 \u957F await \u2192 \u843D\u76D8\u300D\u7684\u8DEF\u5F84\u3002base \u662F\u540C\u6B65\u5F00\u59CB\u524D
-// \u7684\u4E0D\u53EF\u53D8\u57FA\u7EBF\u5FEB\u7167\uFF0Cmutated \u662F\u540C\u6B65\u8DD1\u5B8C\u7684\u79C1\u6709\u526F\u672C\u3002\u76F4\u63A5 writeDb(mutated) \u4F1A\u7528\u540C\u6B65\u5F00\u59CB\u65F6\u7684\u6574\u5E93
-// \u5FEB\u7167\u8986\u76D6\u78C1\u76D8\uFF0C\u62B9\u6389 await \u7A97\u53E3\u5185\u5E76\u53D1 updateDb \u843D\u76D8\u7684\u6210\u4EA4/\u53CD\u9988/\u7559\u75D5\u7B49\u65E0\u5173\u5199\u5165\u3002\u6539\u4E3A\u5728 updateDb
-// \u91CC\u91CD\u8BFB\u6700\u65B0\u5E93\uFF0C\u53EA\u628A\u300Cmutated \u76F8\u5BF9 base \u771F\u6B63\u6539\u52A8\u8FC7\u7684\u9876\u5C42\u952E\u300D\u5AC1\u63A5\u8FC7\u53BB\uFF0C\u5176\u4F59\u952E\u4FDD\u7559\u7A97\u53E3\u5185\u7684\u5E76\u53D1\u5199\u3002
-// \u6CE8\u610F\uFF1A\u82E5\u540C\u6B65\u4E0E\u5E76\u53D1\u5199\u6539\u7684\u662F\u540C\u4E00\u9876\u5C42\u952E\uFF08\u73B0\u5B9E\u4E2D\u4E3B\u8981\u662F listings\uFF09\uFF0C\u540C\u6B65\u503C\u80DC\u51FA\u2014\u2014\u4E0E\u65E7\u6574\u5E93\u56DE\u5199\u884C\u4E3A
-// \u4E00\u81F4\uFF0C\u672A\u65B0\u589E\u56DE\u9000\uFF1B\u771F\u6B63\u88AB\u4FDD\u4F4F\u7684\u662F\u540C\u6B65\u4E0D\u78B0\u7684\u90A3\u4E9B\u952E\u3002
+function isIdObjectArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(
+    (item) => item && typeof item === 'object' && !Array.isArray(item) &&
+      Object.prototype.hasOwnProperty.call(item, 'id')
+  )
+}
+
+// \u5E26 id \u7684\u5BF9\u8C61\u6570\u7EC4\u4E09\u65B9\u6309\u5143\u7D20\u5408\u5E76\uFF1Abase=\u540C\u6B65\u524D\u57FA\u7EBF\uFF0Cmutated=\u540C\u6B65\u79C1\u6709\u526F\u672C\uFF0Cfresh=\u843D\u76D8\u65F6\u6700\u65B0\u5E93\u3002
+// \u4EE5 fresh\uFF08\u542B await \u7A97\u53E3\u5185\u5E76\u53D1\u5199\uFF09\u4E3A\u5E95\uFF0C\u53EA\u5957\u7528 sync \u771F\u6B63\u6539\u52A8/\u65B0\u589E/\u5220\u9664\u7684\u5143\u7D20\uFF1A
+// - sync \u6539\u4E86\u67D0 id\uFF08mutated \u8BE5\u5143\u7D20 !== base\uFF09\u2192 \u7528 sync \u7248\u672C\uFF1B
+// - sync \u6CA1\u78B0\u67D0 id\uFF08mutated===base\uFF09\u2192 \u4FDD\u7559 fresh \u7248\u672C\uFF08\u4FDD\u4F4F\u5E76\u53D1\u5BF9\u8BE5\u5143\u7D20\u7684\u6539\u52A8\uFF09\uFF1B
+// - sync \u5220\u4E86\u67D0 id\uFF08base \u6709\u3001mutated \u65E0\uFF09\u2192 \u4ECE\u7ED3\u679C\u5254\u9664\uFF1B
+// - sync \u65B0\u589E\u67D0 id\uFF08mutated \u6709\u3001base \u65E0\uFF09\u2192 \u524D\u63D2\uFF08\u8D34\u5408 footprints/\u65E5\u5FD7 unshift \u7684\u201C\u65B0\u7684\u5728\u524D\u201D\uFF09\uFF1B
+// - fresh \u5E76\u53D1\u65B0\u589E\uFF08base/mutated \u90FD\u65E0\uFF09\u2192 \u4FDD\u7559\u3002
+function mergeById(base, mutated, fresh) {
+  const baseById = new Map(base.map((item) => [item.id, item]))
+  const mutatedById = new Map(mutated.map((item) => [item.id, item]))
+  const kept = []
+  const seen = new Set()
+  for (const item of fresh) {
+    if (!item || item.id == null) { kept.push(item); continue } // \u5F02\u5E38\u5143\u7D20\u539F\u6837\u4FDD\u7559
+    seen.add(item.id)
+    const inBase = baseById.has(item.id)
+    const inMutated = mutatedById.has(item.id)
+    if (inBase && !inMutated) continue // sync \u5220\u9664\u4E86\u8BE5\u5143\u7D20
+    if (inMutated && JSON.stringify(baseById.get(item.id)) !== JSON.stringify(mutatedById.get(item.id))) {
+      kept.push(mutatedById.get(item.id)) // sync \u6539\u52A8\u4E86\u8BE5 id
+    } else {
+      kept.push(item) // sync \u672A\u6539\uFF08\u6216 fresh \u5E76\u53D1\u65B0\u589E\uFF09\u2192 \u4FDD\u7559 fresh
+    }
+  }
+  const additions = mutated.filter((item) => !seen.has(item.id) && !baseById.has(item.id))
+  return additions.concat(kept)
+}
+
+// \u589E\u91CF\u5408\u5E76\u56DE\u5199\uFF1A\u7528\u4E8E\u98DE\u4E66\u540C\u6B65\u8FD9\u7C7B\u300Cclone \u79C1\u6709\u526F\u672C \u2192 \u957F await \u2192 \u843D\u76D8\u300D\u7684\u8DEF\u5F84\u3002base \u662F\u540C\u6B65\u5F00\u59CB\u524D\u7684
+// \u4E0D\u53EF\u53D8\u57FA\u7EBF\u5FEB\u7167\uFF0Cmutated \u662F\u540C\u6B65\u8DD1\u5B8C\u7684\u79C1\u6709\u526F\u672C\u3002\u76F4\u63A5 writeDb(mutated) \u4F1A\u7528\u540C\u6B65\u5F00\u59CB\u65F6\u7684\u6574\u5E93\u5FEB\u7167
+// \u8986\u76D6\u78C1\u76D8\uFF0C\u62B9\u6389 await \u7A97\u53E3\u5185\u5E76\u53D1 updateDb \u843D\u76D8\u7684\u5199\u5165\u3002\u6539\u4E3A\u5728 updateDb \u91CC\u91CD\u8BFB\u6700\u65B0\u5E93\uFF0C\u53EA\u628A mutated
+// \u76F8\u5BF9 base \u771F\u6B63\u6539\u52A8\u8FC7\u7684\u90E8\u5206\u5AC1\u63A5\u8FC7\u53BB\uFF1A\u9876\u5C42\u952E\u82E5\u662F\u5E26 id \u7684\u5BF9\u8C61\u6570\u7EC4\uFF08listings/footprints/\u65E5\u5FD7\u7B49\uFF09\uFF0C
+// \u6309\u5143\u7D20\u7EA7\u4E09\u65B9\u5408\u5E76\uFF0C\u53EA\u8986\u76D6 sync \u52A8\u8FC7\u7684\u5143\u7D20\u3001\u4FDD\u7559 fresh \u91CC sync \u6CA1\u78B0\u7684\u5143\u7D20\uFF08\u5E76\u53D1\u5199\uFF09\uFF1B\u5176\u4F59\u952E\u505A\u6574\u952E
+// \u589E\u91CF\uFF08sync \u6539\u8FC7\u5219\u8986\u76D6\u3001\u672A\u6539\u5219\u4FDD\u7559\u5E76\u53D1\u5199\uFF09\u3002\u8FD9\u6837\u540C\u6B65\u5BF9\u81EA\u5DF1\u623F\u6E90\u7684\u6539\u52A8\u7167\u5E38\u843D\u5730\uFF0C\u800C\u7A97\u53E3\u5185\u5E76\u53D1\u7684\u6210\u4EA4
+// \u786E\u8BA4/\u8DB3\u8FF9/\u7F16\u8F91\u4E0D\u518D\u56E0\u201C\u540C\u6B65\u78B0\u4E86\u540C\u4E00\u4E2A\u9876\u5C42\u6570\u7EC4\u201D\u88AB\u6574\u5757\u56DE\u6EDA\u3002sync \u6570\u636E\u6C38\u4E0D\u4E22\u5931\uFF08\u5B83\u52A8\u8FC7\u7684\u5143\u7D20\u603B\u662F\u80DC\u51FA\uFF09\u3002
 function commitDelta(base, mutated) {
+  const safeBase = base || {}
+  const safeMutated = mutated || {}
   return updateDb((freshDb) => {
-    const keys = new Set([...Object.keys(base || {}), ...Object.keys(mutated || {})])
+    const keys = new Set([...Object.keys(safeBase), ...Object.keys(safeMutated)])
     for (const key of keys) {
-      const hasNext = Object.prototype.hasOwnProperty.call(mutated || {}, key)
-      const before = JSON.stringify(base ? base[key] : undefined)
-      const after = hasNext ? JSON.stringify(mutated[key]) : undefined
+      const hasNext = Object.prototype.hasOwnProperty.call(safeMutated, key)
+      const before = JSON.stringify(safeBase[key])
+      const after = hasNext ? JSON.stringify(safeMutated[key]) : undefined
       if (before === after) continue // \u540C\u6B65\u672A\u6539\u8BE5\u952E\uFF0C\u4FDD\u7559 freshDb \u4E2D\u7684\u5E76\u53D1\u5199
-      if (hasNext) {
-        freshDb[key] = mutated[key]
+      if (!hasNext) { delete freshDb[key]; continue } // \u540C\u6B65\u5220\u9664\u4E86\u8BE5\u9876\u5C42\u952E
+      if (isIdObjectArray(safeBase[key]) && isIdObjectArray(safeMutated[key])) {
+        const freshArr = Array.isArray(freshDb[key]) ? freshDb[key] : []
+        freshDb[key] = mergeById(safeBase[key], safeMutated[key], freshArr)
       } else {
-        delete freshDb[key] // \u540C\u6B65\u5220\u9664\u4E86\u8BE5\u9876\u5C42\u952E
+        freshDb[key] = safeMutated[key] // \u975E id \u5BF9\u8C61\u6570\u7EC4\uFF1A\u6574\u952E\u8986\u76D6\uFF08\u4E0E\u65E7\u884C\u4E3A\u4E00\u81F4\uFF09
       }
     }
     return freshDb
