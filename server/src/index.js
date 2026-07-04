@@ -477,7 +477,17 @@ function serveAdminWeb(req, res, pathname) {
     Pragma: 'no-cache',
     Expires: '0'
   })
-  fs.createReadStream(filePath).pipe(res)
+  const stream = fs.createReadStream(filePath)
+  stream.on('error', (error) => {
+    // statSync 通过后文件被删/被独占锁定等会让读流触发 error；pipe 不转发源流错误，
+    // 无 error 监听会成为 uncaughtException 使进程退出。响应头通常已发出，只能断开连接。
+    if (res.headersSent) {
+      res.destroy(error)
+    } else {
+      sendError(res, error)
+    }
+  })
+  stream.pipe(res)
 }
 
 function serveUtilityScript(req, res, pathname) {
@@ -495,7 +505,17 @@ function serveUtilityScript(req, res, pathname) {
     Pragma: 'no-cache',
     Expires: '0'
   })
-  fs.createReadStream(filePath).pipe(res)
+  const stream = fs.createReadStream(filePath)
+  stream.on('error', (error) => {
+    // statSync 通过后文件被删/被独占锁定等会让读流触发 error；pipe 不转发源流错误，
+    // 无 error 监听会成为 uncaughtException 使进程退出。响应头通常已发出，只能断开连接。
+    if (res.headersSent) {
+      res.destroy(error)
+    } else {
+      sendError(res, error)
+    }
+  })
+  stream.pipe(res)
 }
 
 const DEFAULT_LLM_SYSTEM_PROMPT = '你是寓你配房小帮手。根据租客预算、区域、户型和标签偏好，从内部房源库候选房源中返回推荐理由；不能编造不存在的房源，不能输出详细地址、房东联系方式、房间号或视频签名链接。'
