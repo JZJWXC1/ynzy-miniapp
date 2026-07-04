@@ -308,6 +308,21 @@ function attachRealtimeAsr(server, options = {}) {
       return
     }
     if (pathname !== CLIENT_PATH) return
+    // 鉴权/限流：实时 ASR 每条连接都用服务端密钥开一路付费 DashScope 上游，未认证客户端可白嫖
+    // 付费语音识别并放大成本/资源 DoS。交由 options.authorizeUpgrade 裁决（登录放行、游客按 IP
+    // 限流）。该回调在同步 upgrade 监听器内，任何异常都必须兜住、只销毁连接、绝不冒泡崩进程。
+    if (typeof options.authorizeUpgrade === 'function') {
+      let allowed = false
+      try {
+        allowed = options.authorizeUpgrade(req) === true
+      } catch (error) {
+        allowed = false
+      }
+      if (!allowed) {
+        socket.destroy()
+        return
+      }
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleRealtimeConnection(ws, req, options)
     })

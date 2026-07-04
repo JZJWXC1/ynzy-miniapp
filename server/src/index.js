@@ -1234,6 +1234,9 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const db = readDbForRequest()
 
   if (method === 'POST' && pathname === '/admin/auth/login') {
+    // 登录是唯一免鉴权入口。按客户端 IP 限流，防止对后台口令（含内置默认账号）无限暴力破解。
+    // requestClientKey 在可信代理下取 XFF 末段，客户端无法伪造。
+    assertGuestRateLimit(req, 'admin-login', 10)
     const body = await parseBody(req)
     const account = String(body.account || '').trim()
     const password = String(body.password || '')
@@ -1745,9 +1748,24 @@ function startFeishuSyncTimer() {
   console.log(`飞书房源自动同步已开启：每 ${minutes} 分钟执行一次`)
 }
 
+// 实时 ASR 升级鉴权：每条连接都用服务端密钥开一路付费 DashScope 上游。与 HTTP
+// /mini/asr/transcribe 对齐——登录用户放行，游客按 IP 限流——避免未认证客户端白嫖付费
+// 语音识别并放大成本/资源 DoS。无 token 的游客 miniUserIdFromRequest 返回 ''，无效/过期/
+// 停用 token 抛错即拒绝升级。
+function authorizeRealtimeAsrUpgrade(req) {
+  try {
+    const userId = miniUserIdFromRequest(req, dbStore.readDb())
+    if (!userId) assertGuestRateLimit(req, 'asr-realtime', 20)
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
 const server = http.createServer(router)
 asrRealtime.attachRealtimeAsr(server, {
-  getDb: dbStore.readDb
+  getDb: dbStore.readDb,
+  authorizeUpgrade: authorizeRealtimeAsrUpgrade
 })
 
 // 游离的 Promise 拒绝：请求内的异步错误已被 router 的 try/catch 兜住并返回错误响应，逃逸到

@@ -27,7 +27,9 @@ const criticalScripts = [
   'server/scripts/graceful-exit-v1-test.js',
   // 升级握手成功后，客户端一条畸形（未 mask）WS 帧不得逃逸成 uncaughtException 打死进程
   // （clientWs 必须挂 error 监听）。
-  'server/scripts/asr-realtime-crash-test.js'
+  'server/scripts/asr-realtime-crash-test.js',
+  // 实时 ASR upgrade 鉴权钩子：未授权/超限连接必须在升级阶段被拒，鉴权回调抛错须兜成拒绝。
+  'server/scripts/asr-realtime-auth-test.js'
 ]
 
 function repoPath(relativePath) {
