@@ -1,4 +1,6 @@
 const assert = require('assert')
+process.env.COMPANY_CONTACT_PHONES = process.env.COMPANY_CONTACT_PHONES || '10000000001,10000000002'
+
 const domain = require('../src/domain')
 const feishuSync = require('../src/feishu-sync')
 const locationMap = require('../src/location-map')
@@ -126,8 +128,8 @@ function run() {
   assert.strictEqual(companyNoVideoDetail.commissionText, '公司房源成交不抽佣，带看中介全佣', '公司房源详情必须展示带看中介全佣文案')
   assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
   assert.strictEqual(companyNoVideoDetail.sensitiveLocked, false, '公司房源详情地址电话必须直接公开')
-  assert.deepStrictEqual(companyNoVideoDetail.companyContactPhones, ['19941091943', '18758141785', '13282125992'], '公司房源详情必须下发服务端配置电话')
-  assert.strictEqual(companyNoVideoDetail.landlordPhone, '19941091943/18758141785/13282125992', '公司房源详情电话必须使用公司看房电话')
+  assert.deepStrictEqual(companyNoVideoDetail.companyContactPhones, ['10000000001', '10000000002'], '公司房源详情必须下发服务端配置电话')
+  assert.strictEqual(companyNoVideoDetail.landlordPhone, '10000000001/10000000002', '公司房源详情电话必须使用公司看房电话')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)
@@ -277,6 +279,10 @@ function run() {
   assert.ok(realPin.listingCount >= 1, '地图点应按小区聚合房源')
   assertNoPublicSensitiveFields(realPin, '地图小区点')
   ;(realPin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '地图房源摘要'))
+  domain.updateListingCoordinate(db, 'U1', reliableMapListing.id, { latitude: 31.111, longitude: 121.222 })
+  const correctedPin = domain.mapPins(db).find((item) => item.community === '京漾东韵府')
+  assert.strictEqual(correctedPin.latitude, 31.111, '后台人工修正坐标必须优先于已有小区坐标库')
+  assert.strictEqual(correctedPin.longitude, 121.222, '后台人工修正坐标必须真正进入地图点位')
 
   db.companySheetSnapshot = {
     rows: [

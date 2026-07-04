@@ -184,7 +184,8 @@ async function run() {
       PORT: String(port),
       DATA_FILE: dataFile,
       V1_DISABLE_LEGACY_ROUTES: '1',
-      AUTH_TOKEN_SECRET: 'guest-mode-test-secret'
+      AUTH_TOKEN_SECRET: 'guest-mode-test-secret',
+      COMPANY_CONTACT_PHONES: '10000000001,10000000002'
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -223,7 +224,7 @@ async function run() {
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
     assert.strictEqual(companyDetail.statusCode, 200, '匿名公司房源详情应返回 200')
     assert.strictEqual(dataOf(companyDetail).companyListing, true, '匿名详情只能打开公司房源')
-    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('19941091943/18758141785/13282125992'), '匿名公司房源详情应返回公司看房电话')
+    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('10000000001/10000000002'), '匿名公司房源详情应返回公司看房电话')
     assert.ok(JSON.stringify(dataOf(companyDetail)).includes('246810#'), '匿名公司房源详情应返回公司看房密码')
 
     const partnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER')

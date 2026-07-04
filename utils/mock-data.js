@@ -13,7 +13,7 @@
   var COMPANY_SOURCE = '公司房源';
   var V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
-  var COMPANY_CONTACT_PHONES = ['19941091943', '18758141785', '13282125992'];
+  var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var BROKER_ROLE = '中介';

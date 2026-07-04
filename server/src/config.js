@@ -145,7 +145,7 @@ module.exports = {
     downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
   },
   company: {
-    contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', ['19941091943', '18758141785', '13282125992'])
+    contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', [])
   },
   qqMap: {
     webserviceKey: process.env.QQ_MAP_WEBSERVICE_KEY || process.env.QQ_MAP_KEY || ''

@@ -1659,6 +1659,28 @@ function pendingMapCoordinateFields() {
 }
 
 function mapCoordinateFromListing(listing = {}) {
+  // 管理员人工修正过的坐标（admin-verified）优先于小区坐标库：后台已逐套核实的精确点位
+  // 不应被小区级近似坐标覆盖，否则修正坐标永远不会真正上图。
+  const manualLatitude = numericCoordinate(firstOwnValue(listing, ['mapLatitude', 'latitude']))
+  const manualLongitude = numericCoordinate(firstOwnValue(listing, ['mapLongitude', 'longitude']))
+  if (listing.coordinateSource === 'admin-verified-coordinate' && hasValidCoordinatePair(manualLatitude, manualLongitude)) {
+    const community = String(listing.community || '').trim()
+    if (community && community !== '待补充') {
+      const level = coordinateLevelFromFields(listing)
+      return {
+        latitude: manualLatitude,
+        longitude: manualLongitude,
+        source: 'admin-verified-coordinate',
+        community,
+        coordinateVerified: level === 'verified',
+        level,
+        coordinateLevel: level,
+        coordinateAccuracy: level,
+        coordinateStatus: listing.coordinateStatus || coordinateStatusText(level)
+      }
+    }
+  }
+
   const communityCoordinate = coordinateByCommunity(listing.community)
   if (communityCoordinate) {
     return {
@@ -1907,6 +1929,21 @@ function mapCommunities(db, filter = {}) {
       })
     }
     const group = groups.get(key)
+    // 管理员人工修正坐标优先：小区点先由最先命中的房源定坐标，但若后续房源带有后台已核实的
+    // admin-verified 坐标，则升级该小区点位（让小区库近似坐标让位于人工修正的精确点位）。
+    if (coordinate.source === 'admin-verified-coordinate' && group.coordinateSource !== 'admin-verified-coordinate') {
+      group.latitude = coordinate.latitude
+      group.longitude = coordinate.longitude
+      group.coordinateSource = coordinate.source
+      group.coordinateVerified = coordinate.level === 'verified'
+      group.coordinateLevel = coordinate.level || 'verified'
+      group.coordinateAccuracy = coordinate.coordinateAccuracy || coordinate.level || 'verified'
+      group.coordinateStatus = coordinate.coordinateStatus || coordinateStatusText(coordinate.level || 'verified')
+      group.coordinateLabel = group.coordinateStatus
+      group.coordinateCalloutNote = coordinate.level === 'approximate'
+        ? '近似位置'
+        : (coordinate.level === 'block-center' ? '板块中心近似位置' : '')
+    }
     const rent = Number(listing.rent || 0)
     group.listingCount += 1
     group.minRent = group.minRent ? Math.min(group.minRent, rent) : rent
