@@ -770,6 +770,17 @@ async function ensureMaterialVideo(token, material, options = {}) {
       materialUrl: material.videoUrl || material.url || material.sourcePath || material.name || ''
     }
   }
+  // 复用：目标房源若已保存过同一素材（token 一致）的视频且有 OSS videoKey，直接沿用，避免
+  // 每轮同步都重新下载整只视频再重传 OSS。原跳过条件 material.videoKey 来自 drive 文件列表恒为
+  // 空、从不命中，导致每次同步对每个匹配素材全量下载+重传，产生 GB 级重复流量与孤儿对象。
+  const reuseTarget = options.existing
+  if (reuseTarget && material.token && reuseTarget.sourceMaterialToken === material.token && reuseTarget.videoKey) {
+    return {
+      videoKey: reuseTarget.videoKey,
+      videoUrl: reuseTarget.videoUrl || '',
+      materialUrl: reuseTarget.sourceMaterialUrl || material.url || ''
+    }
+  }
   if (material.videoKey && material.videoUrl) {
     return { videoKey: material.videoKey, videoUrl: material.videoUrl, materialUrl: material.videoUrl }
   }
@@ -947,7 +958,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
 
     try {
       const video = material
-        ? await ensureMaterialVideo(options.feishuToken || '', material, options)
+        ? await ensureMaterialVideo(options.feishuToken || '', material, { ...options, existing })
         : { videoKey: '', videoUrl: '', materialUrl: '' }
       const payload = buildListingPayload(row, video)
       if (existing) {
