@@ -1324,6 +1324,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     return sendJson(res, feishuSync.status(db))
   }
   if (method === 'POST' && pathname === '/admin/feishu-sync/run') {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     if (body.dryRun) {
       const previewDb = dbStore.clone(db)
@@ -1434,6 +1435,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminDealConfirmMatch = pathname.match(/^\/admin\/deals\/([^/]+)\/confirm$/)
   if (method === 'POST' && adminDealConfirmMatch) {
+    assertAdminCapability(adminAccount)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       domain.confirmDeal(nextDb, adminAccount.userId || adminAccount.id, adminDealConfirmMatch[1])
     )))
@@ -1462,6 +1464,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const rechargeReviewMatch = pathname.match(/^\/admin\/recharges\/([^/]+)\/review$/)
   if (method === 'POST' && rechargeReviewMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.reviewRechargeBill(nextDb, adminAccount.userId || adminAccount.id, rechargeReviewMatch[1], body)))
   }
@@ -1609,6 +1612,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     return sendJson(res, normalizeLlmConfig(db.llmConfig || {}))
   }
   if (method === 'PUT' && pathname === '/admin/llm-config') {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => saveLlmConfig(nextDb, body)))
   }

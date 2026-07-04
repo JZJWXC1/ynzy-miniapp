@@ -228,6 +228,16 @@ async function run() {
     assert.strictEqual(managerCreate.statusCode, 403, '受限管理员不得创建管理员自我提权')
     const managerResetPwd = await request('POST', '/admin/accounts/A001/password', { password: 'takeover99' }, managerAuth)
     assert.strictEqual(managerResetPwd.statusCode, 403, '受限管理员不得重置他人（含超管）密码接管账号')
+    // 与整库导出同级的高危写操作也必须受能力门约束（能力门在业务处理前即拦截，故不存在的 id
+    // 也应返回 403 而非 404）：整库飞书同步回写、改全局 LLM 配置、放行充值、确认成交/佣金。
+    const managerFeishuSync = await request('POST', '/admin/feishu-sync/run', { dryRun: true }, managerAuth)
+    assert.strictEqual(managerFeishuSync.statusCode, 403, '受限管理员不得触发整库飞书同步回写')
+    const managerLlmConfig = await request('PUT', '/admin/llm-config', { systemPrompt: 'takeover' }, managerAuth)
+    assert.strictEqual(managerLlmConfig.statusCode, 403, '受限管理员不得修改全局 LLM 配置（影响所有用户）')
+    const managerDealConfirm = await request('POST', '/admin/deals/D-NOEXIST/confirm', null, managerAuth)
+    assert.strictEqual(managerDealConfirm.statusCode, 403, '受限管理员不得确认成交/放行佣金')
+    const managerRechargeReview = await request('POST', '/admin/recharges/R-NOEXIST/review', { action: 'approve' }, managerAuth)
+    assert.strictEqual(managerRechargeReview.statusCode, 403, '受限管理员不得放行充值')
 
     // 对照：全部后台权限管理员可以执行高危操作
     const superLogin = await request('POST', '/admin/auth/login', { account: 'admin', password: 'admin123' })
