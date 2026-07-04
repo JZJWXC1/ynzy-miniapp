@@ -2762,7 +2762,12 @@ function confirmDeal(db, adminId, dealId) {
   }
 
   const existingRecord = (db.commissionRecords || []).find((record) => record.dealId === deal.id)
-  const commissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
+  // 分佣规则以签单时冻结的快照为准，绝不按确认时刻的房源现状重算——否则待确认期间房源被
+  // 编辑/迁移（ownerType/source/companyListing 变化，或上传人被提为管理员）会静默改变甚至
+  // 清零上传人分佣。仅当历史签单缺少冻结值时才回退重算。
+  const commissionRule = deal.commissionRule
+    || (deal.dealSnapshot && deal.dealSnapshot.commissionRule)
+    || commissionRuleForListing(listing, db, deal.uploaderId)
   if (deal.status === '已确认') {
     return {
       message: '签单已确认',
@@ -2775,10 +2780,16 @@ function confirmDeal(db, adminId, dealId) {
   const now = nowText()
   const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.uploaderRate / 100)
   const platformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.platformRate / 100)
-  deal.commissionRule = clone(commissionRule)
-  deal.dealSnapshot = {
-    ...(deal.dealSnapshot || {}),
-    commissionRule: clone(commissionRule)
+  // 不再回写覆盖 deal.commissionRule / dealSnapshot.commissionRule：它们是签单时冻结的
+  // 不可变证据。仅为缺失冻结值的历史签单补齐（不覆盖已有值）。
+  if (!deal.commissionRule) {
+    deal.commissionRule = clone(commissionRule)
+  }
+  if (deal.dealSnapshot && !deal.dealSnapshot.commissionRule) {
+    deal.dealSnapshot = {
+      ...deal.dealSnapshot,
+      commissionRule: clone(commissionRule)
+    }
   }
   if (commissionRule.rate <= 0) {
     deal.status = '已确认'

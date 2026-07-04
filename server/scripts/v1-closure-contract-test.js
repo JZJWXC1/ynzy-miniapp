@@ -177,7 +177,11 @@ function run() {
   assert.ok(deal.snapshotAt, '签单必须保存快照时间')
   assert.deepStrictEqual(deal.dealSnapshot.commissionRule, { rate: 20, uploaderRate: 15, platformRate: 5 }, '签单必须保存不可变快照对象')
 
+  // 待确认期间篡改房源：改上传人，并把房源标记为公司房源（公司房源重算得 0/0/0，会把上传人
+  // 分佣清零、commissionRecord 置空）。确认分佣必须仍按签单冻结的 20/15/5 快照结算，且不得
+  // 用确认时刻的重算值覆盖冻结快照。
   rawListing.uploaderId = 'U3'
+  rawListing.companyListing = true
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(confirmResult.commissionRecord.uploaderId, 'U1', '确认分佣必须使用 deal.uploaderId，而不是当前 listing.uploaderId')
   assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东成交总比例必须固定 20%')
@@ -186,6 +190,7 @@ function run() {
   assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 90000, '二房东上传人分佣必须按房东实付佣金 15% 计算')
   assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 30000, '二房东平台留存必须按房东实付佣金 5% 计算')
   assert.strictEqual(confirmResult.commissionRecord.needId, need.id, '正式分佣记录应保留 needId')
+  assert.deepStrictEqual(confirmResult.deal.dealSnapshot.commissionRule, { rate: 20, uploaderRate: 15, platformRate: 5 }, '确认签单不得用确认时刻重算值覆盖签单冻结的分佣快照')
 
   console.log('v1-closure-contract-test passed')
 }
