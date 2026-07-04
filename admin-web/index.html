@@ -346,7 +346,7 @@
 
     .filter-bar {
       display: grid;
-      grid-template-columns: 160px 160px minmax(220px, 1fr) 92px;
+      grid-template-columns: 140px 140px 140px 140px minmax(200px, 1fr) 92px;
       gap: 12px;
       align-items: end;
       margin-bottom: 14px;
@@ -743,6 +743,89 @@
       margin-bottom: 14px;
     }
 
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 32px 20px;
+      background: rgba(21, 63, 54, .45);
+      overflow-y: auto;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(780px, 100%);
+      padding: 24px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .modal-card h3 {
+      margin: 0 0 6px;
+      color: var(--deep);
+      font-size: 18px;
+    }
+
+    .modal-sub {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .modal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .modal-grid .form-item.full {
+      grid-column: 1 / -1;
+    }
+
+    .feature-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .feature-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 0 12px;
+      color: var(--pine);
+      background: var(--mint);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .feature-option input {
+      width: auto;
+      min-height: 0;
+      margin: 0;
+      accent-color: var(--pine);
+    }
+
+    .modal-error {
+      margin-top: 12px;
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 700;
+      min-height: 18px;
+    }
+
     .switch-row {
       display: flex;
       align-items: center;
@@ -907,7 +990,7 @@
       <h2 class="panel-title">管理员登录</h2>
       <p class="panel-sub">管理员账号由后端校验。请使用已配置的正式管理员账号。</p>
       <label for="account">账号</label>
-      <input id="account" value="19941091943" autocomplete="username">
+      <input id="account" value="admin" autocomplete="username">
       <label for="password">密码</label>
       <input id="password" value="" type="password" autocomplete="current-password">
       <button class="login-button" id="loginButton">进入后台</button>
@@ -1001,6 +1084,26 @@
               <option value="浦沿">浦沿</option>
               <option value="建设路">建设路</option>
               <option value="钱江新城">钱江新城</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>来源</span>
+            <select id="sourceFilter">
+              <option value="">全部来源</option>
+              <option value="公司">公司房源</option>
+              <option value="业主">业主房源</option>
+              <option value="二房东">二房东房源</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>状态</span>
+            <select id="statusFilter">
+              <option value="">全部状态</option>
+              <option value="在租">在租</option>
+              <option value="待确认">待确认</option>
+              <option value="待审核">待审核</option>
+              <option value="已驳回">已驳回</option>
+              <option value="成交">已签单/成交</option>
             </select>
           </label>
           <label class="filter-item">
@@ -1330,6 +1433,102 @@
     </main>
   </section>
 
+  <div class="modal-overlay" id="listingEditorOverlay">
+    <div class="modal-card">
+      <h3 id="listingEditorTitle">编辑房源</h3>
+      <p class="modal-sub" id="listingEditorSub">修改后立即生效；把状态改为“已下架”会移入后台资产池，可在资产池重新上架。审核与成交状态请走对应流程。</p>
+      <div class="modal-grid">
+        <label class="form-item">
+          <span>区域</span>
+          <input id="editArea" placeholder="如：滨江">
+        </label>
+        <label class="form-item">
+          <span>板块</span>
+          <input id="editBlock" placeholder="如：西兴">
+        </label>
+        <label class="form-item">
+          <span>小区名称</span>
+          <input id="editCommunity" placeholder="小区名称">
+        </label>
+        <label class="form-item">
+          <span>栋</span>
+          <input id="editBuilding" placeholder="如：3栋">
+        </label>
+        <label class="form-item">
+          <span>单元</span>
+          <input id="editUnit" placeholder="如：2单元">
+        </label>
+        <label class="form-item">
+          <span>房号</span>
+          <input id="editRoomNumber" placeholder="如：501室">
+        </label>
+        <label class="form-item">
+          <span>租赁方式</span>
+          <select id="editRentMode">
+            <option value="整租">整租</option>
+            <option value="合租">合租</option>
+          </select>
+        </label>
+        <div class="form-item">
+          <span>户型（室/厅/卫）</span>
+          <div style="display:flex;gap:6px;">
+            <input id="editRoom" placeholder="2室">
+            <input id="editHall" placeholder="1厅">
+            <input id="editBath" placeholder="1卫">
+          </div>
+        </div>
+        <label class="form-item">
+          <span>租金（元/月）</span>
+          <input id="editRent" type="number" min="1" placeholder="如：3500">
+        </label>
+        <label class="form-item">
+          <span>房东电话</span>
+          <input id="editContact" placeholder="房东联系电话">
+        </label>
+        <label class="form-item">
+          <span>看房密码</span>
+          <input id="editViewingPassword" placeholder="清空表示无密码">
+        </label>
+        <label class="form-item">
+          <span>状态</span>
+          <select id="editStatus">
+            <option value="">保持不变</option>
+            <option value="在租">在租</option>
+            <option value="待确认">待确认</option>
+            <option value="已下架">已下架（移入资产池）</option>
+          </select>
+        </label>
+        <label class="form-item">
+          <span>房源来源</span>
+          <select id="editOwnerType">
+            <option value="二房东房源">二房东房源</option>
+            <option value="业主房源">业主房源</option>
+          </select>
+        </label>
+        <div class="form-item" style="align-self:end;">
+          <span>公司房源</span>
+          <label class="switch-row" style="min-height:44px;">
+            <input type="checkbox" id="editCompanyListing">
+            <span>标记为公司房源（不分佣）</span>
+          </label>
+        </div>
+        <label class="form-item full">
+          <span>视频链接</span>
+          <input id="editVideoUrl" placeholder="视频 URL（留空保持不变）">
+        </label>
+        <div class="form-item full">
+          <span>房源特点（至少选一项，无特点请选“无”）</span>
+          <div class="feature-options" id="editFeatureOptions"></div>
+        </div>
+      </div>
+      <div class="modal-error" id="listingEditorError"></div>
+      <div class="inline-actions">
+        <button id="saveListingEditor">保存修改</button>
+        <button class="ghost-button" id="cancelListingEditor">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="../utils/mock-data.js"></script>
   <script>
     const adminAccounts = [
@@ -1386,6 +1585,8 @@
     const areaFilter = document.getElementById('areaFilter');
     const blockFilter = document.getElementById('blockFilter');
     const communityFilter = document.getElementById('communityFilter');
+    const sourceFilter = document.getElementById('sourceFilter');
+    const statusFilter = document.getElementById('statusFilter');
     const listingRows = document.getElementById('listingRows');
     const listingEmpty = document.getElementById('listingEmpty');
     const listingReviewList = document.getElementById('listingReviewList');
@@ -1402,6 +1603,7 @@
     let llmConfigInitialized = false;
     let listingReviewItems = [];
     let expiredListingItems = [];
+    let adminListingItems = [];
     const localConfirmedDeals = {};
 
     function pillClass(value) {
@@ -1657,13 +1859,24 @@
       const area = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
-      const listingData = await getAdminData(`/admin/listings${buildQuery({ area, block, community })}`, () => dataCenter.getAdminListings());
+      const source = sourceFilter.value;
+      const status = statusFilter.value;
+      const listingData = await getAdminData(`/admin/listings${buildQuery({ area, block, community, source, status })}`, () => dataCenter.getAdminListings());
       const rows = listingData.filter((item) => {
         const matchArea = !area || item.area === area;
         const matchBlock = !block || item.block === block;
         const matchCommunity = !community || item.community.includes(community);
-        return matchArea && matchBlock && matchCommunity;
+        const company = Boolean(item.companyListing || item.isCompanyListing);
+        const sourceText = `${item.sourceLabel || ''}${item.ownerType || ''}${item.source || ''}`;
+        const matchSource = !source || (source === '公司'
+          ? company
+          : (!company && sourceText.includes(source)));
+        const matchStatus = !status || (status === '成交'
+          ? /成交|签单/.test(String(item.status || ''))
+          : item.status === status);
+        return matchArea && matchBlock && matchCommunity && matchSource && matchStatus;
       });
+      adminListingItems = rows;
 
       listingRows.innerHTML = rows.map((item) => {
         const sourceText = item.sourceLabel || item.ownerType || item.source || '';
@@ -1687,6 +1900,7 @@
           <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span><span class="sub-cell">${coordinateText}</span></td>
           <td>
             <div class="row-actions">
+              <button class="table-action edit-listing-button" data-id="${item.id}">编辑</button>
               <button class="table-action verify-listing-button" data-id="${item.id}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
               <button class="table-action coordinate-listing-button" data-id="${item.id}" data-title="${item.title || item.community || item.id}" data-latitude="${item.mapLatitude || ''}" data-longitude="${item.mapLongitude || ''}">坐标修正</button>
               <button class="table-action review-owner-listing-button" data-id="${item.id}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
@@ -2059,7 +2273,8 @@
       const area = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
-      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community })}`, () => (
+      const source = sourceFilter.value;
+      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community, source })}`, () => (
         dataCenter.getExpiredListings ? dataCenter.getExpiredListings({ area, block, community }) : []
       )));
       expiredListingItems = rows;
@@ -2666,6 +2881,113 @@
       await renderLaunchCheck();
     }
 
+    // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
+    const LISTING_EDIT_FEATURE_OPTIONS = ['近地铁', '电梯', '燃气', '独卫', '朝南', '带阳台', '带露台（阁楼）', '可短租', '可月付', '干湿分离', '采光好', '首次出租', '民水民电', '无'];
+    let editingListingItem = null;
+
+    function renderEditFeatureOptions(selected) {
+      const tags = uniqueTextList(selected);
+      // 存量房源可能带旧标签（免押金/急租等），一并渲染避免保存时被静默丢弃
+      const extra = tags.filter((tag) => LISTING_EDIT_FEATURE_OPTIONS.indexOf(tag) === -1);
+      document.getElementById('editFeatureOptions').innerHTML = LISTING_EDIT_FEATURE_OPTIONS.concat(extra).map((tag) => `
+        <label class="feature-option"><input type="checkbox" value="${safeAttr(tag)}" ${tags.indexOf(tag) !== -1 ? 'checked' : ''}>${safeText(tag)}</label>
+      `).join('');
+    }
+
+    function openListingEditor(item) {
+      editingListingItem = item;
+      document.getElementById('listingEditorTitle').textContent = `编辑房源 · ${item.title || item.community || item.id}`;
+      document.getElementById('editArea').value = item.area || '';
+      document.getElementById('editBlock').value = item.block || '';
+      document.getElementById('editCommunity').value = item.community || '';
+      document.getElementById('editBuilding').value = item.building || '';
+      document.getElementById('editUnit').value = item.unit || '';
+      document.getElementById('editRoomNumber').value = item.roomNumber || '';
+      document.getElementById('editRentMode').value = /合租/.test(String(item.rentMode || item.type || '')) ? '合租' : '整租';
+      document.getElementById('editRoom').value = item.room || '';
+      document.getElementById('editHall').value = item.hall || '';
+      document.getElementById('editBath').value = item.bath || '';
+      document.getElementById('editRent').value = item.rentValue || '';
+      document.getElementById('editContact').value = item.landlordPhone || item.contact || '';
+      document.getElementById('editViewingPassword').value = item.viewingPassword || '';
+      document.getElementById('editStatus').value = '';
+      document.getElementById('editOwnerType').value = item.ownerType === '业主房源' ? '业主房源' : '二房东房源';
+      document.getElementById('editCompanyListing').checked = Boolean(item.companyListing || item.isCompanyListing);
+      document.getElementById('editVideoUrl').value = item.videoUrl || '';
+      renderEditFeatureOptions(Array.isArray(item.features) ? item.features : textList(item.features));
+      document.getElementById('listingEditorSub').textContent = `当前状态：${item.status || '未知'} · 修改后立即生效；改为“已下架”会移入后台资产池，可在资产池重新上架。审核与成交状态请走对应流程。`;
+      document.getElementById('listingEditorError').textContent = '';
+      document.getElementById('listingEditorOverlay').classList.add('active');
+    }
+
+    function closeListingEditor() {
+      editingListingItem = null;
+      document.getElementById('listingEditorOverlay').classList.remove('active');
+    }
+
+    async function submitListingEditor() {
+      if (!editingListingItem) return;
+      const errorBox = document.getElementById('listingEditorError');
+      errorBox.textContent = '';
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再编辑房源：/admin-web/');
+        return;
+      }
+      const features = Array.prototype.slice.call(document.querySelectorAll('#editFeatureOptions input:checked')).map((input) => input.value);
+      const rent = Number(document.getElementById('editRent').value);
+      if (!Number.isFinite(rent) || rent <= 0) {
+        errorBox.textContent = '租金必须是大于 0 的数字';
+        return;
+      }
+      if (!features.length) {
+        errorBox.textContent = '请至少选择一个房源特点，无特点请选“无”';
+        return;
+      }
+      const payload = {
+        area: document.getElementById('editArea').value.trim(),
+        block: document.getElementById('editBlock').value.trim(),
+        community: document.getElementById('editCommunity').value.trim(),
+        building: document.getElementById('editBuilding').value.trim(),
+        unit: document.getElementById('editUnit').value.trim(),
+        roomNumber: document.getElementById('editRoomNumber').value.trim(),
+        rentMode: document.getElementById('editRentMode').value,
+        room: document.getElementById('editRoom').value.trim(),
+        hall: document.getElementById('editHall').value.trim(),
+        bath: document.getElementById('editBath').value.trim(),
+        rent,
+        contact: document.getElementById('editContact').value.trim(),
+        viewingPassword: document.getElementById('editViewingPassword').value.trim(),
+        ownerType: document.getElementById('editOwnerType').value,
+        companyListing: document.getElementById('editCompanyListing').checked,
+        features
+      };
+      const videoUrl = document.getElementById('editVideoUrl').value.trim();
+      if (videoUrl) payload.videoUrl = videoUrl;
+      const status = document.getElementById('editStatus').value;
+      if (status) payload.status = status;
+
+      const saveButton = document.getElementById('saveListingEditor');
+      saveButton.disabled = true;
+      try {
+        await adminRequest(`/admin/listings/${encodeURIComponent(editingListingItem.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        errorBox.textContent = error.message || '保存失败，请重试';
+        saveButton.disabled = false;
+        return;
+      }
+      saveButton.disabled = false;
+      closeListingEditor();
+      await renderListings();
+      await renderExpiredListings();
+      await renderDashboardStats();
+      await renderAreaStats();
+      await renderAdminLogs();
+      alert('房源信息已保存');
+    }
+
     async function verifyAdminListing(id) {
       if (!id) return;
       if (!canUseAdminApi()) {
@@ -3170,6 +3492,13 @@
         return;
       }
 
+      const editListingButton = event.target.closest('.edit-listing-button');
+      if (editListingButton && !editListingButton.disabled) {
+        const editItem = adminListingItems.find((row) => String(row.id) === editListingButton.dataset.id);
+        if (editItem) openListingEditor(editItem);
+        return;
+      }
+
       const verifyButton = event.target.closest('.verify-listing-button');
       if (verifyButton && !verifyButton.disabled) {
         verifyAdminListing(verifyButton.dataset.id).catch((error) => {
@@ -3213,7 +3542,7 @@
       });
     });
 
-    [areaFilter, blockFilter, communityFilter].forEach((item) => {
+    [areaFilter, blockFilter, communityFilter, sourceFilter, statusFilter].forEach((item) => {
       item.addEventListener('input', () => {
         renderListings();
         renderExpiredListings();
@@ -3227,8 +3556,20 @@
       areaFilter.value = '';
       blockFilter.value = '';
       communityFilter.value = '';
+      sourceFilter.value = '';
+      statusFilter.value = '';
       renderListings();
       renderExpiredListings();
+    });
+    document.getElementById('saveListingEditor').addEventListener('click', () => {
+      submitListingEditor().catch((error) => {
+        document.getElementById('listingEditorError').textContent = error.message || '保存失败，请重试';
+        document.getElementById('saveListingEditor').disabled = false;
+      });
+    });
+    document.getElementById('cancelListingEditor').addEventListener('click', closeListingEditor);
+    document.getElementById('listingEditorOverlay').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) closeListingEditor();
     });
     document.getElementById('saveMaintenanceRule').addEventListener('click', () => {
       saveMaintenanceRule().catch((error) => {

@@ -739,14 +739,14 @@ function listingMaintenanceRule(db) {
   }
 }
 
-function expireListing(db, listing, reason) {
+function expireListing(db, listing, reason, options = {}) {
   if (!listing || isExpiredListing(listing)) return false
   const freshness = listingFreshness(listing)
   const now = nowText()
   listing.lifecycleStatus = 'expired'
   listing.status = '已下架'
   listing.expiredAt = now
-  listing.expiredBy = 'system'
+  listing.expiredBy = options.by || 'system'
   listing.expiredPool = '后台资产池'
   listing.expiredReason = reason || `超过 ${VERIFY_STALE_DAYS} 天未电话联系房东确认房态`
   listing.expiredStaleDays = freshness.staleDays
@@ -755,8 +755,8 @@ function expireListing(db, listing, reason) {
   pushFootprint(db, {
     id: id('F'),
     listingId: listing.id,
-    viewerId: 'system',
-    action: '自动下架',
+    viewerId: options.by || 'system',
+    action: options.action || '自动下架',
     time: now,
     sync: listing.expiredReason
   })
@@ -1936,6 +1936,7 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
     contact,
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
+    viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
     videoLabel: listing.videoLabel || (hasListingVideo(listing) ? '房源视频' : ''),
     hasVideo: hasListingVideo(listing),
     type: listing.type || listing.rentMode || '',
@@ -1965,12 +1966,30 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
   }
 }
 
+function matchListingSourceFilter(listing, source) {
+  if (!source) return true
+  const company = isCompanyListing(listing)
+  const owner = !company && normalizeOwnerType(listing.ownerType || listing.houseSourceType || '') === OWNER_SOURCE
+  if (/公司/.test(source)) return company
+  if (/业主/.test(source)) return owner
+  if (/二房东/.test(source)) return !company && !owner
+  return true
+}
+
+function matchListingStatusFilter(listing, status) {
+  if (!status) return true
+  if (/成交|签单/.test(status)) return isSoldListing(listing)
+  return String(listing.status || '') === status
+}
+
 function adminListings(db, filter = {}) {
   return activeListings(db)
     .filter((listing) => {
       if (filter.area && String(listing.area || '').indexOf(filter.area) === -1) return false
       if (filter.block && String(listing.block || '').indexOf(filter.block) === -1) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
+      if (!matchListingSourceFilter(listing, filter.source)) return false
+      if (!matchListingStatusFilter(listing, filter.status)) return false
       return true
     })
     .map((listing) => {
@@ -2008,6 +2027,7 @@ function expiredListings(db, filter = {}) {
       if (filter.area && String(listing.area || '').indexOf(filter.area) === -1) return false
       if (filter.block && String(listing.block || '').indexOf(filter.block) === -1) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
+      if (!matchListingSourceFilter(listing, filter.source)) return false
       return true
     })
     .map((listing) => {
@@ -3360,6 +3380,11 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const rent = firstText(form.rent, current.rent)
   const videoUrl = firstText(form.videoUrl, current.videoUrl)
   const videoKey = firstText(form.videoKey, current.videoKey)
+  // 看房密码显式传空串表示清空，不传才沿用现值
+  const viewingPasswordInput = firstOwnValue(form, ['viewingPassword', 'showingPassword'])
+  const viewingPassword = viewingPasswordInput !== undefined
+    ? String(viewingPasswordInput || '').trim()
+    : firstText(current.viewingPassword, current.showingPassword)
   const companyFlagInput = firstOwnValue(form, ['companyListing', 'isCompanyListing', 'companyOwned'])
   const ownerTypeInput = firstText(form.ownerType, form.houseSourceType, form.landlordType, current.ownerType, current.houseSourceType)
   const ownerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
@@ -3447,6 +3472,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     rent: Number(rent),
     videoUrl,
     videoKey,
+    viewingPassword,
     commissionRate: rate,
     features,
     hasFeatureInput: featureInputCount > 0 || noCommission,
@@ -3625,7 +3651,8 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     error.statusCode = 404
     throw error
   }
-  assertListingActive(listing)
+  // 管理员在编辑中把房源下架后仍需要拿到回包，此时跳过在架校验
+  if (!options.includeExpired) assertListingActive(listing)
   const user = userById(db, userId) || {}
   if (!options.admin && listing.uploaderId !== userId && !user.isAdmin) {
     const error = new Error('只能修改自己上传的房源')
@@ -3647,6 +3674,7 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     videoLabel: listing.videoLabel || '房源实拍视频',
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
+    viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
     status: listing.status || '',
     reviewStatus: listing.reviewStatus || '',
     communityMatched: listing.communityMatched !== undefined ? truthyFlag(listing.communityMatched) : listing.communityMatchStatus !== '未匹配',
@@ -3661,6 +3689,9 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     ...display
   }
 }
+
+// 管理员编辑弹窗允许直接调整的状态；审核（待审核/已驳回）与成交（签单/成交）必须走各自流程
+const ADMIN_EDIT_STATUS_OPTIONS = ['在租', '待确认', '已下架']
 
 function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   const listing = listingById(db, listingId)
@@ -3682,6 +3713,31 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   assertNoDuplicateActiveListing(db, fields, listingId)
   const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
 
+  // 状态编辑仅管理员可用，且只收敛到安全状态：
+  // 上/下架走既有生命周期语义（下架进资产池可恢复），审核、成交状态必须走对应流程，不能在编辑里绕过护栏
+  const statusBeforeEdit = String(listing.status || '')
+  const requestedStatus = options.admin ? firstText(form.status) : ''
+  const statusChangeRequested = Boolean(requestedStatus) && requestedStatus !== statusBeforeEdit
+  if (statusChangeRequested) {
+    if (ADMIN_EDIT_STATUS_OPTIONS.indexOf(requestedStatus) === -1) {
+      const error = new Error('状态只能调整为在租、待确认或已下架；审核请走房源审核操作，成交请走签单流程')
+      error.statusCode = 400
+      throw error
+    }
+    if (isSoldListing(listing)) {
+      const error = new Error('已签单/成交房源不能在编辑中调整状态，请走签单与成交流程处理')
+      error.statusCode = 400
+      throw error
+    }
+    const keepApproved = listing.reviewStatus === '已通过' && options.admin && !fields.requiresManualReview
+    const willPendReview = (fields.ownerType === OWNER_SOURCE || fields.requiresManualReview) && !keepApproved
+    if (willPendReview && requestedStatus !== '已下架') {
+      const error = new Error('该房源需先通过人工审核，审核通过后才能调整为在租或待确认')
+      error.statusCode = 400
+      throw error
+    }
+  }
+
   listing.title = `${fields.address} · ${fields.layout}`
   listing.shortTitle = fields.community || fields.address
   listing.rent = fields.rent
@@ -3699,6 +3755,8 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.commissionRate = fields.commissionRate
   listing.videoUrl = fields.videoUrl
   listing.videoKey = fields.videoKey || ''
+  listing.viewingPassword = fields.viewingPassword
+  listing.showingPassword = fields.viewingPassword
   listing.ownerType = fields.ownerType
   listing.houseSourceType = fields.ownerType
   listing.type = fields.rentMode
@@ -3733,7 +3791,28 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.updatedAt = nowText()
   syncListingRecommendationProfile(listing, needsReview && listing.reviewStatus !== '已通过' ? 'pending_review' : '')
 
-  return editableListingDetail(db, userId, listingId, { admin: true })
+  if (statusChangeRequested) {
+    if (requestedStatus === '已下架') {
+      expireListing(db, listing, firstText(form.statusReason, '管理员编辑房源时手动下架'), { by: userId, action: '管理员下架' })
+    } else if (listing.status !== '待审核') {
+      listing.status = requestedStatus
+      if (requestedStatus === '在租') {
+        listing.lifecycleStatus = 'active'
+        listing.lastVerifiedAt = nowText()
+      }
+      syncListingRecommendationProfile(listing)
+      pushFootprint(db, {
+        id: id('F'),
+        listingId,
+        viewerId: userId,
+        action: '管理员调整状态',
+        time: nowText(),
+        sync: `状态由「${statusBeforeEdit || '未知'}」调整为「${requestedStatus}」`
+      })
+    }
+  }
+
+  return editableListingDetail(db, userId, listingId, { admin: true, includeExpired: true })
 }
 
 function reviewOwnerListing(db, adminId, listingId, payload = {}) {

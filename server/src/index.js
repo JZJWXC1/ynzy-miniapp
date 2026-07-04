@@ -1361,14 +1361,17 @@ async function handleAdmin(req, res, pathname, searchParams) {
     return sendJson(res, withSignedListingVideoUrls(domain.adminListings(db, {
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
-      community: searchParams.get('community') || ''
+      community: searchParams.get('community') || '',
+      source: searchParams.get('source') || '',
+      status: searchParams.get('status') || ''
     })))
   }
   if (method === 'GET' && pathname === '/admin/expired-listings') {
     return sendJson(res, withSignedListingVideoUrls(domain.expiredListings(db, {
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
-      community: searchParams.get('community') || ''
+      community: searchParams.get('community') || '',
+      source: searchParams.get('source') || ''
     })))
   }
   const adminExpiredRestoreMatch = pathname.match(/^\/admin\/expired-listings\/([^/]+)\/restore$/)
