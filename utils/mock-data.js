@@ -170,9 +170,9 @@
       { id: 'U002', name: '李明', phone: '13800010002', role: '内部员工 · 带看人', authed: '已实名', isAdmin: false },
       { id: 'U003', name: '陈晨', phone: '13800010003', role: '内部员工 · 群聊上传人', authed: '已实名', isAdmin: false },
       { id: 'U004', name: '张敏', phone: '13800010004', role: '区域主管', authed: '已实名', isAdmin: true },
-      { id: 'U19941091943', name: '吴志坚', phone: '19941091943', role: '管理员', authed: '已实名', isAdmin: true },
-      { id: 'U18857026476', name: '吴彦祖', phone: '18857026476', role: '管理员', authed: '已实名', isAdmin: true },
-      { id: 'U19975390741', name: '吴尊', phone: '19975390741', role: '管理员', authed: '已实名', isAdmin: true },
+      { id: 'U007', name: '孙管理', phone: '13800010007', role: '管理员', authed: '已实名', isAdmin: true },
+      { id: 'U008', name: '周管理', phone: '13800010008', role: '管理员', authed: '已实名', isAdmin: true },
+      { id: 'U009', name: '吴管理', phone: '13800010009', role: '管理员', authed: '已实名', isAdmin: true },
       { id: 'U005', name: '刘洋', phone: '13800010005', role: '内部员工', authed: '已实名', isAdmin: false },
       { id: 'U006', name: '赵一', phone: '13800010006', role: '内部员工', authed: '未实名', isAdmin: false }
     ],
