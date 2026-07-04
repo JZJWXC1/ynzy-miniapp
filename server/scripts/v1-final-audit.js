@@ -15,7 +15,12 @@ const criticalScripts = [
   'server/scripts/assistant-v1-test.js',
   'server/scripts/backend-contract-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',
-  'server/scripts/auth-token-v1-test.js'
+  'server/scripts/auth-token-v1-test.js',
+  // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
+  // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
+  'server/scripts/v1-closure-contract-test.js',
+  'server/scripts/video-share-v1-test.js',
+  'server/scripts/v1-acceptance-check.js'
 ]
 
 function repoPath(relativePath) {

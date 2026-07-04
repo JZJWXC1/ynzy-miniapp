@@ -772,7 +772,7 @@ check('游客模式仅开放公司房源脱敏浏览', () => {
   assertIncludes(serverIndex, 'assertGuestListingAllowed(detail)', '匿名详情必须拦截合作房源')
   assertIncludes(detailPageSource, "promptLoginGuide('登录后查看合作房源'", '前端触碰合作房源详情必须弹登录引导')
   assertIncludes(guestModeTestSource, '匿名列表接口应返回 200', '游客模式测试必须覆盖匿名列表')
-  assertIncludes(guestModeTestSource, '匿名飞书快照不能返回看房密码', '游客模式测试必须覆盖飞书快照脱敏')
+  assertIncludes(guestModeTestSource, '匿名飞书快照应返回看房密码', '游客模式测试必须覆盖公司房源快照对游客完整开放（公司房源完整字段公开，含看房密码/电话）')
   assertIncludes(guestModeTestSource, '匿名请求合作房源详情必须返回 401', '游客模式测试必须覆盖合作房源详情 401')
   assertIncludes(guestModeTestSource, '匿名不可调用敏感查看', '游客模式测试必须覆盖匿名敏感查看 401')
   assertIncludes(guestModeTestSource, '登录必须返回小程序 token', '游客模式测试必须改为 token 登录后访问合作房源')
