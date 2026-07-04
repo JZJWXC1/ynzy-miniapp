@@ -74,8 +74,10 @@ function updateDb(mutator) {
   }
 }
 
+// 是否为「带 id 的对象数组」。空数组也算（视作该类数组的空集），使 base/mutated 在空↔非空之间
+// 过渡时仍走元素级合并——否则空基线会退化成整键覆盖，把并发写整块抹掉。
 function isIdObjectArray(value) {
-  return Array.isArray(value) && value.length > 0 && value.every(
+  return Array.isArray(value) && value.every(
     (item) => item && typeof item === 'object' && !Array.isArray(item) &&
       Object.prototype.hasOwnProperty.call(item, 'id')
   )
@@ -105,7 +107,15 @@ function mergeById(base, mutated, fresh) {
       kept.push(item) // sync \u672A\u6539\uFF08\u6216 fresh \u5E76\u53D1\u65B0\u589E\uFF09\u2192 \u4FDD\u7559 fresh
     }
   }
-  const additions = mutated.filter((item) => !seen.has(item.id) && !baseById.has(item.id))
+  // additions 补入 fresh 里没有、但同步需要落地的元素：
+  // - sync 纯新增（base 无该 id）；
+  // - sync 改动过、但该 id 已不在 fresh（被并发删除或被 slice 挤出）——不补回就丢了同步改动。
+  // sync 未改且已不在 fresh = 并发删除且同步没碰 → 尊重并发删除，不补。
+  const additions = mutated.filter((item) => {
+    if (item == null || item.id == null || seen.has(item.id)) return false
+    if (!baseById.has(item.id)) return true // sync 纯新增
+    return JSON.stringify(baseById.get(item.id)) !== JSON.stringify(item) // sync 改动过 → 补回，防丢同步数据
+  })
   return additions.concat(kept)
 }
 
@@ -127,9 +137,11 @@ function commitDelta(base, mutated) {
       const after = hasNext ? JSON.stringify(safeMutated[key]) : undefined
       if (before === after) continue // \u540C\u6B65\u672A\u6539\u8BE5\u952E\uFF0C\u4FDD\u7559 freshDb \u4E2D\u7684\u5E76\u53D1\u5199
       if (!hasNext) { delete freshDb[key]; continue } // \u540C\u6B65\u5220\u9664\u4E86\u8BE5\u9876\u5C42\u952E
-      if (isIdObjectArray(safeBase[key]) && isIdObjectArray(safeMutated[key])) {
+      // \u7F3A\u5931\u7684 base \u89C6\u4F5C\u7A7A\u96C6\uFF0C\u4F7F\u300C\u9996\u6B21\u540C\u6B65\uFF08base \u65E0\u6B64\u952E/\u4E3A\u7A7A\uFF09+ \u5E76\u53D1\u5199\u300D\u4E5F\u8D70\u5143\u7D20\u7EA7\u5408\u5E76\u3001\u4E0D\u6574\u5757\u8986\u76D6\u3002
+      const baseArr = safeBase[key] === undefined ? [] : safeBase[key]
+      if (isIdObjectArray(baseArr) && isIdObjectArray(safeMutated[key])) {
         const freshArr = Array.isArray(freshDb[key]) ? freshDb[key] : []
-        freshDb[key] = mergeById(safeBase[key], safeMutated[key], freshArr)
+        freshDb[key] = mergeById(baseArr, safeMutated[key], freshArr)
       } else {
         freshDb[key] = safeMutated[key] // \u975E id \u5BF9\u8C61\u6570\u7EC4\uFF1A\u6574\u952E\u8986\u76D6\uFF08\u4E0E\u65E7\u884C\u4E3A\u4E00\u81F4\uFF09
       }

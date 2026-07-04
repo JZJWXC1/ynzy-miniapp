@@ -134,6 +134,30 @@ try {
   )
   assert.ok(lsMerged.dealRecords.some((deal) => deal.id === 'DEAL1'), '并发成交记录必须保留')
 
+  // 10) 同步改动的元素在落盘时已不在 fresh（并发删除，或被 slice 从数组挤出）：同步改动必须补回，
+  //     不得因“只遍历 fresh + additions 仅收纯新增”而把同步数据丢掉。
+  dbStore.writeDb({ listings: [{ id: 'LA', v: 'x' }, { id: 'LB', v: 'y' }] })
+  const dbBase = dbStore.clone(dbStore.readDb())
+  const dbSync = dbStore.clone(dbBase)
+  dbSync.listings.find((item) => item.id === 'LA').v = 'SYNC-CHANGED'          // 同步改动 LA
+  dbStore.updateDb((db) => { db.listings = db.listings.filter((item) => item.id !== 'LA') }) // 并发删除 LA
+  dbStore.commitDelta(dbBase, dbSync)
+  const dbMerged = dbStore.readDb()
+  const la = dbMerged.listings.find((item) => item.id === 'LA')
+  assert.ok(la && la.v === 'SYNC-CHANGED', '同步改动的元素即使已不在 fresh（并发删除/被截断）也必须落地（防丢同步数据）')
+
+  // 11) 空基线边界：footprints 同步开始时为空，同步追加 1 条、窗口内并发也追加——空数组不得让
+  //     commitDelta 退化成整键覆盖抹掉并发写。
+  dbStore.writeDb({ footprints: [] })
+  const ebBase = dbStore.clone(dbStore.readDb())
+  const ebSync = dbStore.clone(ebBase)
+  ebSync.footprints.unshift({ id: 'FS_SYNC', action: '同步追加' })
+  dbStore.updateDb((db) => { db.footprints.unshift({ id: 'FS_USER', action: '用户足迹' }) })
+  dbStore.commitDelta(ebBase, ebSync)
+  const ebIds = dbStore.readDb().footprints.map((item) => item.id)
+  assert.ok(ebIds.includes('FS_USER'), '空基线下同步追加不得抹掉窗口内并发写（空数组边界回归锁）')
+  assert.ok(ebIds.includes('FS_SYNC'), '空基线下同步自己的追加也必须落地')
+
   console.log('db-cache-v1-test passed')
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true })
