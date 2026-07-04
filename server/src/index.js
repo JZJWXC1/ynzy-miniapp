@@ -303,7 +303,17 @@ function base64url(input) {
 }
 
 function adminTokenSecret() {
-  return process.env.ADMIN_TOKEN_SECRET || 'ynzy-admin-local-dev-secret'
+  const secret = String(process.env.ADMIN_TOKEN_SECRET || '').trim()
+  if (secret) return secret
+  // 生产环境拒绝回退到硬编码密钥：否则任何读过源码的人都能自行加签，构造出通过 verifyAdminToken
+  // 的合法后台 Token，进而获得全部 /admin/* 权限（整库导出、创建/禁用管理员、确认签单等）。
+  // 对齐 miniAuthTokenSecret 的 fail-closed 取向；仅本地开发保留回退便于起服务。
+  if (String(process.env.NODE_ENV || '').trim() === 'production') {
+    const error = new Error('管理后台 Token 密钥未配置（生产环境必须设置 ADMIN_TOKEN_SECRET）')
+    error.statusCode = 503
+    throw error
+  }
+  return 'ynzy-admin-local-dev-secret'
 }
 
 function hashPassword(password) {

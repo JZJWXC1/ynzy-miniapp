@@ -207,6 +207,16 @@ async function run() {
     const expiredToken = signMiniToken({ userId: 'U1', exp: Date.now() - 1000 })
     const expiredProfile = await request('GET', '/mini/profile', null, { Authorization: `Bearer ${expiredToken}` })
     assert.strictEqual(expiredProfile.statusCode, 401, '过期 token 必须返回 401')
+
+    // 管理后台鉴权：/admin/* 必须校验管理员 token，不接受无 token、小程序 token 或伪造 token
+    const adminNoToken = await request('GET', '/admin/dashboard')
+    assert.strictEqual(adminNoToken.statusCode, 401, '无 token 访问管理后台必须返回 401')
+
+    const adminWithMiniToken = await request('GET', '/admin/dashboard', null, authHeader)
+    assert.strictEqual(adminWithMiniToken.statusCode, 401, '小程序 token 不能冒充管理后台 token')
+
+    const adminForged = await request('GET', '/admin/dashboard', null, { Authorization: 'Bearer forged-admin-token.invalidsig' })
+    assert.strictEqual(adminForged.statusCode, 401, '伪造/篡改的管理后台 token 必须返回 401')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })

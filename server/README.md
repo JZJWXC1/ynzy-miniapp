@@ -310,7 +310,7 @@ POST /admin/auth/login
 Authorization: Bearer <admin-token>
 ```
 
-后台 token 由 `ADMIN_TOKEN_SECRET` 签发，有效期 8 小时。
+后台 token 由 `ADMIN_TOKEN_SECRET` 签发，有效期 8 小时。生产环境（`NODE_ENV=production`）必须显式配置 `ADMIN_TOKEN_SECRET`，否则服务拒绝签发/校验后台 token 并返回 `503`；未配置时不再回退到内置开发密钥，避免任何读过源码的人伪造管理员 token 越权。
 
 常用管理接口：
 
