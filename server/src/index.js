@@ -483,6 +483,15 @@ function assertAdminRequest(req, db) {
   return account
 }
 
+function assertAdminCapability(account) {
+  // 高危操作（创建/禁用管理员、整库导出）仅限“全部后台权限”账号。permission 字段原先从不参与
+  // 鉴权，任何持有效 token 的受限账号（区域查看/后台查看）都能自我提权或导出全量数据。
+  if (account && account.permission === '全部后台权限') return
+  const error = new Error('当前管理员无权执行该操作')
+  error.statusCode = 403
+  throw error
+}
+
 function serveAdminWeb(req, res, pathname) {
   const relativePath = pathname === '/admin-web' || pathname === '/admin-web/' ? 'index.html' : pathname.replace('/admin-web/', '')
   const filePath = path.resolve(config.adminWebDir, relativePath)
@@ -1458,10 +1467,12 @@ async function handleAdmin(req, res, pathname, searchParams) {
     })
   }
   if (method === 'GET' && pathname === '/admin/data/export') {
+    assertAdminCapability(adminAccount)
     const date = new Date().toISOString().slice(0, 10)
     return sendJsonDownload(res, `ynzy-backup-${date}.json`, db)
   }
   if (method === 'POST' && pathname === '/admin/accounts') {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     const accountName = String(body.account || '').trim()
     const password = String(body.password || '').trim()
@@ -1506,6 +1517,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminStatusMatch = pathname.match(/^\/admin\/accounts\/([^/]+)\/status$/)
   if (method === 'POST' && adminStatusMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     const action = body.action || body.status
     const nextStatus = action === 'disable' || action === 'disabled' || action === '禁用' ? '禁用' : '启用'

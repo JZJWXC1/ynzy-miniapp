@@ -217,6 +217,21 @@ async function run() {
 
     const adminForged = await request('GET', '/admin/dashboard', null, { Authorization: 'Bearer forged-admin-token.invalidsig' })
     assert.strictEqual(adminForged.statusCode, 401, '伪造/篡改的管理后台 token 必须返回 401')
+
+    // 权限分级：受限管理员（区域查看权限）不得执行超级管理员专属高危操作
+    const managerLogin = await request('POST', '/admin/auth/login', { account: 'manager01', password: 'manager123' })
+    assert.strictEqual(managerLogin.statusCode, 200, '区域查看权限管理员应能登录')
+    const managerAuth = { Authorization: `Bearer ${dataOf(managerLogin).token}` }
+    const managerExport = await request('GET', '/admin/data/export', null, managerAuth)
+    assert.strictEqual(managerExport.statusCode, 403, '受限管理员不得导出整库数据')
+    const managerCreate = await request('POST', '/admin/accounts', { account: 'eviladmin', password: 'evilpass99', permission: '全部后台权限' }, managerAuth)
+    assert.strictEqual(managerCreate.statusCode, 403, '受限管理员不得创建管理员自我提权')
+
+    // 对照：全部后台权限管理员可以执行高危操作
+    const superLogin = await request('POST', '/admin/auth/login', { account: 'admin', password: 'admin123' })
+    assert.strictEqual(superLogin.statusCode, 200, '超级管理员应能登录')
+    const superExport = await request('GET', '/admin/data/export', null, { Authorization: `Bearer ${dataOf(superLogin).token}` })
+    assert.strictEqual(superExport.statusCode, 200, '全部后台权限管理员可导出整库数据')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })
