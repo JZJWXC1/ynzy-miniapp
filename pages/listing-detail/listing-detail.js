@@ -150,10 +150,10 @@ Page({
     Promise.all([
       apiService.getListingDetail(id),
       apiService.getListingLogs(id).catch(() => []),
-      apiService.getProfileState().catch((error) => {
-        if (isAuthError(error)) return { user: {} }
-        return Promise.reject(error)
-      })
+      // profile 只影响“可查看敏感信息”按钮态，属辅助请求：任何失败（鉴权或网络/5xx）都降级为
+      // 未登录空用户，不能因它 fail-fast 拖垮整个 Promise.all，否则公司房源在弱网下会误报
+      // “房源不存在或已下架”（此时 getListingDetail 往往已成功）。
+      apiService.getProfileState().catch(() => ({ user: {} }))
     ]).then(([listing, logs, profile]) => {
       const user = profile && profile.user ? profile.user : {}
       const canTrySensitive = Boolean(
