@@ -496,7 +496,9 @@ function serveAdminWeb(req, res, pathname) {
   const relativePath = pathname === '/admin-web' || pathname === '/admin-web/' ? 'index.html' : pathname.replace('/admin-web/', '')
   const filePath = path.resolve(config.adminWebDir, relativePath)
 
-  if (!filePath.startsWith(config.adminWebDir)) {
+  // 目录边界比较必须带分隔符：裸 startsWith(adminWebDir) 会把 admin-web-backup、admin-website
+  // 等同前缀的兄弟目录误判为「在目录内」，被 ../admin-web-backup/x 之类路径整目录暴露。
+  if (filePath !== config.adminWebDir && !filePath.startsWith(config.adminWebDir + path.sep)) {
     const error = new Error('非法路径')
     error.statusCode = 403
     throw error
@@ -628,8 +630,10 @@ function buildLaunchCheck(db) {
   const llmConfig = db.llmConfig || {}
   const llmSecretName = llmConfig.secretName || 'LLM_API_KEY'
   const asrStatus = asrService.configStatus(db)
-  const defaultPasswords = new Set(['admin123', 'manager123'])
-  const weakAdmins = accounts.filter((account) => account.password || defaultPasswords.has(String(account.password || '')))
+  // 后台账号一旦存明文 password 字段即视为弱（内置默认账号 admin123/manager123 即如此；正式
+  // 账号应只保存加密 passwordHash）。原写法的 defaultPasswords 分支永不触发——account.password
+  // 为真时前一分支已短路命中，为假时 String('') 又不在集合内，属死代码，去掉以免误导。
+  const weakAdmins = accounts.filter((account) => Boolean(account.password))
   const ossMissing = []
   if (!config.oss.bucket) ossMissing.push('ALI_OSS_BUCKET')
   if (!config.oss.region) ossMissing.push('ALI_OSS_REGION')
@@ -1790,8 +1794,8 @@ process.on('uncaughtException', (error) => {
   setTimeout(() => process.exit(1), 3000).unref()
 })
 
-server.listen(config.port, () => {
-  console.log(`寓你住一起后端已启动：http://127.0.0.1:${config.port}`)
-  console.log(`管理后台：http://127.0.0.1:${config.port}/admin-web/`)
+server.listen(config.port, config.host, () => {
+  console.log(`寓你住一起后端已启动：http://${config.host}:${config.port}`)
+  console.log(`管理后台：http://${config.host}:${config.port}/admin-web/`)
   startFeishuSyncTimer()
 })

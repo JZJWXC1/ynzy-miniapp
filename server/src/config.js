@@ -114,6 +114,9 @@ const blockCenters = {
 module.exports = {
   rootDir,
   port: numberFromEnv('PORT', 3000),
+  // 监听地址：默认只绑 127.0.0.1，强制流量经生产 nginx（其 proxy_pass 指向 127.0.0.1）进入，
+  // 不把应用端口直接暴露到公网、绕过 nginx。确需对外直连或跨主机健康检查时显式设 HOST=0.0.0.0。
+  host: process.env.HOST || '127.0.0.1',
   dataFile,
   // db.json 默认紧凑序列化以降低整库重写的磁盘写放大；DB_JSON_PRETTY=1 恢复缩进便于人读。
   dbPrettyJson: boolFromEnv('DB_JSON_PRETTY', false),
