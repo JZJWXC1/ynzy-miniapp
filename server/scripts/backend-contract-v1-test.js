@@ -402,6 +402,30 @@ function run() {
   assert.ok(stale5 && stale5.needsVerify && stale5.staleDays >= 5, '第 5 天必须进入再次提醒')
 
   db.listings.unshift({
+    id: 'STALE_3',
+    title: '三天提醒房源',
+    shortTitle: '三天提醒房源',
+    uploaderId: 'U1',
+    rent: 3000,
+    layout: '整租一室',
+    area: '滨江区',
+    community: '滨江金色黎明',
+    address: '三天提醒地址',
+    landlordPhone: '13911113333',
+    commissionRate: 20,
+    videoUrl: 'https://example.com/stale-3.mp4',
+    status: '在租',
+    lifecycleStatus: 'active',
+    lastVerifiedAt: daysAgo(3),
+    createdAt: daysAgo(3)
+  })
+  const stale3 = domain.adminListings(db).find((item) => item.id === 'STALE_3')
+  assert.ok(stale3, '第 3 天提醒房源必须存在于后台清单')
+  assert.strictEqual(stale3.verifyStatus, '提醒核验', '第 3 天档必须进入提醒核验（区别于第 5 天的重点核验）')
+  assert.strictEqual(stale3.needsVerify, true, '第 3 天档必须标记需核验')
+  assert.ok(stale3.staleDays >= 3 && stale3.staleDays < 5, '第 3 天档 staleDays 应落在 [3,5)')
+
+  db.listings.unshift({
     id: 'STALE_7',
     title: '七天失效房源',
     shortTitle: '七天失效房源',
@@ -425,6 +449,12 @@ function run() {
   assert.strictEqual(stale7.lifecycleStatus, 'expired', '自动失效必须进入失效生命周期')
   assert.ok(stale7.expiredPool, '自动失效必须保留后台资产池标记')
   assert.ok(!domain.filterListings(db).some((item) => item.id === 'STALE_7'), '失效房源不能进入前台列表')
+  // 3/5 天档只提醒不下架：enforce 后仍为 active 且留在前台列表，防止档位阈值被误改成下架
+  const stale3AfterEnforce = db.listings.find((item) => item.id === 'STALE_3')
+  const stale5AfterEnforce = db.listings.find((item) => item.id === 'STALE_5')
+  assert.strictEqual(stale3AfterEnforce.lifecycleStatus, 'active', '第 3 天档只提醒不下架')
+  assert.strictEqual(stale5AfterEnforce.lifecycleStatus, 'active', '第 5 天档只提醒不下架')
+  assert.ok(domain.filterListings(db).some((item) => item.id === 'STALE_3'), '第 3 天档仍应出现在前台列表')
 
   assertRejects(
     () => domain.createClientReport(db, 'U2', created.id, { customerName: '王先生' }),

@@ -82,7 +82,12 @@ function run() {
   assert.strictEqual(rawListing.uploaderId, 'U1')
 
   domain.updateNormalListing(db, 'U1', listing.id, listingPayload({ rent: 4300 }))
-  assert.strictEqual(db.listings.find((item) => item.id === listing.id).rent, 4300, '编辑同一房源不能被去重误杀')
+  const editedListing = db.listings.find((item) => item.id === listing.id)
+  assert.strictEqual(editedListing.rent, 4300, '编辑同一房源不能被去重误杀')
+  // 编辑路径也必须无视客户端伪造的分佣与身份字段（listingPayload 提交了 commissionRate:99、
+  // uploaderId:'EVIL_UPLOADER'）：分佣由服务端按 ownerType 固定计算，上传人不可被改写。
+  assert.strictEqual(editedListing.commissionRate, 15, '编辑房源不能被客户端 commissionRate 覆盖，须服务端按二房东 15% 计算')
+  assert.strictEqual(editedListing.uploaderId, 'U1', '编辑房源不能改写上传人 uploaderId')
 
   assertRejects(
     () => domain.addNormalListing(db, 'U2', listingPayload({ videoKey: 'house-videos/v1-closure/duplicate.mp4' })),
@@ -112,6 +117,17 @@ function run() {
   assert.ok(sensitiveResult.sensitive.landlordPhone, '绑定需求和用途后可返回敏感信息')
   assert.strictEqual(footprint.needId, need.id, '敏感查看足迹必须保存 needId')
   assert.strictEqual(footprint.purpose, '约带看', '敏感查看足迹必须保存 purpose')
+
+  // 实名门槛：非中介且未实名的用户查看敏感信息必须 403，即便 needId/purpose 齐全也不放行。
+  // （注：当前实现对角色含“中介”的用户整体豁免实名，此豁免是否符合产品预期需二次确认；
+  //  此处仅固化“非中介未实名 → 403”这条明确规则。）
+  db.users.push({ id: 'U_OPS', name: '运营未实名', phone: '13900000009', role: '运营', authed: '未实名' })
+  const opsNeed = domain.createRentalNeed(db, 'U_OPS', { rawText: '客户找滨江两室', source: 'match-chat' }).need
+  assertRejects(
+    () => domain.addSensitiveFootprint(db, 'U_OPS', listing.id, { needId: opsNeed.id, purpose: '约带看' }),
+    (error) => error.statusCode === 403 && /实名/.test(error.message),
+    '非中介且未实名用户查看敏感信息必须先完成实名认证'
+  )
 
   assertRejects(
     () => domain.addSensitiveFootprint(db, 'U1', listing.id, {}),
