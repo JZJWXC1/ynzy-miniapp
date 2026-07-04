@@ -1713,18 +1713,31 @@ function startFeishuSyncTimer() {
   console.log(`飞书房源自动同步已开启：每 ${minutes} 分钟执行一次`)
 }
 
-// 最后防线：单个请求处理器里逃逸的异步异常，或第三方回调（如静态文件读流）里的
-// 异常，不应拖垮整个进程；记录后继续服务其余请求，避免单点故障放大为服务不可用。
-process.on('unhandledRejection', (reason) => {
-  console.error(`未处理的 Promise 拒绝：${reason && reason.stack ? reason.stack : reason}`)
-})
-process.on('uncaughtException', (error) => {
-  console.error(`未捕获异常：${error && error.stack ? error.stack : error}`)
-})
-
 const server = http.createServer(router)
 asrRealtime.attachRealtimeAsr(server, {
   getDb: dbStore.readDb
+})
+
+// 游离的 Promise 拒绝：请求内的异步错误已被 router 的 try/catch 兜住并返回错误响应，逃逸到
+// 这里的多是后台/游离 promise 拒绝；只记录不退出，避免个别良性拒绝触发整进程重启。
+process.on('unhandledRejection', (reason) => {
+  console.error(`未处理的 Promise 拒绝：${reason && reason.stack ? reason.stack : reason}`)
+})
+// 未捕获异常意味着进程状态未知，继续运行不安全（可能带着损坏的状态硬撑）。记录后优雅关闭并
+// 退出，由 systemd（ynzy-miniapp.service，Restart=always/RestartSec=3）在数秒内拉起干净实例。
+// 请求级错误已被 router 的 try/catch 兜住，不会到这里，故单个坏请求不会导致整进程重启。
+let uncaughtShuttingDown = false
+process.on('uncaughtException', (error) => {
+  console.error(`未捕获异常，进程即将退出并由 systemd 拉起：${error && error.stack ? error.stack : error}`)
+  if (uncaughtShuttingDown) return
+  uncaughtShuttingDown = true
+  try {
+    server.close(() => process.exit(1))
+  } catch (closeError) {
+    process.exit(1)
+  }
+  // 兜底：server.close 迟迟不回调时强制退出，不阻塞 systemd 重启。
+  setTimeout(() => process.exit(1), 3000).unref()
 })
 
 server.listen(config.port, () => {
