@@ -1538,8 +1538,19 @@ async function router(req, res) {
     return
   }
 
-  const url = new URL(req.url, `http://${req.headers.host}`)
-  const pathname = decodeURIComponent(url.pathname)
+  // URL 解析放在独立 try 内：畸形百分号转义（如 /%zz）会让 decodeURIComponent 抛
+  // URIError，畸形 Host 头会让 new URL 抛 TypeError。逃逸到 async router 之外会变成
+  // unhandledRejection 使进程退出（Node>=15 默认），任意游客一条 curl 即可打死服务。
+  let url
+  let pathname
+  try {
+    url = new URL(req.url, `http://${req.headers.host}`)
+    pathname = decodeURIComponent(url.pathname)
+  } catch (error) {
+    error.statusCode = 400
+    sendError(res, error)
+    return
+  }
 
   try {
     if (pathname === '/') {
@@ -1615,6 +1626,15 @@ function startFeishuSyncTimer() {
   setInterval(runScheduledFeishuSync, interval)
   console.log(`飞书房源自动同步已开启：每 ${minutes} 分钟执行一次`)
 }
+
+// 最后防线：单个请求处理器里逃逸的异步异常，或第三方回调（如静态文件读流）里的
+// 异常，不应拖垮整个进程；记录后继续服务其余请求，避免单点故障放大为服务不可用。
+process.on('unhandledRejection', (reason) => {
+  console.error(`未处理的 Promise 拒绝：${reason && reason.stack ? reason.stack : reason}`)
+})
+process.on('uncaughtException', (error) => {
+  console.error(`未捕获异常：${error && error.stack ? error.stack : error}`)
+})
 
 const server = http.createServer(router)
 asrRealtime.attachRealtimeAsr(server, {
