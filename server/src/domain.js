@@ -2601,7 +2601,10 @@ function formatDealRecord(db, deal = {}) {
   const uploader = userById(db, deal.uploaderId) || {}
   const baseCommissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
   const savedCommissionRule = deal.commissionRule || {}
-  const rate = Number(baseCommissionRule.rate || 0)
+  // 展示总比例与 confirmDeal 结算口径一致：优先取签单冻结的 commissionRule.rate，仅历史缺失时
+  // 才回退按当前 listing 重算。否则签单后房源被改为公司房源等情况下，rate 会取现状 0 而
+  // uploaderRate/platformRate 仍是冻结的 15/5，形成“总佣 0% 却拆出 20%”且与实付分佣冲突的矛盾对象。
+  const rate = Number(savedCommissionRule.rate ?? baseCommissionRule.rate ?? 0)
   const uploaderRate = Number(savedCommissionRule.uploaderRate ?? (rate ? (savedCommissionRule.rate ?? baseCommissionRule.uploaderRate) : 0))
   const platformRate = Number(savedCommissionRule.platformRate ?? Math.max(0, rate - uploaderRate))
   const commissionRule = { rate, uploaderRate, platformRate }

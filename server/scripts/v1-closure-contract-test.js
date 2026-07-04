@@ -207,6 +207,10 @@ function run() {
   assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 30000, '二房东平台留存必须按房东实付佣金 5% 计算')
   assert.strictEqual(confirmResult.commissionRecord.needId, need.id, '正式分佣记录应保留 needId')
   assert.deepStrictEqual(confirmResult.deal.dealSnapshot.commissionRule, { rate: 20, uploaderRate: 15, platformRate: 5 }, '确认签单不得用确认时刻重算值覆盖签单冻结的分佣快照')
+  // 展示层（formatDealRecord）也必须按冻结快照给出一致比例：房源被改公司房源后，成交展示不能
+  // 出现 rate:0 却拆出 uploaderRate:15 的自相矛盾对象，且展示总比例须与实付分佣（20%）自洽。
+  assert.deepStrictEqual(confirmResult.deal.commissionRule, { rate: 20, uploaderRate: 15, platformRate: 5 }, '成交展示分佣比例必须与冻结快照一致，不得用当前房源现状重算出矛盾总佣')
+  assert.strictEqual(confirmResult.deal.uploaderCommissionRate, 20, '成交展示总比例须与实付分佣自洽，不得为 0')
 
   console.log('v1-closure-contract-test passed')
 }
