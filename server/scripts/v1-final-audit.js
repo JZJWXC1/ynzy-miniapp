@@ -29,7 +29,10 @@ const criticalScripts = [
   // （clientWs 必须挂 error 监听）。
   'server/scripts/asr-realtime-crash-test.js',
   // 实时 ASR upgrade 鉴权钩子：未授权/超限连接必须在升级阶段被拒，鉴权回调抛错须兜成拒绝。
-  'server/scripts/asr-realtime-auth-test.js'
+  'server/scripts/asr-realtime-auth-test.js',
+  // 公司房源一律默认带电梯房（38584f6 引入的规则），此前唯一锁定它的测试不在门禁内，
+  // 改坏也不会红；纳入门禁。
+  'server/scripts/company-default-features-test.js'
 ]
 
 function repoPath(relativePath) {
