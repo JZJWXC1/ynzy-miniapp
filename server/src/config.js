@@ -117,6 +117,9 @@ module.exports = {
   dataFile,
   // db.json 默认紧凑序列化以降低整库重写的磁盘写放大；DB_JSON_PRETTY=1 恢复缩进便于人读。
   dbPrettyJson: boolFromEnv('DB_JSON_PRETTY', false),
+  // 是否信任 X-Forwarded-For（部署于 nginx 等可信反向代理之后时为真，默认真）；
+  // 直连暴露应设 TRUST_PROXY=0，否则客户端可伪造 XFF 绕过游客限流。
+  trustProxy: boolFromEnv('TRUST_PROXY', true),
   adminWebDir: path.resolve(rootDir, '..', 'admin-web'),
   oss: {
     homeUrl: process.env.ALI_OSS_HOME_URL || defaultOssHomeUrl,

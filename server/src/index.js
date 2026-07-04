@@ -32,6 +32,19 @@ const GUEST_RATE_WINDOW_MS = 60 * 1000
 const GUEST_RATE_LIMIT = 80
 const MINI_AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const guestRateBuckets = new Map()
+let lastGuestBucketSweep = 0
+
+// 定期清理过期限流桶：Map 原先只增不删，长期运行内存无界增长（伪造 XFF 时每个 key 留一条）。
+// 每个窗口最多全量清扫一次，删除已过窗的桶，成本可控。
+function sweepGuestRateBuckets(now) {
+  if (now - lastGuestBucketSweep < GUEST_RATE_WINDOW_MS) return
+  lastGuestBucketSweep = now
+  for (const [key, bucket] of guestRateBuckets) {
+    if (now - bucket.startedAt >= GUEST_RATE_WINDOW_MS) {
+      guestRateBuckets.delete(key)
+    }
+  }
+}
 
 function sendJson(res, data, statusCode = 200) {
   res.writeHead(statusCode, {
@@ -138,12 +151,19 @@ function mapQueryFilter(searchParams) {
 }
 
 function requestClientKey(req) {
-  const forwarded = String((req.headers && req.headers['x-forwarded-for']) || '').split(',')[0].trim()
-  return forwarded || (req.socket && req.socket.remoteAddress) || 'unknown'
+  const socketAddr = (req.socket && req.socket.remoteAddress) || 'unknown'
+  if (!config.trustProxy) return socketAddr
+  // 部署于可信反向代理之后：nginx 用 $proxy_add_x_forwarded_for 把真实对端 IP 追加到
+  // X-Forwarded-For 末段，取最后一段（代理追加、客户端无法伪造）而非可被伪造的首段，
+  // 否则攻击者每请求换一个伪造 XFF 即可绕过游客限流。直连暴露时应设 TRUST_PROXY=0。
+  const parts = String((req.headers && req.headers['x-forwarded-for']) || '')
+    .split(',').map((item) => item.trim()).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : socketAddr
 }
 
 function assertGuestRateLimit(req, scope, limit = GUEST_RATE_LIMIT) {
   const now = Date.now()
+  sweepGuestRateBuckets(now)
   const key = `${scope}:${requestClientKey(req)}`
   const bucket = guestRateBuckets.get(key) || { startedAt: now, count: 0 }
   if (now - bucket.startedAt >= GUEST_RATE_WINDOW_MS) {
