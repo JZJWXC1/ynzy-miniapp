@@ -17,10 +17,19 @@ async function chat(db, payload = {}, context = {}) {
     lastIntent: result.response.intent,
     lastTraceSummary: result.traceSummary || null
   })
-  assistantFeedback.createAssistantTraceLog(db, context.userId, payload, result.response, {
+
+  const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, result.response, {
     threadId,
     traceSummary: result.traceSummary
   })
+  // 慢速 LLM 调用已在只读快照上跑完，留痕交由调用方在同步写事务里落到最新 db，
+  // 避免 await 期间的并发写入被旧快照整库回写覆盖（见 db.js 写窗口竞态）。
+  // 未提供 persistTrace 时（测试等直调场景）保持原语义：直接写进传入的 db。
+  if (typeof context.persistTrace === 'function') {
+    context.persistTrace(writeTraceLog)
+  } else {
+    writeTraceLog(db)
+  }
 
   return result.response
 }

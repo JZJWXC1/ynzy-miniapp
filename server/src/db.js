@@ -37,17 +37,9 @@ function updateDb(mutator) {
   return result
 }
 
-async function updateDbAsync(mutator) {
-  const db = readDb()
-  const result = await mutator(db)
-  writeDb(db)
-  return result
-}
-
 module.exports = {
   clone,
   readDb,
   writeDb,
-  updateDb,
-  updateDbAsync
+  updateDb
 }

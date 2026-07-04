@@ -843,11 +843,15 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/assistant/chat') {
     const body = await parseBody(req)
+    // 助手对话的慢速 LLM 调用只在请求快照 db 上只读执行，不再用 updateDbAsync 把整个
+    // await 窗口罩进写事务；留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
+    // 消除“读快照→await 数秒→整库回写覆盖并发写入”的丢数据竞态。
+    const persistTrace = (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-assistant-chat', 30)
-      return sendJson(res, await dbStore.updateDbAsync((nextDb) => assistantService.chat(companyOnlyDb(nextDb), body, { userId: '' })))
+      return sendJson(res, await assistantService.chat(companyOnlyDb(db), body, { userId: '', persistTrace }))
     }
-    return sendJson(res, await dbStore.updateDbAsync((nextDb) => assistantService.chat(nextDb, body, { userId })))
+    return sendJson(res, await assistantService.chat(db, body, { userId, persistTrace }))
   }
 
   if (method === 'POST' && pathname === '/mini/asr/transcribe') {
