@@ -75,25 +75,41 @@ function sendWechatPayNotify(res, code, message) {
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let raw = ''
+    let settled = false
+    const fail = (error, statusCode) => {
+      if (settled) return
+      settled = true
+      if (statusCode) error.statusCode = statusCode
+      reject(error)
+    }
     req.on('data', (chunk) => {
+      if (settled) return
       raw += chunk
       if (raw.length > 2 * 1024 * 1024) {
-        reject(new Error('请求内容过大'))
-        req.destroy()
+        // 超限设 413（原先无 statusCode 会落到 500），且不再提前 req.destroy()，
+        // 否则连接被撕毁、错误响应无法送达客户端。
+        fail(new Error('请求内容过大'), 413)
       }
     })
     req.on('end', () => {
+      if (settled) return
       if (!raw) {
+        settled = true
         resolve({})
         return
       }
       try {
-        resolve(JSON.parse(raw))
+        const parsed = JSON.parse(raw)
+        settled = true
+        resolve(parsed)
       } catch (error) {
-        error.statusCode = 400
-        reject(error)
+        fail(error, 400)
       }
     })
+    // 客户端中途断开（弱网小程序常见）时若不监听 error/aborted，'end' 不会触发，
+    // Promise 永不 settle，await parseBody 之后的处理器会永久挂起、连接与闭包滞留。
+    req.on('error', (error) => fail(error, 400))
+    req.on('aborted', () => fail(new Error('请求连接已中断'), 400))
   })
 }
 
