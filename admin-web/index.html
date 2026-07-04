@@ -2914,7 +2914,9 @@
       document.getElementById('editOwnerType').value = item.ownerType === '业主房源' ? '业主房源' : '二房东房源';
       document.getElementById('editCompanyListing').checked = Boolean(item.companyListing || item.isCompanyListing);
       document.getElementById('editVideoUrl').value = item.videoUrl || '';
-      renderEditFeatureOptions(Array.isArray(item.features) ? item.features : textList(item.features));
+      // 展示字段会把租赁方式(整租/合租)掺进特点，回填时过滤，租赁方式走独立下拉
+      renderEditFeatureOptions((Array.isArray(item.features) ? item.features : textList(item.features))
+        .filter((tag) => tag !== '整租' && tag !== '合租'));
       document.getElementById('listingEditorSub').textContent = `当前状态：${item.status || '未知'} · 修改后立即生效；改为“已下架”会移入后台资产池，可在资产池重新上架。审核与成交状态请走对应流程。`;
       document.getElementById('listingEditorError').textContent = '';
       document.getElementById('listingEditorOverlay').classList.add('active');
