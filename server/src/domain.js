@@ -69,12 +69,16 @@ function nowText() {
 
 // 统一的足迹写入入口：unshift 后按上限截断，防止 db.json 无限膨胀
 function pushFootprint(db, record) {
+  // 统一补 dateKey：dashboardSummary 与敏感查看额度判定均以 dateKey 为准，仅在缺失时才回退
+  // 到 time 文本。历史上部分足迹（如房态核验）只写 time:'刚刚' 不写 dateKey，会被日期匹配
+  // 逻辑永久判定为“今天”，导致今日统计与额度计数长期失真；写入时补当天 dateKey 从源头消除。
+  const normalized = record.dateKey ? record : { ...record, dateKey: todayKey() }
   db.footprints = db.footprints || []
-  db.footprints.unshift(record)
+  db.footprints.unshift(normalized)
   if (db.footprints.length > MAX_FOOTPRINT_ROWS) {
     db.footprints = db.footprints.slice(0, MAX_FOOTPRINT_ROWS)
   }
-  return record
+  return normalized
 }
 
 function id(prefix) {
