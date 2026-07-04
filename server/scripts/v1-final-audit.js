@@ -22,7 +22,9 @@ const criticalScripts = [
   'server/scripts/video-share-v1-test.js',
   'server/scripts/v1-acceptance-check.js',
   // db.json 解析缓存/clone 隔离/写后刷新/抛异常回滚的契约（飞书同步与助手长 await 路径依赖）。
-  'server/scripts/db-cache-v1-test.js'
+  'server/scripts/db-cache-v1-test.js',
+  // asr upgrade 处理器兜住畸形请求（单个坏请求不打崩进程）+ 未捕获异常记录后优雅退出的契约。
+  'server/scripts/graceful-exit-v1-test.js'
 ]
 
 function repoPath(relativePath) {

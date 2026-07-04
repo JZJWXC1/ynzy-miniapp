@@ -260,8 +260,19 @@ function handleRealtimeConnection(clientWs, req, options = {}) {
 function attachRealtimeAsr(server, options = {}) {
   const wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host}`)
-    if (decodeURIComponent(url.pathname) !== CLIENT_PATH) return
+    // upgrade 事件是同步监听器，不经过 async router 的兜底：畸形百分号转义（如 /%zz）会让
+    // decodeURIComponent 抛 URIError、畸形 Host 头会让 new URL 抛 TypeError，逃逸出去即
+    // uncaughtException——现在全局兜底是 process.exit，任意客户端一条畸形 upgrade 即可打死
+    // 进程。故与 router 的 URL 解析同样独立 try：解析失败直接销毁连接，不升级、不崩进程。
+    let pathname
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`)
+      pathname = decodeURIComponent(url.pathname)
+    } catch (error) {
+      socket.destroy()
+      return
+    }
+    if (pathname !== CLIENT_PATH) return
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleRealtimeConnection(ws, req, options)
     })
