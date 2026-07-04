@@ -1,14 +1,17 @@
 /**app.wxss**/
 page {
-  --brand-green: #2E6B4E;
-  --brand-green-dark: #174331;
-  --brand-cream: #FBF5EA;
-  --brand-orange: #F7A64A;
-  --brand-blue: #8FD0E8;
-  --brand-yellow: #F8D06B;
-  --brand-line: #DDE7DA;
-  --brand-muted: #6E8174;
-  --brand-card: #FFFFFF;
+  --brand-green: #326955;
+  --brand-green-dark: #173D33;
+  --brand-green-soft: #EAF2EC;
+  --brand-cream: #F8F3EA;
+  --brand-orange: #C9923F;
+  --brand-blue: #9ED8E7;
+  --brand-blue-soft: #EFF8F9;
+  --brand-yellow: #E6BE62;
+  --brand-yellow-soft: #F7E9C4;
+  --brand-line: #DCE4DA;
+  --brand-muted: #667469;
+  --brand-card: #FFFDF8;
   min-height: 100vh;
   color: var(--brand-green-dark);
   background: var(--brand-cream);
@@ -56,7 +59,7 @@ button::after {
   min-height: 100%;
   padding: 24rpx 28rpx 44rpx;
   background:
-    linear-gradient(180deg, #fffaf1 0%, var(--brand-cream) 360rpx, var(--brand-cream) 100%);
+    linear-gradient(180deg, #FBF8F1 0%, var(--brand-cream) 360rpx, #FAF7F0 100%);
 }
 
 .section-title {
@@ -83,7 +86,7 @@ button::after {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 24rpx;
-  box-shadow: 0 16rpx 36rpx rgba(46, 107, 78, 0.08);
+  box-shadow: 0 14rpx 32rpx rgba(23, 61, 51, 0.06);
 }
 
 .brand-button {
@@ -126,13 +129,13 @@ button::after {
   font-size: 20rpx;
   font-weight: 900;
   line-height: 42rpx;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(50, 105, 85, 0.09);
   border-radius: 14rpx;
 }
 
 .listing-maintenance-tag {
-  color: #8A5B00;
-  background: rgba(248, 208, 107, 0.3);
+  color: #6D5521;
+  background: rgba(230, 190, 98, 0.24);
 }
 
 .listing-relevance-tag {
