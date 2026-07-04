@@ -1283,15 +1283,19 @@ function listingLogs(db, listingId, userId) {
 }
 
 function footprintRecords(db, userId) {
+  // 预建 id→实体索引，避免对每条足迹重复线性扫描 listings/users（原实现 filter+map 阶段
+  // 各做一次 listingById、两次 userById，足迹量大时接近 O(n×listings)）。
+  const listingsById = new Map((db.listings || []).map((listing) => [listing.id, listing]))
+  const usersById = new Map((db.users || []).map((user) => [user.id, user]))
   return (db.footprints || [])
     .filter((record) => {
-      const listing = listingById(db, record.listingId) || {}
+      const listing = listingsById.get(record.listingId) || {}
       return record.viewerId === userId || listing.uploaderId === userId
     })
     .map((record) => {
-      const listing = listingById(db, record.listingId) || {}
-      const viewer = userById(db, record.viewerId) || {}
-      const uploader = userById(db, listing.uploaderId) || {}
+      const listing = listingsById.get(record.listingId) || {}
+      const viewer = usersById.get(record.viewerId) || {}
+      const uploader = usersById.get(listing.uploaderId) || {}
       const location = publicListingLocationFields(listing)
       const isMine = record.viewerId === userId
       return {
@@ -2109,10 +2113,14 @@ function updateListingCoordinate(db, adminId, listingId, payload = {}) {
 }
 
 function adminLogs(db) {
+  // 预建 id→实体索引，避免对每条足迹重复线性扫描 listings/users（后台足迹页无分页，
+  // 足迹上限可达 30000，原实现每行三次线性查找造成数百万次比较）。
+  const listingsById = new Map((db.listings || []).map((listing) => [listing.id, listing]))
+  const usersById = new Map((db.users || []).map((user) => [user.id, user]))
   return (db.footprints || []).map((item) => {
-    const listing = listingById(db, item.listingId) || {}
-    const viewer = userById(db, item.viewerId) || {}
-    const uploader = userById(db, listing.uploaderId) || {}
+    const listing = listingsById.get(item.listingId) || {}
+    const viewer = usersById.get(item.viewerId) || {}
+    const uploader = usersById.get(listing.uploaderId) || {}
     return {
       viewer: viewer.name,
       listing: listing.shortTitle,
