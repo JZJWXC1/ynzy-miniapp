@@ -115,6 +115,8 @@ module.exports = {
   rootDir,
   port: numberFromEnv('PORT', 3000),
   dataFile,
+  // db.json 默认紧凑序列化以降低整库重写的磁盘写放大；DB_JSON_PRETTY=1 恢复缩进便于人读。
+  dbPrettyJson: boolFromEnv('DB_JSON_PRETTY', false),
   adminWebDir: path.resolve(rootDir, '..', 'admin-web'),
   oss: {
     homeUrl: process.env.ALI_OSS_HOME_URL || defaultOssHomeUrl,

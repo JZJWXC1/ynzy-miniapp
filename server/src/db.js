@@ -44,10 +44,16 @@ function readDb() {
   return db
 }
 
+// 默认紧凑序列化：两空格 pretty-print 会使 db.json 膨胀近 2 倍，放大每次整库重写的
+// 磁盘写入量（足迹等高频只增留痕尤其明显）。需要人读时用 DB_JSON_PRETTY=1 恢复缩进。
+function serializeDb(db) {
+  return config.dbPrettyJson ? JSON.stringify(db, null, 2) : JSON.stringify(db)
+}
+
 function writeDb(db) {
   ensureDataFile()
   const tempFile = `${config.dataFile}.${process.pid}.tmp`
-  fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), 'utf8')
+  fs.writeFileSync(tempFile, serializeDb(db), 'utf8')
   fs.renameSync(tempFile, config.dataFile)
   // \u521A\u5199\u5165\u7684\u5BF9\u8C61\u5373\u6700\u65B0\u72B6\u6001\uFF0C\u7ED1\u5B9A\u65B0 stat \u4F5C\u4E3A\u7F13\u5B58\uFF0C\u8BA9\u7D27\u968F\u5176\u540E\u7684 readDb \u76F4\u63A5\u547D\u4E2D\u3002
   const key = statKey()

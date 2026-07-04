@@ -65,6 +65,8 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 Environment=FOOTPRINT_MAX_ROWS=30000
 ```
 
+数据库 JSON 默认紧凑写入以降低整库重写的磁盘写放大；如需人工排查可设置 `DB_JSON_PRETTY=1` 恢复两空格缩进（`/admin/data/export` 导出始终为美化格式，不受影响）。
+
 ## 小程序端鉴权
 
 小程序登录接口：
