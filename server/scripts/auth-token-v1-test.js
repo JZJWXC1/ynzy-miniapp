@@ -226,6 +226,8 @@ async function run() {
     assert.strictEqual(managerExport.statusCode, 403, '受限管理员不得导出整库数据')
     const managerCreate = await request('POST', '/admin/accounts', { account: 'eviladmin', password: 'evilpass99', permission: '全部后台权限' }, managerAuth)
     assert.strictEqual(managerCreate.statusCode, 403, '受限管理员不得创建管理员自我提权')
+    const managerResetPwd = await request('POST', '/admin/accounts/A001/password', { password: 'takeover99' }, managerAuth)
+    assert.strictEqual(managerResetPwd.statusCode, 403, '受限管理员不得重置他人（含超管）密码接管账号')
 
     // 对照：全部后台权限管理员可以执行高危操作
     const superLogin = await request('POST', '/admin/auth/login', { account: 'admin', password: 'admin123' })

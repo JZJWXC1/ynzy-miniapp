@@ -1544,6 +1544,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminPasswordMatch = pathname.match(/^\/admin\/accounts\/([^/]+)\/password$/)
   if (method === 'POST' && adminPasswordMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     const nextPassword = String(body.password || '').trim()
     if (nextPassword.length < 8) {
