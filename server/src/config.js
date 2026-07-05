@@ -86,12 +86,12 @@ const blockDistrictMap = Object.keys(districtBlocks).reduce((map, district) => {
   return map
 }, {})
 const communityLocationOverrides = {
-  '小洋坝家园一区': { district: '余杭区', block: '万达' },
-  '小洋坝家园二区': { district: '余杭区', block: '万达' },
-  '小洋坝家园三区': { district: '余杭区', block: '万达' },
-  '大华海派风景': { district: '余杭区', block: '万达' },
-  '风雅乐府': { district: '余杭区', block: '万达' },
-  '瑷颐湾': { district: '余杭区', block: '万达' }
+  '小洋坝家园一区': { district: '余杭区', block: '城北万象城' },
+  '小洋坝家园二区': { district: '余杭区', block: '城北万象城' },
+  '小洋坝家园三区': { district: '余杭区', block: '城北万象城' },
+  '大华海派风景': { district: '余杭区', block: '城北万象城' },
+  '风雅乐府': { district: '余杭区', block: '城北万象城' },
+  '瑷颐湾': { district: '余杭区', block: '城北万象城' }
 }
 const communityDistrictOverrides = Object.keys(communityLocationOverrides).reduce((map, community) => {
   map[community] = communityLocationOverrides[community].district
