@@ -1636,6 +1636,10 @@
       return safeText(value, '');
     }
 
+    function safeTextWithBreaks(value, fallback = '') {
+      return safeText(value, fallback).replace(/&lt;br&gt;/g, '<br>');
+    }
+
     function maskPhone(value) {
       const text = String(value || '').trim();
       return text.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
@@ -1820,7 +1824,7 @@
 	      const summary = await getDashboardData() || {};
 	      const tasks = await buildTodayTaskMetrics(summary);
 	      const areaStats = arrayValue(summary.areaStats);
-	      const areaText = areaStats.length ? areaStats.map((item) => `${item.area} ${item.count}`).join(' · ') : '暂无分区数据';
+	      const areaText = areaStats.length ? areaStats.map((item) => `${safeText(item.area)} ${safeText(item.count)}`).join(' · ') : '暂无分区数据';
 	      document.getElementById('dashboardStats').innerHTML = [
 	        { value: tasks.pendingMaintenanceListings, label: `待维护房源<br>${areaText}` },
 	        { value: `${tasks.expiringSoonListings}/${tasks.expiredListingCount}`, label: '即将失效 / 废房源池<br>第7天自动进入资产池' },
@@ -1828,7 +1832,7 @@
 	        { value: tasks.pendingDealCount, label: '待确认签单<br>管理员确认后生成分佣' },
 	        { value: tasks.todaySensitiveViews, label: `今日敏感查看<br>需复盘 ${tasks.todaySensitiveViews} 次` },
 	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端按规则拆分' }
-	      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+	      ].map((item) => `<div class="stat"><strong>${safeText(item.value)}</strong><span>${safeTextWithBreaks(item.label)}</span></div>`).join('');
 
 	      document.getElementById('riskRows').innerHTML = [
 	        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '待维护房源', status: tasks.pendingMaintenanceListings > 0 ? '需核验' : '正常', time: '今日任务' },
@@ -1838,7 +1842,7 @@
 	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
 	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，后端拆分' }
 	      ].map((item) => `
-	        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
+	        <tr><td>${safeText(item.title)}</td><td>${safeText(item.object)}</td><td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td><td>${safeText(item.time)}</td></tr>
 	      `).join('');
 	    }
 
@@ -1848,9 +1852,9 @@
 	      const max = Math.max(1, Math.max.apply(null, areaData.map((item) => item.count)));
 	      document.getElementById('areaStats').innerHTML = areaData.map((item) => `
         <div class="area-row">
-          <strong>${item.area}</strong>
+          <strong>${safeText(item.area)}</strong>
           <div class="bar"><i style="width: ${Math.max(18, Math.round(item.count / max * 100))}%"></i></div>
-          <span>${item.count} 套</span>
+          <span>${safeText(item.count)} 套</span>
         </div>
       `).join('');
     }
@@ -1887,24 +1891,24 @@
         const canReview = item.reviewStatus === '待审核' || item.status === '待审核';
         return `
         <tr>
-          <td>${item.title}<span class="sub-cell">${sourceText}${item.noCommission ? ' · 不分佣' : ''}${reviewText}${manualReviewText}</span></td>
-          <td>${item.area}</td>
-          <td>${item.block}</td>
-          <td>${item.community}</td>
-          <td>${item.uploader}</td>
-          <td>${item.rent}</td>
-          <td>${item.layout}</td>
-          <td>${item.commission}</td>
-          <td><span class="pill">${item.video}</span></td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${statusReviewText}</span></td>
-          <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span><span class="sub-cell">${coordinateText}</span></td>
+          <td>${safeText(item.title)}<span class="sub-cell">${safeText(sourceText, '')}${item.noCommission ? ' · 不分佣' : ''}${safeText(reviewText, '')}${safeText(manualReviewText, '')}</span></td>
+          <td>${safeText(item.area)}</td>
+          <td>${safeText(item.block)}</td>
+          <td>${safeText(item.community)}</td>
+          <td>${safeText(item.uploader)}</td>
+          <td>${safeText(item.rent)}</td>
+          <td>${safeText(item.layout)}</td>
+          <td>${safeText(item.commission)}</td>
+          <td><span class="pill">${safeText(item.video)}</span></td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(statusReviewText, '')}</span></td>
+          <td><span class="${pillClass(item.verifyStatus)}">${safeText(item.verifyStatus || '正常')}</span><span class="sub-cell">${safeText(item.verifyTip || item.lastVerifiedAt || '', '')}</span><span class="sub-cell">${safeText(coordinateText)}</span></td>
           <td>
             <div class="row-actions">
-              <button class="table-action edit-listing-button" data-id="${item.id}">编辑</button>
-              <button class="table-action verify-listing-button" data-id="${item.id}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
-              <button class="table-action coordinate-listing-button" data-id="${item.id}" data-title="${item.title || item.community || item.id}" data-latitude="${item.mapLatitude || ''}" data-longitude="${item.mapLongitude || ''}">坐标修正</button>
-              <button class="table-action review-owner-listing-button" data-id="${item.id}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
-              <button class="table-action reject review-owner-listing-button" data-id="${item.id}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
+              <button class="table-action edit-listing-button" data-id="${safeAttr(item.id)}">编辑</button>
+              <button class="table-action verify-listing-button" data-id="${safeAttr(item.id)}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
+              <button class="table-action coordinate-listing-button" data-id="${safeAttr(item.id)}" data-title="${safeAttr(item.title || item.community || item.id)}" data-latitude="${safeAttr(item.mapLatitude || '')}" data-longitude="${safeAttr(item.mapLongitude || '')}">坐标修正</button>
+              <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
+              <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
             </div>
           </td>
         </tr>
@@ -2406,16 +2410,16 @@
       const rows = await getAdminData('/admin/commissions', () => dataCenter.getCommissionRows());
       document.getElementById('commissionRows').innerHTML = rows.map((item) => `
         <tr>
-          <td>${item.listing}</td>
-          <td>${item.uploader}</td>
-          <td>${item.dealer}</td>
-          <td>${item.rate}</td>
+          <td>${safeText(item.listing)}</td>
+          <td>${safeText(item.uploader)}</td>
+          <td>${safeText(item.dealer)}</td>
+          <td>${safeText(item.rate)}</td>
           <td>${safeText(item.uploaderRate === undefined ? '-' : item.uploaderRate + '%')}</td>
-          <td>${moneyText(item.landlordCommission, item.landlordCommissionFen)}</td>
-          <td>${moneyText(item.uploaderCommission, item.uploaderCommissionFen)}</td>
-          <td>${moneyText(item.platformCommission, item.platformCommissionFen, true)}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
-          <td>${item.time}</td>
+          <td>${safeText(moneyText(item.landlordCommission, item.landlordCommissionFen))}</td>
+          <td>${safeText(moneyText(item.uploaderCommission, item.uploaderCommissionFen))}</td>
+          <td>${safeText(moneyText(item.platformCommission, item.platformCommissionFen, true))}</td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td>
+          <td>${safeText(item.time)}</td>
         </tr>
       `).join('');
     }
@@ -2568,18 +2572,18 @@
       const empty = document.getElementById('showingEmpty');
       body.innerHTML = rows.map((item) => `
         <tr>
-          <td>${item.user}<span class="sub-cell">${item.userPhone || '无电话'} · ${item.time || ''}</span></td>
-          <td>${item.community || item.listing}<span class="sub-cell">${item.room || '-'} · 上传人 ${item.uploader || '-'}</span></td>
+          <td>${safeText(item.user)}<span class="sub-cell">${safeText(item.userPhone || '无电话')} · ${safeText(item.time || '', '')}</span></td>
+          <td>${safeText(item.community || item.listing)}<span class="sub-cell">${safeText(item.room || '-')} · 上传人 ${safeText(item.uploader || '-')}</span></td>
           <td>
-            ${item.photoUrl ? `<a class="audit-shot" href="${item.photoUrl}" target="_blank"><img src="${item.photoUrl}" alt="带看水印照片"></a>` : '<span class="audit-shot">待补图</span>'}
+            ${item.photoUrl ? `<a class="audit-shot" href="${safeAttr(item.photoUrl)}" target="_blank" rel="noopener"><img src="${safeAttr(item.photoUrl)}" alt="带看水印照片"></a>` : '<span class="audit-shot">待补图</span>'}
           </td>
-          <td>${item.locationText || '-'}<span class="sub-cell">${item.watermarkText || '待查看水印信息'}</span></td>
-          <td>${item.reward}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${item.reviewNote || '管理员核验水印照片真实性'}</span></td>
+          <td>${safeText(item.locationText || '-')}<span class="sub-cell">${safeText(item.watermarkText || '待查看水印信息')}</span></td>
+          <td>${safeText(item.reward)}</td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(item.reviewNote || '管理员核验水印照片真实性')}</span></td>
           <td>
             <div class="row-actions">
-              <button class="table-action showing-review-button" data-id="${item.id}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
-              <button class="table-action reject showing-review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
+              <button class="table-action showing-review-button" data-id="${safeAttr(item.id)}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
+              <button class="table-action reject showing-review-button" data-id="${safeAttr(item.id)}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
             </div>
           </td>
         </tr>
@@ -2592,7 +2596,7 @@
       if (!select) return;
       const current = select.value;
       select.innerHTML = '<option value="">不绑定员工</option>' + (users || []).map((item) => (
-        `<option value="${item.id}">${item.name || item.id} · ${item.phone || ''}</option>`
+        `<option value="${safeAttr(item.id)}">${safeText(item.name || item.id)} · ${safeText(item.phone || '', '')}</option>`
       )).join('');
       if (current) select.value = current;
     }
@@ -2624,15 +2628,15 @@
       document.getElementById('adminRows').innerHTML = rows.map((item) => {
         return `
           <tr>
-            <td>${item.account}</td>
-            <td>${item.name}</td>
-            <td>${item.permission}</td>
-            <td>${item.todayViews}</td>
-            <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+            <td>${safeText(item.account)}</td>
+            <td>${safeText(item.name)}</td>
+            <td>${safeText(item.permission)}</td>
+            <td>${safeText(item.todayViews)}</td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td>
             <td>${item.canEdit ? `
               <div class="row-actions">
-                <button class="table-action password-button" data-id="${item.id}" data-account="${item.account}">修改密码</button>
-                <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${item.id}" data-account="${item.account}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
+                <button class="table-action password-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">修改密码</button>
+                <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
               </div>
             ` : '-'}</td>
           </tr>
@@ -2666,16 +2670,16 @@
         { value: summary.pass || 0, label: '已通过' },
         { value: summary.todo || 0, label: '需处理' },
         { value: summary.pending || 0, label: '待人工确认' }
-      ].map((item) => `<div class="launch-stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+      ].map((item) => `<div class="launch-stat"><strong>${safeText(item.value)}</strong><span>${safeText(item.label)}</span></div>`).join('');
 
       document.getElementById('launchRows').innerHTML = (data.items || []).map((item) => `
         <div class="launch-card">
           <div class="launch-card-head">
-            <div class="launch-title">${item.title}</div>
-            <span class="${pillClass(item.status)}">${item.status}</span>
+            <div class="launch-title">${safeText(item.title)}</div>
+            <span class="${pillClass(item.status)}">${safeText(item.status)}</span>
           </div>
-          <div class="launch-detail">${item.detail || ''}</div>
-          <div class="launch-action">${item.action || ''}</div>
+          <div class="launch-detail">${safeText(item.detail || '', '')}</div>
+          <div class="launch-action">${safeText(item.action || '', '')}</div>
         </div>
       `).join('');
 
@@ -3119,7 +3123,7 @@
         { name: '缺视频素材', value: status.missingVideoMaterialCount || 0, note: '后台标记缺视频素材，不再因素材缺失自动下架' },
         { name: '最近执行', value: lastLog && lastLog.finishedAt ? lastLog.finishedAt : '暂无', note: lastLog ? `新增 ${lastLog.created || 0} / 更新 ${lastLog.updated || 0} / 下架 ${lastLog.down || 0}` : '点击立即同步后返回本次结果' }
       ].map((item) => `
-        <tr><td>${item.name}</td><td>${item.value}</td><td>${item.note || ''}</td></tr>
+        <tr><td>${safeText(item.name)}</td><td>${safeText(item.value)}</td><td>${safeText(item.note || '', '')}</td></tr>
       `).join('');
       document.getElementById('feishuSyncResult').textContent = lastLog
         ? JSON.stringify({
