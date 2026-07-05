@@ -17,6 +17,16 @@ function safeText(value) {
   return String(value || '').trim()
 }
 
+function isUnsupportedApiError(error) {
+  const message = String((error && (error.errMsg || error.message)) || '').toLowerCase()
+  return /not\s+support|unsupported|未支持|不支持|not\s+function|undefined/.test(message)
+}
+
+function isAlbumAuthError(error) {
+  const message = String((error && (error.errMsg || error.message)) || '')
+  return /auth|authorize|permission|deny|denied|scope\.writePhotosAlbum/i.test(message)
+}
+
 function isAuthError(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403)
 }
@@ -114,7 +124,8 @@ Page({
     sensitivePurpose: SENSITIVE_PURPOSE_OPTIONS[0],
     sensitivePurposeCustom: '',
     canShareVideo: false,
-    shareStateText: '登录中介账号后，可把公开视频推荐卡转发给租客。',
+    shareVideoBusy: false,
+    shareStateText: '登录中介账号后，可把原视频文件发送给租客。',
     shareBrokerName: '',
     needId: '',
     needTemporary: false,
@@ -173,7 +184,7 @@ Page({
         canShareVideo,
         shareBrokerName: user.name || '',
         shareStateText: canShareVideo
-          ? '只转发视频和公开摘要，不包含地址、房东电话、楼栋单元房号。'
+          ? '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
           : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
     }).catch((error) => {
@@ -199,51 +210,138 @@ Page({
     })
   },
 
-  shareVideoPath() {
-    const listing = this.data.listing || {}
-    const params = [
-      `id=${encodeURIComponent(listing.id || '')}`,
-      'source=tenant-video-share'
-    ]
-    if (this.data.shareBrokerName) {
-      params.push(`broker=${encodeURIComponent(this.data.shareBrokerName)}`)
-    }
-    return `/pages/shared-video/shared-video?${params.join('&')}`
-  },
-
-  shareVideoTitle() {
-    return '房间视频'
-  },
-
-  prepareVideoShare() {
-    if (!this.data.canShareVideo) {
-      wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
-      return
-    }
-    const listing = this.data.listing || {}
-    apiService.recordVideoShare(listing.id, {
-      channel: 'wechat',
-      target: 'tenant',
-      sharePath: this.shareVideoPath(),
-      shareTitle: this.shareVideoTitle()
-    }).then((result) => {
-      if (result && result.logs) {
-        this.setData({ logs: result.logs })
+  downloadShareVideo(videoUrl) {
+    return new Promise((resolve, reject) => {
+      if (!wx.downloadFile) {
+        reject(new Error('当前微信版本暂不支持下载视频文件'))
+        return
       }
-    }).catch((error) => {
-      wx.showToast({
-        title: error && error.message ? error.message : '转发留痕失败',
-        icon: 'none'
+      wx.downloadFile({
+        url: videoUrl,
+        timeout: 60000,
+        success: (res) => {
+          if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+            reject(new Error(`视频下载失败：${res.statusCode}`))
+            return
+          }
+          if (!res.tempFilePath) {
+            reject(new Error('未获取到视频临时文件'))
+            return
+          }
+          resolve(res.tempFilePath)
+        },
+        fail: reject
       })
     })
   },
 
-  onShareAppMessage() {
+  shareVideoFile(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.shareFileMessage) {
+        reject(new Error('当前微信版本暂不支持直接发送视频文件'))
+        return
+      }
+      wx.shareFileMessage({
+        filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
+  saveVideoForManualShare(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.saveVideoToPhotosAlbum) {
+        reject(new Error('当前微信版本暂不支持保存视频到相册'))
+        return
+      }
+      wx.saveVideoToPhotosAlbum({
+        filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
+  recordVideoFileShare(channel) {
     const listing = this.data.listing || {}
-    return {
-      title: this.shareVideoTitle(),
-      path: this.shareVideoPath(),
-      imageUrl: listing.shareImageUrl || ''
+    return apiService.recordVideoShare(listing.id, {
+      channel: channel || 'wechat-file',
+      target: 'tenant',
+      sharePath: '',
+      shareTitle: '原视频文件'
+    }).then((result) => {
+      if (result && result.logs) {
+        this.setData({ logs: result.logs })
+      }
+      return result
+    })
+  },
+
+  async fallbackSaveVideo(filePath) {
+    try {
+      await this.saveVideoForManualShare(filePath)
+      await this.recordVideoFileShare('wechat-album-fallback')
+      wx.showModal({
+        title: '视频已保存',
+        content: '当前微信版本暂不支持直接发送文件，请从相册手动发送给租客。',
+        showCancel: false
+      })
+    } catch (error) {
+      if (isAlbumAuthError(error)) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存视频到相册后，再手动发送给租客。',
+          cancelText: '取消',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
+        return
+      }
+      throw error
+    }
+  },
+
+  async prepareVideoShare() {
+    if (!this.data.canShareVideo) {
+      wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
+      return
+    }
+    if (this.data.shareVideoBusy) return
+    const listing = this.data.listing || {}
+    if (!listing.videoUrl) {
+      wx.showToast({ title: '这套房源暂无可转发视频', icon: 'none' })
+      return
+    }
+    this.setData({
+      shareVideoBusy: true,
+      shareStateText: '正在准备原视频文件'
+    })
+    wx.showLoading({ title: '准备视频' })
+    try {
+      const filePath = await this.downloadShareVideo(listing.videoUrl)
+      wx.hideLoading()
+      try {
+        await this.shareVideoFile(filePath)
+        await this.recordVideoFileShare('wechat-file')
+        wx.showToast({ title: '视频已发送', icon: 'none' })
+      } catch (shareError) {
+        if (!isUnsupportedApiError(shareError)) throw shareError
+        await this.fallbackSaveVideo(filePath)
+      }
+    } catch (error) {
+      wx.hideLoading()
+      wx.showToast({
+        title: error && (error.message || error.errMsg) ? (error.message || error.errMsg) : '视频转发未完成',
+        icon: 'none'
+      })
+    } finally {
+      this.setData({
+        shareVideoBusy: false,
+        shareStateText: '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
+      })
     }
   },
 

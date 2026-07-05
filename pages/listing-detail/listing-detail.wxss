@@ -63,6 +63,7 @@ page {
   flex: 0 0 188rpx;
   height: 72rpx;
   margin: 0;
+  padding: 0 12rpx;
   color: #153f36;
   font-size: 25rpx;
   font-weight: 900;
@@ -483,14 +484,24 @@ page {
 
 .purpose-option {
   flex: 1 1 190rpx;
-  height: 68rpx;
+  min-height: 68rpx;
   margin: 0;
+  padding: 8rpx 14rpx;
   color: #2f6f60;
   font-size: 24rpx;
   font-weight: 900;
-  line-height: 68rpx;
+  line-height: 1.25;
   background: #e9f5f0;
   border-radius: 18rpx;
+  box-sizing: border-box;
+  white-space: normal;
+}
+
+.purpose-option text {
+  display: flex;
+  min-height: 52rpx;
+  align-items: center;
+  justify-content: center;
 }
 
 .purpose-option.active {
@@ -543,7 +554,7 @@ page {
 
 .v1-modal-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16rpx;
   margin-top: 24rpx;
 }
@@ -551,6 +562,15 @@ page {
 .v1-modal-actions .ghost-button,
 .v1-modal-actions .primary-button {
   height: 80rpx;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 0;
+  padding: 0 12rpx;
+  font-size: 26rpx;
+  line-height: 1.2;
   border-radius: 20rpx;
+  box-sizing: border-box;
+  white-space: normal;
 }

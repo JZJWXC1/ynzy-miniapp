@@ -19,10 +19,9 @@
         </view>
         <button
           class="video-share-button"
-          open-type="share"
-          data-share-type="tenant-video"
+          loading="{{shareVideoBusy}}"
           bindtap="prepareVideoShare"
-          disabled="{{!canShareVideo}}"
+          disabled="{{!canShareVideo || shareVideoBusy}}"
         >
           一键转发
         </button>
@@ -137,7 +136,7 @@
         data-purpose="{{item}}"
         bindtap="chooseSensitivePurpose"
       >
-        {{item}}
+        <text>{{item}}</text>
       </button>
     </view>
     <view class="v1-field">

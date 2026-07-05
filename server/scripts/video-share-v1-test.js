@@ -1,4 +1,6 @@
 const assert = require('assert')
+const fs = require('fs')
+const path = require('path')
 const domain = require('../src/domain')
 
 const now = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -71,5 +73,26 @@ assert.throws(() => {
 assert.throws(() => {
   domain.recordVideoShare(db, '', 'L-video-share', {})
 }, /未登录|账号未开通/)
+
+const ROOT_DIR = path.resolve(__dirname, '..', '..')
+const detailJs = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/listing-detail.js'), 'utf8')
+const detailWxml = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/listing-detail.wxml'), 'utf8')
+const detailWxss = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/listing-detail.wxss'), 'utf8')
+
+assert(detailJs.includes('wx.downloadFile'), '一键转发前必须先下载签名视频到临时文件')
+assert(detailJs.includes('wx.shareFileMessage'), '一键转发必须发送原视频文件')
+assert(detailJs.includes('wx.saveVideoToPhotosAlbum'), '不支持直接发送文件时必须回退保存视频到相册')
+assert(!detailJs.includes('onShareAppMessage'), '一键转发不得再走小程序卡片分享')
+assert(!detailWxml.includes('open-type="share"'), '一键转发按钮不得触发小程序卡片')
+
+const shareFileBlock = detailJs.match(/wx\.shareFileMessage\(\{([\s\S]*?)\n\s*\}\)/)
+assert(shareFileBlock, '必须存在 wx.shareFileMessage 调用')
+const shareFilePayload = shareFileBlock[1].replace(/\bfilePath\b/g, '')
+assert(!/\b(title|path|fileName|name)\s*:/.test(shareFilePayload), '发送文件不得携带小程序卡片、标题或文件名参数')
+
+assert(detailJs.includes("sharePath: ''"), '转发留痕不得写入小程序分享路径')
+assert(detailJs.includes('不包含地址、房东电话、楼栋单元房号'), '转发提示必须明确不包含敏感房源信息')
+assert(detailWxss.includes('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)'), '查看用途弹窗按钮区必须避免窄屏截断')
+assert(detailWxss.includes('white-space: normal'), '查看用途按钮文字必须允许换行')
 
 console.log('video-share-v1-test passed')
