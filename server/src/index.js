@@ -1276,6 +1276,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     return sendJson(res, domain.listingMaintenanceRule(db))
   }
   if (method === 'PUT' && pathname === '/admin/listing-maintenance-rule') {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       domain.setListingMaintenanceRule(nextDb, adminAccount.userId || adminAccount.id, body)
@@ -1306,6 +1307,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const assistantFeedbackReviewMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/review$/)
   if (method === 'POST' && assistantFeedbackReviewMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       assistantService.reviewFeedback(nextDb, assistantFeedbackReviewMatch[1], body, {
@@ -1315,6 +1317,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const assistantFeedbackEvalMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/promote-eval$/)
   if (method === 'POST' && assistantFeedbackEvalMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       assistantService.promoteFeedbackToEvalCase(nextDb, assistantFeedbackEvalMatch[1], body, {
@@ -1384,6 +1387,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminExpiredRestoreMatch = pathname.match(/^\/admin\/expired-listings\/([^/]+)\/restore$/)
   if (method === 'POST' && adminExpiredRestoreMatch) {
+    assertAdminCapability(adminAccount)
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.restoreExpiredListing(nextDb, adminAccount.userId || adminAccount.id, adminExpiredRestoreMatch[1])
       return withSignedListingVideoUrls(domain.expiredListings(nextDb, {
@@ -1395,11 +1399,13 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminListingEditMatch = pathname.match(/^\/admin\/listings\/([^/]+)$/)
   if (method === 'PUT' && adminListingEditMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.updateNormalListing(nextDb, adminAccount.userId || adminAccount.id, adminListingEditMatch[1], body, { admin: true })))
   }
   const adminListingCoordinateMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/coordinate$/)
   if (method === 'POST' && adminListingCoordinateMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.updateListingCoordinate(nextDb, adminAccount.userId || adminAccount.id, adminListingCoordinateMatch[1], body)
@@ -1412,6 +1418,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminListingVerifyMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && adminListingVerifyMatch) {
+    assertAdminCapability(adminAccount)
     return sendJson(res, dbStore.updateDb((nextDb) => {
       domain.verifyListingAvailability(nextDb, adminAccount.userId || adminAccount.id, adminListingVerifyMatch[1], { admin: true })
       return withSignedListingVideoUrls(domain.adminListings(nextDb, {
@@ -1423,6 +1430,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const adminListingReviewMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/review$/)
   if (method === 'POST' && adminListingReviewMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       withSignedListingVideoUrls(domain.reviewOwnerListing(nextDb, adminAccount.userId || adminAccount.id, adminListingReviewMatch[1], body))
@@ -1455,11 +1463,13 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const showingReviewMatch = pathname.match(/^\/admin\/showings\/([^/]+)\/review$/)
   if (method === 'POST' && showingReviewMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, withSignedShowingPhotoUrls(dbStore.updateDb((nextDb) => domain.reviewShowingUpload(nextDb, adminAccount.userId || adminAccount.id, showingReviewMatch[1], body))))
   }
   const groupReviewMatch = pathname.match(/^\/admin\/groups\/uploads\/([^/]+)\/review$/)
   if (method === 'POST' && groupReviewMatch) {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     return sendJson(res, withSignedScreenshotUrls(dbStore.updateDb((nextDb) => domain.reviewGroupUpload(nextDb, adminAccount.userId || adminAccount.id, groupReviewMatch[1], body))))
   }
@@ -1477,6 +1487,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   const rechargeSyncMatch = pathname.match(/^\/admin\/recharges\/([^/]+)\/sync$/)
   if (method === 'POST' && rechargeSyncMatch) {
+    assertAdminCapability(adminAccount)
     const bill = (db.rechargeBills || []).find((item) => item.id === rechargeSyncMatch[1] || item.outTradeNo === rechargeSyncMatch[1])
     if (!bill) {
       const error = new Error('未找到充值账单')
