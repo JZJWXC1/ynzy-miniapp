@@ -222,6 +222,18 @@ async function run() {
     const managerLogin = await request('POST', '/admin/auth/login', { account: 'manager01', password: 'manager123' })
     assert.strictEqual(managerLogin.statusCode, 200, '区域查看权限管理员应能登录')
     const managerAuth = { Authorization: `Bearer ${dataOf(managerLogin).token}` }
+    const requiredHighRiskWriteCases = [
+      ['PUT', '/admin/listing-maintenance-rule', { enabled: false }],
+      ['POST', '/admin/listings/L-NOEXIST/review', { action: 'approve' }],
+      ['POST', '/admin/listings/L-NOEXIST/verify', null],
+      ['POST', '/admin/listings/L-NOEXIST/coordinate', { latitude: 30.1, longitude: 120.1 }],
+      ['POST', '/admin/expired-listings/L-NOEXIST/restore', null],
+      ['POST', '/admin/recharges/R-NOEXIST/sync', null]
+    ]
+    for (const [method, targetPath, body] of requiredHighRiskWriteCases) {
+      const response = await request(method, targetPath, body, managerAuth)
+      assert.strictEqual(response.statusCode, 403, `restricted admin must not call ${method} ${targetPath}`)
+    }
     const managerExport = await request('GET', '/admin/data/export', null, managerAuth)
     assert.strictEqual(managerExport.statusCode, 403, '受限管理员不得导出整库数据')
     const managerCreate = await request('POST', '/admin/accounts', { account: 'eviladmin', password: 'evilpass99', permission: '全部后台权限' }, managerAuth)
