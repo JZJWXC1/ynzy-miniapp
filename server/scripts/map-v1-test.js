@@ -145,6 +145,23 @@ function testDb() {
         community: '华丰欣苑',
         lastVerifiedAt: EIGHT_DAYS_AGO,
         updatedAt: EIGHT_DAYS_AGO
+      }),
+      listing({
+        id: 'L13',
+        community: '缺素材公司房源小区',
+        rent: 3100,
+        videoUrl: '',
+        videoKey: '',
+        source: '公司房源',
+        ownerType: '公司房源',
+        houseSourceType: '公司房源',
+        companyListing: true,
+        isCompanyListing: true,
+        noCommission: true,
+        mapLatitude: 30.352,
+        mapLongitude: 120.152,
+        coordinateSource: 'admin-verified-coordinate',
+        coordinateVerified: true
       })
     ]
   }
@@ -187,6 +204,12 @@ assert(byCommunity(rows, '管理员确认小区'), 'coordinateVerified 为 true 
 assert(!byCommunity(rows, '待审核小区'), '待审核房源不会进入地图')
 assert(!byCommunity(rows, '已失效小区'), '已失效房源不会进入地图')
 assert(!byCommunity(rows, '华丰欣苑'), '7 天未维护房源不会进入地图')
+const missingVideoCompany = byCommunity(rows, '缺素材公司房源小区')
+assert(missingVideoCompany, '无视频公司房源应进入地图聚合')
+assert.strictEqual(missingVideoCompany.listingCount, 1, '无视频公司房源应计入地图套数')
+assert.deepStrictEqual(missingVideoCompany.activeListingIds, ['L13'], '无视频公司房源应返回可打开详情的房源 id')
+assert.strictEqual(missingVideoCompany.listings[0].hasVideo, false, '无视频公司房源地图侧边卡不应显示视频标签')
+assert.strictEqual(missingVideoCompany.listings[0].video, '', '无视频公司房源地图摘要不应携带视频文案')
 
 const bounded = communities({
   north: 30.285,

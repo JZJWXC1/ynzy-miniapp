@@ -217,8 +217,11 @@ async function run() {
 
     const guestPins = await request('GET', '/mini/map/pins')
     assert.strictEqual(guestPins.statusCode, 200, '匿名地图接口应返回 200')
-    const pinText = JSON.stringify(dataOf(guestPins))
-    assert.ok(!pinText.includes('GUEST_COMPANY'), '匿名地图必须继续排除无视频公司房源点位')
+    const pins = dataOf(guestPins)
+    const pinText = JSON.stringify(pins)
+    assert.ok(pinText.includes('GUEST_COMPANY'), '匿名地图必须纳入无视频公司房源点位')
+    const companyPin = pins.find((item) => (item.activeListingIds || []).indexOf('GUEST_COMPANY') !== -1)
+    assert.ok(companyPin && companyPin.listings && companyPin.listings[0] && companyPin.listings[0].hasVideo === false, '匿名地图无视频公司房源不能显示视频标签')
     assert.ok(!pinText.includes('GUEST_PARTNER'), '匿名地图不能包含合作房源点位')
 
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')

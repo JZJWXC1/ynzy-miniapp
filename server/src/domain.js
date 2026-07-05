@@ -1988,7 +1988,6 @@ function mapCommunities(db, filter = {}) {
   const groups = new Map()
   publicListings(db).forEach((listing) => {
     if (!isV1MapActiveListing(listing)) return
-    if (!hasListingVideo(listing)) return
     const coordinate = mapCoordinateFromListing(listing)
     if (!coordinate) return
     if (!coordinateInBounds(coordinate, normalizedFilter)) return

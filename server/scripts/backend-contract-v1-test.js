@@ -140,7 +140,10 @@ function run() {
   companyNoVideoRaw.lastVerifiedAt = daysAgo(1)
   assert.ok(domain.adminListings(db, { missingVideoMaterial: 'missing' }).some((item) => item.id === companyNoVideo.id), '后台必须支持缺视频素材筛选')
   assert.ok(!domain.adminListings(db, { missingVideoMaterial: 'ready' }).some((item) => item.id === companyNoVideo.id), '缺视频素材房源不能进入已配视频筛选')
-  assert.ok(!domain.mapPins(db).some((item) => (item.activeListingIds || []).indexOf(companyNoVideo.id) !== -1), '地图必须继续排除无视频公司房源')
+  const companyNoVideoPin = domain.mapPins(db).find((item) => (item.activeListingIds || []).indexOf(companyNoVideo.id) !== -1)
+  assert.ok(companyNoVideoPin, '地图必须纳入无视频公司房源')
+  assert.strictEqual(companyNoVideoPin.listingCount, 1, '无视频公司房源必须计入地图套数')
+  assert.strictEqual(companyNoVideoPin.listings[0].hasVideo, false, '无视频公司房源地图侧边卡不应显示视频标签')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)

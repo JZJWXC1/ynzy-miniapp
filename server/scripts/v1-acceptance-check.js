@@ -307,7 +307,7 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
     videoUrl: ''
   }), { admin: true })
   assert.ok(domain.filterListings(db, { category: '公司房源' }).some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入公司房源列表')
-  assert.ok(!domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '地图必须继续排除无视频公司房源')
+  assert.ok(domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '地图必须纳入无视频公司房源')
   assert.ok(domain.matchListings(db, { area: '京漾东韵府' }).listings.some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入匹配候选')
   assert.ok(domain.listingDetail(db, companyNoVideo.id), '公司房源无视频必须可打开详情')
 
@@ -419,6 +419,13 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   const companyConfirm = domain.confirmDeal(db, 'ADMIN', companyDeal.id)
   assert.strictEqual(companyConfirm.commissionRecord, null, '公司房源确认签单不能生成分佣记录')
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
+})
+
+check('首页公司房源表按房源行展示套数', () => {
+  const indexWxml = readFile('pages/index/index.wxml')
+  assertIncludes(indexWxml, 'sheetPreview.listingCount', '首页房源表计数必须使用房源行 listingCount')
+  assertIncludes(indexWxml, '套房源', '首页房源表计数文案必须使用套房源口径')
+  assert.ok(!indexWxml.includes('companySheetSnapshot.rowCount || 0}} 行内容'), '首页不能用原始快照行数展示公司房源数量')
 })
 
 check('接口路径覆盖第一版验收闭环', () => {
