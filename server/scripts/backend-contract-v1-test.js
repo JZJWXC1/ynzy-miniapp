@@ -583,6 +583,7 @@ function run() {
     commissionRate: 0,
     features: ['不分佣', '押一付一', '电梯房']
   })
+  assert.strictEqual(domain.isNoCommissionListing(convertedCompanyRaw), true, '测试前公司房源应命中免佣 OR 链')
   domain.updateNormalListing(db, 'ADMIN', convertedCompany.id, {
     area: convertedCompanyRaw.area,
     block: convertedCompanyRaw.block,
@@ -606,6 +607,7 @@ function run() {
   assert.strictEqual(convertedCompanyRaw.noCommission, false, '公司房源改为二房东后不得沿用免佣状态')
   assert.strictEqual(convertedCompanyRaw.commissionRate, 15, '公司房源改为二房东后必须重算上传人 15% 分佣')
   assert.strictEqual(convertedCompanyRaw.features.indexOf('不分佣'), -1, '公司房源改为二房东后必须清理不分佣特点')
+  assert.strictEqual(domain.isNoCommissionListing(convertedCompanyRaw), false, '公司房源改为二房东后免佣 OR 链必须整体为 false')
   const convertedReportResult = domain.createClientReport(db, 'U2', convertedCompany.id, {
     needId: 'N1',
     customerPhone: '13800005555'

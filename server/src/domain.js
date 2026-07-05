@@ -3934,6 +3934,7 @@ module.exports = {
   matchListings,
   listingDetail,
   isCompanyListing,
+  isNoCommissionListing,
   listingLogs,
   recordVideoShare,
   footprintRecords,
