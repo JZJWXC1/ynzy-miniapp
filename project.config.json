@@ -13,55 +13,100 @@
       "outputPath": ""
     },
     "useCompilerPlugins": false,
-    "minifyWXML": true
+    "minifyWXML": true,
+    "compileWorklet": false,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "minifyWXSS": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "condition": false,
+    "swc": false,
+    "disableSWC": true
   },
   "compileType": "miniprogram",
   "simulatorPluginLibVersion": {},
   "packOptions": {
     "ignore": [
       {
-        "type": "folder",
-        "value": ".tmp"
+        "value": ".tmp",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": ".codegraph"
+        "value": ".codegraph",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "server"
+        "value": ".claude",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "admin-web"
+        "value": ".git",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "deploy"
+        "value": "server",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "dist"
+        "value": "admin-web",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "scripts"
+        "value": "deploy",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "ui-preview"
+        "value": "dist",
+        "type": "folder"
       },
       {
-        "type": "file",
-        "value": "需求.md"
+        "value": "scripts",
+        "type": "folder"
       },
       {
-        "type": "file",
-        "value": "接口上线说明.md"
+        "value": "ui-preview",
+        "type": "folder"
       },
       {
-        "type": "file",
-        "value": "内测验收清单.md"
+        "value": "docs",
+        "type": "folder"
+      },
+      {
+        "value": "project.private.config.json",
+        "type": "file"
+      },
+      {
+        "value": ".eslintrc.js",
+        "type": "file"
+      },
+      {
+        "value": ".gitignore",
+        "type": "file"
+      },
+      {
+        "value": ".gitattributes",
+        "type": "file"
+      },
+      {
+        "value": "AGENTS.md",
+        "type": "file"
+      },
+      {
+        "value": "需求.md",
+        "type": "file"
+      },
+      {
+        "value": "变更说明-V3.md",
+        "type": "file"
+      },
+      {
+        "value": "接口上线说明.md",
+        "type": "file"
+      },
+      {
+        "value": "内测验收清单.md",
+        "type": "file"
       }
     ],
     "include": []
