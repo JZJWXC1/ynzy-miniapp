@@ -943,12 +943,20 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'POST' && pathname === '/mini/llm/match') {
+    const startedAt = Date.now()
     const body = await parseBody(req)
-    if (isGuestUser(userId)) {
-      assertGuestRateLimit(req, 'mini-llm-match')
-      return sendJson(res, await llm.matchRentalNeed(companyOnlyDb(db), guestListingFilter(body)))
+    const guest = isGuestUser(userId)
+    try {
+      const resultDb = guest ? companyOnlyDb(db) : db
+      const resultBody = guest ? guestListingFilter(body) : body
+      if (guest) assertGuestRateLimit(req, 'mini-llm-match')
+      const result = await llm.matchRentalNeed(resultDb, resultBody)
+      console.log(`[llm-match] status=200 durationMs=${Date.now() - startedAt} guest=${guest}`)
+      return sendJson(res, result)
+    } catch (error) {
+      console.log(`[llm-match] status=${error.statusCode || 500} durationMs=${Date.now() - startedAt} guest=${guest}`)
+      throw error
     }
-    return sendJson(res, await llm.matchRentalNeed(db, body))
   }
 
   if (method === 'POST' && pathname === '/mini/assistant/chat') {

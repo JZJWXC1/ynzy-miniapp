@@ -384,6 +384,7 @@ POST /mini/assistant/feedback
 ```
 
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
+生产服务会为 `POST /mini/llm/match` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`，用于排查真实 LLM 链路耗时；日志不记录请求正文、手机号、地址或房源敏感字段。
 
 模型密钥只从服务端环境变量读取：
 
