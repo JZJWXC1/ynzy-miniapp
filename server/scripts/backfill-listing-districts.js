@@ -34,6 +34,14 @@ function inferDistrict(listing = {}) {
   return mapped || current || '待分区'
 }
 
+function inferBlock(listing = {}) {
+  return locationMap.blockForLocation({
+    community: listing.community,
+    block: text(listing.block) || '待板块',
+    area: text(listing.area || listing.district)
+  })
+}
+
 function distribution(listings = []) {
   return listings.reduce((map, listing) => {
     const district = text(listing.district || listing.area) || '待分区'
@@ -47,12 +55,19 @@ function backfill(db = {}) {
   let changed = 0
   listings.forEach((listing) => {
     const nextDistrict = inferDistrict(listing)
+    const nextBlock = inferBlock(listing)
     if (!nextDistrict) return
     const beforeDistrict = text(listing.district)
     const beforeArea = text(listing.area)
+    const beforeBlock = text(listing.block)
     if (beforeDistrict !== nextDistrict) listing.district = nextDistrict
     if (beforeArea !== nextDistrict) listing.area = nextDistrict
-    if (beforeDistrict !== text(listing.district) || beforeArea !== text(listing.area)) changed += 1
+    if (nextBlock && beforeBlock !== nextBlock) listing.block = nextBlock
+    if (
+      beforeDistrict !== text(listing.district) ||
+      beforeArea !== text(listing.area) ||
+      beforeBlock !== text(listing.block)
+    ) changed += 1
   })
   return {
     total: listings.length,

@@ -131,7 +131,11 @@ function unique(values) {
 
 function normalizeLocationFields(fields = {}, community = '') {
   const explicitDistrict = firstField(fields, ['行政区', '城区', '城市区域', 'districtName'])
-  const block = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
+  const rawBlock = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
+  const block = locationMap.blockForLocation({
+    community,
+    block: rawBlock
+  })
   return {
     area: locationMap.districtForLocation({
       community,

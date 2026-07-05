@@ -32,12 +32,37 @@ function compactKey(value) {
   return normalizeText(value).replace(/\s+/g, '')
 }
 
-function districtForCommunity(community) {
+function communityOverride(community) {
   const text = compactKey(community)
-  if (!text) return ''
-  const overrides = (config.location && config.location.communityDistrictOverrides) || {}
+  if (!text) return null
+  const overrides = (config.location && config.location.communityLocationOverrides) || {}
   const matched = Object.keys(overrides).find((name) => compactKey(name) === text)
-  return matched ? overrides[matched] : ''
+  if (matched) return overrides[matched] || null
+  const districtOverrides = (config.location && config.location.communityDistrictOverrides) || {}
+  const blockOverrides = (config.location && config.location.communityBlockOverrides) || {}
+  const legacyMatched = unique(Object.keys(districtOverrides).concat(Object.keys(blockOverrides)))
+    .find((name) => compactKey(name) === text)
+  if (!legacyMatched) return null
+  return {
+    district: districtOverrides[legacyMatched] || '',
+    block: blockOverrides[legacyMatched] || ''
+  }
+}
+
+function districtForCommunity(community) {
+  const override = communityOverride(community)
+  return override ? normalizeText(override.district) : ''
+}
+
+function blockForCommunity(community) {
+  const override = communityOverride(community)
+  return override ? normalizeText(override.block) : ''
+}
+
+function blockForLocation(location = {}) {
+  return blockForCommunity(location.community || location.communityName) ||
+    normalizeText(location.block || location.area || location.fallback) ||
+    '待板块'
 }
 
 function districtForBlock(block, fallback = '', options = {}) {
@@ -59,7 +84,8 @@ function districtForBlock(block, fallback = '', options = {}) {
 }
 
 function districtForLocation(location = {}) {
-  return districtForBlock(location.block || location.area, location.district || location.fallback || location.area, {
+  const block = blockForLocation(location)
+  return districtForBlock(block || location.area, location.district || location.fallback || location.area, {
     community: location.community || location.communityName
   })
 }
@@ -68,6 +94,8 @@ module.exports = {
   splitLocationTokens,
   configuredDistrictName,
   districtForCommunity,
+  blockForCommunity,
+  blockForLocation,
   districtForBlock,
   districtForLocation
 }

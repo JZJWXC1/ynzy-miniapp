@@ -85,14 +85,22 @@ const blockDistrictMap = Object.keys(districtBlocks).reduce((map, district) => {
   })
   return map
 }, {})
-const communityDistrictOverrides = {
-  '小洋坝家园一区': '余杭区',
-  '小洋坝家园二区': '余杭区',
-  '小洋坝家园三区': '余杭区',
-  '大华海派风景': '余杭区',
-  '风雅乐府': '余杭区',
-  '瑷颐湾': '余杭区'
+const communityLocationOverrides = {
+  '小洋坝家园一区': { district: '余杭区', block: '万达' },
+  '小洋坝家园二区': { district: '余杭区', block: '万达' },
+  '小洋坝家园三区': { district: '余杭区', block: '万达' },
+  '大华海派风景': { district: '余杭区', block: '万达' },
+  '风雅乐府': { district: '余杭区', block: '万达' },
+  '瑷颐湾': { district: '余杭区', block: '万达' }
 }
+const communityDistrictOverrides = Object.keys(communityLocationOverrides).reduce((map, community) => {
+  map[community] = communityLocationOverrides[community].district
+  return map
+}, {})
+const communityBlockOverrides = Object.keys(communityLocationOverrides).reduce((map, community) => {
+  map[community] = communityLocationOverrides[community].block
+  return map
+}, {})
 const blockCenters = {
   '万达': { latitude: 30.333, longitude: 120.128 },
   '北部软件园': { latitude: 30.335, longitude: 120.121 },
@@ -156,7 +164,9 @@ module.exports = {
   location: {
     districtBlocks,
     blockDistrictMap,
+    communityLocationOverrides,
     communityDistrictOverrides,
+    communityBlockOverrides,
     blockCenters
   },
   feishu: {

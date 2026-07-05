@@ -203,28 +203,34 @@ function run() {
   }).some((item) => item.id === dongxinyuanListing.id), '前台列表应支持拱墅区+东新园+两室+3000-5000 组合筛选')
   assert.ok(domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === fourRoomListing.id), '三室以上应包含四室及更多户型')
   assert.ok(!domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === dongxinyuanListing.id), '三室以上不应包含两室')
-  assert.strictEqual(locationMap.districtForLocation({
-    community: '小洋坝家园一区',
-    block: '万达'
-  }), '余杭区', '小区级覆盖必须优先于板块映射')
+  ;['小洋坝家园一区', '小洋坝家园二区', '小洋坝家园三区', '大华海派风景', '风雅乐府', '瑷颐湾'].forEach((community) => {
+    assert.strictEqual(locationMap.districtForLocation({
+      community,
+      block: '祥符'
+    }), '余杭区', `${community} 小区级行政区覆盖必须优先于板块映射`)
+    assert.strictEqual(locationMap.blockForLocation({
+      community,
+      block: '祥符'
+    }), '万达', `${community} 小区级板块覆盖必须固定为万达`)
+  })
   assert.strictEqual(locationMap.districtForLocation({
     community: '普通万达小区',
     block: '万达'
   }), '拱墅区', '未配置小区覆盖时应继续按板块映射')
   const yuhangSyncedRow = feishuSync.normalizeRecord({
     fields: {
-      小区: '小洋坝家园一区',
-      板块: '万达',
+      小区: '风雅乐府',
+      板块: '祥符',
       房号: '1-1-101',
       户型描述: '两室一厅一卫',
       租金: '4200'
     }
   }, 0)
   assert.strictEqual(yuhangSyncedRow.area, '余杭区', '飞书同步应按小区覆盖写入余杭区')
-  assert.strictEqual(yuhangSyncedRow.block, '万达', '小区覆盖不能改写原板块')
+  assert.strictEqual(yuhangSyncedRow.block, '万达', '飞书同步应按小区覆盖写入万达板块')
   const backfillDb = {
     listings: [
-      { id: 'YH1', community: '小洋坝家园一区', block: '万达', district: '拱墅区', area: '拱墅区', companyListing: true },
+      { id: 'YH1', community: '小洋坝家园一区', block: '祥符', district: '拱墅区', area: '拱墅区', companyListing: true },
       { id: 'GS1', community: '普通万达小区', block: '万达', district: '', area: '', companyListing: true },
       { id: 'SC1', community: '闸弄口小区', block: '闸弄口', district: '', area: '', companyListing: true }
     ]
@@ -232,7 +238,7 @@ function run() {
   const backfillResult = backfillDistricts.backfill(backfillDb)
   assert.strictEqual(backfillDb.listings[0].district, '余杭区', '回填应把小区覆盖房源改为余杭区')
   assert.strictEqual(backfillDb.listings[0].area, '余杭区', '回填应同步更新 area')
-  assert.strictEqual(backfillDb.listings[0].block, '万达', '回填不能改写板块')
+  assert.strictEqual(backfillDb.listings[0].block, '万达', '回填应把小区覆盖房源改为万达板块')
   assert.deepStrictEqual(backfillResult.distribution, { '余杭区': 1, '拱墅区': 1, '上城区': 1 }, '回填分布应覆盖三区')
 
   const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
