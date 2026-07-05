@@ -16,6 +16,8 @@
   var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
+  var OWNER_SOURCE_ALIASES = [OWNER_SOURCE, '业主'];
+  var SECOND_LANDLORD_SOURCE_ALIASES = [SECOND_LANDLORD_SOURCE, '二房东', '二房東', '普通上传', '合作房源'];
   var OWNER_COMMISSION_RATE = 20;
   var SECOND_LANDLORD_COMMISSION_RATE = 15;
   var BROKER_ROLE = '中介';
@@ -269,10 +271,11 @@
 
   function prepareSourceFields(form, current, featureState) {
     var companyListing = formCompanyListing(form || {}, current || {});
-    var ownerType = normalizeOwnerType(firstText((form || {}).ownerType, (form || {}).houseSourceType, (form || {}).landlordType, (current || {}).ownerType, (current || {}).houseSourceType), (current || {}).ownerType || SECOND_LANDLORD_SOURCE);
+    var normalizedOwnerType = normalizeOwnerType(firstText((form || {}).ownerType, (form || {}).houseSourceType, (form || {}).landlordType, (current || {}).ownerType, (current || {}).houseSourceType), (current || {}).ownerType || SECOND_LANDLORD_SOURCE);
     var sourceInput = firstText((form || {}).source, (form || {}).sourceType, (form || {}).listingType, (form || {}).inventoryType);
     var nonCompanySourceInput = sourceInput && !/公司房源|company/.test(sourceInput) ? sourceInput : '';
     var currentCompany = isCompanyListing(current || {});
+    var ownerType = companyListing ? COMPANY_SOURCE : normalizedOwnerType;
     var noCommission = companyListing;
     // 佣金率一律按房源类型重算，忽略表单/历史传入值，与服务端保持一致。
     var finalRate = noCommission ? 0 : commissionRateByOwnerType(ownerType);
@@ -419,11 +422,21 @@
     return listing && (listing.lifecycleStatus === 'expired' || listing.status === '已失效' || listing.status === '已下架');
   }
 
-  function normalizeOwnerType(value, fallback) {
+  function textInList(value, list) {
     var text = String(value || '').trim();
-    if (/业主/.test(text)) return OWNER_SOURCE;
-    if (/二房东|二房東/.test(text)) return SECOND_LANDLORD_SOURCE;
-    return fallback || SECOND_LANDLORD_SOURCE;
+    return list.indexOf(text) !== -1;
+  }
+
+  function ownerTypeFromStructuredValue(value) {
+    if (textInList(value, OWNER_SOURCE_ALIASES)) return OWNER_SOURCE;
+    if (textInList(value, SECOND_LANDLORD_SOURCE_ALIASES)) return SECOND_LANDLORD_SOURCE;
+    return '';
+  }
+
+  function normalizeOwnerType(value, fallback) {
+    return ownerTypeFromStructuredValue(value) ||
+      ownerTypeFromStructuredValue(fallback) ||
+      SECOND_LANDLORD_SOURCE;
   }
 
   // 佣金率由房源类型派生，对齐服务端 server/src/domain.js commissionRateByOwnerType：
@@ -436,10 +449,11 @@
 
   function isOwnerListing(listing) {
     var data = listing || {};
-    var sourceText = [data.ownerType, data.houseSourceType, data.source, data.sourceType, data.listingType, data.category].map(function (item) {
-      return String(item || '');
-    }).join(' ');
-    return normalizeOwnerType(data.ownerType || '') === OWNER_SOURCE || /业主/.test(sourceText);
+    var values = [data.ownerType, data.houseSourceType, data.source];
+    if (isCompanyListing(data)) return false;
+    return values.some(function (item) {
+      return ownerTypeFromStructuredValue(item) === OWNER_SOURCE;
+    });
   }
 
   function requiresListingReview(listing) {
@@ -607,7 +621,9 @@
     var data = listing || {};
     var companyListing = isCompanyListing(data);
     var noCommission = companyListing;
-    var ownerType = normalizeOwnerType(data.ownerType || data.houseSourceType || '', SECOND_LANDLORD_SOURCE);
+    var ownerType = companyListing
+      ? COMPANY_SOURCE
+      : normalizeOwnerType(data.ownerType || data.houseSourceType || data.source || '', SECOND_LANDLORD_SOURCE);
     var reviewStatus = ownerReviewStatus(Object.assign({}, data, { ownerType: ownerType }));
     var sourceLabel = companyListing ? COMPANY_SOURCE : ownerType;
     return {
@@ -616,7 +632,7 @@
       noCommission: noCommission,
       ownerType: ownerType,
       houseSourceType: ownerType,
-      isOwnerListing: ownerType === OWNER_SOURCE,
+      isOwnerListing: !companyListing && ownerType === OWNER_SOURCE,
       reviewStatus: reviewStatus,
       requiresManualReview: truthyFlag(data.requiresManualReview),
       manualReviewReason: data.manualReviewReason || '',
@@ -782,9 +798,10 @@
 
   function matchesCategory(listing, category) {
     if (!category || category === '全部') return true;
+    if (category === OWNER_SOURCE) return isOwnerListing(listing);
+    if (category === COMPANY_SOURCE) return isCompanyListing(listing);
     var display = listingDisplayFields(listing);
     var text = String((listing.type || '') + (listing.layout || '') + (listing.source || '') + (display.ownerType || '') + (display.sourceLabel || ''));
-    if (category === '业主房源') return text.indexOf('业主') !== -1;
     return text.indexOf(category) !== -1;
   }
 

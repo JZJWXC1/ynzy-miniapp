@@ -32,6 +32,8 @@ const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全�
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
 const SECOND_LANDLORD_SOURCE = '二房东房源'
+const OWNER_SOURCE_ALIASES = new Set([OWNER_SOURCE, '业主'])
+const SECOND_LANDLORD_SOURCE_ALIASES = new Set([SECOND_LANDLORD_SOURCE, '二房东', '二房東', '普通上传', '合作房源'])
 const BROKER_ROLE = '中介'
 const BROKER_AUTHED = '手机号登录'
 const OWNER_DAILY_VIEW_LIMIT = 3
@@ -141,23 +143,26 @@ function isFrontendEffectiveListing(listing = {}) {
     !isPendingOwnerReview(listing)
 }
 
-function normalizeOwnerType(value, fallback = SECOND_LANDLORD_SOURCE) {
+function ownerTypeFromStructuredValue(value = '') {
   const text = String(value || '').trim()
-  if (/业主/.test(text)) return OWNER_SOURCE
-  if (/二房东|二房東/.test(text)) return SECOND_LANDLORD_SOURCE
-  return fallback || SECOND_LANDLORD_SOURCE
+  if (OWNER_SOURCE_ALIASES.has(text)) return OWNER_SOURCE
+  if (SECOND_LANDLORD_SOURCE_ALIASES.has(text)) return SECOND_LANDLORD_SOURCE
+  return ''
+}
+
+function normalizeOwnerType(value, fallback = SECOND_LANDLORD_SOURCE) {
+  return ownerTypeFromStructuredValue(value) ||
+    ownerTypeFromStructuredValue(fallback) ||
+    SECOND_LANDLORD_SOURCE
 }
 
 function isOwnerListing(listing = {}) {
-  const sourceText = [
+  if (isCompanyListing(listing)) return false
+  return [
     listing.ownerType,
     listing.houseSourceType,
-    listing.source,
-    listing.sourceType,
-    listing.listingType,
-    listing.category
-  ].map((item) => String(item || '')).join(' ')
-  return normalizeOwnerType(listing.ownerType || '') === OWNER_SOURCE || /业主/.test(sourceText)
+    listing.source
+  ].some((item) => normalizeOwnerType(item || '', '') === OWNER_SOURCE)
 }
 
 function requiresListingReview(listing = {}) {
@@ -585,7 +590,9 @@ function featuresWithCompanyDefaults(value, listing = {}) {
 
 function listingSourceFields(listing = {}) {
   const companyListing = isCompanyListing(listing)
-  const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
+  const ownerType = companyListing
+    ? COMPANY_SOURCE
+    : normalizeOwnerType(listing.ownerType || listing.houseSourceType || listing.source || '', SECOND_LANDLORD_SOURCE)
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
   const noCommission = companyListing
@@ -594,7 +601,7 @@ function listingSourceFields(listing = {}) {
     companyListing,
     isCompanyListing: companyListing,
     ownerType,
-    isOwnerListing: ownerType === OWNER_SOURCE,
+    isOwnerListing: !companyListing && ownerType === OWNER_SOURCE,
     reviewStatus,
     requiresManualReview: truthyFlag(listing.requiresManualReview),
     manualReviewReason: listing.manualReviewReason || '',
@@ -612,15 +619,27 @@ function migrateCompanyListings(db = {}) {
   ;(db.listings || []).forEach((listing) => {
     const shouldBeCompany = isLegacyRentInventory(listing) || isCompanyListing(listing)
     const shouldNoCommission = shouldBeCompany || isNoCommissionListing(listing)
-    if (shouldBeCompany && !isCompanyListing(listing)) {
-      listing.source = COMPANY_SOURCE
-      listing.companyListing = true
-      listing.isCompanyListing = true
-      changed = true
-    }
-    if (shouldBeCompany && listing.source !== COMPANY_SOURCE) {
-      listing.source = COMPANY_SOURCE
-      changed = true
+    if (shouldBeCompany) {
+      if (listing.source !== COMPANY_SOURCE) {
+        listing.source = COMPANY_SOURCE
+        changed = true
+      }
+      if (listing.ownerType !== COMPANY_SOURCE) {
+        listing.ownerType = COMPANY_SOURCE
+        changed = true
+      }
+      if (listing.houseSourceType !== COMPANY_SOURCE) {
+        listing.houseSourceType = COMPANY_SOURCE
+        changed = true
+      }
+      if (!listing.companyListing) {
+        listing.companyListing = true
+        changed = true
+      }
+      if (!listing.isCompanyListing) {
+        listing.isCompanyListing = true
+        changed = true
+      }
     }
     if (shouldNoCommission && Number(listing.commissionRate || 0) !== 0) {
       listing.commissionRate = 0
@@ -1059,9 +1078,10 @@ function homeListings(db) {
 
 function matchesCategory(listing, category) {
   if (!category || category === '全部') return true
+  if (category === OWNER_SOURCE) return isOwnerListing(listing)
+  if (category === COMPANY_SOURCE) return isCompanyListing(listing)
   const display = listingDisplayFields(listing)
   const type = `${listing.type || ''}${listing.layout || ''}${listing.source || ''}${display.ownerType || ''}${display.sourceLabel || ''}`
-  if (category === '业主房源') return type.indexOf('业主') !== -1
   return type.indexOf(category) !== -1
 }
 
@@ -2005,11 +2025,12 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
 
 function matchListingSourceFilter(listing, source) {
   if (!source) return true
+  const requested = String(source || '').trim()
   const company = isCompanyListing(listing)
-  const owner = !company && normalizeOwnerType(listing.ownerType || listing.houseSourceType || '') === OWNER_SOURCE
-  if (/公司/.test(source)) return company
-  if (/业主/.test(source)) return owner
-  if (/二房东/.test(source)) return !company && !owner
+  const owner = isOwnerListing(listing)
+  if (requested === COMPANY_SOURCE || requested === '公司') return company
+  if (requested === OWNER_SOURCE || requested === '业主') return owner
+  if (requested === SECOND_LANDLORD_SOURCE || requested === '二房东') return !company && !owner
   return true
 }
 
@@ -2766,8 +2787,9 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   const location = publicListingLocationFields(listing)
   const listingTitle = publicListingTitle(listing, location) || listing.title || '未知房源'
   const rentFen = Math.round(Number(listing.rent || 0) * 100)
-  const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
-  const source = listing.source || listingSourceFields(listing).sourceLabel || ''
+  const sourceFields = listingSourceFields(listing)
+  const ownerType = sourceFields.ownerType
+  const source = listing.source || sourceFields.sourceLabel || ''
   const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId)
   const dealSnapshot = {
     needId: report.needId || '',
@@ -3424,13 +3446,14 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     : firstText(current.viewingPassword, current.showingPassword)
   const companyFlagInput = firstOwnValue(form, ['companyListing', 'isCompanyListing', 'companyOwned'])
   const ownerTypeInput = firstText(form.ownerType, form.houseSourceType, form.landlordType, current.ownerType, current.houseSourceType)
-  const ownerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
+  const normalizedOwnerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
   const sourceInput = firstText(form.source, form.sourceType, form.listingType, form.inventoryType)
   const nonCompanySourceInput = sourceInput && !/公司房源|company/.test(sourceInput) ? sourceInput : ''
   const currentCompany = isCompanyListing(current)
   const companyListing = companyFlagInput !== undefined
     ? truthyFlag(companyFlagInput)
     : (sourceInput ? /公司房源|company/.test(sourceInput) : currentCompany)
+  const ownerType = companyListing ? COMPANY_SOURCE : normalizedOwnerType
   const featureFields = ['features', 'featureTags', 'tags']
   const formFeatureInput = firstOwnValue(form, featureFields)
   const currentFeatureInput = firstOwnValue(current, featureFields)

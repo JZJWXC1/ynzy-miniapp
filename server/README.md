@@ -106,9 +106,11 @@ token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签�
 
 房源分为：
 
-- 公司房源：公司自营或飞书同步房源，`companyListing=true` 或来源文本包含公司房源。
-- 二房东房源：合作房源，`ownerType=二房东房源`。
-- 业主房源：合作房源，`ownerType=业主房源`。
+- 公司房源：公司自营或飞书同步房源，优先信任 `companyListing=true` 或结构化 `source=公司房源`，命中公司后不再进入业主筛选。
+- 二房东房源：合作房源，`ownerType=二房东房源`、`houseSourceType=二房东房源` 或结构化 `source=二房东房源`。
+- 业主房源：合作房源，`ownerType=业主房源`、`houseSourceType=业主房源` 或结构化 `source=业主房源`。
+
+业主/二房东归类只信结构化枚举字段，标题、描述、户型里出现“业主”等文字不参与判定；存量公司房源若误带 `ownerType=业主房源`，读库迁移会纠正为公司房源。
 
 视频规则：
 
