@@ -80,10 +80,28 @@ const detailWxml = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/lis
 const detailWxss = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/listing-detail.wxss'), 'utf8')
 
 assert(detailJs.includes('wx.downloadFile'), '一键转发前必须先下载签名视频到临时文件')
+assert(detailJs.includes('wx.shareVideoMessage'), '一键转发必须优先发送视频气泡')
+assert(detailJs.includes('videoPath: filePath'), 'wx.shareVideoMessage 必须使用本地视频路径')
 assert(detailJs.includes('wx.shareFileMessage'), '一键转发必须发送原视频文件')
 assert(detailJs.includes('wx.saveVideoToPhotosAlbum'), '不支持直接发送文件时必须回退保存视频到相册')
+assert(detailJs.includes('wx.hideShareMenu'), '房源详情页必须禁用右上角原生小程序转发')
 assert(!detailJs.includes('onShareAppMessage'), '一键转发不得再走小程序卡片分享')
 assert(!detailWxml.includes('open-type="share"'), '一键转发按钮不得触发小程序卡片')
+
+const prepareStart = detailJs.indexOf('async prepareVideoShare()')
+const prepareEnd = detailJs.indexOf('revealSensitive()', prepareStart)
+assert(prepareStart !== -1 && prepareEnd > prepareStart, '必须存在 prepareVideoShare 流程')
+const prepareVideoShareSource = detailJs.slice(prepareStart, prepareEnd)
+const videoShareIndex = prepareVideoShareSource.indexOf('this.shareVideoMessage(filePath)')
+const fileShareIndex = prepareVideoShareSource.indexOf('this.shareVideoFile(filePath)')
+const albumShareIndex = prepareVideoShareSource.indexOf('this.fallbackSaveVideo(filePath)')
+assert(videoShareIndex !== -1 && fileShareIndex !== -1 && albumShareIndex !== -1, '必须实现视频气泡、文件、相册三级降级')
+assert(videoShareIndex < fileShareIndex && fileShareIndex < albumShareIndex, '三级降级顺序必须是 shareVideoMessage -> shareFileMessage -> 保存相册')
+
+const shareVideoBlock = detailJs.match(/wx\.shareVideoMessage\(\{([\s\S]*?)\n\s*\}\)/)
+assert(shareVideoBlock, '必须存在 wx.shareVideoMessage 调用')
+const shareVideoPayload = shareVideoBlock[1].replace(/\bvideoPath\b/g, '')
+assert(!/\b(title|path|fileName|name)\s*:/.test(shareVideoPayload), '发送视频气泡不得携带小程序卡片、标题或文件名参数')
 
 const shareFileBlock = detailJs.match(/wx\.shareFileMessage\(\{([\s\S]*?)\n\s*\}\)/)
 assert(shareFileBlock, '必须存在 wx.shareFileMessage 调用')

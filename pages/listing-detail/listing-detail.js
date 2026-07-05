@@ -17,11 +17,6 @@ function safeText(value) {
   return String(value || '').trim()
 }
 
-function isUnsupportedApiError(error) {
-  const message = String((error && (error.errMsg || error.message)) || '').toLowerCase()
-  return /not\s+support|unsupported|未支持|不支持|not\s+function|undefined/.test(message)
-}
-
 function isAlbumAuthError(error) {
   const message = String((error && (error.errMsg || error.message)) || '')
   return /auth|authorize|permission|deny|denied|scope\.writePhotosAlbum/i.test(message)
@@ -143,6 +138,7 @@ Page({
   },
 
   onLoad(options) {
+    this.hideNativeShareMenu()
     const id = options.id;
     const needId = decodeOption(options.needId)
     if (!id) {
@@ -155,6 +151,17 @@ Page({
       entrySource: decodeOption(options.source)
     })
     this.loadListing(id);
+  },
+
+  onShow() {
+    this.hideNativeShareMenu()
+  },
+
+  hideNativeShareMenu() {
+    if (!wx.hideShareMenu) return
+    wx.hideShareMenu({
+      menus: ['shareAppMessage', 'shareTimeline']
+    })
   },
 
   loadListing(id) {
@@ -249,6 +256,20 @@ Page({
     })
   },
 
+  shareVideoMessage(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.shareVideoMessage) {
+        reject(new Error('当前微信版本暂不支持直接发送视频气泡'))
+        return
+      }
+      wx.shareVideoMessage({
+        videoPath: filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
   saveVideoForManualShare(filePath) {
     return new Promise((resolve, reject) => {
       if (!wx.saveVideoToPhotosAlbum) {
@@ -324,12 +345,17 @@ Page({
       const filePath = await this.downloadShareVideo(listing.videoUrl)
       wx.hideLoading()
       try {
-        await this.shareVideoFile(filePath)
-        await this.recordVideoFileShare('wechat-file')
+        await this.shareVideoMessage(filePath)
+        await this.recordVideoFileShare('wechat-video')
         wx.showToast({ title: '视频已发送', icon: 'none' })
-      } catch (shareError) {
-        if (!isUnsupportedApiError(shareError)) throw shareError
-        await this.fallbackSaveVideo(filePath)
+      } catch (videoShareError) {
+        try {
+          await this.shareVideoFile(filePath)
+          await this.recordVideoFileShare('wechat-file')
+          wx.showToast({ title: '视频已发送', icon: 'none' })
+        } catch (fileShareError) {
+          await this.fallbackSaveVideo(filePath)
+        }
       }
     } catch (error) {
       wx.hideLoading()
