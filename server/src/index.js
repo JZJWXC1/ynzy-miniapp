@@ -484,9 +484,23 @@ function assertAdminRequest(req, db) {
 }
 
 function assertAdminCapability(account) {
-  // 高危操作（创建/禁用管理员、整库导出）仅限“全部后台权限”账号。permission 字段原先从不参与
-  // 鉴权，任何持有效 token 的受限账号（区域查看/后台查看）都能自我提权或导出全量数据。
-  if (account && account.permission === '全部后台权限') return
+  // 存量管理员账号历史上没有 permission/capabilities 字段；这类账号按超级管理员兼容，
+  // 只拦截显式标为受限权限的账号，避免老账号编辑房源被误判 403。
+  if (!account) {
+    const error = new Error('当前管理员无权执行该操作')
+    error.statusCode = 403
+    throw error
+  }
+  const permission = String(account.permission || '').trim()
+  const capabilities = Array.isArray(account.capabilities)
+    ? account.capabilities.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+  const explicitlyRestricted = (
+    permission && permission !== '全部后台权限'
+  ) || (
+    capabilities.length && capabilities.indexOf('*') === -1 && capabilities.indexOf('all') === -1
+  )
+  if (!explicitlyRestricted) return
   const error = new Error('当前管理员无权执行该操作')
   error.statusCode = 403
   throw error

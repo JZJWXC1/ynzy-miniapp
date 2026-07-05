@@ -31,6 +31,30 @@
       background: var(--paper);
     }
 
+    .admin-toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 10000;
+      max-width: min(360px, calc(100vw - 48px));
+      padding: 14px 18px;
+      color: #fff;
+      font-weight: 800;
+      line-height: 1.5;
+      background: var(--deep);
+      border-radius: 12px;
+      box-shadow: 0 16px 42px rgba(21, 63, 54, .24);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(12px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .admin-toast.active {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
     .login-screen {
       min-height: 100vh;
       display: grid;
@@ -1529,6 +1553,8 @@
     </div>
   </div>
 
+  <div class="admin-toast" id="adminToast" role="status" aria-live="polite"></div>
+
   <script src="../utils/mock-data.js"></script>
   <script>
     const adminAccounts = [
@@ -1604,6 +1630,7 @@
     let listingReviewItems = [];
     let expiredListingItems = [];
     let adminListingItems = [];
+    let adminToastTimer = null;
     const localConfirmedDeals = {};
 
     function pillClass(value) {
@@ -1638,6 +1665,17 @@
 
     function safeTextWithBreaks(value, fallback = '') {
       return safeText(value, fallback).replace(/&lt;br&gt;/g, '<br>');
+    }
+
+    function showAdminToast(message) {
+      const toast = document.getElementById('adminToast');
+      if (!toast) return;
+      toast.textContent = message || '操作已完成';
+      toast.classList.add('active');
+      clearTimeout(adminToastTimer);
+      adminToastTimer = setTimeout(() => {
+        toast.classList.remove('active');
+      }, 2200);
     }
 
     function maskPhone(value) {
@@ -1859,14 +1897,14 @@
       `).join('');
     }
 
-    async function renderListings() {
+    async function renderListings(sourceListingData) {
       const area = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
       const source = sourceFilter.value;
       const status = statusFilter.value;
-      const listingData = await getAdminData(`/admin/listings${buildQuery({ area, block, community, source, status })}`, () => dataCenter.getAdminListings());
-      const rows = listingData.filter((item) => {
+      const listingData = sourceListingData || await getAdminData(`/admin/listings${buildQuery({ area, block, community, source, status })}`, () => dataCenter.getAdminListings());
+      const rows = arrayValue(listingData).filter((item) => {
         const matchArea = !area || item.area === area;
         const matchBlock = !block || item.block === block;
         const matchCommunity = !community || item.community.includes(community);
@@ -2211,8 +2249,8 @@
       `;
     }
 
-    async function renderListingReviews() {
-      const listingData = await getAdminData('/admin/listings', () => dataCenter.getAdminListings());
+    async function renderListingReviews(sourceListingData) {
+      const listingData = sourceListingData || await getAdminData('/admin/listings', () => dataCenter.getAdminListings());
       const rows = arrayValue(listingData).filter(isPendingListingReview);
       listingReviewItems = rows;
       listingReviewRows.innerHTML = rows.map(renderReviewListRow).join('');
@@ -2770,23 +2808,25 @@
           await renderListingReviews();
           await renderDashboardStats();
           await renderAreaStats();
+          showAdminToast(approved ? '审核通过，列表状态已刷新。' : '已驳回，列表状态已刷新。');
           return;
         }
         alert('请通过后端地址打开后台后再审核房源：/admin-web/');
         return;
       }
 
-      await adminRequest(`/admin/listings/${id}/review`, {
+      const updatedListings = await adminRequest(`/admin/listings/${id}/review`, {
         method: 'POST',
         body: JSON.stringify({
           action,
           note: approved ? '管理员审核通过，房源已上架' : '管理员审核驳回，房源暂不上架'
         })
       });
-      await renderListings();
-      await renderListingReviews();
+      await renderListings(updatedListings);
+      await renderListingReviews(updatedListings);
       await renderDashboardStats();
       await renderAreaStats();
+      showAdminToast(approved ? '审核通过，列表状态已刷新。' : '已驳回，列表状态已刷新。');
     }
 
     async function changeAdminPassword(id, account) {

@@ -99,7 +99,35 @@ function seedDb() {
     footprints: [],
     clientReports: [],
     dealRecords: [],
-    commissionRecords: []
+    commissionRecords: [],
+    adminAccounts: [
+      {
+        id: 'A001',
+        account: 'admin',
+        password: 'admin123',
+        name: '管理员',
+        userId: 'U1',
+        permission: '全部后台权限',
+        status: '启用'
+      },
+      {
+        id: 'A002',
+        account: 'manager01',
+        password: 'manager123',
+        name: '区域主管',
+        userId: 'U1',
+        permission: '区域查看权限',
+        status: '启用'
+      },
+      {
+        id: 'A003',
+        account: 'legacyadmin',
+        password: 'legacy123',
+        name: '存量管理员',
+        userId: 'U1',
+        status: '启用'
+      }
+    ]
   }
   fs.writeFileSync(dataFile, JSON.stringify(db, null, 2), 'utf8')
 }
@@ -273,11 +301,40 @@ async function run() {
     const managerRechargeSync = await request('POST', '/admin/recharges/R-NOEXIST/sync', null, managerAuth)
     assert.strictEqual(managerRechargeSync.statusCode, 403, '受限管理员不得同步并改写充值状态')
 
+    // 存量管理员账号没有 permission/capabilities 字段时，必须按超级管理员兼容，不能误拦房源编辑为 403
+    const legacyLogin = await request('POST', '/admin/auth/login', { account: 'legacyadmin', password: 'legacy123' })
+    assert.strictEqual(legacyLogin.statusCode, 200, '无显式权限字段的存量管理员应能登录')
+    const legacyEdit = await request('PUT', '/admin/listings/AUTH_PARTNER', {
+      area: '拱墅区',
+      block: '测试板块',
+      community: '合作鉴权小区',
+      building: '1幢',
+      unit: '1单元',
+      roomNumber: '101',
+      rentMode: '整租',
+      room: '两室',
+      hall: '一厅',
+      bath: '一卫',
+      rent: 3100,
+      contact: '13911112222',
+      ownerType: '二房东房源',
+      companyListing: false,
+      features: ['电梯'],
+      videoUrl: 'https://example.com/auth-token.mp4'
+    }, { Authorization: `Bearer ${dataOf(legacyLogin).token}` })
+    assert.strictEqual(legacyEdit.statusCode, 200, '存量管理员编辑房源不应被 assertAdminCapability 误拦 403')
+    assert.strictEqual(dataOf(legacyEdit).id, 'AUTH_PARTNER', '存量管理员编辑应返回房源详情')
+
     // 对照：全部后台权限管理员可以执行高危操作
     const superLogin = await request('POST', '/admin/auth/login', { account: 'admin', password: 'admin123' })
     assert.strictEqual(superLogin.statusCode, 200, '超级管理员应能登录')
     const superExport = await request('GET', '/admin/data/export', null, { Authorization: `Bearer ${dataOf(superLogin).token}` })
     assert.strictEqual(superExport.statusCode, 200, '全部后台权限管理员可导出整库数据')
+
+    const adminWebSource = fs.readFileSync(path.join(serverDir, '..', 'admin-web', 'index.html'), 'utf8')
+    assert(adminWebSource.includes('showAdminToast'), '后台审核通过/驳回后必须有 toast 反馈')
+    assert(adminWebSource.includes('renderListings(updatedListings)'), '审核后房源列表必须使用接口返回的新状态即时刷新')
+    assert(adminWebSource.includes('renderListingReviews(updatedListings)'), '审核后待审核列表必须使用接口返回的新状态即时刷新')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })
