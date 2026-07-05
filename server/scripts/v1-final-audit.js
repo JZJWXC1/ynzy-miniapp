@@ -32,7 +32,11 @@ const criticalScripts = [
   'server/scripts/asr-realtime-auth-test.js',
   // 公司房源一律默认带电梯房（38584f6 引入的规则），此前唯一锁定它的测试不在门禁内，
   // 改坏也不会红；纳入门禁。
-  'server/scripts/company-default-features-test.js'
+  'server/scripts/company-default-features-test.js',
+  // 飞书公司房源同步是线上库存口径来源：无素材/素材失败必须降级上架并保留对账信息。
+  'server/scripts/feishu-sync-v1-test.js',
+  // 登录态真 LLM 链路挂起时必须在供应商级超时后回本地真实匹配，不能让前端报网络失败。
+  'server/scripts/llm-provider-timeout-fallback-test.js'
 ]
 
 function repoPath(relativePath) {

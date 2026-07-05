@@ -349,6 +349,7 @@ async function main() {
   })
   result = await llm.matchRentalNeed(clone(failDb), { text: '滨江四千左右两室，必须有燃气' })
   assert.strictEqual(result.mode, 'local-fallback', 'LLM失败时没有本地降级')
+  assert.strictEqual(result.degraded, true, 'LLM失败时必须标记 degraded=true')
   assert(result.listings.length > 0, 'LLM失败后没有返回本地匹配结果')
 
   result = await llm.matchRentalNeed(clone(db), { stage: 'recognize', text: '滨江四千左右两室，必须有燃气' })

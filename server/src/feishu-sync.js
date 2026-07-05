@@ -50,6 +50,65 @@ function trimSlash(value) {
   return String(value || '').replace(/\/+$/, '')
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function shortError(error) {
+  return String(error && error.message ? error.message : error || '').replace(/\s+/g, ' ').trim()
+}
+
+function materialRetryCount() {
+  const count = Number(config.feishu.materialTransferRetryCount || 0)
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+}
+
+function materialTimeoutMs() {
+  const timeout = Number(config.feishu.materialTransferTimeoutMs || 0)
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 120000
+}
+
+async function withMaterialRetry(label, action) {
+  const retries = materialRetryCount()
+  let lastError = null
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await action(attempt + 1)
+    } catch (error) {
+      lastError = error
+      if (attempt >= retries) break
+      const baseDelay = Number(config.feishu.materialTransferRetryDelayMs || 800)
+      const delayMs = Math.max(100, baseDelay) * (attempt + 1)
+      await sleep(delayMs)
+    }
+  }
+  const message = shortError(lastError) || '未知错误'
+  const error = new Error(`${label}失败${retries ? `（已重试 ${retries} 次）` : ''}：${message}`)
+  error.statusCode = lastError && lastError.statusCode ? lastError.statusCode : 502
+  throw error
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController()
+  const timeout = materialTimeoutMs()
+  const timer = setTimeout(() => controller.abort(), timeout)
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    })
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      const timeoutError = new Error(`请求超过 ${Math.round(timeout / 1000)} 秒未返回`)
+      timeoutError.statusCode = 504
+      throw timeoutError
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function readJson(filePath) {
   const target = path.isAbsolute(filePath) ? filePath : path.resolve(config.rootDir, '..', filePath)
   const content = fs.readFileSync(target, 'utf8').replace(/^\uFEFF/, '')
@@ -730,8 +789,16 @@ async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 
   return materials
 }
 
-async function downloadFeishuMaterial(token, material) {
+async function downloadFeishuMaterialOnce(token, material) {
   if (material.localFilePath) {
+    const stat = fs.statSync(material.localFilePath)
+    if (stat.size > config.oss.maxVideoSize) {
+      const sizeMb = Math.ceil(stat.size / 1024 / 1024)
+      const limitMb = Math.floor(config.oss.maxVideoSize / 1024 / 1024)
+      const error = new Error(`本地素材 ${sizeMb}MB 超过当前 OSS 视频上限 ${limitMb}MB`)
+      error.statusCode = 413
+      throw error
+    }
     return {
       buffer: fs.readFileSync(material.localFilePath),
       contentType: 'video/mp4'
@@ -749,14 +816,22 @@ async function downloadFeishuMaterial(token, material) {
   let lastStatus = 0
   let lastText = ''
   for (const endpoint of endpoints) {
-    const response = await fetch(`${trimSlash(config.feishu.baseUrl)}${endpoint}`, {
+    const response = await fetchWithTimeout(`${trimSlash(config.feishu.baseUrl)}${endpoint}`, {
       headers: { Authorization: `Bearer ${token}` }
     })
     if (response.ok) {
-      return {
+      const downloaded = {
         buffer: Buffer.from(await response.arrayBuffer()),
         contentType: response.headers.get('content-type') || 'video/mp4'
       }
+      if (downloaded.buffer.length > config.oss.maxVideoSize) {
+        const sizeMb = Math.ceil(downloaded.buffer.length / 1024 / 1024)
+        const limitMb = Math.floor(config.oss.maxVideoSize / 1024 / 1024)
+        const error = new Error(`飞书素材 ${sizeMb}MB 超过当前 OSS 视频上限 ${limitMb}MB`)
+        error.statusCode = 413
+        throw error
+      }
+      return downloaded
     }
     lastStatus = response.status
     lastText = await response.text().catch(() => '')
@@ -764,6 +839,10 @@ async function downloadFeishuMaterial(token, material) {
   const error = new Error(`飞书素材下载失败：${lastStatus}${lastText ? ` ${lastText.slice(0, 120)}` : ''}`)
   error.statusCode = lastStatus
   throw error
+}
+
+async function downloadFeishuMaterial(token, material) {
+  return withMaterialRetry('飞书素材下载', () => downloadFeishuMaterialOnce(token, material))
 }
 
 async function ensureMaterialVideo(token, material, options = {}) {
@@ -795,7 +874,7 @@ async function ensureMaterialVideo(token, material, options = {}) {
     const policy = oss.createVideoUploadPolicy({ fileName: material.name || 'feishu-video.mp4' })
     if (policy.uploadMode === 'oss-post') {
       const downloaded = await downloadFeishuMaterial(token, material)
-      const saved = await oss.putObjectBuffer(policy.objectKey, downloaded.buffer, downloaded.contentType)
+      const saved = await withMaterialRetry('OSS 素材转存', () => oss.putObjectBuffer(policy.objectKey, downloaded.buffer, downloaded.contentType))
       return { videoKey: saved.objectKey, videoUrl: saved.fileUrl, materialUrl: material.url || '' }
     }
     if (material.videoUrl || material.url) {
@@ -843,6 +922,14 @@ function existingByExternalId(db) {
   return map
 }
 
+function syncActorId(db = {}, adminId = '') {
+  const requested = String(adminId || '').trim()
+  const users = db.users || []
+  if (requested && users.some((user) => String(user.id || user.userId || '') === requested)) return requested
+  const admin = users.find((user) => user && (user.isAdmin || user.role === '管理员'))
+  return admin ? (admin.id || admin.userId || requested || 'feishu-sync') : (requested || 'feishu-sync')
+}
+
 function buildListingPayload(row, video) {
   return {
     city: row.city || '杭州',
@@ -876,7 +963,27 @@ function buildListingPayload(row, video) {
   }
 }
 
-function attachFeishuFields(listing, row, material, video) {
+function roomLabel(row = {}) {
+  return [row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey || `第 ${row.rowNumber} 行`
+}
+
+function materialLabel(material = null) {
+  if (!material) return ''
+  return material.sourcePath || material.name || material.url || material.videoUrl || material.token || ''
+}
+
+function buildAuditRow(row, material, syncResult, failureReason = '') {
+  return {
+    rowNumber: row.rowNumber,
+    room: roomLabel(row),
+    tableStatus: row.isDown ? '下架' : (row.statusText || '在租'),
+    matchedMaterialName: materialLabel(material),
+    syncResult,
+    failureReason
+  }
+}
+
+function attachFeishuFields(listing, row, material, video, materialFailureReason = '') {
   listing.externalSource = 'feishu'
   listing.feishuRecordId = String(row.externalId)
   listing.feishuMatchKey = row.matchKey
@@ -890,13 +997,19 @@ function attachFeishuFields(listing, row, material, video) {
   listing.note = row.remark || ''
   listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
   const hasMaterial = Boolean(material)
+  const materialReady = hasMaterial && !materialFailureReason
   listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
   listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''
   listing.sourceMaterialPath = hasMaterial ? (material.sourcePath || '') : ''
   listing.sourceMaterialUrl = hasMaterial ? (video.materialUrl || material.url || '') : ''
-  listing.syncStatus = hasMaterial ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
-  listing.videoMaterialStatus = hasMaterial ? '已匹配视频素材' : MISSING_VIDEO_MATERIAL_STATUS
-  listing.missingVideoMaterial = !hasMaterial
+  listing.syncStatus = materialReady ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
+  listing.videoMaterialStatus = materialReady ? '已匹配视频素材' : (hasMaterial ? '素材转存失败' : MISSING_VIDEO_MATERIAL_STATUS)
+  listing.missingVideoMaterial = !materialReady
+  if (materialFailureReason) {
+    listing.videoMaterialFailureReason = materialFailureReason
+  } else {
+    delete listing.videoMaterialFailureReason
+  }
   listing.syncedAt = nowText()
   listing.status = '在租'
   listing.lifecycleStatus = 'active'
@@ -910,9 +1023,28 @@ function attachFeishuFields(listing, row, material, video) {
   delete listing.expiredStaleDays
 }
 
+function upsertFeishuListing(db, adminId, existing, byExternalId, row, material, video, materialFailureReason = '') {
+  const payload = buildListingPayload(row, video)
+  if (existing) {
+    if (existing.lifecycleStatus === 'expired' || existing.status === '已下架') {
+      existing.lifecycleStatus = 'active'
+      existing.status = '在租'
+    }
+    domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true })
+    attachFeishuFields(existing, row, material, video, materialFailureReason)
+    return { action: 'updated', listing: existing }
+  }
+  const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true })
+  const listing = db.listings.find((item) => item.id === detail.id)
+  attachFeishuFields(listing, row, material, video, materialFailureReason)
+  if (listing && row.externalId) byExternalId.set(String(row.externalId), listing)
+  return { action: 'created', listing }
+}
+
 async function applySync(db, rows, materials, adminId, options = {}) {
   db.listings = db.listings || []
   db.feishuSyncLogs = db.feishuSyncLogs || []
+  const actorId = syncActorId(db, adminId)
   const matcher = createMaterialMatcher(materials)
   const byExternalId = existingByExternalId(db)
   const seen = new Set()
@@ -927,8 +1059,10 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     down: 0,
     skippedNoMaterial: 0,
     missingVideoMaterial: 0,
+    materialTransferFailed: 0,
     skippedInvalid: 0,
     failed: 0,
+    auditRows: [],
     messages: []
   }
 
@@ -937,18 +1071,21 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     if (!row.externalId) {
       result.skippedInvalid += 1
       result.messages.push(`第 ${row.rowNumber} 行缺少房源编号或小区房号，已跳过`)
+      result.auditRows.push(buildAuditRow(row, null, '跳过-缺少房源编号或小区房号', '关键字段缺失'))
       continue
     }
     seen.add(String(row.externalId))
     const existing = byExternalId.get(String(row.externalId))
     if (row.isDown) {
-      if (existing && downListing(db, existing, '飞书房源表已下架，自动同步下架', adminId)) result.down += 1
+      if (existing && downListing(db, existing, '飞书房源表已下架，自动同步下架', actorId)) result.down += 1
+      result.auditRows.push(buildAuditRow(row, null, existing ? '下架' : '跳过-表内下架且线上不存在', '表内状态为下架/已租/关闭'))
       continue
     }
 
     if (!row.community || !row.building || !row.roomNumber || !row.rent || !row.layout) {
       result.skippedInvalid += 1
       result.messages.push(`第 ${row.rowNumber} 行字段不完整，需小区、几栋、房间号、租金、户型`)
+      result.auditRows.push(buildAuditRow(row, null, '跳过-字段不完整', '缺少小区/楼栋/房号/租金/户型之一'))
       continue
     }
     const material = matcher(row)
@@ -964,31 +1101,41 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       const video = material
         ? await ensureMaterialVideo(options.feishuToken || '', material, { ...options, existing })
         : { videoKey: '', videoUrl: '', materialUrl: '' }
-      const payload = buildListingPayload(row, video)
-      if (existing) {
-        if (existing.lifecycleStatus === 'expired' || existing.status === '已下架') {
-          existing.lifecycleStatus = 'active'
-          existing.status = '在租'
-        }
-        domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true })
-        attachFeishuFields(existing, row, material, video)
+      const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video)
+      if (upsert.action === 'updated') {
         result.updated += 1
       } else {
-        const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true })
-        const listing = db.listings.find((item) => item.id === detail.id)
-        attachFeishuFields(listing, row, material, video)
         result.created += 1
       }
+      result.auditRows.push(buildAuditRow(row, material, material ? '上架-已配视频' : '上架-缺视频素材', material ? '' : '未匹配素材'))
     } catch (error) {
-      result.failed += 1
-      result.messages.push(`第 ${row.rowNumber} 行同步失败：${error.message}`)
+      if (material) {
+        const failureReason = shortError(error)
+        const video = { videoKey: '', videoUrl: '', materialUrl: material.url || material.videoUrl || material.sourcePath || material.name || '' }
+        const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, failureReason)
+        if (upsert.action === 'updated') {
+          result.updated += 1
+        } else {
+          result.created += 1
+        }
+        result.materialTransferFailed += 1
+        result.missingVideoMaterial += 1
+        if (result.messages.length < 20) {
+          result.messages.push(`第 ${row.rowNumber} 行素材匹配但搬运失败，已降级上架并标记缺视频素材：${failureReason}`)
+        }
+        result.auditRows.push(buildAuditRow(row, material, '上架-素材失败降级缺视频素材', failureReason))
+      } else {
+        result.failed += 1
+        result.messages.push(`第 ${row.rowNumber} 行同步失败：${error.message}`)
+        result.auditRows.push(buildAuditRow(row, material, '失败', shortError(error)))
+      }
     }
   }
 
   db.listings.forEach((listing) => {
     if (listing.externalSource !== 'feishu' || !listing.feishuRecordId) return
     if (seen.has(String(listing.feishuRecordId))) return
-    if (downListing(db, listing, '飞书房源表未返回该房源，自动同步下架', adminId)) result.down += 1
+    if (downListing(db, listing, '飞书房源表未返回该房源，自动同步下架', actorId)) result.down += 1
   })
 
   result.finishedAt = nowText()

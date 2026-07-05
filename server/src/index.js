@@ -1410,7 +1410,8 @@ async function handleAdmin(req, res, pathname, searchParams) {
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',
       source: searchParams.get('source') || '',
-      status: searchParams.get('status') || ''
+      status: searchParams.get('status') || '',
+      missingVideoMaterial: searchParams.get('missingVideoMaterial') || searchParams.get('videoMaterialStatus') || ''
     })))
   }
   if (method === 'GET' && pathname === '/admin/expired-listings') {

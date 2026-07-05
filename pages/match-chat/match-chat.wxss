@@ -132,6 +132,13 @@ page {
   border-radius: 24rpx 24rpx 8rpx 24rpx;
 }
 
+.degraded-notice {
+  margin-top: 8rpx;
+  color: #6f837c;
+  font-size: 21rpx;
+  line-height: 1.35;
+}
+
 .need-tags {
   display: flex;
   flex-wrap: wrap;

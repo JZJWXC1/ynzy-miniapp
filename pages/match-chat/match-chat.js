@@ -522,6 +522,7 @@ Page({
       text: buildAssistantText(matchResult, listings),
       threadId: matchResult.threadId || this.currentThreadId || '',
       sourceText: requestPayload.text || '',
+      degradedNotice: matchResult.degraded ? (matchResult.degradedNotice || '智能解读稍后重试') : '',
       needTags: buildNeedTags(matchResult.need),
       need: matchResult.need || {},
       placeResolution: matchResult.placeResolution || null,

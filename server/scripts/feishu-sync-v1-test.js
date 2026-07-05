@@ -30,9 +30,10 @@ async function main() {
       联系电话: '13900001111',
       看房方式密码: '336699#'
     })
-  ], [], 'A1', { dryRun: true })
+  ], [], 'system-feishu-sync', { dryRun: true })
 
   assert.strictEqual(first.created, 1, '缺素材房源仍应同步入库')
+  assert.strictEqual(db.listings[0].uploaderId, 'A1', '系统定时同步新增房源应自动落到真实管理员身份')
   assert.strictEqual(first.down, 0, '缺素材不应自动下架')
   assert.strictEqual(first.missingVideoMaterial, 1, '应统计缺视频素材数量')
   const missing = db.listings[0]
@@ -60,6 +61,31 @@ async function main() {
   assert.strictEqual(matched.updated, 1, '按房号命中的素材应更新原房源')
   assert.strictEqual(db.listings[0].syncStatus, '已同步飞书', '命中素材后应恢复正常同步状态')
   assert.strictEqual(db.listings[0].missingVideoMaterial, false, '命中素材后应清除缺素材标记')
+  assert.ok((matched.auditRows || []).some((item) => item.syncResult === '上架-已配视频'), '对账表应记录已配视频结果')
+
+  const transferFailed = await feishuSync.applySync(db, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '602',
+      户型: '一室一厅一卫',
+      押一付一: '2900'
+    })
+  ], [
+    { name: '602.mp4' }
+  ], 'A1', { dryRun: false })
+
+  assert.strictEqual(transferFailed.failed, 0, '素材匹配后不可用不应阻断公司房源上架')
+  assert.strictEqual(transferFailed.materialTransferFailed, 1, '应统计素材搬运失败次数')
+  assert.strictEqual(transferFailed.missingVideoMaterial, 1, '素材搬运失败应计入缺视频素材')
+  const degradedListing = db.listings.find((item) => item.roomNumber === '602')
+  assert.ok(degradedListing, '素材失败降级后仍应创建公司房源')
+  assert.strictEqual(degradedListing.missingVideoMaterial, true, '素材失败降级房源应标记缺视频素材')
+  assert.strictEqual(degradedListing.videoMaterialStatus, '素材转存失败', '后台应保留素材转存失败状态')
+  assert.ok(degradedListing.videoMaterialFailureReason, '后台应保留素材失败原因')
+  assert.ok((transferFailed.auditRows || []).some((item) => item.syncResult === '上架-素材失败降级缺视频素材' && item.failureReason), '对账表应记录素材失败降级原因')
 
   const districtUpdated = await feishuSync.applySync(db, [
     row({
@@ -75,9 +101,10 @@ async function main() {
     { name: '601D.mp4', videoUrl: 'https://example.com/601D.mp4' }
   ], 'A1', { dryRun: true })
   assert.strictEqual(districtUpdated.updated, 1, '飞书更新应命中原房源')
-  assert.strictEqual(db.listings[0].district, '拱墅区', '飞书更新也应回写 district')
-  assert.strictEqual(db.listings[0].area, '拱墅区', '飞书更新也应回写 area')
-  assert.strictEqual(db.listings[0].block, '东新园', '飞书更新应保留板块')
+  const updated601 = db.listings.find((item) => item.roomNumber === '601D')
+  assert.strictEqual(updated601.district, '拱墅区', '飞书更新也应回写 district')
+  assert.strictEqual(updated601.area, '拱墅区', '飞书更新也应回写 area')
+  assert.strictEqual(updated601.block, '东新园', '飞书更新应保留板块')
 
   const removed = await feishuSync.applySync(db, [], [], 'A1', { dryRun: true })
   assert.strictEqual(removed.down, 1, '房源表删除后应自动下架')

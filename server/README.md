@@ -243,8 +243,11 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 - 房源表和视频素材库按房号/楼栋单元房号等 Key 对齐。
 - 飞书表仍在架的公司房源会写入或更新本地房源，并标记 `companyListing=true`、`noCommission=true`。
 - 飞书表删除、下架、关闭、已租等状态会让对应公司房源自动下架，进入后台资产池。
-- 素材缺失的飞书房源不会被静默丢弃，会在后台标记 `missingVideoMaterial=true` 和 `缺视频素材`。
-- 公司房源即使缺视频，也可进入普通公司房源列表；地图仍要求真实小区坐标。
+- 素材缺失、素材下载超时、OSS 转存失败或素材超过当前视频大小上限时，飞书房源不会被静默丢弃，会照常上架并在后台标记 `missingVideoMaterial=true`、`缺视频素材`/`素材转存失败`，同时保留 `videoMaterialFailureReason` 供对账。
+- 公司房源即使缺视频，也可进入公司房源专区、全部房源列表、首页推荐、筛选与统计；地图仍坚持“有视频才上图”，不会把缺视频公司房源放到地图。
+- 管理后台房源列表支持 `missingVideoMaterial=missing|ready` 查询，页面里可直接筛“缺视频素材”。
+- `server/scripts/feishu-sync-audit.js` 可只读 dry-run 输出逐行对账表：房号、表内状态、匹配素材、同步结果、失败原因。
+- 定时同步使用系统任务名触发时，服务端会自动落到库里的真实管理员身份执行新增/更新，避免新增公司房源因 `system-feishu-sync` 不是用户账号而失败。
 - `户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，并去掉前缀保存净户型；否则按合租处理。
 - 板块到行政区映射由服务端配置决定：闸弄口、新塘、元宝塘、东站归上城区，其余现有板块归拱墅区；命中 `communityLocationOverrides` 的小区（如小洋坝家园、大华海派风景、风雅乐府、瑷颐湾等）优先固定为余杭区/城北万象城。
 
@@ -262,6 +265,9 @@ FEISHU_BITABLE_APP_TOKEN=
 FEISHU_BITABLE_TABLE_ID=
 FEISHU_MATERIAL_FOLDER_TOKEN=
 FEISHU_UPLOAD_TO_OSS=true
+FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000
+FEISHU_MATERIAL_TRANSFER_RETRY_COUNT=2
+FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS=800
 FEISHU_SYNC_INTERVAL_MINUTES=60
 ```
 
@@ -385,6 +391,8 @@ POST /mini/assistant/feedback
 
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
 生产服务会为 `POST /mini/llm/match` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`，用于排查真实 LLM 链路耗时；日志不记录请求正文、手机号、地址或房源敏感字段。
+`/mini/llm/match` 的客户端超时单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
+`GET /admin/launch-check` 会检查当前 `llmConfig.secretName` 对应的服务端环境变量是否存在；缺失时明示变量名，不返回密钥值。
 
 模型密钥只从服务端环境变量读取：
 

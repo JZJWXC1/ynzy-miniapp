@@ -246,6 +246,8 @@ check('找房助手生产网络失败不返回本地模拟房源', () => {
   assertIncludes(llmService, 'emptyNetworkMatchResult', '生产网络失败必须构造空房源结果')
   assertIncludes(matchChat, 'matchResult && matchResult.networkFailed ? [] : buildListingSections', '小程序网络失败时不能渲染推荐卡片')
   assertIncludes(matchChat, '网络连接失败，请点下方按钮重试。', '小程序网络失败时必须提示重试')
+  assertIncludes(matchChat, 'degradedNotice', '小程序必须展示供应商降级提示但继续渲染真实匹配结果')
+  assertIncludes(matchChat, '智能解读稍后重试', '供应商降级提示文案必须写入页面数据')
   assert.ok(!matchChat.includes('先给你本地匹配结果'), '生产网络失败文案不能暗示本地推荐可用')
   assertIncludes(networkFallbackTestSource, '生产失败时不能返回本地推荐房源', '客户端网络失败测试必须阻止 mock 房源回退')
 })
@@ -305,7 +307,7 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
     videoUrl: ''
   }), { admin: true })
   assert.ok(domain.filterListings(db, { category: '公司房源' }).some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入公司房源列表')
-  assert.ok(domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '有真实小区坐标的公司房源无视频必须进入地图')
+  assert.ok(!domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '地图必须继续排除无视频公司房源')
   assert.ok(domain.matchListings(db, { area: '京漾东韵府' }).listings.some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入匹配候选')
   assert.ok(domain.listingDetail(db, companyNoVideo.id), '公司房源无视频必须可打开详情')
 

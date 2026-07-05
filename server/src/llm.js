@@ -3,6 +3,7 @@ const matchService = require('./match-service')
 const DEFAULT_QWEN_NEED_PARSER_MODEL = 'qwen3.5-plus'
 const DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL = 'qwen3.7-plus'
 const DEFAULT_QWEN_REPLY_MODEL = 'qwen-turbo'
+const LLM_PROVIDER_TIMEOUT_MS = 20000
 
 function scrubSensitiveText(value) {
   return String(value || '')
@@ -70,6 +71,11 @@ function configForTask(config = {}, task = '') {
     ...config,
     model: taskModel || qwenDefault || config.model
   }
+}
+
+function providerTimeoutMs(config = {}) {
+  const timeout = Number(config.providerTimeoutMs || config.timeoutMs || 0)
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : LLM_PROVIDER_TIMEOUT_MS
 }
 
 function providerTextPart(value) {
@@ -156,15 +162,40 @@ async function callProvider(config, prompt) {
   }
 
   const body = buildProviderRequestBody(config, prompt)
+  const timeoutMs = providerTimeoutMs(config)
+  const controller = new AbortController()
+  let timedOut = false
+  let timeoutTimer = null
+  const timeoutError = () => {
+    const error = new Error(`LLM 供应商调用超过 ${Math.round(timeoutMs / 1000)} 秒，已降级本地匹配`)
+    error.statusCode = 504
+    error.code = 'LLM_PROVIDER_TIMEOUT'
+    return error
+  }
+  const timeoutPromise = new Promise((resolve, reject) => {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      reject(timeoutError())
+    }, timeoutMs)
+  })
 
-  const res = await fetch(config.apiBaseUrl, {
+  const providerRequest = fetch(config.apiBaseUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`
     },
+    signal: controller.signal,
     body: JSON.stringify(body)
+  }).catch((error) => {
+    if (timedOut && error && error.name === 'AbortError') return null
+    throw error
   })
+  const res = await Promise.race([providerRequest, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutTimer)
+  })
+  if (!res) throw timeoutError()
 
   if (!res.ok) {
     throw new Error(`LLM 请求失败：${res.status}`)
@@ -293,7 +324,10 @@ async function matchRentalNeed(db, payload = {}) {
     return {
       ...local,
       mode: 'local-fallback',
-      warning: error.message
+      degraded: true,
+      degradedNotice: '智能解读稍后重试',
+      degradedReason: 'llm_provider_failed',
+      warning: scrubSensitiveText(error.message)
     }
   }
 }
@@ -311,6 +345,8 @@ module.exports = {
     extractProviderText,
     buildProviderRequestBody,
     configForTask,
+    providerTimeoutMs,
+    LLM_PROVIDER_TIMEOUT_MS,
     callProvider
   }
 }

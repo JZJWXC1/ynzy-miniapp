@@ -185,6 +185,9 @@ module.exports = {
     recordsFile: process.env.FEISHU_RECORDS_FILE || '',
     materialsFile: process.env.FEISHU_MATERIALS_FILE || '',
     uploadToOss: boolFromEnv('FEISHU_UPLOAD_TO_OSS', true),
+    materialTransferTimeoutMs: numberFromEnv('FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS', 120000),
+    materialTransferRetryCount: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_COUNT', 2),
+    materialTransferRetryDelayMs: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS', 800),
     syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 60)
   },
   wechatPay: {

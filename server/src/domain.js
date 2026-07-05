@@ -1988,6 +1988,7 @@ function mapCommunities(db, filter = {}) {
   const groups = new Map()
   publicListings(db).forEach((listing) => {
     if (!isV1MapActiveListing(listing)) return
+    if (!hasListingVideo(listing)) return
     const coordinate = mapCoordinateFromListing(listing)
     if (!coordinate) return
     if (!coordinateInBounds(coordinate, normalizedFilter)) return
@@ -2067,6 +2068,12 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
     viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
     videoLabel: listing.videoLabel || (hasListingVideo(listing) ? '房源视频' : ''),
     hasVideo: hasListingVideo(listing),
+    missingVideoMaterial: Boolean(listing.missingVideoMaterial),
+    videoMaterialStatus: listing.videoMaterialStatus || '',
+    videoMaterialFailureReason: listing.videoMaterialFailureReason || '',
+    sourceMaterialName: listing.sourceMaterialName || '',
+    sourceMaterialPath: listing.sourceMaterialPath || '',
+    sourceMaterialUrl: listing.sourceMaterialUrl || '',
     type: listing.type || listing.rentMode || '',
     rentMode: listing.rentMode || listing.type || '',
     room: listing.room || '',
@@ -2111,6 +2118,19 @@ function matchListingStatusFilter(listing, status) {
   return String(listing.status || '') === status
 }
 
+function matchListingVideoMaterialFilter(listing, status) {
+  if (!status) return true
+  const requested = String(status || '').trim().toLowerCase()
+  const missing = Boolean(listing.missingVideoMaterial) ||
+    listing.videoMaterialStatus === '缺视频素材' ||
+    listing.syncStatus === '缺视频素材'
+  if (['missing', 'true', '1', '缺视频素材', '缺视频'].indexOf(requested) !== -1) return missing
+  if (['ready', 'hasVideo', 'has-video', '已配视频', '有视频'].map((item) => item.toLowerCase()).indexOf(requested) !== -1) {
+    return hasListingVideo(listing) && !missing
+  }
+  return true
+}
+
 function adminListings(db, filter = {}) {
   return activeListings(db)
     .filter((listing) => {
@@ -2119,6 +2139,7 @@ function adminListings(db, filter = {}) {
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
       if (!matchListingSourceFilter(listing, filter.source)) return false
       if (!matchListingStatusFilter(listing, filter.status)) return false
+      if (!matchListingVideoMaterialFilter(listing, filter.missingVideoMaterial || filter.videoMaterialStatus)) return false
       return true
     })
     .map((listing) => {
@@ -2137,7 +2158,9 @@ function adminListings(db, filter = {}) {
         layout: String(listing.layout || '').replace('整租', ''),
         commission: display.commissionText,
         source: listing.source || display.sourceLabel,
-        video: listing.videoUrl ? '已传' : '未传',
+        video: hasListingVideo(listing)
+          ? '已传'
+          : (listing.videoMaterialStatus || (listing.missingVideoMaterial ? '缺视频素材' : '未传')),
         status: listing.status,
         lastVerifiedAt: freshness.lastVerifiedAt,
         verifyStatus: freshness.verifyStatus,

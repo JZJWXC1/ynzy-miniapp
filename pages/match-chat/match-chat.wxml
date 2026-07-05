@@ -18,6 +18,7 @@
           <view class="message-bubble">
             <text>{{message.text}}</text>
           </view>
+          <view wx:if="{{message.degradedNotice}}" class="degraded-notice">{{message.degradedNotice}}</view>
 
           <view wx:if="{{message.retryable}}" class="retry-panel">
             <button loading="{{loading}}" bindtap="retryLastNeed">{{message.retryText || '重试'}}</button>

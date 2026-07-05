@@ -130,6 +130,17 @@ function run() {
   assert.strictEqual(companyNoVideoDetail.sensitiveLocked, false, '公司房源详情地址电话必须直接公开')
   assert.deepStrictEqual(companyNoVideoDetail.companyContactPhones, ['10000000001', '10000000002'], '公司房源详情必须下发服务端配置电话')
   assert.strictEqual(companyNoVideoDetail.landlordPhone, '10000000001/10000000002', '公司房源详情电话必须使用公司看房电话')
+  const companyNoVideoRaw = db.listings.find((item) => item.id === companyNoVideo.id)
+  companyNoVideoRaw.missingVideoMaterial = true
+  companyNoVideoRaw.videoMaterialStatus = '缺视频素材'
+  companyNoVideoRaw.mapLatitude = 30.281
+  companyNoVideoRaw.mapLongitude = 120.217
+  companyNoVideoRaw.coordinateSource = 'admin-verified-coordinate'
+  companyNoVideoRaw.coordinateVerified = true
+  companyNoVideoRaw.lastVerifiedAt = daysAgo(1)
+  assert.ok(domain.adminListings(db, { missingVideoMaterial: 'missing' }).some((item) => item.id === companyNoVideo.id), '后台必须支持缺视频素材筛选')
+  assert.ok(!domain.adminListings(db, { missingVideoMaterial: 'ready' }).some((item) => item.id === companyNoVideo.id), '缺视频素材房源不能进入已配视频筛选')
+  assert.ok(!domain.mapPins(db).some((item) => (item.activeListingIds || []).indexOf(companyNoVideo.id) !== -1), '地图必须继续排除无视频公司房源')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)

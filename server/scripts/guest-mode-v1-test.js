@@ -218,7 +218,7 @@ async function run() {
     const guestPins = await request('GET', '/mini/map/pins')
     assert.strictEqual(guestPins.statusCode, 200, '匿名地图接口应返回 200')
     const pinText = JSON.stringify(dataOf(guestPins))
-    assert.ok(pinText.includes('GUEST_COMPANY'), '匿名地图必须包含公司房源点位')
+    assert.ok(!pinText.includes('GUEST_COMPANY'), '匿名地图必须继续排除无视频公司房源点位')
     assert.ok(!pinText.includes('GUEST_PARTNER'), '匿名地图不能包含合作房源点位')
 
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
