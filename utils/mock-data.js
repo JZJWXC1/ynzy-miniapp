@@ -268,19 +268,24 @@
   function prepareSourceFields(form, current, rate, featureState) {
     var companyListing = formCompanyListing(form || {}, current || {});
     var ownerType = normalizeOwnerType(firstText((form || {}).ownerType, (form || {}).houseSourceType, (form || {}).landlordType, (current || {}).ownerType, (current || {}).houseSourceType), (current || {}).ownerType || SECOND_LANDLORD_SOURCE);
-    var noCommission = companyListing || Number(rate) === 0 || parseFeatureInput((form || {}).features).indexOf(NO_COMMISSION_FEATURE) !== -1;
+    var sourceInput = firstText((form || {}).source, (form || {}).sourceType, (form || {}).listingType, (form || {}).inventoryType);
+    var nonCompanySourceInput = sourceInput && !/公司房源|company/.test(sourceInput) ? sourceInput : '';
+    var currentCompany = isCompanyListing(current || {});
+    var noCommission = companyListing;
     var finalRate = noCommission ? 0 : rate;
     var features = featuresWithCompanyDefaults(featureState.features, {
       companyListing: companyListing,
       noCommission: noCommission,
       commissionRate: finalRate
+    }).filter(function (item) {
+      return noCommission || item !== NO_COMMISSION_FEATURE;
     });
     return {
       companyListing: companyListing,
       noCommission: noCommission,
       commissionRate: finalRate,
       ownerType: ownerType,
-      source: companyListing ? COMPANY_SOURCE : firstText((form || {}).source, (current || {}).source, ownerType),
+      source: companyListing ? COMPANY_SOURCE : (nonCompanySourceInput || (currentCompany ? ownerType : firstText((current || {}).source, ownerType))),
       features: features,
       hasFeatureInput: featureState.hasFeatureInput || noCommission
     };
@@ -590,7 +595,7 @@
   function listingSourceFields(listing) {
     var data = listing || {};
     var companyListing = isCompanyListing(data);
-    var noCommission = isNoCommissionListing(data);
+    var noCommission = companyListing;
     var ownerType = normalizeOwnerType(data.ownerType || data.houseSourceType || '', SECOND_LANDLORD_SOURCE);
     var reviewStatus = ownerReviewStatus(Object.assign({}, data, { ownerType: ownerType }));
     var sourceLabel = companyListing ? COMPANY_SOURCE : ownerType;
@@ -2275,6 +2280,12 @@
     listing.source = sourceState.source;
     listing.companyListing = sourceState.companyListing;
     listing.isCompanyListing = sourceState.companyListing;
+    if (!sourceState.companyListing) {
+      delete listing.sourceType;
+      delete listing.listingType;
+      delete listing.inventoryType;
+      delete listing.companyOwned;
+    }
     listing.noCommission = sourceState.noCommission;
     listing.communityMatched = communityReview.communityMatched;
     listing.communityMatchStatus = communityReview.communityMatchStatus;

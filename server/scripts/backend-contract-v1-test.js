@@ -564,6 +564,63 @@ function run() {
   assert.strictEqual(db.dealRecords.find((item) => item.id === companyDeal.id).commissionRecordId, '', '公司房源签单不能挂载 commissionRecordId')
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
 
+  const convertedCompany = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNo: '778',
+    roomNumber: '778',
+    address: '杭州滨江区半山家苑1幢1单元778室',
+    videoKey: 'house-videos/backend-contract/company-to-partner.mp4'
+  }))
+  const convertedCompanyRaw = db.listings.find((item) => item.id === convertedCompany.id)
+  Object.assign(convertedCompanyRaw, {
+    source: '公司房源',
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    companyListing: true,
+    isCompanyListing: true,
+    noCommission: true,
+    commissionRate: 0,
+    features: ['不分佣', '押一付一', '电梯房']
+  })
+  domain.updateNormalListing(db, 'ADMIN', convertedCompany.id, {
+    area: convertedCompanyRaw.area,
+    block: convertedCompanyRaw.block,
+    community: convertedCompanyRaw.community,
+    building: convertedCompanyRaw.building,
+    unit: convertedCompanyRaw.unit,
+    roomNumber: convertedCompanyRaw.roomNumber,
+    rentMode: convertedCompanyRaw.rentMode,
+    room: convertedCompanyRaw.room,
+    hall: convertedCompanyRaw.hall,
+    bath: convertedCompanyRaw.bath,
+    rent: convertedCompanyRaw.rent,
+    contact: convertedCompanyRaw.landlordPhone,
+    ownerType: '二房东房源',
+    companyListing: false,
+    features: [NO_FEATURE]
+  }, { admin: true })
+  assert.strictEqual(convertedCompanyRaw.companyListing, false, '公司房源改为二房东后 companyListing 必须清除')
+  assert.strictEqual(convertedCompanyRaw.isCompanyListing, false, '公司房源改为二房东后 isCompanyListing 必须清除')
+  assert.strictEqual(domain.isCompanyListing(convertedCompanyRaw), false, '公司房源改为二房东后来源文本也不能继续命中公司房源')
+  assert.strictEqual(convertedCompanyRaw.noCommission, false, '公司房源改为二房东后不得沿用免佣状态')
+  assert.strictEqual(convertedCompanyRaw.commissionRate, 15, '公司房源改为二房东后必须重算上传人 15% 分佣')
+  assert.strictEqual(convertedCompanyRaw.features.indexOf('不分佣'), -1, '公司房源改为二房东后必须清理不分佣特点')
+  const convertedReportResult = domain.createClientReport(db, 'U2', convertedCompany.id, {
+    needId: 'N1',
+    customerPhone: '13800005555'
+  })
+  const convertedReport = db.clientReports.find((item) => item.id === convertedReportResult.report.id)
+  const convertedDealResult = domain.createDealFromReport(db, 'U2', convertedReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const convertedDeal = db.dealRecords.find((item) => item.id === convertedDealResult.deal.id)
+  const convertedConfirm = domain.confirmDeal(db, 'ADMIN', convertedDeal.id)
+  assert.strictEqual(convertedConfirm.commissionRecord.rate, 20, '转为二房东后的房源成交总比例必须恢复 20%')
+  assert.strictEqual(convertedConfirm.commissionRecord.uploaderRate, 15, '转为二房东后的房源上传人必须拿 15%')
+  assert.strictEqual(convertedConfirm.commissionRecord.uploaderCommissionFen, 75000, '转为二房东后的房源上传人分佣必须按 15% 计算')
+
   const beforeAdminUploadCommissionCount = db.commissionRecords.length
   const adminUploadReportResult = domain.createClientReport(db, 'U2', adminSecondLandlordListing.id, {
     needId: 'N1',

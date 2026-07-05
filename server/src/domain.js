@@ -588,7 +588,7 @@ function listingSourceFields(listing = {}) {
   const ownerType = normalizeOwnerType(listing.ownerType || listing.houseSourceType || '', SECOND_LANDLORD_SOURCE)
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
-  const noCommission = companyListing || truthyFlag(listing.noCommission)
+  const noCommission = companyListing
   const commissionRate = noCommission ? 0 : commissionRateByOwnerType(ownerType)
   return {
     companyListing,
@@ -3426,6 +3426,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const ownerTypeInput = firstText(form.ownerType, form.houseSourceType, form.landlordType, current.ownerType, current.houseSourceType)
   const ownerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
   const sourceInput = firstText(form.source, form.sourceType, form.listingType, form.inventoryType)
+  const nonCompanySourceInput = sourceInput && !/公司房源|company/.test(sourceInput) ? sourceInput : ''
   const currentCompany = isCompanyListing(current)
   const companyListing = companyFlagInput !== undefined
     ? truthyFlag(companyFlagInput)
@@ -3436,7 +3437,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const featureInput = formFeatureInput !== undefined ? formFeatureInput : currentFeatureInput
   const featureInputCount = parseFeatureInput(featureInput).filter((item) => item !== NO_COMMISSION_FEATURE).length
   const invalidFeatures = invalidListingFeatures(featureInput)
-  const noCommission = companyListing || isNoCommissionListing(current)
+  const noCommission = companyListing
   const rate = noCommission ? 0 : commissionRateByOwnerType(ownerType)
   const features = featuresWithCompanyDefaults(featureInput, {
     commissionRate: rate,
@@ -3521,7 +3522,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     communityMatchStatus: communityMatched ? '已匹配' : '未匹配',
     requiresManualReview,
     manualReviewReason,
-    source: companyListing ? COMPANY_SOURCE : (sourceInput || current.source || ownerType || '普通上传')
+    source: companyListing ? COMPANY_SOURCE : (nonCompanySourceInput || (currentCompany ? ownerType : (current.source || ownerType || '普通上传')))
   }
 }
 
@@ -3805,6 +3806,12 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.source = fields.source
   listing.companyListing = fields.companyListing
   listing.isCompanyListing = fields.companyListing
+  if (!fields.companyListing) {
+    delete listing.sourceType
+    delete listing.listingType
+    delete listing.inventoryType
+    delete listing.companyOwned
+  }
   listing.noCommission = fields.noCommission
   listing.communityMatched = fields.communityMatched
   listing.communityMatchStatus = fields.communityMatchStatus
