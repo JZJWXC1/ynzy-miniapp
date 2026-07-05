@@ -114,7 +114,7 @@
 
       <view class="field">
         <view class="label">分佣规则</view>
-        <view class="preview-line">签单后按平台规则计算</view>
+        <view class="preview-line">{{commissionRuleText}}</view>
       </view>
 
       <view class="video-upload" bindtap="chooseVideo">

@@ -701,6 +701,23 @@ function getCommissionRecords() {
   })
 }
 
+function getCommissionConfig() {
+  return apiClient.call({
+    path: '/mini/commission-config',
+    mock: () => mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
+      totalRate: 20,
+      secondLandlordRate: 15,
+      ownerRate: 20,
+      companyRate: 0,
+      uploaderRates: {
+        '二房东房源': 15,
+        '业主房源': 20,
+        '公司房源': 0
+      }
+    }
+  })
+}
+
 function getGroupState() {
   return apiClient.call({
     path: '/mini/groups',
@@ -938,6 +955,7 @@ module.exports = {
   createRentalNeed,
   rechargePoints,
   getCommissionRecords,
+  getCommissionConfig,
   getGroupState,
   uploadGroupListing,
   createGroupScreenshotUploadPolicy,

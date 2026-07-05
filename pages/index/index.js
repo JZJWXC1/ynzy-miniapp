@@ -621,7 +621,7 @@ Page({
     taskLoading: false,
     workbench: [
       { title: '实名查看留痕', value: '地址和电话查看同步上传人和管理员' },
-      { title: '分佣规则', value: '签单后按平台规则计算' },
+      { title: '分佣规则', value: '签单后按当前分佣配置结算' },
       { title: '视频房源', value: '普通房源上传只允许视频' },
       { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新失效' }
     ]
@@ -915,7 +915,7 @@ Page({
     }
     wx.showModal({
       title: name,
-      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕，签单后按平台规则计算。',
+      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕，签单后按当前分佣配置结算。',
       showCancel: false
     });
   },

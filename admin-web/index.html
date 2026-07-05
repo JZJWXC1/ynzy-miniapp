@@ -1089,6 +1089,23 @@
             <button id="saveMaintenanceRule">保存规则开关</button>
           </div>
         </div>
+        <div class="config-card commission-config-card">
+          <h3>分佣配置</h3>
+          <div class="filter-bar">
+            <label class="filter-item">
+              <span>二房东上传人比例</span>
+              <input id="commissionSecondRate" type="number" min="0" max="20" step="0.5" placeholder="15">
+            </label>
+            <label class="filter-item">
+              <span>业主上传人比例</span>
+              <input id="commissionOwnerRate" type="number" min="0" max="20" step="0.5" placeholder="20">
+            </label>
+          </div>
+          <div class="status-box" id="commissionConfigStatus">正在读取分佣配置...</div>
+          <div class="inline-actions">
+            <button id="saveCommissionConfig">保存分佣配置</button>
+          </div>
+        </div>
         <div class="filter-bar">
           <label class="filter-item">
             <span>区域</span>
@@ -1207,7 +1224,7 @@
 
       <section class="panel" id="deals">
         <div class="deal-summary" id="dealSummary"></div>
-        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。成交总比例由后端固定按房东实付佣金的 20% 计算，上传人与平台留存按房源类型和上传人身份拆分。</div>
+        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。成交总比例固定为 20%，上传人比例按签单时的分佣配置快照结算。</div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
@@ -1625,6 +1642,15 @@
     const expiredListingEmpty = document.getElementById('expiredListingEmpty');
     const maintenanceRuleEnabled = document.getElementById('maintenanceRuleEnabled');
     const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
+    const commissionSecondRate = document.getElementById('commissionSecondRate');
+    const commissionOwnerRate = document.getElementById('commissionOwnerRate');
+    const commissionConfigStatus = document.getElementById('commissionConfigStatus');
+    const defaultCommissionConfig = {
+      totalRate: 20,
+      secondLandlordRate: 15,
+      ownerRate: 20,
+      companyRate: 0
+    };
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
     let llmConfigInitialized = false;
     let listingReviewItems = [];
@@ -1730,7 +1756,8 @@
 	    function expectedUploaderCommissionFen(item) {
 	      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
 	      if (saved > 0) return saved;
-	      return Math.round(Number(item.landlordCommissionFen || 0) * Number(item.uploaderRate === undefined ? 20 : item.uploaderRate) / 100);
+	      const fallbackRate = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig).secondLandlordRate;
+	      return Math.round(Number(item.landlordCommissionFen || 0) * Number(item.uploaderRate === undefined ? fallbackRate : item.uploaderRate) / 100);
 	    }
 
 	    function needIdText(item) {
@@ -1878,7 +1905,7 @@
 	        { title: '报备记录待跟进', object: '报备记录', status: tasks.pendingReportCount > 0 ? '待联系核对' : '正常', time: '今日任务' },
 	        { title: '签单审核待管理员确认', object: '签单审核', status: tasks.pendingDealCount > 0 ? '待确认' : '正常', time: '今日任务' },
 	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，后端拆分' }
+	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，按配置快照拆分' }
 	      ].map((item) => `
 	        <tr><td>${safeText(item.title)}</td><td>${safeText(item.object)}</td><td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td><td>${safeText(item.time)}</td></tr>
 	      `).join('');
@@ -2311,6 +2338,61 @@
       await renderAdminLogs();
     }
 
+    function normalizeCommissionConfig(config) {
+      const source = config || {};
+      const rates = source.uploaderRates || {};
+      const totalRate = numberValue(source.totalRate, defaultCommissionConfig.totalRate);
+      return {
+        totalRate,
+        secondLandlordRate: numberValue(source.secondLandlordRate, rates['二房东房源'], defaultCommissionConfig.secondLandlordRate),
+        ownerRate: numberValue(source.ownerRate, rates['业主房源'], defaultCommissionConfig.ownerRate),
+        companyRate: 0,
+        updatedAt: source.updatedAt || '',
+        updatedBy: source.updatedBy || ''
+      };
+    }
+
+    function commissionConfigDisplayText(config) {
+      const rule = normalizeCommissionConfig(config);
+      return `成交总比例 ${rule.totalRate}%；二房东上传人 ${rule.secondLandlordRate}%，平台 ${Math.max(0, rule.totalRate - rule.secondLandlordRate)}%；业主上传人 ${rule.ownerRate}%；公司房源不抽佣。`;
+    }
+
+    async function renderCommissionConfig() {
+      const config = normalizeCommissionConfig(await getAdminData('/admin/commission-config', () => (
+        dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig
+      )));
+      commissionSecondRate.value = config.secondLandlordRate;
+      commissionOwnerRate.value = config.ownerRate;
+      commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
+    }
+
+    async function saveCommissionConfig() {
+      const payload = {
+        secondLandlordRate: Number(commissionSecondRate.value),
+        ownerRate: Number(commissionOwnerRate.value)
+      };
+      commissionConfigStatus.textContent = '正在保存...';
+      try {
+        const saved = canUseAdminApi()
+          ? await adminRequest('/admin/commission-config', {
+              method: 'PUT',
+              body: JSON.stringify(payload)
+            })
+          : (dataCenter.updateCommissionConfig ? dataCenter.updateCommissionConfig(payload) : Object.assign({}, defaultCommissionConfig, payload));
+        const config = normalizeCommissionConfig(saved);
+        commissionSecondRate.value = config.secondLandlordRate;
+        commissionOwnerRate.value = config.ownerRate;
+        commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
+        showAdminToast('分佣配置已保存');
+        await renderListings();
+        await renderExpiredListings();
+        await renderDeals();
+        await renderCommissions();
+      } catch (error) {
+        commissionConfigStatus.textContent = '保存失败：' + (error.message || '请稍后重试');
+      }
+    }
+
     async function renderExpiredListings() {
       const area = areaFilter.value;
       const block = blockFilter.value;
@@ -2353,6 +2435,7 @@
 
     function getLocalDealRows() {
       if (!dataCenter.getDealRecords) return [];
+      const config = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig);
       return dataCenter.getDealRecords().map((item) => {
         const confirmed = Boolean(localConfirmedDeals[item.id]);
         const expectedFen = expectedUploaderCommissionFen(item);
@@ -2363,9 +2446,9 @@
           customerPhoneMasked: '',
           expectedUploaderCommissionFen: expectedFen,
           expectedUploaderCommission: (expectedFen / 100).toFixed(2),
-          uploaderCommissionRate: 20,
-          uploaderRate: 20,
-          platformRate: 0
+          uploaderCommissionRate: config.totalRate,
+          uploaderRate: config.secondLandlordRate,
+          platformRate: Math.max(0, config.totalRate - config.secondLandlordRate)
         }, item, confirmed ? {
           status: '已确认',
           uploaderCommissionFen: expectedFen,
@@ -3114,7 +3197,7 @@
 
     async function confirmAdminDeal(id) {
       if (!id) return;
-      if (!window.confirm('确认该签单真实有效，并由后端按总比例 20% 计算、按房源类型拆分上传人与平台留存？')) return;
+      if (!window.confirm('确认该签单真实有效，并按签单时的分佣配置快照生成分佣记录？')) return;
 
       if (!canUseAdminApi()) {
         localConfirmedDeals[id] = new Date().toLocaleString('zh-CN', { hour12: false });
@@ -3396,6 +3479,7 @@
       renderDashboardStats();
       renderAreaStats();
       renderMaintenanceRule();
+      renderCommissionConfig();
       renderListings();
       renderListingReviews();
       renderExpiredListings();
@@ -3620,6 +3704,11 @@
     document.getElementById('saveMaintenanceRule').addEventListener('click', () => {
       saveMaintenanceRule().catch((error) => {
         alert(error.message || '规则开关保存失败');
+      });
+    });
+    document.getElementById('saveCommissionConfig').addEventListener('click', () => {
+      saveCommissionConfig().catch((error) => {
+        alert(error.message || '分佣配置保存失败');
       });
     });
     document.getElementById('assistantFeedbackStatus').addEventListener('change', () => {

@@ -11,7 +11,7 @@
   var NO_COMMISSION_FEATURE = '不分佣';
   var DEPOSIT_FREE_FEATURE = '免押金';
   var COMPANY_SOURCE = '公司房源';
-  var V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手';
+  var V1_COMMISSION_TEXT = '成交总比例按房东实付佣金的 20% 计算';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
   var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
   var OWNER_SOURCE = '业主房源';
@@ -185,6 +185,19 @@
       enabled: false,
       remindDays: [3, 5],
       expireDays: VERIFY_STALE_DAYS,
+      updatedAt: '',
+      updatedBy: ''
+    },
+    commissionConfig: {
+      totalRate: 20,
+      uploaderRates: {
+        '二房东房源': 15,
+        '业主房源': 20,
+        '公司房源': 0
+      },
+      secondLandlordRate: 15,
+      ownerRate: 20,
+      companyRate: 0,
       updatedAt: '',
       updatedBy: ''
     },
@@ -439,12 +452,75 @@
       SECOND_LANDLORD_SOURCE;
   }
 
-  // 佣金率由房源类型派生，对齐服务端 server/src/domain.js commissionRateByOwnerType：
-  // 业主房源 20%，二房东房源 15%（公司房源在 prepareSourceFields 中另行归零）。
-  function commissionRateByOwnerType(ownerType) {
+  function boundedRate(value, fallback) {
+    var number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(20, Math.max(0, Math.round(number * 100) / 100));
+  }
+
+  function firstDefinedValue(primary, fallback) {
+    return primary === undefined || primary === null || primary === '' ? fallback : primary;
+  }
+
+  function getCommissionConfig() {
+    var saved = state.commissionConfig || {};
+    var rates = saved.uploaderRates || {};
+    var secondLandlordRate = boundedRate(firstDefinedValue(saved.secondLandlordRate, rates[SECOND_LANDLORD_SOURCE]), SECOND_LANDLORD_COMMISSION_RATE);
+    var ownerRate = boundedRate(firstDefinedValue(saved.ownerRate, rates[OWNER_SOURCE]), OWNER_COMMISSION_RATE);
+    var uploaderRates = {};
+    uploaderRates[SECOND_LANDLORD_SOURCE] = secondLandlordRate;
+    uploaderRates[OWNER_SOURCE] = ownerRate;
+    uploaderRates[COMPANY_SOURCE] = 0;
+    return {
+      totalRate: 20,
+      uploaderRates: uploaderRates,
+      secondLandlordRate: secondLandlordRate,
+      ownerRate: ownerRate,
+      companyRate: 0,
+      updatedAt: saved.updatedAt || '',
+      updatedBy: saved.updatedBy || ''
+    };
+  }
+
+  function updateCommissionConfig(payload) {
+    var data = payload || {};
+    var rates = data.uploaderRates || {};
+    var current = getCommissionConfig();
+    var uploaderRates = {};
+    uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordRate, rates[SECOND_LANDLORD_SOURCE]), current.secondLandlordRate);
+    uploaderRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerRate, rates[OWNER_SOURCE]), current.ownerRate);
+    uploaderRates[COMPANY_SOURCE] = 0;
+    state.commissionConfig = {
+      totalRate: 20,
+      uploaderRates: uploaderRates,
+      companyRate: 0,
+      updatedAt: '刚刚',
+      updatedBy: 'preview-admin'
+    };
+    state.commissionConfig.secondLandlordRate = state.commissionConfig.uploaderRates[SECOND_LANDLORD_SOURCE];
+    state.commissionConfig.ownerRate = state.commissionConfig.uploaderRates[OWNER_SOURCE];
+    state.footprints.unshift({
+      id: 'F' + Date.now(),
+      viewerId: 'preview-admin',
+      action: '调整分佣配置',
+      time: '刚刚',
+      sync: '已更新分佣配置'
+    });
+    return getCommissionConfig();
+  }
+
+  function publicCommissionTextForOwnerType(ownerType) {
+    var config = getCommissionConfig();
     return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
-      ? OWNER_COMMISSION_RATE
-      : SECOND_LANDLORD_COMMISSION_RATE;
+      ? '管理员确认签单后，上传人按房东实付佣金的 ' + config.ownerRate + '% 结算'
+      : '成交总比例按房东实付佣金的 ' + config.totalRate + '% 计算';
+  }
+
+  function commissionRateByOwnerType(ownerType) {
+    var config = getCommissionConfig();
+    return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
+      ? config.ownerRate
+      : config.secondLandlordRate;
   }
 
   function isOwnerListing(listing) {
@@ -639,8 +715,8 @@
       communityMatched: data.communityMatched !== undefined ? truthyFlag(data.communityMatched) : data.communityMatchStatus !== '未匹配',
       communityMatchStatus: data.communityMatchStatus || (data.communityMatched === false ? '未匹配' : '已匹配'),
       sourceLabel: sourceLabel,
-      commissionText: companyListing ? COMPANY_COMMISSION_TEXT : V1_COMMISSION_TEXT,
-      commissionBadge: companyListing ? COMPANY_COMMISSION_TEXT : V1_COMMISSION_TEXT
+      commissionText: companyListing ? COMPANY_COMMISSION_TEXT : publicCommissionTextForOwnerType(ownerType),
+      commissionBadge: companyListing ? COMPANY_COMMISSION_TEXT : String(commissionRateByOwnerType(ownerType)) + '%'
     };
   }
 
@@ -781,7 +857,7 @@
       meta: (location.locationSummary || location.area) + ' · ' + listing.layout + ' · 仅视频',
       sub: V1_COMMISSION_TEXT + ' · 上传人' + uploader.name,
       price: '¥' + listing.rent + '/月',
-      tag: '签单后20%结算',
+      tag: '按配置结算',
       videoUrl: listing.videoUrl || '',
       city: location.city,
       district: location.district,
@@ -2135,7 +2211,7 @@
       throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
     }
     if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
-      throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
+      throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
       throw new Error('只有管理员可以上传或标记公司房源');
@@ -2267,7 +2343,7 @@
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
     if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
-      throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
+      throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
       throw new Error('只有管理员可以上传或标记公司房源');
@@ -2498,6 +2574,8 @@
     restoreExpiredListing: restoreExpiredListing,
     getListingMaintenanceRule: getListingMaintenanceRule,
     updateListingMaintenanceRule: updateListingMaintenanceRule,
+    getCommissionConfig: getCommissionConfig,
+    updateCommissionConfig: updateCommissionConfig,
     getAdminLogs: getAdminLogs,
     getCommissionRows: getCommissionRows,
     getPointLogs: getPointLogs,

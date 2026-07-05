@@ -929,6 +929,10 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.filterListings(db, filter))
   }
 
+  if (method === 'GET' && pathname === '/mini/commission-config') {
+    return sendJson(res, domain.commissionConfig(db))
+  }
+
   if (method === 'POST' && pathname === '/mini/listings/match') {
     const body = await parseBody(req)
     if (isGuestUser(userId)) {
@@ -1294,6 +1298,16 @@ async function handleAdmin(req, res, pathname, searchParams) {
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => (
       domain.setListingMaintenanceRule(nextDb, adminAccount.userId || adminAccount.id, body)
+    )))
+  }
+  if (method === 'GET' && pathname === '/admin/commission-config') {
+    return sendJson(res, domain.commissionConfig(db))
+  }
+  if (method === 'PUT' && pathname === '/admin/commission-config') {
+    assertAdminCapability(adminAccount)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => (
+      domain.setCommissionConfig(nextDb, adminAccount.userId || adminAccount.id, body)
     )))
   }
   if (method === 'GET' && pathname === '/admin/launch-check') {

@@ -27,7 +27,6 @@ const SECOND_LANDLORD_COMMISSION_RATE = 15
 const OWNER_COMMISSION_RATE = 20
 const TOTAL_DEAL_COMMISSION_RATE = 20
 const UPLOADER_COMMISSION_RATE = OWNER_COMMISSION_RATE
-const PUBLIC_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算；二房东上传人 15%、平台 5%，业主上传人 20%'
 const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣'
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
@@ -470,15 +469,87 @@ function isCompanyListing(listing = {}) {
   )
 }
 
-function commissionRateByOwnerType(ownerType = SECOND_LANDLORD_SOURCE) {
-  return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
-    ? OWNER_COMMISSION_RATE
-    : SECOND_LANDLORD_COMMISSION_RATE
+function boundedRate(value, fallback, max = TOTAL_DEAL_COMMISSION_RATE) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(0, Math.round(number * 100) / 100))
 }
 
-function commissionRateForListing(listing = {}) {
+function defaultCommissionConfig() {
+  return {
+    totalRate: TOTAL_DEAL_COMMISSION_RATE,
+    uploaderRates: {
+      [SECOND_LANDLORD_SOURCE]: SECOND_LANDLORD_COMMISSION_RATE,
+      [OWNER_SOURCE]: OWNER_COMMISSION_RATE,
+      [COMPANY_SOURCE]: 0
+    },
+    secondLandlordRate: SECOND_LANDLORD_COMMISSION_RATE,
+    ownerRate: OWNER_COMMISSION_RATE,
+    companyRate: 0,
+    updatedAt: '',
+    updatedBy: ''
+  }
+}
+
+function commissionConfig(db = {}) {
+  const saved = db.commissionConfig || {}
+  const savedRates = saved.uploaderRates || {}
+  const base = defaultCommissionConfig()
+  const totalRate = TOTAL_DEAL_COMMISSION_RATE
+  const secondLandlordRate = boundedRate(
+    saved.secondLandlordRate ?? savedRates[SECOND_LANDLORD_SOURCE],
+    base.secondLandlordRate,
+    totalRate
+  )
+  const ownerRate = boundedRate(
+    saved.ownerRate ?? savedRates[OWNER_SOURCE],
+    base.ownerRate,
+    totalRate
+  )
+  return {
+    totalRate,
+    uploaderRates: {
+      [SECOND_LANDLORD_SOURCE]: secondLandlordRate,
+      [OWNER_SOURCE]: ownerRate,
+      [COMPANY_SOURCE]: 0
+    },
+    secondLandlordRate,
+    ownerRate,
+    companyRate: 0,
+    updatedAt: saved.updatedAt || '',
+    updatedBy: saved.updatedBy || ''
+  }
+}
+
+function commissionRateByOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
+  const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
+  const config = commissionConfig(db)
+  return normalized === OWNER_SOURCE
+    ? config.ownerRate
+    : config.secondLandlordRate
+}
+
+function publicCommissionTextForOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
+  const config = commissionConfig(db)
+  const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
+  if (normalized === OWNER_SOURCE) {
+    return `管理员确认签单后，上传人按房东实付佣金的 ${config.ownerRate}% 结算`
+  }
+  return `成交总比例按房东实付佣金的 ${config.totalRate}% 计算`
+}
+
+function uploadCommissionTextForOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
+  const config = commissionConfig(db)
+  const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
+  if (normalized === OWNER_SOURCE) {
+    return `上传人按房东实付佣金的 ${config.ownerRate}% 结算`
+  }
+  return `上传人最高 ${config.secondLandlordRate}%`
+}
+
+function commissionRateForListing(listing = {}, db = {}) {
   if (isCompanyListing(listing)) return 0
-  return commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE)
+  return commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE, db)
 }
 
 function isAdminUser(user = {}) {
@@ -496,7 +567,7 @@ function commissionRuleForListing(listing = {}, db = {}, uploaderId = '') {
   const uploader = userById(db, uploaderId || listing.uploaderId) || {}
   const uploaderRate = isAdminUser(uploader)
     ? 0
-    : commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE)
+    : commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE, db)
   const platformRate = Math.max(0, TOTAL_DEAL_COMMISSION_RATE - uploaderRate)
   return {
     rate: TOTAL_DEAL_COMMISSION_RATE,
@@ -588,7 +659,7 @@ function featuresWithCompanyDefaults(value, listing = {}) {
   return features.length ? features : [NO_FEATURE]
 }
 
-function listingSourceFields(listing = {}) {
+function listingSourceFields(listing = {}, db = {}) {
   const companyListing = isCompanyListing(listing)
   const ownerType = companyListing
     ? COMPANY_SOURCE
@@ -596,7 +667,7 @@ function listingSourceFields(listing = {}) {
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
   const noCommission = companyListing
-  const commissionRate = noCommission ? 0 : commissionRateByOwnerType(ownerType)
+  const commissionRate = noCommission ? 0 : commissionRateByOwnerType(ownerType, db)
   return {
     companyListing,
     isCompanyListing: companyListing,
@@ -609,7 +680,7 @@ function listingSourceFields(listing = {}) {
     communityMatchStatus: listing.communityMatchStatus || (listing.communityMatched === false ? '未匹配' : '已匹配'),
     noCommission,
     sourceLabel,
-    commissionText: noCommission ? COMPANY_COMMISSION_TEXT : PUBLIC_COMMISSION_TEXT,
+    commissionText: noCommission ? COMPANY_COMMISSION_TEXT : publicCommissionTextForOwnerType(ownerType, db),
     commissionBadge: noCommission ? '公司房源' : `${commissionRate}%`
   }
 }
@@ -675,11 +746,11 @@ function listingFeatureFields(listing = {}) {
   }
 }
 
-function listingDisplayFields(listing = {}) {
+function listingDisplayFields(listing = {}, db = {}) {
   const freshness = listingFreshness(listing)
   return {
     ...listingFeatureFields(listing),
-    ...listingSourceFields(listing),
+    ...listingSourceFields(listing, db),
     lastVerifiedAt: freshness.lastVerifiedAt,
     staleDays: freshness.staleDays,
     verifyStatus: freshness.verifyStatus,
@@ -1049,19 +1120,19 @@ function adminUsers(db) {
 function formatHomeListing(db, listing) {
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing)
+  const display = listingDisplayFields(listing, db)
   const companyPublic = companyPublicListingFields(listing)
   const publicTitle = publicListingTitle(listing, location)
   const companyListing = isCompanyListing(listing)
   const mediaText = hasListingVideo(listing) ? '仅视频' : (companyListing ? '公司房源表' : '待补视频')
-  const commissionText = companyListing ? COMPANY_COMMISSION_TEXT : PUBLIC_COMMISSION_TEXT
+  const commissionText = display.commissionText
   return {
     id: listing.id,
     title: publicTitle,
     meta: `${location.locationSummary || location.area} · ${listing.layout} · ${mediaText}`,
     sub: `${display.sourceLabel} · ${commissionText} · 上传人 ${uploader.name || '平台'}`,
     price: `¥${listing.rent}/月`,
-    tag: companyListing ? '公司房源' : `${commissionRateForListing(listing)}%`,
+    tag: companyListing ? '公司房源' : `${commissionRateForListing(listing, db)}%`,
     videoUrl: listing.videoUrl || '',
     layout: listing.layout || '',
     rentMode: listing.rentMode || listing.type || '',
@@ -1242,7 +1313,7 @@ function listingDetail(db, listingId) {
   if (!isFrontendEffectiveListing(listing)) return null
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing)
+  const display = listingDisplayFields(listing, db)
   const companyPublic = companyPublicListingFields(listing)
   return {
     id: listing.id,
@@ -1254,7 +1325,7 @@ function listingDetail(db, listingId) {
     areaText: `${location.city} · ${location.area}`,
     address: companyPublic.address || '确认留痕后可查看',
     sensitiveLocked: !display.companyListing,
-    commissionRate: display.noCommission ? 0 : commissionRateForListing(listing),
+    commissionRate: display.noCommission ? 0 : commissionRateForListing(listing, db),
     commissionText: display.commissionText,
     noCommission: display.noCommission,
     companyListing: display.companyListing,
@@ -1397,13 +1468,13 @@ function ownedListings(db, userId) {
     .filter((listing) => listing.uploaderId === userId)
     .map((listing) => {
       const location = publicListingLocationFields(listing)
-      const display = listingDisplayFields(listing)
+      const display = listingDisplayFields(listing, db)
       return {
         id: listing.id,
         title: publicListingTitle(listing, location),
         ...location,
         rent: String(listing.rent),
-        commissionRate: display.noCommission ? '不分佣' : `${commissionRateForListing(listing)}%`,
+        commissionRate: display.noCommission ? '不分佣' : `${commissionRateForListing(listing, db)}%`,
         commissionText: display.commissionText,
         noCommission: display.noCommission,
         companyListing: display.companyListing,
@@ -1556,12 +1627,12 @@ function groupState(db, userId) {
       .filter((listing) => listing.source === '群聊上传')
       .map((listing) => {
         const uploader = userById(db, listing.uploaderId) || {}
-        const display = listingDisplayFields(listing)
+        const display = listingDisplayFields(listing, db)
         return {
           id: listing.id,
           title: `${listing.block || '待板块'} · ${listing.layout}`,
           price: `¥${listing.rent}/月`,
-          rule: PUBLIC_COMMISSION_TEXT,
+          rule: display.commissionText,
           publisher: `${uploader.name || '未知'} · 已认证`,
           status: listing.source === '群聊上传' ? '群聊上传房源' : '电话地址需实名查看',
           ...display
@@ -1920,7 +1991,7 @@ function mapCommunities(db, filter = {}) {
     const coordinate = mapCoordinateFromListing(listing)
     if (!coordinate) return
     if (!coordinateInBounds(coordinate, normalizedFilter)) return
-    const display = listingDisplayFields(listing)
+    const display = listingDisplayFields(listing, db)
     if (!listingMatchesMapFilter(listing, normalizedFilter, display)) return
     const community = coordinate.community || listing.community
     const key = String(community || '').trim()
@@ -2054,7 +2125,7 @@ function adminListings(db, filter = {}) {
       const uploader = userById(db, listing.uploaderId) || {}
       const freshness = listingFreshness(listing)
       const location = listingLocationFields(listing)
-      const display = listingDisplayFields(listing)
+      const display = listingDisplayFields(listing, db)
       return {
         id: listing.id,
         title: listing.shortTitle,
@@ -2064,7 +2135,7 @@ function adminListings(db, filter = {}) {
         uploader: uploader.name,
         rent: `${listing.rent}/月`,
         layout: String(listing.layout || '').replace('整租', ''),
-        commission: PUBLIC_COMMISSION_TEXT,
+        commission: display.commissionText,
         source: listing.source || display.sourceLabel,
         video: listing.videoUrl ? '已传' : '未传',
         status: listing.status,
@@ -2092,7 +2163,7 @@ function expiredListings(db, filter = {}) {
       const uploader = userById(db, listing.uploaderId) || {}
       const freshness = listingFreshness(listing)
       const location = listingLocationFields(listing)
-      const display = listingDisplayFields(listing)
+      const display = listingDisplayFields(listing, db)
       return {
         id: listing.id,
         title: listing.shortTitle || listing.title,
@@ -2103,7 +2174,7 @@ function expiredListings(db, filter = {}) {
         uploaderPhone: uploader.phone || '',
         rent: `${listing.rent}/月`,
         layout: String(listing.layout || '').replace('整租', ''),
-        commission: PUBLIC_COMMISSION_TEXT,
+        commission: display.commissionText,
         source: listing.source || display.sourceLabel,
         video: listing.videoUrl ? '已传' : '未传',
         status: listing.status || '已下架',
@@ -2648,7 +2719,7 @@ function createClientReport(db, userId, listingId, payload = {}) {
     community: location.community || '',
     rentAtReport: listing.rent || '',
     rentFen: Math.round(Number(listing.rent || 0) * 100),
-    source: listing.source || listingSourceFields(listing).sourceLabel || '',
+    source: listing.source || listingSourceFields(listing, db).sourceLabel || '',
     snapshotAt: now
   }
   const report = {
@@ -2686,7 +2757,7 @@ function formatDealRecord(db, deal = {}) {
   const savedCommissionRule = deal.commissionRule || {}
   // 展示总比例与 confirmDeal 结算口径一致：优先取签单冻结的 commissionRule.rate，仅历史缺失时
   // 才回退按当前 listing 重算。否则签单后房源被改为公司房源等情况下，rate 会取现状 0 而
-  // uploaderRate/platformRate 仍是冻结的 15/5，形成“总佣 0% 却拆出 20%”且与实付分佣冲突的矛盾对象。
+  // uploaderRate/platformRate 仍是冻结拆分，形成“总佣 0% 却拆出比例”且与实付分佣冲突的矛盾对象。
   const rate = Number(savedCommissionRule.rate ?? baseCommissionRule.rate ?? 0)
   const uploaderRate = Number(savedCommissionRule.uploaderRate ?? (rate ? (savedCommissionRule.rate ?? baseCommissionRule.uploaderRate) : 0))
   const platformRate = Number(savedCommissionRule.platformRate ?? Math.max(0, rate - uploaderRate))
@@ -2787,7 +2858,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   const location = publicListingLocationFields(listing)
   const listingTitle = publicListingTitle(listing, location) || listing.title || '未知房源'
   const rentFen = Math.round(Number(listing.rent || 0) * 100)
-  const sourceFields = listingSourceFields(listing)
+  const sourceFields = listingSourceFields(listing, db)
   const ownerType = sourceFields.ownerType
   const source = listing.source || sourceFields.sourceLabel || ''
   const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId)
@@ -3461,7 +3532,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const featureInputCount = parseFeatureInput(featureInput).filter((item) => item !== NO_COMMISSION_FEATURE).length
   const invalidFeatures = invalidListingFeatures(featureInput)
   const noCommission = companyListing
-  const rate = noCommission ? 0 : commissionRateByOwnerType(ownerType)
+  const rate = noCommission ? 0 : commissionRateByOwnerType(ownerType, options.db || {})
   const features = featuresWithCompanyDefaults(featureInput, {
     commissionRate: rate,
     companyListing,
@@ -3549,6 +3620,43 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   }
 }
 
+function setCommissionConfig(db = {}, adminId = '', payload = {}) {
+  const current = commissionConfig(db)
+  const rates = payload.uploaderRates || {}
+  const secondLandlordRate = boundedRate(
+    payload.secondLandlordRate ?? payload.secondLandlordUploaderRate ?? rates[SECOND_LANDLORD_SOURCE],
+    current.secondLandlordRate,
+    current.totalRate
+  )
+  const ownerRate = boundedRate(
+    payload.ownerRate ?? payload.ownerUploaderRate ?? rates[OWNER_SOURCE],
+    current.ownerRate,
+    current.totalRate
+  )
+  const now = nowText()
+  db.commissionConfig = {
+    totalRate: TOTAL_DEAL_COMMISSION_RATE,
+    uploaderRates: {
+      [SECOND_LANDLORD_SOURCE]: secondLandlordRate,
+      [OWNER_SOURCE]: ownerRate,
+      [COMPANY_SOURCE]: 0
+    },
+    secondLandlordRate,
+    ownerRate,
+    companyRate: 0,
+    updatedAt: now,
+    updatedBy: adminId || 'admin'
+  }
+  pushFootprint(db, {
+    id: id('F'),
+    viewerId: adminId || 'admin',
+    action: '调整分佣配置',
+    time: now,
+    sync: `二房东上传人 ${secondLandlordRate}%，业主上传人 ${ownerRate}%，公司房源不抽佣`
+  })
+  return commissionConfig(db)
+}
+
 function validateListingFields(fields, user = {}, options = {}) {
   if (
     !fields.address ||
@@ -3573,8 +3681,8 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  if (!Number.isFinite(fields.commissionRate) || fields.commissionRate < 0 || fields.commissionRate > 20) {
-    const error = new Error('分佣规则由后端按房源类型固定，二房东 15%，业主 20%，公司房源不分佣')
+  if (!Number.isFinite(fields.commissionRate) || fields.commissionRate < 0 || fields.commissionRate > TOTAL_DEAL_COMMISSION_RATE) {
+    const error = new Error('分佣规则由后端按当前配置和房源类型派生，公司房源不分佣')
     error.statusCode = 400
     throw error
   }
@@ -3627,7 +3735,7 @@ function assertNoDuplicateActiveListing(db, fields, currentListingId = '') {
 
 function addNormalListing(db, userId, form = {}, options = {}) {
   const user = assertKnownUser(db, userId)
-  const fields = normalizeListingForm(form, {}, { admin: options.admin, user })
+  const fields = normalizeListingForm(form, {}, { admin: options.admin, user, db })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields)
 
@@ -3721,7 +3829,7 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     throw error
   }
   const location = listingLocationFields(listing)
-  const display = listingDisplayFields(listing)
+  const display = listingDisplayFields(listing, db)
   return {
     id: listing.id,
     title: listing.title,
@@ -3769,7 +3877,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
     throw error
   }
 
-  const fields = normalizeListingForm(form, listing, { admin: options.admin, user })
+  const fields = normalizeListingForm(form, listing, { admin: options.admin, user, db })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields, listingId)
   const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
@@ -3950,6 +4058,8 @@ module.exports = {
   listingMaintenanceRule,
   setListingMaintenanceRule,
   enforceListingMaintenanceRule,
+  commissionConfig,
+  setCommissionConfig,
   dashboardSummary,
   formatHomeListing,
   homeListings,

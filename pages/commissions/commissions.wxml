@@ -4,8 +4,8 @@
     <view class="hero-card">
       <view>
         <view class="hero-kicker">合作成交</view>
-        <view class="hero-title">管理员确认签单后，上传人按房源类型结算。</view>
-        <view class="hero-desc">二房东房源到手 15%，业主房源到手 20%，状态和金额以确认记录为准。</view>
+        <view class="hero-title">管理员确认签单后，上传人按配置快照结算。</view>
+        <view class="hero-desc">每笔成交以确认记录里的比例和金额为准，后续配置调整不影响历史记录。</view>
       </view>
       <view class="hero-mark">佣</view>
     </view>

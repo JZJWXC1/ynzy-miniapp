@@ -52,7 +52,7 @@ Page({
     dealWorkbench: buildDealWorkbench(),
     reminders: [
       { title: '敏感信息查看', value: '今天有人查看了你上传房源的电话' },
-      { title: '待确认分佣', value: '有成交单待确认，签单后按平台规则计算' },
+      { title: '待确认分佣', value: '有成交单待确认，签单后按配置快照结算' },
       { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新自动失效' }
     ],
     sourceStats: [],

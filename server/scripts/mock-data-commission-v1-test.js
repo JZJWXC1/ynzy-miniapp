@@ -85,6 +85,19 @@ function run() {
   }))
   assert.strictEqual(owner.noCommission, false, 'mock owner listing should stay commission-enabled')
   assert.strictEqual(owner.commissionRate, 20, 'mock owner listing should recompute uploader rate to 20')
+
+  const savedConfig = mockData.updateCommissionConfig({
+    secondLandlordRate: 12,
+    ownerRate: 18
+  })
+  assert.strictEqual(savedConfig.secondLandlordRate, 12, 'mock commission config should update second-landlord rate')
+  const configurable = mockData.addNormalListing(listingPayload({
+    roomNumber: '1202',
+    ownerType: TEXT.secondLandlord,
+    houseSourceType: TEXT.secondLandlord,
+    source: TEXT.secondLandlord
+  }))
+  assert.strictEqual(configurable.commissionRate, 12, 'mock new second-landlord listing should use configured 12% rate')
 }
 
 run()

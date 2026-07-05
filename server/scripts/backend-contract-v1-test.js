@@ -652,6 +652,75 @@ function run() {
   assert.strictEqual(adminUploadConfirm.commissionRecord.uploaderCommissionFen, 0, '管理员上传二房东房源上传人分佣必须为 0')
   assert.strictEqual(adminUploadConfirm.commissionRecord.platformCommissionFen, 100000, '管理员上传二房东房源平台留存必须等于房东实付佣金的 20%')
 
+  assert.strictEqual(domain.commissionConfig(db).secondLandlordRate, 15, '默认二房东上传人比例为 15%')
+  const savedCommissionConfig = domain.setCommissionConfig(db, 'ADMIN', {
+    secondLandlordRate: 12,
+    ownerRate: 18
+  })
+  assert.strictEqual(savedCommissionConfig.secondLandlordRate, 12, '分佣配置应允许调整二房东上传人比例')
+  assert.strictEqual(savedCommissionConfig.ownerRate, 18, '分佣配置应允许调整业主上传人比例')
+  assert.ok(db.footprints.some((item) => item.action === '调整分佣配置'), '分佣配置变更必须写足迹')
+  assert.strictEqual(db.commissionRecords.find((item) => item.id === confirmResult.commissionRecord.id).uploaderRate, 15, '旧分佣记录不受后续配置调整影响')
+
+  const configurableListing = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNo: '780',
+    roomNumber: '780',
+    address: '杭州滨江区半山家苑1幢1单元780室',
+    videoKey: 'house-videos/backend-contract/configurable-second.mp4'
+  }))
+  const configurableRaw = db.listings.find((item) => item.id === configurableListing.id)
+  assert.strictEqual(configurableRaw.commissionRate, 12, '配置改为 12 后新二房东房源应写入 12% 上传人比例')
+  const configurableDetail = domain.listingDetail(db, configurableListing.id)
+  assert.strictEqual(configurableDetail.commissionText, '成交总比例按房东实付佣金的 20% 计算', '二房东详情黄条只展示成交总比例')
+  assert.ok(!/平台|抽成/.test(configurableDetail.commissionText), '二房东详情黄条不得出现平台抽成字样')
+  const configurableReportResult = domain.createClientReport(db, 'U2', configurableListing.id, {
+    needId: 'N1',
+    customerPhone: '13800006666'
+  })
+  const configurableReport = db.clientReports.find((item) => item.id === configurableReportResult.report.id)
+  const configurableDealResult = domain.createDealFromReport(db, 'U2', configurableReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const configurableDeal = db.dealRecords.find((item) => item.id === configurableDealResult.deal.id)
+  assert.deepStrictEqual(configurableDeal.commissionRule, { rate: 20, uploaderRate: 12, platformRate: 8 }, '签单应冻结当前二房东 12% 分佣配置')
+  const configurableConfirm = domain.confirmDeal(db, 'ADMIN', configurableDeal.id)
+  assert.strictEqual(configurableConfirm.commissionRecord.uploaderRate, 12, '配置改为 12 后新成交按 12% 结算')
+  assert.strictEqual(configurableConfirm.commissionRecord.platformRate, 8, '配置改为 12 后平台留存为 8%')
+  assert.strictEqual(configurableConfirm.commissionRecord.uploaderCommissionFen, 60000, '房东实付佣金 5000 元时 12% 为 600 元')
+  assert.strictEqual(configurableConfirm.commissionRecord.platformCommissionFen, 40000, '房东实付佣金 5000 元时 8% 为 400 元')
+
+  const configurableOwner = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '京漾东韵府',
+    community: '京漾东韵府',
+    roomNo: '902',
+    roomNumber: '902',
+    address: '杭州上城区京漾东韵府1幢1单元902室',
+    ownerType: '业主房源',
+    houseSourceType: '业主房源',
+    source: '业主房源',
+    videoKey: 'house-videos/backend-contract/configurable-owner.mp4'
+  }))
+  domain.reviewOwnerListing(db, 'ADMIN', configurableOwner.id, { action: 'approve' })
+  const configurableOwnerDetail = domain.listingDetail(db, configurableOwner.id)
+  assert.strictEqual(configurableOwnerDetail.commissionText, '管理员确认签单后，上传人按房东实付佣金的 18% 结算', '业主详情黄条应展示当前业主上传人比例')
+  const configurableOwnerReportResult = domain.createClientReport(db, 'U2', configurableOwner.id, {
+    needId: 'N1',
+    customerPhone: '13800007777'
+  })
+  const configurableOwnerReport = db.clientReports.find((item) => item.id === configurableOwnerReportResult.report.id)
+  const configurableOwnerDealResult = domain.createDealFromReport(db, 'U2', configurableOwnerReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const configurableOwnerDeal = db.dealRecords.find((item) => item.id === configurableOwnerDealResult.deal.id)
+  assert.deepStrictEqual(configurableOwnerDeal.commissionRule, { rate: 20, uploaderRate: 18, platformRate: 2 }, '签单应冻结当前业主 18% 分佣配置')
+  const configurableOwnerConfirm = domain.confirmDeal(db, 'ADMIN', configurableOwnerDeal.id)
+  assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderRate, 18, '配置改为 18 后新业主成交按 18% 结算')
+  assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderCommissionFen, 90000, '房东实付佣金 5000 元时 18% 为 900 元')
+
   // 回归用例（2026-07-02 P1 修复）：库外小区裸提交（不带任何匹配/审核字段）
   // 必须由服务端小区库判定为 未匹配 + 待审核，且不得进入首页/前台列表/地图
   const outsidePayload = listingPayload({

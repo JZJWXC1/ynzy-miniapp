@@ -9,8 +9,13 @@ const {
 } = require('../../utils/listing-features')
 
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
-const PLATFORM_COMMISSION_TEXT = '签单后按平台规则计算'
 const FALLBACK_MAX_VIDEO_MB = 300 // 与服务端 OSS 策略默认上限对齐的前端预检兜底值
+const DEFAULT_COMMISSION_CONFIG = {
+  totalRate: 20,
+  secondLandlordRate: 15,
+  ownerRate: 20,
+  companyRate: 0
+}
 
 const defaultForm = {
   city: '杭州',
@@ -63,6 +68,25 @@ function isBlank(value) {
 
 function requiresUploadVideo(form = {}) {
   return !form.companyListing
+}
+
+function normalizeCommissionConfig(config) {
+  const source = config || {}
+  const rates = source.uploaderRates || {}
+  const pickRate = (value, fallback) => (value === undefined || value === null || value === '' ? fallback : Number(value))
+  return {
+    totalRate: pickRate(source.totalRate, DEFAULT_COMMISSION_CONFIG.totalRate),
+    secondLandlordRate: pickRate(source.secondLandlordRate, rates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordRate : rates['二房东房源']),
+    ownerRate: pickRate(source.ownerRate, rates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerRate : rates['业主房源']),
+    companyRate: 0
+  }
+}
+
+function commissionRuleText(form = {}, config = DEFAULT_COMMISSION_CONFIG) {
+  const rule = normalizeCommissionConfig(config)
+  if (form.companyListing) return '公司房源成交不抽佣'
+  if (form.ownerType === '业主房源') return `上传人按房东实付佣金的 ${rule.ownerRate}% 结算`
+  return `上传人最高${rule.secondLandlordRate}%`
 }
 
 function normalizeUploadFeatures(features) {
@@ -135,11 +159,14 @@ Page({
     videoFile: null,
     existingVideoUrl: '',
     existingVideoKey: '',
+    commissionConfig: DEFAULT_COMMISSION_CONFIG,
+    commissionRuleText: commissionRuleText(defaultForm, DEFAULT_COMMISSION_CONFIG),
     submitting: false
   },
 
   onLoad(options) {
     this.loadCurrentUser()
+    this.loadCommissionConfig()
     const id = options && options.id ? options.id : ''
     if (id) {
       this.loadEditableListing(id)
@@ -162,11 +189,27 @@ Page({
     })
   },
 
+  loadCommissionConfig() {
+    apiService.getCommissionConfig().then((config) => {
+      const normalized = normalizeCommissionConfig(config)
+      this.setData({
+        commissionConfig: normalized,
+        commissionRuleText: commissionRuleText(this.data.form, normalized)
+      })
+    }).catch(() => {
+      this.setData({
+        commissionConfig: DEFAULT_COMMISSION_CONFIG,
+        commissionRuleText: commissionRuleText(this.data.form, DEFAULT_COMMISSION_CONFIG)
+      })
+    })
+  },
+
   refreshPreview(nextForm) {
     const form = nextForm || this.data.form
     this.setData({
       layoutPreview: buildLayout(form),
-      addressPreview: buildAddress(form)
+      addressPreview: buildAddress(form),
+      commissionRuleText: commissionRuleText(form, this.data.commissionConfig)
     })
   },
 
@@ -278,7 +321,7 @@ Page({
       'form.companyListing': companyListing,
       'form.features': features,
       featureOptions: buildFeatureOptions(features)
-    })
+    }, () => this.refreshPreview())
   },
 
   selectOwnerType(event) {
@@ -286,7 +329,7 @@ Page({
     if (this.data.form.companyListing) return
     this.setData({
       'form.ownerType': ownerType
-    })
+    }, () => this.refreshPreview())
   },
 
   chooseVideo() {
