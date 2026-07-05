@@ -98,6 +98,25 @@ function isIdObjectArray(value) {
 // \u4EE5 fresh \u4E3A\u5E95\uFF0C\u53EA\u628A sync \u76F8\u5BF9 base \u771F\u6B63\u6539\u52A8\u8FC7\u7684\u5B57\u6BB5\u8986\u76D6\u4E0A\u53BB\uFF08sync \u5220\u9664\u7684\u5B57\u6BB5\u5219\u5220\u6389\uFF09\uFF0C\u4ECE\u800C
 // \u4FDD\u7559 fresh \u5BF9 sync \u672A\u78B0\u5B57\u6BB5\u7684\u5E76\u53D1\u6539\u52A8\u3002\u7528\u4E8E\u300C\u540C\u4E00\u5143\u7D20\u88AB sync \u4E0E\u5E76\u53D1\u5199\u540C\u65F6\u6539\u52A8\uFF08\u4E0D\u540C\u5B57\u6BB5\uFF09\u300D\uFF1A
 // \u5426\u5219\u300Csync \u52A8\u8FC7\u8BE5\u5143\u7D20\u5C31\u6574\u4EFD\u80DC\u51FA\u300D\u4F1A\u9759\u9ED8\u56DE\u6EDA\u5E76\u53D1\u5199\uFF08\u5982 sync \u5237 syncedAt \u7684\u540C\u65F6\u5E76\u53D1\u786E\u8BA4\u4E86\u6210\u4EA4\uFF09\u3002
+const TERMINAL_STATUS_FIELDS = new Set(['status', 'lifecycleStatus', 'expiredAt', 'expiredBy', 'expiredPool', 'expiredReason', 'expiredStaleDays'])
+
+function isTerminalDealState(value) {
+  return /成交|签单|sold/i.test(String(value || ''))
+}
+
+function freshTerminalStatusWins(key, mutated, fresh) {
+  if (!TERMINAL_STATUS_FIELDS.has(key)) return false
+  const safeMutated = mutated || {}
+  const safeFresh = fresh || {}
+  const freshStatus = key === 'status' ? safeFresh[key] : safeFresh.status
+  const syncStatus = key === 'status' ? safeMutated[key] : safeMutated.status
+  const freshLifecycle = key === 'lifecycleStatus' ? safeFresh[key] : safeFresh.lifecycleStatus
+  const syncLifecycle = key === 'lifecycleStatus' ? safeMutated[key] : safeMutated.lifecycleStatus
+  const freshTerminal = isTerminalDealState(freshStatus) || isTerminalDealState(freshLifecycle)
+  const syncTerminal = isTerminalDealState(syncStatus) || isTerminalDealState(syncLifecycle)
+  return freshTerminal && !syncTerminal
+}
+
 function mergeChangedFields(base, mutated, fresh) {
   const safeBase = base || {}
   const safeMutated = mutated || {}
@@ -108,6 +127,7 @@ function mergeChangedFields(base, mutated, fresh) {
     const before = JSON.stringify(safeBase[key])
     const after = inMutated ? JSON.stringify(safeMutated[key]) : undefined
     if (before === after) continue // sync \u672A\u6539\u8BE5\u5B57\u6BB5 \u2192 \u4FDD\u7559 fresh \u7684\u503C\uFF08\u53EF\u80FD\u542B\u5E76\u53D1\u5199\uFF09
+    if (freshTerminalStatusWins(key, safeMutated, fresh)) continue // 并发成交/签单终态优先于同步下架等非终态
     if (!inMutated) { delete result[key]; continue } // sync \u5220\u4E86\u8BE5\u5B57\u6BB5
     result[key] = safeMutated[key] // sync \u6539\u4E86\u8BE5\u5B57\u6BB5 \u2192 \u53D6 sync \u503C\uFF08\u540C\u5B57\u6BB5\u51B2\u7A81\u4EE5 sync \u4E3A\u51C6\uFF09
   }

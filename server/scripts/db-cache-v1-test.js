@@ -219,6 +219,35 @@ try {
   assert.strictEqual(seResult.lifecycleStatus, 'sold', '同步不得回滚窗口内并发对同一房源的生命周期状态')
   assert.strictEqual(seResult.syncedAt, 'T1', '同步对该房源真正改动的字段（syncedAt）必须落地')
 
+  // 13) 同字段状态冲突：同步认为飞书房源应下架，同时窗口内并发成交确认已把同一房源置为
+  //     已成交/sold。成交/签单是业务终态，优先级必须高于同步下架；否则会出现成交记录存在、
+  //     房源却被同步改进资产池的矛盾状态。同步自己的非状态元数据仍应落地。
+  dbStore.writeDb({
+    listings: [{ id: 'FEISHU3', externalSource: 'feishu', status: '在租', lifecycleStatus: 'active', syncedAt: 'T0' }],
+    dealRecords: []
+  })
+  const scBase = dbStore.clone(dbStore.readDb())
+  const scSync = dbStore.clone(scBase)
+  const scListing = scSync.listings.find((item) => item.id === 'FEISHU3')
+  scListing.status = '已下架'
+  scListing.lifecycleStatus = 'expired'
+  scListing.expiredAt = 'SYNC-DOWN'
+  scListing.expiredReason = '飞书同步下架'
+  scListing.syncedAt = 'T2'
+  dbStore.updateDb((db) => {
+    const f = db.listings.find((item) => item.id === 'FEISHU3')
+    f.status = '已成交'
+    f.lifecycleStatus = 'sold'
+    db.dealRecords.push({ id: 'DEAL3', listingId: 'FEISHU3' })
+  })
+  dbStore.commitDelta(scBase, scSync)
+  const scResult = dbStore.readDb().listings.find((item) => item.id === 'FEISHU3')
+  assert.strictEqual(scResult.status, '已成交', '并发成交终态必须优先于同步下架状态')
+  assert.strictEqual(scResult.lifecycleStatus, 'sold', '并发成交生命周期必须优先于同步 expired')
+  assert.strictEqual(scResult.expiredAt, undefined, '成交终态胜出时不得残留同步下架时间')
+  assert.strictEqual(scResult.expiredReason, undefined, '成交终态胜出时不得残留同步下架原因')
+  assert.strictEqual(scResult.syncedAt, 'T2', '状态裁决不应阻止同步元数据落地')
+
   console.log('db-cache-v1-test passed')
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true })
