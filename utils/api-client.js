@@ -113,7 +113,7 @@ function request(options) {
       url: buildUrl(config.baseUrl, options.path),
       method,
       data,
-      timeout: config.timeout,
+      timeout: options.timeout || config.timeout,
       header: {
         'content-type': 'application/json',
         ...authHeader(config)

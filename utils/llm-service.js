@@ -9,6 +9,7 @@ const {
 } = require('./listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
+const LLM_MATCH_TIMEOUT_MS = 60000
 const AREA_WORDS = ['钱江新城', '上城区', '拱墅区', '西湖区', '滨江区', '萧山区', '余杭区', '临平区', '钱塘区', '上城', '拱墅', '西湖', '滨江', '萧山', '余杭', '临平', '钱塘', '西兴', '长河', '浦沿', '东新园', '建设路']
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
@@ -454,6 +455,7 @@ function recognizeRentalNeed(payload) {
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
+    timeout: LLM_MATCH_TIMEOUT_MS,
     mock: () => localResult
   }).then((serverResult) => normalizeRecognitionResult(serverResult, requestPayload)).catch((error) => {
     if (shouldUseLocalFallbackAfterError()) {
@@ -474,6 +476,7 @@ function matchRentalNeed(payload) {
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
+    timeout: LLM_MATCH_TIMEOUT_MS,
     mock: () => localResult
   }).then((serverResult) => normalizeServerResult(serverResult, requestPayload)).catch((error) => {
     if (shouldUseLocalFallbackAfterError()) {
@@ -548,6 +551,7 @@ module.exports = {
   parseNeedText,
   buildLocalRecognition,
   buildLocalMatch,
+  LLM_MATCH_TIMEOUT_MS,
   recognizeRentalNeed,
   matchRentalNeed,
   chatAssistant,

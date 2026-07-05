@@ -112,9 +112,23 @@ Page({
     })
   },
 
+  onHide() {
+    this.cleanupVoiceInput()
+  },
+
   onUnload() {
-    if (this.voiceController && this.data.isVoiceListening) {
+    this.cleanupVoiceInput()
+  },
+
+  cleanupVoiceInput() {
+    if (!this.voiceController) return
+    if (typeof this.voiceController.cancel === 'function') {
+      this.voiceController.cancel()
+    } else if (this.data.isVoiceListening) {
       this.voiceController.stop()
+    }
+    if (this.data.isVoiceListening) {
+      this.setData({ isVoiceListening: false })
     }
   },
 

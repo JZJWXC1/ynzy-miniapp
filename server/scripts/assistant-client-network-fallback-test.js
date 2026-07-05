@@ -10,9 +10,12 @@ global.getApp = () => ({
   }
 })
 
+const requestOptions = []
+
 global.wx = {
   getStorageSync: () => '',
   request(options) {
+    requestOptions.push(options)
     options.fail({ errMsg: 'mocked network failure' })
   }
 }
@@ -41,6 +44,14 @@ async function main() {
   assertEmptyFailedResult(recognitionResult, 'recognize rental need')
   assert.strictEqual(recognitionResult.stage, 'recognize')
   assert.strictEqual(recognitionResult.readyToConfirm, false)
+
+  const matchRequests = requestOptions.filter((item) => /\/mini\/llm\/match$/.test(item.url || ''))
+  assert.strictEqual(matchRequests.length, 2, '/mini/llm/match 应分别覆盖识别和确认匹配')
+  matchRequests.forEach((item) => {
+    assert.strictEqual(item.timeout, llmService.LLM_MATCH_TIMEOUT_MS, '/mini/llm/match 必须单独放宽到 60 秒')
+  })
+  const assistantChat = requestOptions.find((item) => /\/mini\/assistant\/chat$/.test(item.url || ''))
+  assert.strictEqual(assistantChat.timeout, 1, '非 /mini/llm/match 接口仍沿用全局超时')
 
   console.log('assistant-client-network-fallback-test passed')
 }

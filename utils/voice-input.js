@@ -213,6 +213,14 @@ function createController(handlers = {}) {
     finalTimer = null
   }
 
+  function closeRealtimeSocket() {
+    const task = socketTask
+    socketTask = null
+    socketReady = false
+    pendingFrames = []
+    closeSocket(task)
+  }
+
   function stopRecorderQuietly() {
     if (!listening) return
     try {
@@ -227,7 +235,7 @@ function createController(handlers = {}) {
     clearFinalTimer()
     transcribing = false
     const text = currentCaption()
-    closeSocket(socketTask)
+    closeRealtimeSocket()
     safeCall(handlers.onStop, text, Object.assign({}, lastRecordResult || {}, {
       asrResult: {
         text,
@@ -243,7 +251,7 @@ function createController(handlers = {}) {
     starting = false
     transcribing = false
     clearFinalTimer()
-    closeSocket(socketTask)
+    closeRealtimeSocket()
     stopRecorderQuietly()
     safeCall(handlers.onError, createVoiceError(errorMessage(error), '', error && error.code))
   }
@@ -371,7 +379,7 @@ function createController(handlers = {}) {
     transcribing = false
     cancelled = true
     clearFinalTimer()
-    closeSocket(socketTask)
+    closeRealtimeSocket()
     safeCall(handlers.onError, createVoiceError('录音器报错', errorMessage(error), 'recorder-error'))
   })
 
@@ -379,7 +387,9 @@ function createController(handlers = {}) {
     start() {
       if (starting || listening || transcribing) return
       starting = true
+      cancelled = false
       ensureRecordAuthorized((authError) => {
+        if (cancelled || !starting) return
         if (authError) {
           starting = false
           safeCall(handlers.onError, authError)
@@ -394,7 +404,7 @@ function createController(handlers = {}) {
           recorder.start(RECORD_OPTIONS)
         } catch (error) {
           starting = false
-          closeSocket(socketTask)
+          closeRealtimeSocket()
           safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
         }
       })
@@ -402,6 +412,17 @@ function createController(handlers = {}) {
     stop() {
       if (!listening) return
       recorder.stop()
+    },
+    cancel() {
+      if (!starting && !listening && !transcribing && !socketTask && !finalTimer) return
+      cancelled = true
+      socketFailed = true
+      starting = false
+      transcribing = false
+      clearFinalTimer()
+      closeRealtimeSocket()
+      stopRecorderQuietly()
+      safeCall(handlers.onCancel)
     },
     isBusy() {
       return starting || listening || transcribing
