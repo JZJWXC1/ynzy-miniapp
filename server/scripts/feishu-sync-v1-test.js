@@ -43,10 +43,15 @@ async function main() {
   const missing = db.listings[0]
   assert.strictEqual(missing.syncStatus, '缺视频素材', '后台应标记缺视频素材')
   assert.strictEqual(missing.videoMaterialStatus, '缺视频素材', '视频素材状态应标记缺失')
+  assert.strictEqual(missing.requiresManualReview, false, '飞书公司房源缺视频也不得进入人工审核拦截')
+  assert.strictEqual(missing.communityMatched, true, '飞书公司房源应按表内在租直接视为小区已匹配')
   assert.strictEqual(missing.landlordPhone, '13900001111', '公司房源应保留飞书联系电话')
   assert.strictEqual(missing.viewingPassword, '336699#', '公司房源应保留看房方式密码')
   assert.ok(JSON.stringify(missing).includes('13900001111'), '同步房源应保留飞书联系电话')
   assert.ok(JSON.stringify(missing).includes('336699'), '同步房源应保留看房密码')
+  missing.requiresManualReview = true
+  missing.communityMatched = false
+  missing.communityMatchStatus = '未匹配'
 
   const matched = await feishuSync.applySync(db, [
     row({
@@ -65,6 +70,8 @@ async function main() {
   assert.strictEqual(matched.updated, 1, '按房号命中的素材应更新原房源')
   assert.strictEqual(db.listings[0].syncStatus, '已同步飞书', '命中素材后应恢复正常同步状态')
   assert.strictEqual(db.listings[0].missingVideoMaterial, false, '命中素材后应清除缺素材标记')
+  assert.strictEqual(db.listings[0].requiresManualReview, false, '同步更新必须清理存量人工审核残留')
+  assert.strictEqual(db.listings[0].communityMatched, true, '同步更新必须清理存量小区未匹配残留')
   assert.ok((matched.auditRows || []).some((item) => item.syncResult === '上架-已配视频'), '对账表应记录已配视频结果')
 
   const mismatchDb = makeDb()

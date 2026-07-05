@@ -5,6 +5,7 @@ const domain = require('./domain')
 const locationMap = require('./location-map')
 const oss = require('./oss')
 
+const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
 const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
@@ -1017,6 +1018,17 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.feishuMatchKey = row.matchKey
   listing.feishuRowNumber = row.rowNumber
   listing.feishuStatusText = row.statusText
+  listing.source = COMPANY_SOURCE
+  listing.ownerType = COMPANY_SOURCE
+  listing.houseSourceType = COMPANY_SOURCE
+  listing.companyListing = true
+  listing.isCompanyListing = true
+  listing.noCommission = true
+  listing.requiresManualReview = false
+  listing.manualReviewRequired = false
+  listing.manualReviewReason = ''
+  listing.communityMatched = true
+  listing.communityMatchStatus = '已匹配'
   listing.landlordPhone = row.contact || listing.landlordPhone || ''
   listing.contact = row.contact || listing.contact || listing.landlordPhone || ''
   listing.viewingPassword = row.viewingPassword || ''
