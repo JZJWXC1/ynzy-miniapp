@@ -16,6 +16,10 @@ function row(fields) {
   return { fields }
 }
 
+function record(recordId, fields) {
+  return { record_id: recordId, fields }
+}
+
 async function main() {
   const db = makeDb()
   const first = await feishuSync.applySync(db, [
@@ -63,24 +67,41 @@ async function main() {
   assert.strictEqual(db.listings[0].missingVideoMaterial, false, '命中素材后应清除缺素材标记')
   assert.ok((matched.auditRows || []).some((item) => item.syncResult === '上架-已配视频'), '对账表应记录已配视频结果')
 
+  const mismatchDb = makeDb()
+  const mismatch = await feishuSync.applySync(mismatchDb, [
+    record('703', {
+      区域: '闸弄口',
+      小区: '杭行荟',
+      几栋: '5',
+      房号: '710',
+      户型: '一室一厅一卫',
+      押一付一: '3000'
+    })
+  ], [
+    { name: 'mmexport1782463085111.mp4', sourcePath: '棠润府17-1004A/mmexport1782463085111.mp4' }
+  ], 'A1', { dryRun: true })
+  assert.strictEqual(mismatch.skippedNoMaterial, 1, '素材匹配不能用弱房号片段误命中别的小区视频')
+  assert.strictEqual(mismatchDb.listings[0].missingVideoMaterial, true, '弱匹配失败后仍应缺素材上架')
+  assert.strictEqual((mismatch.auditRows || [])[0].matchedMaterialName, '', '弱匹配失败的对账行不应记录错误素材')
+
   const transferFailed = await feishuSync.applySync(db, [
     row({
       区域: '闸弄口',
       小区: '京漾东韵府',
       几栋: '1',
       几单元: '2',
-      房号: '602',
+      房号: '602A',
       户型: '一室一厅一卫',
       押一付一: '2900'
     })
   ], [
-    { name: '602.mp4' }
+    { name: '602A.mp4' }
   ], 'A1', { dryRun: false })
 
   assert.strictEqual(transferFailed.failed, 0, '素材匹配后不可用不应阻断公司房源上架')
   assert.strictEqual(transferFailed.materialTransferFailed, 1, '应统计素材搬运失败次数')
   assert.strictEqual(transferFailed.missingVideoMaterial, 1, '素材搬运失败应计入缺视频素材')
-  const degradedListing = db.listings.find((item) => item.roomNumber === '602')
+  const degradedListing = db.listings.find((item) => item.roomNumber === '602A')
   assert.ok(degradedListing, '素材失败降级后仍应创建公司房源')
   assert.strictEqual(degradedListing.missingVideoMaterial, true, '素材失败降级房源应标记缺视频素材')
   assert.strictEqual(degradedListing.videoMaterialStatus, '素材转存失败', '后台应保留素材转存失败状态')

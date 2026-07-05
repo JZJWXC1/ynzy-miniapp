@@ -444,27 +444,55 @@ function createMaterialMatcher(materials) {
   const normalized = (materials || []).map((item) => (
     item && item.key && item.sourcePath ? item : materialFromRaw(item)
   ))
-  const byToken = new Map()
-  normalized.forEach((item) => {
-    if (item.token) byToken.set(item.token, item)
-  })
+  const isVideoMaterial = (item) => VIDEO_EXT_PATTERN.test(item.name || '') || /^video\//.test(item.type || '')
+  const searchableKey = (item) => normalizedKey([
+    item.sourcePath,
+    item.name,
+    item.localFilePath,
+    item.url,
+    item.videoUrl
+  ].filter(Boolean).join(' '))
+  const fileNameKey = (item) => normalizedKey(item.name || path.basename(item.sourcePath || ''))
+  const includesAny = (text, keys) => keys.some((key) => text.indexOf(key) !== -1)
   return (row) => {
     const direct = materialCandidatesFromRecord(row).find((item) => item.videoUrl || item.url || item.localFilePath || item.token)
     if (direct) return direct
-    const keys = unique([
-      row.matchKey,
-      row.externalId,
-      row.roomNumber,
-      [row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
-      [row.building, row.roomNumber].filter(Boolean).join(''),
+    const communityKey = normalizedKey(row.community)
+    const strongKeys = unique([
       [row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
       [row.community, row.roomNumber].filter(Boolean).join('')
     ]).map(normalizedKey).filter((key) => key.length >= 3)
-    return normalized.find((item) => {
-      if (!VIDEO_EXT_PATTERN.test(item.name || '') && !/^video\//.test(item.type || '')) return false
-      if (item.token && keys.some((key) => byToken.has(key))) return true
-      return keys.some((key) => item.key.indexOf(key) !== -1 || key.indexOf(item.key) !== -1)
-    }) || null
+    const roomNumberKey = normalizedKey(row.roomNumber)
+    const allowRoomOnlyFallback = /[A-Za-z]/.test(String(row.roomNumber || ''))
+    const communityRoomKeys = unique([
+      [row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
+      [row.building, row.roomNumber].filter(Boolean).join(''),
+      allowRoomOnlyFallback ? row.roomNumber : ''
+    ]).map(normalizedKey).filter((key) => key.length >= 3)
+
+    const strongMatch = normalized.find((item) => {
+      if (!isVideoMaterial(item)) return false
+      return includesAny(searchableKey(item), strongKeys)
+    })
+    if (strongMatch) return strongMatch
+
+    if (communityKey && communityRoomKeys.length) {
+      const communityRoomMatch = normalized.find((item) => {
+        if (!isVideoMaterial(item)) return false
+        const text = searchableKey(item)
+        return text.indexOf(communityKey) !== -1 && includesAny(text, communityRoomKeys)
+      })
+      if (communityRoomMatch) return communityRoomMatch
+    }
+
+    const roomOnlyMatches = allowRoomOnlyFallback
+      ? normalized.filter((item) => {
+        if (!isVideoMaterial(item)) return false
+        const text = fileNameKey(item)
+        return text.indexOf(roomNumberKey) !== -1
+      })
+      : []
+    return roomOnlyMatches.length === 1 ? roomOnlyMatches[0] : null
   }
 }
 
