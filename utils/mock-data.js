@@ -16,6 +16,8 @@
   var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
+  var OWNER_COMMISSION_RATE = 20;
+  var SECOND_LANDLORD_COMMISSION_RATE = 15;
   var BROKER_ROLE = '中介';
   var BROKER_AUTHED = '手机号登录';
   var VERIFY_STALE_DAYS = 7;
@@ -265,14 +267,15 @@
     return isCompanyListing(current || {});
   }
 
-  function prepareSourceFields(form, current, rate, featureState) {
+  function prepareSourceFields(form, current, featureState) {
     var companyListing = formCompanyListing(form || {}, current || {});
     var ownerType = normalizeOwnerType(firstText((form || {}).ownerType, (form || {}).houseSourceType, (form || {}).landlordType, (current || {}).ownerType, (current || {}).houseSourceType), (current || {}).ownerType || SECOND_LANDLORD_SOURCE);
     var sourceInput = firstText((form || {}).source, (form || {}).sourceType, (form || {}).listingType, (form || {}).inventoryType);
     var nonCompanySourceInput = sourceInput && !/公司房源|company/.test(sourceInput) ? sourceInput : '';
     var currentCompany = isCompanyListing(current || {});
     var noCommission = companyListing;
-    var finalRate = noCommission ? 0 : rate;
+    // 佣金率一律按房源类型重算，忽略表单/历史传入值，与服务端保持一致。
+    var finalRate = noCommission ? 0 : commissionRateByOwnerType(ownerType);
     var features = featuresWithCompanyDefaults(featureState.features, {
       companyListing: companyListing,
       noCommission: noCommission,
@@ -421,6 +424,14 @@
     if (/业主/.test(text)) return OWNER_SOURCE;
     if (/二房东|二房東/.test(text)) return SECOND_LANDLORD_SOURCE;
     return fallback || SECOND_LANDLORD_SOURCE;
+  }
+
+  // 佣金率由房源类型派生，对齐服务端 server/src/domain.js commissionRateByOwnerType：
+  // 业主房源 20%，二房东房源 15%（公司房源在 prepareSourceFields 中另行归零）。
+  function commissionRateByOwnerType(ownerType) {
+    return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
+      ? OWNER_COMMISSION_RATE
+      : SECOND_LANDLORD_COMMISSION_RATE;
   }
 
   function isOwnerListing(listing) {
@@ -2084,7 +2095,6 @@
   }
 
   function addNormalListing(form) {
-    var rate = form.commissionRate === '' ? 20 : Number(form.commissionRate);
     var id = 'L' + Date.now();
     var city = firstText(form.city, '杭州');
     var area = normalizeDistrict(firstText(form.district, form.area, '拱墅区'));
@@ -2100,14 +2110,14 @@
     var address = firstText(form.address, buildStructuredAddress({ city: city, area: area, community: community, building: building, unit: unit, roomNumber: roomNumber }));
     var layout = firstText(form.layout, buildLayoutFromFields({ rentMode: rentMode, room: room, hall: hall, bath: bath }));
     var featureState = normalizeFormFeatures(form, {});
-    var sourceState = prepareSourceFields(form, {}, rate, featureState);
+    var sourceState = prepareSourceFields(form, {}, featureState);
     var communityReview = normalizeCommunityReviewState(form, {});
     var needsReview = sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview;
     var mapCoordinate = listingMapCoordinateFields(community, form, {});
     if (!address || !form.contact || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
       throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
     }
-    if (!Number.isFinite(rate) || rate < 0 || rate > 20) {
+    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
       throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
@@ -2235,12 +2245,11 @@
     var bath = firstText(form.bath, form.bathroom, form.bathrooms, listing.bath);
     var address = firstText(form.address, buildStructuredAddress({ city: city, area: area, community: community, building: building, unit: unit, roomNumber: roomNumber }), listing.address);
     var layout = firstText(form.layout, buildLayoutFromFields({ rentMode: rentMode, room: room, hall: hall, bath: bath }), listing.layout);
-    var rate = form.commissionRate === '' || form.commissionRate === undefined ? listing.commissionRate : Number(form.commissionRate);
     var featureState = normalizeFormFeatures(form, listing);
-    var sourceState = prepareSourceFields(form, listing, rate, featureState);
+    var sourceState = prepareSourceFields(form, listing, featureState);
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 20) {
+    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
       throw new Error('结算规则已固定为上传人按房东实付佣金的 20%，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
