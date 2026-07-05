@@ -74,6 +74,40 @@ async function main() {
   assert.strictEqual(db.listings[0].communityMatched, true, '同步更新必须清理存量小区未匹配残留')
   assert.ok((matched.auditRows || []).some((item) => item.syncResult === '上架-已配视频'), '对账表应记录已配视频结果')
 
+  const staleVideoDb = makeDb()
+  await feishuSync.applySync(staleVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '601D',
+      户型: '一室一厅一卫',
+      押一付一: '2800'
+    })
+  ], [
+    { name: '601D.mp4', videoUrl: 'https://example.com/601D.mp4', videoKey: 'house-videos/601D.mp4' }
+  ], 'A1', { dryRun: true })
+  assert.ok(staleVideoDb.listings[0].videoUrl || staleVideoDb.listings[0].videoKey, '命中素材后应先写入视频字段')
+
+  const staleMissing = await feishuSync.applySync(staleVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '601D',
+      户型: '一室一厅一卫',
+      押一付一: '2800'
+    })
+  ], [], 'A1', { dryRun: true })
+  const staleMissingListing = staleVideoDb.listings[0]
+  assert.strictEqual(staleMissing.updated, 1, '旧房源再次同步缺素材时应更新原房源')
+  assert.strictEqual(staleMissingListing.missingVideoMaterial, true, '旧房源缺素材时应标记缺视频素材')
+  assert.strictEqual(staleMissingListing.videoUrl, '', '旧房源缺素材时必须清空旧 videoUrl')
+  assert.strictEqual(staleMissingListing.videoKey, '', '旧房源缺素材时必须清空旧 videoKey')
+  assert.strictEqual(staleMissingListing.recommendationProfile.hasVideo, false, '推荐画像也必须同步清空视频状态')
+
   const mismatchDb = makeDb()
   const mismatch = await feishuSync.applySync(mismatchDb, [
     record('703', {

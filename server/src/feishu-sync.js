@@ -4,6 +4,7 @@ const config = require('./config')
 const domain = require('./domain')
 const locationMap = require('./location-map')
 const oss = require('./oss')
+const { refreshRecommendationProfile } = require('./listing-recommendation-profile')
 
 const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
@@ -1001,6 +1002,14 @@ function materialLabel(material = null) {
   return material.sourcePath || material.name || material.url || material.videoUrl || material.token || ''
 }
 
+function clearListingVideoFields(listing = {}) {
+  listing.videoUrl = ''
+  listing.videoKey = ''
+  delete listing.videoSignedUrl
+  delete listing.signedVideoUrl
+  delete listing.videoPreviewUrl
+}
+
 function buildAuditRow(row, material, syncResult, failureReason = '') {
   return {
     rowNumber: row.rowNumber,
@@ -1056,6 +1065,10 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.reviewStatus = '无需审核'
   listing.lastVerifiedAt = listing.syncedAt
   listing.updatedAt = listing.syncedAt
+  if (!materialReady) {
+    clearListingVideoFields(listing)
+    refreshRecommendationProfile(listing, { generatedAt: listing.updatedAt })
+  }
   delete listing.expiredAt
   delete listing.expiredBy
   delete listing.expiredPool
