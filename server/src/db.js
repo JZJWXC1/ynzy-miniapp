@@ -26,7 +26,9 @@ let parseCache = null
 function statKey() {
   try {
     const stat = fs.statSync(config.dataFile)
-    return `${stat.mtimeMs}:${stat.size}`
+    // 纳入 inode：writeDb 用「写临时文件 + rename」替换，每次落盘都是新 inode，
+    // 使缓存键不再被「同毫秒 + 同 size」的跨进程等长写入别名化（否则会误命中陈旧缓存丢写）。
+    return `${stat.ino}:${stat.mtimeMs}:${stat.size}`
   } catch (error) {
     return null
   }
@@ -54,27 +56,191 @@ function serializeDb(db) {
   return config.dbPrettyJson ? JSON.stringify(db, null, 2) : JSON.stringify(db)
 }
 
-function writeDb(db) {
+// ---------- 跨进程写锁（P0-2 并发写保护） ----------
+// 单主机同机多进程：服务器与运维脚本(backfill/geocode)可能同时写 db.json，各自「读 fresh→改→
+// 原子 rename」之间若无互斥，后写会整块覆盖先写、丢数据（commitDelta 只在单进程内合并，不跨进程）。
+// 用零依赖 O_EXCL 锁文件做 advisory 互斥：获取有界超时（拿不到就抛错，绝不无限等/死锁）；
+// 陈旧锁（持锁进程崩溃未清理）按 mtime age 回收；进程内可重入（mutator 再调 updateDb 不自死锁）；
+// 仅在 updateDb/writeDb 同步临界区短暂持锁（毫秒级），单进程内几乎无争用。锁参数从环境变量读，
+// 便于测试与生产覆盖：DB_WRITE_LOCK(默认开,置 0/off 退回旧行为)、DB_LOCK_TIMEOUT_MS(默认 10000)、
+// DB_LOCK_STALE_MS(默认 30000)。
+let heldLockFd = null
+let heldLockDepth = 0
+let heldLockToken = null // 本进程锁的唯一标记，写进锁文件；release 只删「仍属于我」的锁
+
+function lockFilePath() {
+  return `${config.dataFile}.lock`
+}
+
+function lockEnabled() {
+  return !/^(0|false|no|off)$/i.test(String(process.env.DB_WRITE_LOCK || '').trim())
+}
+
+function lockNumberEnv(name, fallback) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function sleepSync(ms) {
+  // 零依赖同步睡眠：Atomics.wait 让出 CPU（Node 主线程允许），比忙等省电。
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms))
+  } catch (error) {
+    const until = Date.now() + ms
+    while (Date.now() < until) { /* 退化忙等，极少触发 */ }
+  }
+}
+
+// Windows 下 rename 覆盖已存在文件时可能瞬时抛 EPERM/EACCES/EBUSY（AV/索引器/刚释放的句柄）；
+// 短暂重试即可，绝不因平台瞬时错误丢一次写盘。Linux 上 rename 原子、几乎不触发重试。
+function renameWithRetry(from, to) {
+  const maxTries = 30
+  for (let i = 0; ; i += 1) {
+    try {
+      fs.renameSync(from, to)
+      return
+    } catch (error) {
+      const transient = error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'EBUSY'
+      if (!transient || i >= maxTries) throw error
+      sleepSync(5)
+    }
+  }
+}
+
+// 尽力删除锁文件：Windows 下 unlink 也会瞬时 EPERM/EBUSY，重试消化；实在删不掉不抛错（
+// 交给 liveness/自身 pid/陈旧回收兜底），避免释放路径抛错阻断上层。
+function unlinkWithRetry(p) {
+  for (let i = 0; ; i += 1) {
+    try {
+      fs.unlinkSync(p)
+      return
+    } catch (error) {
+      if (error.code === 'ENOENT') return // 已不在
+      const transient = error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'EBUSY'
+      if (!transient || i >= 30) return // 尽力而为
+      sleepSync(5)
+    }
+  }
+}
+
+// 单主机 pid 存活探测：signal 0 只探测存在、不真杀。ESRCH=不存在；EPERM=存在但无权限（算存活）。
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+
+// 判定锁是否陈旧（可安全回收）。以「持有者进程存活与否」为权威——存活的持有者哪怕临界区很慢也绝不回收，
+// 避免误删活锁造成两个并发写者。只有读不出 pid（内容缺失/被别的工具建的锁）时才退回 age 兜底。
+function isStaleLock(lp, staleMs) {
+  try {
+    const content = fs.readFileSync(lp, 'utf8')
+    const pid = parseInt(String(content).split(':')[0], 10)
+    if (Number.isInteger(pid) && pid > 0) {
+      // 自己 pid 的锁但当前未持有（heldLockDepth 为 0 才会走到这）= 上次释放没删掉的孤儿 → 必回收，防自锁死。
+      if (pid === process.pid) return true
+      return !isProcessAlive(pid) // 别的持有者：已死→陈旧回收；存活→绝不回收（防误删活锁）
+    }
+  } catch (readError) { /* 读不到内容 → 退回 age */ }
+  try {
+    return Date.now() - fs.statSync(lp).mtimeMs > staleMs
+  } catch (statError) {
+    return false // 文件已不在，交给上层重试
+  }
+}
+
+function acquireDbLock() {
+  if (!lockEnabled()) return null // 紧急关闭开关：退回旧行为（无锁）
+  if (heldLockDepth > 0) { heldLockDepth += 1; return heldLockFd } // 本进程重入
+  const lp = lockFilePath()
+  const timeoutMs = lockNumberEnv('DB_LOCK_TIMEOUT_MS', 10000)
+  const staleMs = lockNumberEnv('DB_LOCK_STALE_MS', 30000)
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      const fd = fs.openSync(lp, 'wx') // O_CREAT|O_EXCL：原子创建，已存在则 EEXIST
+      try { fs.writeSync(fd, token) } catch (writeError) { /* 写元信息失败不致命 */ }
+      heldLockFd = fd
+      heldLockDepth = 1
+      heldLockToken = token
+      return fd
+    } catch (error) {
+      // EEXIST=锁被占；Windows 并发/权限也可能给 EPERM/EACCES。不再靠 statSync 区分真假权限错误
+      //（Windows 下不可靠、且有 race），改为统一走「回收陈旧锁 + 有界等待 + 每轮 sleep + 超时抛错」：
+      // 即便是真权限错误（目录只读），也只会在 DB_LOCK_TIMEOUT_MS 后抛超时，绝不无限自旋冻死服务。
+      if (error.code !== 'EEXIST' && error.code !== 'EPERM' && error.code !== 'EACCES') throw error
+      try {
+        if (isStaleLock(lp, staleMs)) unlinkWithRetry(lp) // 回收：持有者已死/自身孤儿/内容缺失且 age 陈旧
+      } catch (staleError) { /* 忽略，走等待 */ }
+      if (Date.now() >= deadline) {
+        throw new Error(`获取 db 写锁超时(${timeoutMs}ms)：${lp}（持续超时请检查该目录写权限）`)
+      }
+      sleepSync(Math.min(25, Math.max(1, deadline - Date.now())))
+    }
+  }
+}
+
+function releaseDbLock(fd) {
+  if (heldLockDepth > 1) { heldLockDepth -= 1; return } // 重入退出
+  if (heldLockDepth === 0 && fd == null) return // 关闭开关下无锁
+  const token = heldLockToken
+  heldLockDepth = 0
+  heldLockFd = null
+  heldLockToken = null
+  try { if (fd != null) fs.closeSync(fd) } catch (error) { /* 忽略 */ }
+  // 只删「仍属于我」的锁：读回锁文件，token 匹配才删，避免误删别人重建的活锁（防连锁并发写）。
+  // 读失败（Windows 瞬时）时默认当作是自己的（活着的持有者不会被 liveness 回收，锁必然仍是我的）照删，
+  // 否则会遗留孤儿锁把自己/别人锁死。只有明确读到「别人的 token」才不删。
+  if (token != null) {
+    let mine = true
+    try { mine = fs.readFileSync(lockFilePath(), 'utf8') === token } catch (readError) { mine = true }
+    if (mine) unlinkWithRetry(lockFilePath())
+  }
+}
+
+function writeDbUnlocked(db) {
   ensureDataFile()
   const tempFile = `${config.dataFile}.${process.pid}.tmp`
   fs.writeFileSync(tempFile, serializeDb(db), 'utf8')
-  fs.renameSync(tempFile, config.dataFile)
+  renameWithRetry(tempFile, config.dataFile)
   // \u521A\u5199\u5165\u7684\u5BF9\u8C61\u5373\u6700\u65B0\u72B6\u6001\uFF0C\u7ED1\u5B9A\u65B0 stat \u4F5C\u4E3A\u7F13\u5B58\uFF0C\u8BA9\u7D27\u968F\u5176\u540E\u7684 readDb \u76F4\u63A5\u547D\u4E2D\u3002
   const key = statKey()
   parseCache = key ? { key, db: clone(db) } : null
 }
 
-function updateDb(mutator) {
-  const db = readCachedDb()
+// 公开写入：外层包跨进程锁；updateDb 内部改用 writeDbUnlocked，避免重复加锁。
+function writeDb(db) {
+  ensureDataFile()
+  const fd = acquireDbLock()
   try {
+    writeDbUnlocked(db)
+  } finally {
+    releaseDbLock(fd)
+  }
+}
+
+function updateDb(mutator) {
+  ensureDataFile()
+  const fd = acquireDbLock()
+  try {
+    // 持锁时强制从磁盘重读：即便 statKey 撞键（同 tick 等长的跨进程写），也绝不复用本进程陈旧缓存，
+    // 确保读改写基于真实当前磁盘状态，杜绝「持锁仍丢写」。锁关闭(fd 为 null)时退回旧的缓存行为。
+    if (fd != null) parseCache = null
+    const db = readCachedDb()
     const result = mutator(db)
-    writeDb(db)
+    writeDbUnlocked(db)
     return result
   } catch (error) {
     // mutator \u53EF\u80FD\u5DF2\u5C31\u5730\u6539\u52A8\u7F13\u5B58\u5BF9\u8C61\uFF0C\u4F46\u78C1\u76D8\u672A\u5199\u5165\uFF1B\u5931\u6548\u7F13\u5B58\uFF0C\u8BA9\u4E0B\u4E00\u6B21 readDb
     // \u4ECE\u78C1\u76D8\u91CD\u65B0\u89E3\u6790\u51FA\u672A\u88AB\u6C61\u67D3\u7684\u72B6\u6001\uFF0C\u4FDD\u6301\u201C\u629B\u5F02\u5E38\u5373\u56DE\u6EDA\u201D\u8BED\u4E49\u3002
     parseCache = null
     throw error
+  } finally {
+    releaseDbLock(fd)
   }
 }
 
