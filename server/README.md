@@ -478,6 +478,7 @@ POST /mini/assistant/feedback
 生产服务会为 `POST /mini/llm/match` 和 `POST /mini/assistant/chat` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`；助手对话还会记录 `degraded`，用于确认真机登录态是否到达后端。日志不记录请求正文、手机号、地址或房源敏感字段。
 `/mini/llm/match` 与 `/mini/assistant/chat` 的客户端超时都单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
 `/mini/assistant/chat` 额外有入口级兜底超时，默认 `24` 秒，可用 `ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS` 覆盖；触发时走同一套本地真实房源匹配，不返回 mock。
+找房助手意图路由遵循精确优先：明确业务问题仍进入 FAQ；生活化找房诉求（如安静、安全、带娃上学、女生居住）和带上一轮找房条件的续问/指代（如换一套、便宜点、刚才那套的位置）进入找房图，由后续置信门追问或匹配，不能直接落到 FAQ 套话。
 `GET /admin/launch-check` 会检查当前 `llmConfig.secretName` 对应的服务端环境变量是否存在；缺失时明示变量名，不返回密钥值。
 
 模型密钥只从服务端环境变量读取：
@@ -523,6 +524,15 @@ node scripts/auth-token-v1-test.js
 - 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签、报备/签单。
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
 - Bearer token 鉴权、7 天有效期、伪造 `X-User-Id` 无效。
+
+找房助手另有真实需求行为基线：
+
+```bash
+cd server
+node scripts/assistant-real-need-baseline-test.js
+```
+
+该脚本用 16 条真实口语需求锁定精确优先下的行为准星：标准需求应推荐，字段不足或地点歧义应追问，生活化找房诉求与多轮续问不能落到 FAQ，业务/地图使用问题仍保留 FAQ。
 
 可选汇总审计脚本：
 
