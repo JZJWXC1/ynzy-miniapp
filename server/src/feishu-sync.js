@@ -350,12 +350,16 @@ function roomAddressFromParts(parts = {}) {
   return [parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('-')
 }
 
+function roomIdentityKey(parts = {}) {
+  return [parts.community, parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('|')
+}
+
 function normalizeRecord(rawRecord, index) {
   const fields = rawRecord.fields || rawRecord
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
   const location = normalizeLocationFields(fields, community)
   const roomParts = parseRoomParts(fields)
-  const fallbackKey = [community, roomParts.building, roomParts.unit, roomParts.roomNumber].filter(Boolean).join('|')
+  const fallbackKey = roomIdentityKey({ community, ...roomParts })
   const externalId = firstField(fields, ['房源编号', '唯一编号', '编号', 'ID', 'id', 'importKey', 'record_id']) || rawRecord.record_id || fallbackKey
   const parsedLayout = parseLayoutDescription(fields)
   const layoutText = parsedLayout.layoutText
@@ -376,6 +380,7 @@ function normalizeRecord(rawRecord, index) {
     rowNumber: rawRecord.rowNumber || rawRecord.row_number || index + 1,
     externalId,
     matchKey: externalId || fallbackKey,
+    roomIdentityKey: fallbackKey,
     city: firstField(fields, ['城市', 'city']) || '杭州',
     area: location.area,
     block: location.block,
@@ -930,6 +935,9 @@ function downListing(db, listing, reason, adminId) {
   listing.expiredPool = '后台废房源池'
   listing.expiredReason = reason
   listing.updatedAt = now
+  listing.feishuLastSyncAction = 'down'
+  listing.feishuLastSyncAt = now
+  listing.feishuLastSyncReason = reason
   db.footprints = db.footprints || []
   db.footprints.unshift({
     id: id('F'),
@@ -947,6 +955,13 @@ function existingByExternalId(db) {
   ;(db.listings || []).forEach((listing) => {
     if (listing.externalSource === 'feishu' && listing.feishuRecordId) {
       map.set(String(listing.feishuRecordId), listing)
+    }
+    if (listing.externalSource === 'feishu' && listing.feishuRoomIdentityKey) {
+      map.set(String(listing.feishuRoomIdentityKey), listing)
+    }
+    const physicalKey = roomIdentityKey(listing)
+    if (listing.externalSource === 'feishu' && physicalKey) {
+      map.set(String(physicalKey), listing)
     }
   })
   return map
@@ -1025,6 +1040,7 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.externalSource = 'feishu'
   listing.feishuRecordId = String(row.externalId)
   listing.feishuMatchKey = row.matchKey
+  listing.feishuRoomIdentityKey = row.roomIdentityKey || row.matchKey
   listing.feishuRowNumber = row.rowNumber
   listing.feishuStatusText = row.statusText
   listing.source = COMPANY_SOURCE
@@ -1060,6 +1076,8 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
     delete listing.videoMaterialFailureReason
   }
   listing.syncedAt = nowText()
+  listing.feishuLastSyncAt = listing.syncedAt
+  listing.feishuLastSyncReason = materialFailureReason || ''
   listing.status = '在租'
   listing.lifecycleStatus = 'active'
   listing.reviewStatus = '无需审核'
@@ -1085,12 +1103,15 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
     }
     domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true })
     attachFeishuFields(existing, row, material, video, materialFailureReason)
+    existing.feishuLastSyncAction = 'updated'
     return { action: 'updated', listing: existing }
   }
   const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true })
   const listing = db.listings.find((item) => item.id === detail.id)
   attachFeishuFields(listing, row, material, video, materialFailureReason)
+  if (listing) listing.feishuLastSyncAction = 'created'
   if (listing && row.externalId) byExternalId.set(String(row.externalId), listing)
+  if (listing && row.roomIdentityKey) byExternalId.set(String(row.roomIdentityKey), listing)
   return { action: 'created', listing }
 }
 
@@ -1128,7 +1149,8 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       continue
     }
     seen.add(String(row.externalId))
-    const existing = byExternalId.get(String(row.externalId))
+    const existing = byExternalId.get(String(row.externalId)) ||
+      (row.roomIdentityKey ? byExternalId.get(String(row.roomIdentityKey)) : null)
     if (row.isDown) {
       if (existing && downListing(db, existing, '飞书房源表已下架，自动同步下架', actorId)) result.down += 1
       result.auditRows.push(buildAuditRow(row, null, existing ? '下架' : '跳过-表内下架且线上不存在', '表内状态为下架/已租/关闭'))

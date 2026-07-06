@@ -1,6 +1,18 @@
 <navigation-bar title="房源详情" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell detail-page">
+    <block wx:if="{{unavailableListing.unavailable}}">
+      <view class="unavailable-card soft-card">
+        <view class="unavailable-status">房源已更新</view>
+        <view class="unavailable-title">{{unavailableListing.reasonText || '这套房源暂时不能查看'}}</view>
+        <view class="unavailable-desc">可能已经下架、过期或正在重新同步。返回上一页继续看原需求，或重新发起找房。</view>
+        <view class="unavailable-actions">
+          <button class="ghost-button" bindtap="goBackFromUnavailable">返回上一页</button>
+          <button class="primary-button" bindtap="goFindHouseFromUnavailable">重新找房</button>
+        </view>
+      </view>
+    </block>
+    <block wx:else>
     <block wx:if="{{listing.videoUrl}}">
       <view class="video-card">
         <video
@@ -104,6 +116,7 @@
     </view>
 
     <button class="deal-button" bindtap="startReportDeal">先报备客户，再从报备发起签单</button>
+    </block>
   </view>
 </scroll-view>
 <view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal" catchtouchmove="noop">

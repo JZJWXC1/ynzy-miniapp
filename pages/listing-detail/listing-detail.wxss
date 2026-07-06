@@ -8,6 +8,49 @@ page {
   padding-bottom: 64rpx;
 }
 
+.unavailable-card {
+  padding: 42rpx 34rpx;
+}
+
+.unavailable-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44rpx;
+  padding: 0 16rpx;
+  color: #ffffff;
+  font-size: 22rpx;
+  font-weight: 900;
+  background: #B9655A;
+  border-radius: 14rpx;
+}
+
+.unavailable-title {
+  margin-top: 22rpx;
+  color: #182E2A;
+  font-size: 34rpx;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.unavailable-desc {
+  margin-top: 14rpx;
+  color: #6A7671;
+  font-size: 25rpx;
+  line-height: 1.5;
+}
+
+.unavailable-actions {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 28rpx;
+}
+
+.unavailable-actions .ghost-button,
+.unavailable-actions .primary-button {
+  flex: 1 1 0;
+  margin-top: 0;
+}
+
 .video-card {
   height: 380rpx;
   display: flex;

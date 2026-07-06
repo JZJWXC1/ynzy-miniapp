@@ -188,6 +188,32 @@ function isExpiredListing(listing = {}) {
   return listing.lifecycleStatus === 'expired' || listing.status === '已失效' || listing.status === '已下架'
 }
 
+function listingUnavailableReason(listing = {}) {
+  if (!listing || !listing.id) return { reason: 'not-found', reasonText: '房源不存在' }
+  if (isSoldListing(listing)) {
+    return { reason: 'down', reasonText: '该房源已成交或已下架，请返回重新找房。' }
+  }
+  if (isExpiredListing(listing)) {
+    const expiredReason = String(listing.expiredReason || '')
+    const reason = listing.expiredStaleDays !== undefined || /超过\s*\d+\s*天|未电话联系|房态/.test(expiredReason)
+      ? 'expired'
+      : 'down'
+    return {
+      reason,
+      reasonText: reason === 'expired'
+        ? '该房源已超过核验周期或已失效，请返回重新找房。'
+        : '该房源已下架或已更新，请返回重新找房。'
+    }
+  }
+  if (isPendingOwnerReview(listing)) {
+    return { reason: 'pending', reasonText: '该房源正在审核，暂不能查看详情，请返回重新找房。' }
+  }
+  if (requiresListingVideo(listing) && !hasListingVideo(listing)) {
+    return { reason: 'pending', reasonText: '该房源视频素材待补充，暂不能查看详情，请返回重新找房。' }
+  }
+  return { reason: '', reasonText: '' }
+}
+
 function rawActiveListings(db) {
   return (db.listings || []).filter((listing) => !isExpiredListing(listing) && !isSoldListing(listing))
 }
@@ -1306,11 +1332,7 @@ function matchListings(db, condition = {}) {
   }
 }
 
-function listingDetail(db, listingId) {
-  autoExpireOverdueListings(db)
-  const listing = listingById(db, listingId) || publicListings(db).find((item) => item.id === listingId)
-  if (!listing) return null
-  if (!isFrontendEffectiveListing(listing)) return null
+function buildListingDetail(db, listing) {
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing, db)
@@ -1342,6 +1364,56 @@ function listingDetail(db, listingId) {
     ...display,
     ...companyPublic
   }
+}
+
+function unavailableListingDetail(listing, listingId) {
+  const unavailable = listingUnavailableReason(listing)
+  return {
+    id: listing ? listing.id : listingId,
+    unavailable: true,
+    reason: unavailable.reason,
+    reasonText: unavailable.reasonText,
+    status: listing ? (listing.status || '') : '',
+    updatedAt: listing ? (listing.updatedAt || '') : '',
+    syncedAt: listing ? (listing.syncedAt || '') : '',
+    feishuLastSyncAction: listing ? (listing.feishuLastSyncAction || '') : '',
+    feishuLastSyncAt: listing ? (listing.feishuLastSyncAt || listing.syncedAt || '') : ''
+  }
+}
+
+function listingDetailState(db, listingId) {
+  autoExpireOverdueListings(db)
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    return {
+      status: 'not-found',
+      listingId,
+      rawFound: false,
+      unavailable: unavailableListingDetail(null, listingId)
+    }
+  }
+  if (!isFrontendEffectiveListing(listing)) {
+    return {
+      status: 'unavailable',
+      listingId,
+      rawFound: true,
+      reason: listingUnavailableReason(listing).reason,
+      listing,
+      unavailable: unavailableListingDetail(listing, listingId)
+    }
+  }
+  return {
+    status: 'available',
+    listingId,
+    rawFound: true,
+    listing,
+    detail: buildListingDetail(db, listing)
+  }
+}
+
+function listingDetail(db, listingId) {
+  const state = listingDetailState(db, listingId)
+  return state.status === 'available' ? state.detail : null
 }
 
 function assertListingLogsReadable(db, userId, listing) {
@@ -4088,6 +4160,7 @@ module.exports = {
   filterListings,
   matchListings,
   listingDetail,
+  listingDetailState,
   isCompanyListing,
   isNoCommissionListing,
   listingLogs,

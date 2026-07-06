@@ -521,7 +521,11 @@ function getListingDetail(id) {
   return apiClient.call({
     path: `/mini/listings/${id}`,
     mock: () => mockData.getListingDetail(id)
-  }).then((listing) => listingDisplay.normalizeListing(listing))
+  }).then((listing) => (
+    listing && listing.unavailable
+      ? listing
+      : listingDisplay.normalizeListing(listing)
+  ))
 }
 
 function getListingLogs(id) {

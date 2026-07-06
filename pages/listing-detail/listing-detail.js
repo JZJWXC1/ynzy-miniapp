@@ -104,6 +104,7 @@ Page({
     sensitiveAuthLabel: '可查看',
     sensitiveVisible: false,
     listing: {},
+    unavailableListing: {},
     logs: [],
     showingSubmitting: false,
     showingPhotoPath: '',
@@ -173,6 +174,19 @@ Page({
       // “房源不存在或已下架”（此时 getListingDetail 往往已成功）。
       apiService.getProfileState().catch(() => ({ user: {} }))
     ]).then(([listing, logs, profile]) => {
+      if (listing && listing.unavailable) {
+        this.setData({
+          listing: {},
+          unavailableListing: listing,
+          logs: [],
+          sensitiveVisible: false,
+          isVerified: false,
+          canShareVideo: false,
+          shareBrokerName: '',
+          shareStateText: '这套房源已更新，请重新找房。'
+        })
+        return
+      }
       const user = profile && profile.user ? profile.user : {}
       const canTrySensitive = Boolean(
         user.isAdmin ||
@@ -184,6 +198,7 @@ Page({
       const companyListing = Boolean(listing && listing.companyListing)
       this.setData({
         listing,
+        unavailableListing: {},
         logs,
         sensitiveVisible: companyListing,
         isVerified: canTrySensitive,
@@ -200,10 +215,33 @@ Page({
         return
       }
       wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
+      this.setData({
+        unavailableListing: {
+          unavailable: true,
+          reason: 'not-found',
+          reasonText: '这套房源不存在或已下架，请返回重新找房。'
+        }
+      })
     });
   },
 
   noop() {},
+
+  goBackFromUnavailable() {
+    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+    if (pages.length > 1) {
+      wx.navigateBack()
+      return
+    }
+    wx.switchTab({ url: '/pages/index/index' })
+  },
+
+  goFindHouseFromUnavailable() {
+    wx.redirectTo({
+      url: '/pages/match-chat/match-chat',
+      fail: () => wx.switchTab({ url: '/pages/index/index' })
+    })
+  },
 
   promptLoginGuide(title, content) {
     wx.showModal({

@@ -86,6 +86,31 @@ function safeLogError(error) {
     .slice(0, 120)
 }
 
+function safeLogValue(value) {
+  return String(value || '-')
+    .replace(/\s+/g, '_')
+    .replace(/[^\w\u4e00-\u9fa5:./-]/g, '_')
+    .slice(0, 120)
+}
+
+function logListingDetailState(listingId, state, queryId = '') {
+  if (!state || state.status === 'available') return
+  const listing = state.listing || {}
+  const unavailable = state.unavailable || {}
+  console.log([
+    '[listing-detail]',
+    `availability=${safeLogValue(state.status)}`,
+    `queryId=${safeLogValue(queryId)}`,
+    `listingId=${safeLogValue(listingId)}`,
+    `rawFound=${Boolean(state.rawFound)}`,
+    `reason=${safeLogValue(state.reason || unavailable.reason || 'not-found')}`,
+    `status=${safeLogValue(listing.status)}`,
+    `feishuAction=${safeLogValue(listing.feishuLastSyncAction)}`,
+    `feishuAt=${safeLogValue(listing.feishuLastSyncAt || listing.syncedAt)}`,
+    `feishuReason=${safeLogValue(listing.feishuLastSyncReason || listing.expiredReason)}`
+  ].join(' '))
+}
+
 function sendJsonDownload(res, filename, data) {
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -1217,12 +1242,19 @@ async function handleMini(req, res, pathname, searchParams) {
 
   const listingMatch = pathname.match(/^\/mini\/listings\/([^/]+)$/)
   if (method === 'GET' && listingMatch) {
-    const detail = domain.listingDetail(db, listingMatch[1])
-    if (!detail) {
-      const error = new Error('房源不存在或已下架')
+    const listingId = listingMatch[1]
+    const detailState = domain.listingDetailState(db, listingId)
+    if (detailState.status === 'not-found') {
+      logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
+      const error = new Error('房源不存在')
       error.statusCode = 404
       throw error
     }
+    if (detailState.status === 'unavailable') {
+      logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
+      return sendJson(res, detailState.unavailable)
+    }
+    const detail = detailState.detail
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-listing-detail')
       assertGuestListingAllowed(detail)
