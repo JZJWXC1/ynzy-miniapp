@@ -83,5 +83,5 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js                         
 
 - 飞书云盘**只放 `.ygbak` 加密备份**，严禁上传 `BACKUP_ENCRYPTION_KEY`、`.env`、明文 `db.json`。
 - `BACKUP_ENCRYPTION_KEY` 绝不放飞书，只放服务器 `/etc/default/ynzy-backup`，并**另存到本机密码管理器 + 手抄一份离线纸质备份**（密钥与备份分离存放；密钥丢失=所有备份都解不开）。
-- 每周手动从飞书下载一份 `.ygbak`，用 `restore-drill.js --file` 跑一次恢复演练验证。
-- 本轮不做「从飞书自动下载再演练」，留下一轮做完整闭环。
+- 完整闭环已实现：`server/scripts/restore-drill-from-feishu.js` 自动从飞书下载最新 `.ygbak` → 解密 → 往返校验；`ynzy-feishu-drill.timer` 每周日 04:10 自动跑一次。手动：`systemctl start ynzy-feishu-drill.service` 或 `node scripts/restore-drill-from-feishu.js`。下载的是加密文件，解密只到临时目录、用完即清、不写回生产。
+- 仍可用本机文件手动演练：`restore-drill.js --file backups/db-backup-<UTC>.ygbak`。

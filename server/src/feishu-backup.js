@@ -10,6 +10,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const backup = require('./backup') // 复用 parseBackupTimeMs 选最新 .ygbak（backup.js 不反向依赖本文件，无环）
 
 const DEFAULT_BASE_URL = 'https://open.feishu.cn/open-apis'
 
@@ -128,6 +129,74 @@ async function uploadBackupToFeishu({ backupFile, env, fetchImpl }) {
   return { fileName, size: bytes.length, fileToken }
 }
 
+// ---------- 从飞书云盘拉回（列举 + 下载，用于自动闭环演练） ----------
+
+// 列出云盘文件夹下的文件（分页汇总）。folderToken 已抽为纯 token。
+async function listFolderFiles({ folderToken, token, baseUrl, fetchImpl, maxPages = 40 }) {
+  const doFetch = fetchImpl || fetch
+  const base = baseUrl || DEFAULT_BASE_URL
+  const files = []
+  let pageToken = ''
+  for (let i = 0; i < maxPages; i++) {
+    const url = `${base}/drive/v1/files?folder_token=${encodeURIComponent(folderToken)}&page_size=50` +
+      (pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : '')
+    const response = await doFetch(url, { method: 'GET', headers: { Authorization: `Bearer ${token}` } })
+    const body = await parseFeishuJson(response, '列出云盘文件夹')
+    const data = body.data || {}
+    for (const f of (data.files || [])) files.push(f)
+    if (!data.has_more || !data.next_page_token) break
+    pageToken = data.next_page_token
+  }
+  return files
+}
+
+// 从文件列表挑出最新的 .ygbak（按文件名内嵌 UTC 时间戳；无法解析的忽略）。
+function findLatestYgbak(files) {
+  let latest = null
+  for (const f of (files || [])) {
+    const name = f && f.name
+    if (!name || !/\.ygbak$/i.test(name)) continue
+    const timeMs = backup.parseBackupTimeMs(name)
+    if (timeMs == null) continue
+    if (!latest || timeMs > latest.timeMs) latest = { name, fileToken: f.token, timeMs }
+  }
+  return latest
+}
+
+// 下载单个文件为 Buffer（二进制）。下载端点成功直接回文件字节；失败回 JSON 错误。
+async function downloadFile({ fileToken, token, baseUrl, fetchImpl }) {
+  const doFetch = fetchImpl || fetch
+  const base = baseUrl || DEFAULT_BASE_URL
+  const response = await doFetch(`${base}/drive/v1/files/${encodeURIComponent(fileToken)}/download`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  const ct = (response.headers && typeof response.headers.get === 'function' ? response.headers.get('content-type') : '') || ''
+  // 失败时飞书返回 JSON（application/json）；成功返回二进制流。
+  if (!response.ok || /application\/json/i.test(ct)) {
+    await parseFeishuJson(response, '下载云盘文件') // code!=0 或 HTTP 非 2xx 会抛错
+    throw new Error('下载返回的是 JSON 而非文件内容') // 万一 code=0 又是 JSON
+  }
+  const buf = Buffer.from(await response.arrayBuffer())
+  if (buf.length === 0) throw new Error('下载到的文件为空')
+  return buf
+}
+
+// 编排：读凭据 → 取 token → 列文件夹 → 选最新 .ygbak → 下载 → 写到 destPath（二进制）。
+async function downloadLatestBackup({ env, fetchImpl, destPath }) {
+  const cred = readFeishuCredentials(env || process.env)
+  const token = await getTenantAccessToken({
+    appId: cred.appId, appSecret: cred.appSecret, baseUrl: cred.baseUrl, fetchImpl
+  })
+  const files = await listFolderFiles({ folderToken: cred.folderToken, token, baseUrl: cred.baseUrl, fetchImpl })
+  const latest = findLatestYgbak(files)
+  if (!latest) throw new Error('飞书文件夹里没有可识别的 .ygbak 备份')
+  const bytes = await downloadFile({ fileToken: latest.fileToken, token, baseUrl: cred.baseUrl, fetchImpl })
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  fs.writeFileSync(destPath, bytes) // 写的是加密 .ygbak（非明文）
+  return { name: latest.name, fileToken: latest.fileToken, size: bytes.length, path: destPath }
+}
+
 module.exports = {
   DEFAULT_BASE_URL,
   readEnv,
@@ -137,5 +206,9 @@ module.exports = {
   getTenantAccessToken,
   uploadFileToDrive,
   buildUploadName,
-  uploadBackupToFeishu
+  uploadBackupToFeishu,
+  listFolderFiles,
+  findLatestYgbak,
+  downloadFile,
+  downloadLatestBackup
 }

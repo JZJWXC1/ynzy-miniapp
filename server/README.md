@@ -122,18 +122,31 @@ BACKUP_REMOTE_CMD='ossutil cp "$BACKUP_FILE" oss://ynzy-dr-backup-shenzhen/db/ -
 - 飞书云盘**只存 `.ygbak` 加密备份文件**，严禁上传 `BACKUP_ENCRYPTION_KEY`、`.env`、明文 `db.json` 或任何凭据。
 - `BACKUP_ENCRYPTION_KEY` **绝不放飞书**，只放服务器 `/etc/default/ynzy-backup`；并请把它**另存到本机密码管理器 + 手抄一份离线纸质备份**——密钥与加密备份分离存放，任一处泄露都拿不到明文数据；密钥丢失则所有备份都无法解密。
 
-#### 每周手动恢复演练（从飞书下载验证）
+#### 从飞书自动拉回演练（完整闭环）
 
-自动演练（`ynzy-restore-drill.timer`）当前用**服务器本机最新 `.ygbak`**。为了验证「飞书那份也真能恢复」，建议每周手动做一次：
+两层演练互补：
+- `ynzy-restore-drill.timer`（每天 03:10）用**服务器本机最新 `.ygbak`**验证本地备份可恢复。
+- `ynzy-feishu-drill.timer`（每周日 04:10）跑 `server/scripts/restore-drill-from-feishu.js`：**自动从飞书云盘下载最新 `.ygbak` → 解密 → 往返数量校验**，验证「上传到飞书的那份也真能恢复」，形成「备份→加密→上传飞书→拉回→演练」完整闭环。两个 timer 都由 `install-on-server.sh` 自动安装启用。
+
+手动跑一次飞书拉回演练：
 
 ```bash
-# 1) 在飞书云盘该文件夹下载一份最新 .ygbak 到本机或服务器临时目录，例如 /tmp/from-feishu.ygbak
-# 2) 用它跑恢复演练（--out 保留解密产物则用于真恢复；纯验证可不带 --out）
 cd /opt/ynzy-miniapp/server
-BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file /tmp/from-feishu.ygbak
+# 需要 BACKUP_ENCRYPTION_KEY 解密、FEISHU_BACKUP_* 拉回（都在 /etc/default/ynzy-backup）
+systemctl start ynzy-feishu-drill.service && journalctl -u ynzy-feishu-drill -n 20
+# 或直接：
+node scripts/restore-drill-from-feishu.js
 ```
 
-演练会输出 `listings/users/reports/deals/commissionRecords/footprints` 的「备份时刻 vs 恢复出」逐项计数，逐项相等即通过。（下一轮计划：升级为「自动从飞书下载最新 `.ygbak` 再演练」，形成完整闭环。）
+流程：取 tenant_access_token → 列云盘文件夹 → 按文件名时间戳选最新 `.ygbak` → 以二进制下载到临时目录 → 调 `restoreDrill` 解密校验。下载的是加密 `.ygbak`；解密只到临时目录、用完即清，不残留明文，也不写回生产。输出 `listings/users/reports/deals/commissionRecords/footprints` 的「备份时刻 vs 恢复出」逐项计数，逐项相等即通过；任一步失败（缺凭据/无备份/下载失败/解密失败/数量不符）非零退出。
+
+仍可用本机文件手动演练（不经飞书）：
+
+```bash
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup-<UTC>.ygbak
+```
+
+锁定测试：`server/scripts/feishu-restore-drill-v1-test.js`（mock 飞书 list/download，不触公网）。
 
 #### 手动备份 / 手动恢复演练
 

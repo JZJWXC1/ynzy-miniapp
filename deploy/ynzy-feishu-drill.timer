@@ -1,0 +1,10 @@
+[Unit]
+Description=每周从飞书拉回最新备份跑一次恢复演练（完整闭环验证）
+
+[Timer]
+OnCalendar=Sun *-*-* 04:10:00
+Persistent=true
+Unit=ynzy-feishu-drill.service
+
+[Install]
+WantedBy=timers.target

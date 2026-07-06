@@ -172,6 +172,9 @@ cp "$APP_DIR/deploy/ynzy-offsite-backup.service" /etc/systemd/system/ynzy-offsit
 cp "$APP_DIR/deploy/ynzy-offsite-backup.timer" /etc/systemd/system/ynzy-offsite-backup.timer
 cp "$APP_DIR/deploy/ynzy-restore-drill.service" /etc/systemd/system/ynzy-restore-drill.service
 cp "$APP_DIR/deploy/ynzy-restore-drill.timer" /etc/systemd/system/ynzy-restore-drill.timer
+# 从飞书拉回最新 .ygbak 每周演练（完整闭环，P0-1）
+cp "$APP_DIR/deploy/ynzy-feishu-drill.service" /etc/systemd/system/ynzy-feishu-drill.service
+cp "$APP_DIR/deploy/ynzy-feishu-drill.timer" /etc/systemd/system/ynzy-feishu-drill.timer
 ensure_backup_env
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
@@ -179,6 +182,7 @@ systemctl enable --now ynzy-db-backup.timer
 # 异地备份/演练定时器（在 /etc/default/ynzy-backup 填好密钥+异地目标前会 fail-loud，属预期）
 systemctl enable --now ynzy-offsite-backup.timer
 systemctl enable --now ynzy-restore-drill.timer
+systemctl enable --now ynzy-feishu-drill.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
