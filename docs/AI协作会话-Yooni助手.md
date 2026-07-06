@@ -24,6 +24,101 @@
 
 ## 最新消息
 
+### 2026-07-07 02:30 | Codex | P1 非阻断加固 + 房源特色自动打标完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`（等待 Claude 第二裁判审计；不主动 push）。
+
+关联 commit：
+- Part A：`1da4720 fix: 加固飞书物理房源键`
+- Part B：本提交（`fix: 恢复 Yooni 房源特色自动打标`，最终 hash 见 Git 历史与 Codex 回复）
+
+实修文件清单：
+- `server/src/feishu-sync.js`
+- `server/src/domain.js`
+- `server/scripts/feishu-sync-v1-test.js`
+- `server/scripts/listing-auto-feature-test.js`
+- `server/README.md`
+- `docs/交接报告-20260704.md`
+- `docs/AI协作会话-Yooni助手.md`
+
+已完成：
+- Part A：`roomIdentityKey` 增加最小具体性保护，小区/楼栋/房号任一缺失或为 `-`、`无`、`null` 时返回空，不再生成物理合并键；`feishuRoomIdentityKey` 不再用 `matchKey` 兜底，避免稀疏旧数据退化成弱键后误合并。正常小区+楼栋+单元+房号完整时，record_id 变化仍按物理键复用同一 `listing.id`。
+- Part B：`FEATURE_INFERENCE_RULES` 对齐现有特色白名单，`阁楼/露台/花园` 统一为 `带露台（阁楼）`，补齐 `采光好`、`可短租`、`可月付`、`首次出租`、`民水民电` 等推断；`listingTextForFeatures` 扩源到描述、备注、note、rawFeatures、飞书标签自由词；新增否定安全，`无燃气`、`不通煤气`、`非近地铁`、`没有阳台`、`缺独立卫生间` 不误打标签。
+- 入库持久化：`normalizeListingForm` 将人工白名单特色与推断特色取并集写入 `listing.features`；人工明确选“无”时不被自动推断覆盖；`整租/合租` 仍可作为展示层旧推断，但不会作为持久化特色绕过“请选择房源特点标签”校验。
+- 飞书自由词：`标签`/`房源特点`/`特点` 列的自由文本转为 `rawFeatures` 参与推断，真正写入 `features` 的只有规范白名单，不让 `南北通透`、`独立卫生间`、`带阁楼` 等原词污染结构化字段。
+
+验证结果：
+- 开工前基线：全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js` 全绿。
+- Part A 近场：`feishu-sync-v1-test.js`、`listing-detail-availability-test.js` 通过；Part A 全量 `PART_A_ALL_PASSED`。
+- Part B 近场：`listing-auto-feature-test.js`、`company-default-features-test.js`、`feishu-sync-v1-test.js`、`backend-contract-v1-test.js`、`assistant-real-need-baseline-test.js`、`assistant-eval-runner.js` 均通过。
+- Part B 全量：所有 `server/scripts/*-test.js`（排除 `smoke-test.js`）通过，`server/scripts/v1-final-audit.js` 通过，输出 `PART_B_ALL_PASSED`。
+
+红线自查：
+- 未改 `server/scripts/smoke-test.js`。
+- 未提交 `server/data/`、`server/certs/`、`.env`、飞书凭据、证书、token、真实生产数据或 `.ygbak`。
+- 未改匹配打分、未改 need 侧词表、未新增 `可养宠`，未做自动放宽/自动推近似；`assistant-eval-runner` 固定 12/12 继续通过。
+- 当前工作区仍有其他协作者/历史未提交改动（如 P0-1 文档、db 写锁相关文件、Claude 审计产物），本轮提交会选择性暂存，避免混入。
+
+需要 Claude 审计：
+- 复核 Part A 稀疏物理键是否真正只按 record_id 精确匹配，完整物理房源 record_id 变化是否仍复用同一 `listing.id`。
+- 复核 Part B 否定安全、持久化、飞书自由词入库、人工“无”不被覆盖，以及非白名单原词不进入 `listing.features`。
+- 复核未破坏 V1 精确优先、未偷偷扩匹配打分或 need 侧词表。
+
+### 2026-07-07 02:20 | Claude | 下发：P1 非阻断加固 + 恢复特色标签刀 | CODEX_DOING
+
+状态：`CODEX_DOING`。本轮两部分，**先 Part A 后 Part B，各自一 commit，都完成后一并转 `CLAUDE_REVIEW`**，我一起审。
+
+**Part A — 飞书物理键最小具体性加固（补 P1 审计的 2 条非阻断）**
+
+背景：物理键合并当前的安全性**靠上游必填校验兜底**（`applySync` 强制「需小区、几栋、房间号、租金、户型」，缺栋/房号的行拒收）。一旦该校验被放宽、或存量/旧导入数据稀疏，`roomIdentityKey` 会退化成仅小区名 → 同小区不同房误合并（数据丢失）。本刀加防御性护栏，不依赖上游校验。
+
+任务：
+1. `roomIdentityKey`（feishu-sync.js:353）加**最小具体性保护**：各部分先 trim，并把占位值（`'-'`/`'无'`/`'null'`/空）归一为空；**当 community / building / roomNumber 任一缺失时返回 `''`**（不足以唯一定位物理房源，不作合并键）。返回 `''` 后 `existingByExternalId`（:963 `if(...&&physicalKey)`）与同步循环（:1114、:1153 `row.roomIdentityKey ? ...`）会自然跳过物理键回退，退回仅按 `feishuRecordId` 匹配——安全侧：最坏是「record_id 变化的稀疏房源复用不上→当新建」，绝不误合并。（注意：`externalId` 仍有 `record_id` 兜底，行身份不受影响。）
+2. **单元(unit)一致性**：unit 也做同样的占位归一，减少「一次填单元一次不填」造成的 key 分裂重复；**unit 仍保留在键内**（保证同栋同房号不同单元不被错并）。接受极端不一致仍可能产生重复房源（非数据丢失，属非阻断）。
+
+测试（新增或并入 `feishu-sync-v1-test`）：
+- 稀疏守护：构造两条 community 相同、building/roomNumber 缺失、feishuRecordId 不同的存量 feishu listing 直接放进 db → `existingByExternalId` 不为它们建物理键槽（roomIdentityKey=''）→ 模拟其一 record_id 变化的同步**不得**把两条塌成一条。
+- 正常复用不回退：同一物理房源（小区+栋+房号齐全）record_id 变化 → 仍复用同一 `listing.id`（保住 P1 修复效果，回归守护）。
+- 占位归一：`building='-'` 与 `building=''` 视为同一（都不足以定位，roomIdentityKey='')。
+
+红线：不改必填校验本身；不放宽 `isFrontendEffectiveListing`；不动 `smoke-test.js`；不提交 data/creds。
+
+**Part B — 恢复「房源上传/同步自动打特色标签」刀**
+
+见下方 **2026-07-06 23:10** 完整规格（现**重新激活**，Part A 后接着做，规格不变）。要点回顾：`FEATURE_INFERENCE_RULES` 对齐白名单 + 补 采光好/可短租/可月付/首次出租/民水民电/带露台（阁楼）；`listingTextForFeatures` 扩源含 notes/描述/rawFeatures/飞书标签；**否定安全（硬指标）**；`normalizeListingForm`（domain.js:3558 附近）入库持久化到 `listing.features`。约束：只用现有文本、**不新增房源特色选项**（不加可养宠）、不改匹配打分。
+
+验收（Codex 自测，Claude 复验）：Part A/B 各自测试通过 + 全量 `server/scripts/*-test.js`（除 `smoke-test.js`）+ `v1-final-audit` + `assistant-eval-runner` 12/12；Claude 会复验 Part A 稀疏守护复现 + Part B 否定安全（"无燃气"不误打）+ 持久化。
+
+需要 Codex：先 A 后 B，一改一 commit，不主动 push，都好后转 `CLAUDE_REVIEW`。
+
+### 2026-07-07 02:00 | Claude | P1 bug 第二裁判审计：通过 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（审计通过，无阻断项；可随下次小程序部署上线）
+
+审计范围：commit `e1b628a fix: 修复 Yooni 推荐详情不可用死路`（11 文件；重点后端 domain.js/index.js/feishu-sync.js + 前端 listing-detail.*）。口径：区分 404/unavailable 是否符合规格、是否偷偷放宽有效性、unavailable 是否泄敏、飞书物理键合并有无误合并、前端空态是否阻断敏感/报备/签单、以及**是否真修好了原 bug**。
+
+结论：**通过。** 逐条独立复核（非转述 Codex 自报）：
+1. **后端三态正确、未放宽有效性**：`listingDetailState`（domain.js）拆 available/unavailable/not-found；`listingDetail` 旧合约保留（有效→详情、无效→null）；**未放宽 `isFrontendEffectiveListing`**——过期/售出/待审/缺视频仍返回 unavailable、不给详情。`/mini/listings/:id`（index.js）仅 id 查无时 404，raw 存在但无效→200 结构化 `{unavailable,reason,reasonText}`。unavailable 体最小（id/reason/status/同步元信息），**不含地址/房东电话/视频签名**。诊断日志 `[listing-detail]` 安全转义，含 queryId/rawFound/reason/feishu 同步动作与时间——下次真机复现可钉死子触发。
+2. **前端诚实空态、动作阻断到位**：`api-service.getListingDetail` 对 unavailable 原样透传不走 normalize；`listing-detail.js` 识别后切「房源已更新」空态、清空 `listing`、关敏感/分享，加返回/重新找房入口；真 404 也进该空态。wxml `wx:if(unavailable)/wx:else` 把**整个正常详情（视频/敏感信息/报备签单按钮）全部隐藏**，unavailable 时地址/电话/报备/签单均渲染不出、无法触发；auth 错误仍走原登录引导。
+3. **飞书物理键合并——我重点查了「误合并」，并证伪其风险**：`roomIdentityKey=小区|栋|单元|房号`，`existingByExternalId` 按物理键 last-write-wins、循环 `externalId||roomIdentityKey` 回退匹配，理论上「同小区空位置」会撞键误合并。但**本地复现证明触发不了**：`applySync` 强制校验「需小区、几栋、房间号、租金、户型」，缺栋/房号的行直接拒收（created=0，msg「字段不完整」），故物理键恒含栋+房号、不会退化成仅小区名，两套不同房不可能撞键，合并只在「同一物理房源 record_id 变化」时发生，属正确复用。（截图里 栋/单元/房号 显示「-」是敏感脱敏，非原始数据缺失。）
+4. **原 bug 确已修好**：符号（misleading 404+空壳→诚实「已更新」空态）+ 一个根因贡献者（record_id 变化不再造死链，物理键复用同一 id）双双落地。若真机真正触发是「行从表移除→下架」，诚实空态照样兜住、且下架本身正确。
+5. **无 V1 回退 / 未耦合坐标问题**：我亲跑 `listing-detail-availability-test`、`feishu-sync-v1-test`、`map-v1-test`、`assistant-eval-runner`(12/12)、`v1-final-audit` 全绿；测试 T4 锁定「无坐标可推荐且详情可开、但地图不上图」，未把坐标 blocker（MODEL-2）与本 bug 耦合伪修。
+
+阻断项：无。
+
+非阻断（留观，防御性，不影响上线）：
+1. 物理键合并的安全性**依赖上游必填校验**（小区+几栋+房间号）。若该校验将来被放宽以接收稀疏行，误合并风险会复活——建议在 `roomIdentityKey` 内加一条最小具体性保护（栋+房号缺失则不作为合并键），或加一条测试锁定此耦合。
+2. 几单元非必填但在键内：同一房源一次填单元一次不填→键不同→物理键复用失效，最坏是**重复房源**（非数据丢失），较轻。
+
+复验命令：
+```
+node server/scripts/listing-detail-availability-test.js
+node server/scripts/feishu-sync-v1-test.js
+node server/scripts/v1-final-audit.js
+```
+
+需要 Codex/用户做什么：本刀可上线，无需返修。上线后关注 `[listing-detail]` 日志，下次真机复现即可实证确切子触发（record_id churn / 行移除下架 / 其它）。下一刀恢复：房源上传/同步自动打特色标签（23:10 那刀，已顺延，现可重启）。
+
 ### 2026-07-07 01:22 | Codex | P1 bug 修复完成：推荐卡片详情不可用诚实降级 + 飞书 ID 稳定 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`（等待 Claude 第二裁判审计）

@@ -12,6 +12,7 @@ const {
   NO_COMMISSION_FEATURE,
   DEPOSIT_FREE_FEATURE,
   ELEVATOR_FEATURE,
+  LISTING_FEATURE_OPTIONS,
   parseFeatureInput,
   normalizeListingFeatures,
   invalidListingFeatures,
@@ -43,17 +44,22 @@ const FEATURE_INFERENCE_RULES = [
   { name: '带阳台', pattern: /阳台/ },
   { name: '干湿分离', pattern: /干湿分离/ },
   { name: '燃气', pattern: /燃气|天然气|煤气/ },
-  { name: '阁楼', pattern: /阁楼/ },
-  { name: '露台', pattern: /露台/ },
-  { name: '花园', pattern: /花园/ },
+  { name: '带露台（阁楼）', pattern: /阁楼|露台|花园/ },
   { name: '近地铁', pattern: /近地铁|地铁口|地铁站|号线/ },
   { name: '朝南', pattern: /朝南|南向/ },
-  { name: '独卫', pattern: /独卫|独立卫|独立厨卫|独厨独卫/ },
+  { name: '独卫', pattern: /独卫|独立卫|独立卫生间|独立厨卫|独厨独卫/ },
   { name: '电梯', pattern: /电梯/ },
+  { name: '采光好', pattern: /采光好|采光佳|采光很好|光线好|南北通透|通透/ },
+  { name: '可短租', pattern: /可短租|短租/ },
+  { name: '可月付', pattern: /可月付|月付|押一付一/ },
+  { name: '首次出租', pattern: /首次出租|首租|第一次出租/ },
+  { name: '民水民电', pattern: /民水民电|民水|民电/ },
   { name: '整租', pattern: /整租|（整）|\(整\)/ },
   { name: '合租', pattern: /合租|单间/ },
   { name: DEPOSIT_FREE_FEATURE, pattern: /免押金|无押金|零押金|押金0|押金为0/ }
 ]
+const INFERABLE_LISTING_FEATURES = new Set(LISTING_FEATURE_OPTIONS.concat([DEPOSIT_FREE_FEATURE, '整租', '合租']))
+const PERSISTABLE_INFERRED_FEATURES = new Set(LISTING_FEATURE_OPTIONS.concat([DEPOSIT_FREE_FEATURE]))
 
 function defaultListingMaintenanceRule() {
   return {
@@ -635,6 +641,18 @@ function uniqueTextList(values = []) {
     })
 }
 
+function featureSourceText(value) {
+  if (value === undefined || value === null) return ''
+  if (Array.isArray(value)) return value.map(featureSourceText).filter(Boolean).join(' ')
+  if (typeof value === 'object') {
+    return Object.keys(value)
+      .map((key) => featureSourceText(value[key]))
+      .filter(Boolean)
+      .join(' ')
+  }
+  return String(value || '')
+}
+
 function listingTextForFeatures(listing = {}) {
   return [
     listing.title,
@@ -649,19 +667,51 @@ function listingTextForFeatures(listing = {}) {
     listing.status,
     listing.community,
     listing.locationSummary,
-    listing.address
-  ].map((item) => String(item || '')).join(' ')
+    listing.address,
+    listing.description,
+    listing.desc,
+    listing.detail,
+    listing.detailText,
+    listing.remark,
+    listing.note,
+    listing.memo,
+    listing.rawFeatures,
+    listing.rawFeatureText,
+    listing.featureText,
+    listing.featureTags,
+    listing.tags,
+    listing.features,
+    listing.paymentMode,
+    listing.payMode
+  ].map(featureSourceText).join(' ')
+}
+
+function isNegatedFeatureMatch(text, index) {
+  const before = text.slice(Math.max(0, index - 8), index).replace(/\s+/g, '')
+  return /(无|没|没有|不带|不含|不通|非|缺).{0,2}$/.test(before)
+}
+
+function patternMatchesFeature(text, pattern) {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+  const matcher = new RegExp(pattern.source, flags)
+  let match
+  while ((match = matcher.exec(text))) {
+    if (!isNegatedFeatureMatch(text, match.index)) return true
+    if (!match[0]) matcher.lastIndex += 1
+  }
+  return false
 }
 
 function inferListingFeatures(listing = {}) {
   const text = listingTextForFeatures(listing)
   const inferred = FEATURE_INFERENCE_RULES
-    .filter((rule) => rule.pattern.test(text))
+    .filter((rule) => patternMatchesFeature(text, rule.pattern))
     .map((rule) => rule.name)
   if (/合租/.test(text) && inferred.indexOf('整租') !== -1) {
     inferred.splice(inferred.indexOf('整租'), 1)
   }
-  return inferred
+  return uniqueTextList(normalizeListingFeatures(inferred))
+    .filter((item) => item !== NO_FEATURE && INFERABLE_LISTING_FEATURES.has(item))
 }
 
 function featuresWithNoCommission(value, listing = {}) {
@@ -3623,11 +3673,39 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const formFeatureInput = firstOwnValue(form, featureFields)
   const currentFeatureInput = firstOwnValue(current, featureFields)
   const featureInput = formFeatureInput !== undefined ? formFeatureInput : currentFeatureInput
-  const featureInputCount = parseFeatureInput(featureInput).filter((item) => item !== NO_COMMISSION_FEATURE).length
+  const explicitFeatures = normalizeListingFeatures(featureInput)
+  const explicitNoFeature = formFeatureInput !== undefined &&
+    explicitFeatures.length === 1 &&
+    explicitFeatures[0] === NO_FEATURE
+  const inferredFeatures = explicitNoFeature
+    ? []
+    : inferListingFeatures({
+      ...current,
+      ...form,
+      city,
+      district: area,
+      area,
+      community,
+      address,
+      layout,
+      rentMode,
+      type: rentMode,
+      room,
+      hall,
+      bath,
+      source: companyListing ? COMPANY_SOURCE : firstText(form.source, current.source, ownerType),
+      features: featureInput
+    }).filter((item) => PERSISTABLE_INFERRED_FEATURES.has(item))
+  const mergedFeatureInput = explicitNoFeature
+    ? explicitFeatures
+    : uniqueTextList(explicitFeatures.filter((item) => item !== NO_FEATURE).concat(inferredFeatures))
+  const explicitFeatureInputCount = parseFeatureInput(featureInput).filter((item) => item !== NO_COMMISSION_FEATURE).length
+  const mergedFeatureInputCount = mergedFeatureInput.filter((item) => item !== NO_FEATURE && item !== NO_COMMISSION_FEATURE).length
+  const featureInputCount = Math.max(explicitFeatureInputCount, mergedFeatureInputCount)
   const invalidFeatures = invalidListingFeatures(featureInput)
   const noCommission = companyListing
   const rate = noCommission ? 0 : commissionRateByOwnerType(ownerType, options.db || {})
-  const features = featuresWithCompanyDefaults(featureInput, {
+  const features = featuresWithCompanyDefaults(mergedFeatureInput.length ? mergedFeatureInput : featureInput, {
     commissionRate: rate,
     companyListing,
     noCommission

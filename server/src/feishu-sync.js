@@ -5,6 +5,7 @@ const domain = require('./domain')
 const locationMap = require('./location-map')
 const oss = require('./oss')
 const { refreshRecommendationProfile } = require('./listing-recommendation-profile')
+const { normalizeListingFeatures } = require('./listing-features')
 
 const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
@@ -987,6 +988,7 @@ function syncActorId(db = {}, adminId = '') {
 }
 
 function buildListingPayload(row, video) {
+  const normalizedTags = normalizeListingFeatures(row.tags)
   return {
     city: row.city || '杭州',
     district: row.area || '待分区',
@@ -1007,7 +1009,8 @@ function buildListingPayload(row, video) {
     hall: row.hall,
     bath: row.bath,
     commissionRate: 0,
-    features: row.tags,
+    features: normalizedTags,
+    rawFeatures: row.tags,
     companyListing: true,
     source: '公司房源',
     videoUrl: video.videoUrl || '',
