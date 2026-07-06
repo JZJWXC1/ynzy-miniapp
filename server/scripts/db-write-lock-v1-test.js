@@ -85,17 +85,35 @@ async function run() {
     console.log(`  [对照] 锁关闭多进程并发 → ${got}/${EXPECT}` + (got < EXPECT ? `（确认丢写 ${EXPECT - got} 次，印证缺口）` : '（本次恰好未丢）'))
   }
 
-  // 3) 进程内可重入：mutator 里再调 updateDb 不自死锁。
+  // 3) 嵌套 updateDb：内外层共享同一事务对象、最外层统一落盘 → 内外层写都持久化（不静默丢内层写）。
   {
-    process.env.DB_LOCK_TIMEOUT_MS = '1000' // 若重入失效，1s 超时抛错而非无限等
+    process.env.DB_LOCK_TIMEOUT_MS = '1000' // 若嵌套走到重复加锁，1s 超时抛错而非无限等
     fs.writeFileSync(process.env.DATA_FILE, '{}')
-    let inner = false
-    db.updateDb((d) => {
-      d.outer = 1
-      db.updateDb((d2) => { d2.inner = 1; inner = true })
+    const ret = db.updateDb((outer) => {
+      outer.outer = 1
+      db.updateDb((inner) => { inner.inner = 1 })
+      return 'ok'
     })
-    assert.ok(inner, '重入的内层 updateDb 应执行')
-    assert.ok(!fs.existsSync(INPROC_LOCK), '重入结束后锁文件应清理')
+    const disk = JSON.parse(fs.readFileSync(process.env.DATA_FILE, 'utf8'))
+    assert.strictEqual(disk.outer, 1, '外层写应落盘')
+    assert.strictEqual(disk.inner, 1, '嵌套内层写也必须落盘（不得被外层旧快照覆盖）')
+    assert.strictEqual(ret, 'ok', 'updateDb 应返回 mutator 结果')
+    assert.ok(!fs.existsSync(INPROC_LOCK), '嵌套结束后锁文件应清理')
+    resetLockEnv()
+  }
+
+  // 3.1) 事务内调用 writeDb 会整库覆盖事务写 → 应抛清晰错误，不静默成功后丢写。
+  {
+    fs.writeFileSync(process.env.DATA_FILE, '{}')
+    let threw = false
+    try {
+      db.updateDb((d) => { d.a = 1; db.writeDb({ b: 2 }) })
+    } catch (error) {
+      threw = true
+      assert.ok(/事务内|updateDb/.test(error.message), 'writeDb 事务内应报清晰错误，实得：' + error.message)
+    }
+    assert.ok(threw, 'updateDb 事务内调用 writeDb 必须抛错，不得静默整库覆盖')
+    assert.ok(!fs.existsSync(INPROC_LOCK), '抛错后锁文件应清理')
     resetLockEnv()
   }
 

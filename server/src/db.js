@@ -67,6 +67,7 @@ function serializeDb(db) {
 let heldLockFd = null
 let heldLockDepth = 0
 let heldLockToken = null // 本进程锁的唯一标记，写进锁文件；release 只删「仍属于我」的锁
+let activeTxDb = null // 当前持锁 updateDb 事务的 db 对象；嵌套 updateDb 复用它，由最外层统一落盘（防嵌套丢内层写）
 
 function lockFilePath() {
   return `${config.dataFile}.lock`
@@ -214,6 +215,10 @@ function writeDbUnlocked(db) {
 
 // 公开写入：外层包跨进程锁；updateDb 内部改用 writeDbUnlocked，避免重复加锁。
 function writeDb(db) {
+  // 在一个 updateDb 事务里再调 writeDb 会整库覆盖事务对象、静默丢事务写，语义危险，直接禁止并清晰报错。
+  if (activeTxDb !== null) {
+    throw new Error('writeDb 不可在 updateDb 事务内调用（会整库覆盖并静默丢事务写）；请在 mutator 内直接改传入的 db 对象')
+  }
   ensureDataFile()
   const fd = acquireDbLock()
   try {
@@ -224,6 +229,11 @@ function writeDb(db) {
 }
 
 function updateDb(mutator) {
+  // 嵌套 updateDb（本进程已在一个事务里）：复用同一事务 db 对象、不再单独读/写，由最外层统一落盘，
+  // 使内外层改动都持久化，杜绝「嵌套静默丢内层写」。
+  if (activeTxDb !== null) {
+    return mutator(activeTxDb)
+  }
   ensureDataFile()
   const fd = acquireDbLock()
   try {
@@ -231,6 +241,7 @@ function updateDb(mutator) {
     // 确保读改写基于真实当前磁盘状态，杜绝「持锁仍丢写」。锁关闭(fd 为 null)时退回旧的缓存行为。
     if (fd != null) parseCache = null
     const db = readCachedDb()
+    activeTxDb = db
     const result = mutator(db)
     writeDbUnlocked(db)
     return result
@@ -240,6 +251,7 @@ function updateDb(mutator) {
     parseCache = null
     throw error
   } finally {
+    activeTxDb = null // 无论成败清理事务对象，避免泄漏到后续调用
     releaseDbLock(fd)
   }
 }
