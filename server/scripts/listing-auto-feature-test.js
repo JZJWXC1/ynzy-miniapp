@@ -103,6 +103,21 @@ async function main() {
   assertIncludesAll(negated.features, ['朝南', '采光好'], '否定安全')
   assertExcludesAll(negated.features, ['燃气', '近地铁', '带阳台', '独卫'], '否定安全')
 
+  const negatedAfter = createListing(db, {
+    features: ['朝南'],
+    note: '煤气没通，燃气未通，阳台没有，采光好',
+    rawFeatures: '独立卫生间'
+  })
+  assertIncludesAll(negatedAfter.features, ['朝南', '采光好', '独卫'], '后置否定安全')
+  assertExcludesAll(negatedAfter.features, ['燃气', '带阳台'], '后置否定安全')
+
+  const negatedMixed = createListing(db, {
+    features: ['朝南'],
+    note: '有燃气，阳台没有'
+  })
+  assertIncludesAll(negatedMixed.features, ['朝南', '燃气'], '同句混合：本子句正例不被下一子句否定误伤')
+  assertExcludesAll(negatedMixed.features, ['带阳台'], '同句混合：后置否定只作用于本子句')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'

@@ -686,9 +686,22 @@ function listingTextForFeatures(listing = {}) {
   ].map(featureSourceText).join(' ')
 }
 
-function isNegatedFeatureMatch(text, index) {
-  const before = text.slice(Math.max(0, index - 8), index).replace(/\s+/g, '')
-  return /(无|没|没有|不带|不含|不通|非|缺).{0,2}$/.test(before)
+// 特征词【前】紧邻的否定：无燃气 / 不通燃气 / 没通燃气 / 未通燃气 / 暂无燃气 …
+const NEGATION_BEFORE = /(无|没有|没|不带|不含|不通|没通|未通|未开通|非|缺|未|尚未|暂未|待通|欠).{0,2}$/
+// 特征词【后】紧邻的否定：燃气不通 / 煤气没通 / 燃气未通 / 阳台没有 …（口语常见的后置否定）
+const NEGATION_AFTER = /^.{0,2}?(不通|没通|未通|未开通|没有|待通|欠费|坏了|不能用|未装|没装)/
+// 同子句/同字段边界：后置否定只在本子句内生效（空格也算边界，因为特征文本由多字段空格拼接，
+// 避免下一子句或下一字段的否定误伤本特征，如「有燃气，阳台没有」不应抹掉燃气）
+const CLAUSE_SEP = /[，。、；：！？,.;!?|/\s]/
+
+function isNegatedFeatureMatch(text, index, matchLength = 0) {
+  // 前置否定：只看本子句内、特征词前的一小段（遇分隔符即止，避免上一子句的否定跨句误伤，
+  // 如「阳台没有，采光好」里的「没有」不应抹掉「采光好」）
+  const beforeClause = text.slice(Math.max(0, index - 8), index).split(CLAUSE_SEP).pop()
+  if (NEGATION_BEFORE.test(beforeClause)) return true
+  // 后置否定：只看本子句内、特征词后的一小段
+  const afterClause = text.slice(index + matchLength, index + matchLength + 8).split(CLAUSE_SEP)[0]
+  return NEGATION_AFTER.test(afterClause)
 }
 
 function patternMatchesFeature(text, pattern) {
@@ -696,7 +709,7 @@ function patternMatchesFeature(text, pattern) {
   const matcher = new RegExp(pattern.source, flags)
   let match
   while ((match = matcher.exec(text))) {
-    if (!isNegatedFeatureMatch(text, match.index)) return true
+    if (!isNegatedFeatureMatch(text, match.index, match[0].length)) return true
     if (!match[0]) matcher.lastIndex += 1
   }
   return false
