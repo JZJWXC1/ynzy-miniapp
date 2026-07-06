@@ -27,6 +27,61 @@
 
 ## 最新消息
 
+### 2026-07-07 01:01 | Codex | 从飞书自动下载最新 .ygbak 再演练二裁审计 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（代码层面二裁通过；用户已告知 Claude 已部署，因此进入生产验证收口。Codex 本条不把未亲自核验的生产结果写成 DONE。）
+
+关联 commit：
+- `f912175 feat(backup): 从飞书自动下载最新 .ygbak 再演练（完整闭环）`
+- `b343468 docs(collab): 飞书自动拉回演练闭环 → CODEX_REVIEW`
+
+审计范围：
+- `server/src/feishu-backup.js` 的列文件夹、选择最新 `.ygbak`、下载二进制、下载最新备份编排。
+- `server/scripts/restore-drill-from-feishu.js` 的 CLI 退出码、临时目录、调用 `backup.restoreDrill` 路径。
+- `server/scripts/feishu-restore-drill-v1-test.js` 的 mock 覆盖与不触公网边界。
+- `deploy/ynzy-feishu-drill.service` / `.timer` 与 `deploy/install-on-server.sh` 的定时安装路径。
+- `server/README.md`、`docs/db-json-备份与恢复.md` 的运维说明。
+
+审计结论：
+- 代码实现满足本轮目标：从飞书云盘列出备份文件，按 `.ygbak` 文件名中的 UTC 时间戳选择最新文件，使用二进制下载路径保存到临时目录，再复用现有 `backup.restoreDrill` 做解密与往返数量校验。
+- 下载路径未把 `.ygbak` 字节串转成字符串或 JSON；成功路径使用 `arrayBuffer()` 转 `Buffer`，测试中逐字节校验通过。
+- 飞书错误路径按 HTTP 非 2xx 或 `content-type=application/json` 识别，JSON 成功码但返回非文件内容也会被拒绝；少见的“200 + 非备份二进制”仍会被后续 GCM 解密失败兜住。
+- 临时文件清理是双层的：拉回脚本 finally 清理下载目录；`backup.restoreDrill` 自建解密目录并 finally 清理明文。未发现明文生产数据持久落盘路径。
+- systemd 接线保持现有备份核心不变，只新增每周飞书拉回演练定时器；不改 `backup.js` 核心、不改 `smoke-test.js`、不改 `domain.js` / `index.js`。
+
+阻断项：
+- 无代码阻断项。
+
+非阻断项 / 待闭环：
+- `listFolderFiles` 当前最多读取 40 页（约 2000 个文件）。按当前每 6 小时备份、30 天保留远低于上限，不阻断；未来备份保留周期显著增加时再扩展。
+- `findLatestYgbak` 未预先校验文件项是否有 token；飞书正常响应会提供 token，若异常缺失会在下载阶段失败并非零退出，不阻断。
+- 生产真实拉回演练需要以服务器 `ynzy-feishu-drill.service` 本次 journal 作为 DONE 证据；如果 Claude 已部署，请补充本次运行日志摘要（成功文件名、大小、六项计数逐项相等、临时目录清理）后再标 DONE。
+- 飞书 App Secret 曾进入聊天，仍必须由用户在飞书后台轮换；新值只写服务器 `/etc/default/ynzy-backup`，不要再进入聊天、仓库或飞书云盘。
+
+复验命令：
+```powershell
+Push-Location server
+node scripts/feishu-restore-drill-v1-test.js
+node scripts/feishu-backup-v1-test.js
+node scripts/backup-restore-v1-test.js
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+git diff --check e942f48..HEAD
+```
+
+实际复验结果：
+- `feishu-restore-drill-v1-test` 通过。
+- `feishu-backup-v1-test`、`backup-restore-v1-test` 通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）通过：`49/0`。
+- `server/scripts/v1-final-audit.js` 通过。
+- 红线文件扫描通过：本轮范围无 `server/data`、`server/certs`、`.env`、`.ygbak`、`.claude`、真实密钥或飞书凭据。
+- `git diff --check e942f48..HEAD` 通过。
+
+需要对方做什么：
+- Claude：如果已经部署，请在本文件补一条 `DONE` 记录，包含 `ynzy-feishu-drill.service` 的生产真实拉回演练摘要；不要贴任何 token、secret、完整 file_token 或可复用凭据。
+- 用户：继续执行飞书 App Secret 轮换安全待办。
+
 ### 2026-07-07 00:58 | Claude | 从飞书自动下载最新 .ygbak 再演练（完整闭环） | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
