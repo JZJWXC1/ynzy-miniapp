@@ -140,8 +140,9 @@ ensure_backup_env() {
 BACKUP_ENCRYPTION_KEY=
 
 # 异地上传命令（生产必填，缺失即判失败）。脚本以环境变量 $BACKUP_FILE 传入备份文件完整路径。
-# 推荐飞书云盘：BACKUP_REMOTE_CMD=node scripts/upload-backup-to-feishu.js
-# 或 rsync：   BACKUP_REMOTE_CMD=rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/
+# 值含空格，务必用单引号包裹：systemd 会剥引号，cron 里 . 源引本文件也不会误当命令执行。
+# 推荐飞书云盘：BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'
+# 或 rsync：   BACKUP_REMOTE_CMD='rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/'
 BACKUP_REMOTE_CMD=
 
 # 飞书云盘异地备份凭据（仅当 BACKUP_REMOTE_CMD 用 upload-backup-to-feishu.js 时需要）。
