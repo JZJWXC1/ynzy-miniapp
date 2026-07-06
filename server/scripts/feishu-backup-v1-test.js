@@ -149,6 +149,17 @@ async function run() {
     assert.strictEqual(f.calls.upload.opts.body.get('file_name'), 'prod-' + path.basename(file), 'form 的 file_name 应含前缀')
   }
 
+  // 4.2) folder_token 容错：填整条飞书云盘文件夹 URL 也能自动抽出 token 用作 parent_node。
+  {
+    assert.strictEqual(feishu.extractFolderToken('https://x.feishu.cn/drive/folder/K8jwABC123?from=space'), 'K8jwABC123', 'URL 应抽出 folder token')
+    assert.strictEqual(feishu.extractFolderToken('K8jwABC123'), 'K8jwABC123', '纯 token 应原样返回')
+    const { file } = writeFakeYgbak(tmpdir('folderurl'))
+    const f = makeMockFetch()
+    const env = { ...FAKE_ENV, FEISHU_BACKUP_FOLDER_TOKEN: 'https://x.feishu.cn/drive/folder/FolderTokenFromUrl' }
+    await feishu.uploadBackupToFeishu({ backupFile: file, env, fetchImpl: f })
+    assert.strictEqual(f.calls.upload.opts.body.get('parent_node'), 'FolderTokenFromUrl', 'parent_node 应是从 URL 抽出的 token，而非整条 URL')
+  }
+
   // 5) mock 飞书接口失败 → 抛错（非零退出）：分别覆盖 token code!=0、HTTP 非 2xx、upload code!=0。
   {
     const { file } = writeFakeYgbak(tmpdir('fail'))

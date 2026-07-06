@@ -18,6 +18,14 @@ function readEnv(env, name) {
   return v === undefined || v === null ? '' : String(v).trim()
 }
 
+// folder_token 容错：允许直接粘贴飞书云盘文件夹 URL（.../drive/folder/<token>[?参数]），
+// 自动抽出末段 token；若本就是纯 token 则原样返回。避免运维把整条 URL 当 token 导致上传失败。
+function extractFolderToken(value) {
+  const text = String(value || '').trim()
+  const matched = text.match(/\/folder\/([A-Za-z0-9]+)/)
+  return matched ? matched[1] : text
+}
+
 // 读取并校验飞书备份凭据（只从传入 env 读）。缺任一必填即抛错。
 function readFeishuCredentials(env) {
   const appId = readEnv(env, 'FEISHU_BACKUP_APP_ID')
@@ -31,7 +39,7 @@ function readFeishuCredentials(env) {
   return {
     appId,
     appSecret,
-    folderToken,
+    folderToken: extractFolderToken(folderToken), // 允许填 URL，自动抽 token
     baseUrl: readEnv(env, 'FEISHU_BACKUP_API_BASE_URL') || DEFAULT_BASE_URL,
     namePrefix: readEnv(env, 'FEISHU_BACKUP_UPLOAD_NAME_PREFIX')
   }
@@ -123,6 +131,7 @@ async function uploadBackupToFeishu({ backupFile, env, fetchImpl }) {
 module.exports = {
   DEFAULT_BASE_URL,
   readEnv,
+  extractFolderToken,
   readFeishuCredentials,
   validateBackupFile,
   getTenantAccessToken,
