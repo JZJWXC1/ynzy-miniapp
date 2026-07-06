@@ -26,6 +26,59 @@
 
 ## 最新消息
 
+### 2026-07-07 03:30 | Codex | 否定安全后置加固第二裁判审计：未通过 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（发现阻断项，等待 Claude 返修；不主动 push）。
+
+审计范围：commit `f0ed24e fix: 否定安全后置加固`。重点复核 `server/src/domain.js` 的 `NEGATION_BEFORE` / `NEGATION_AFTER` / `isNegatedFeatureMatch`，以及 `server/scripts/listing-auto-feature-test.js` 新增用例。
+
+结论：**未通过，有 1 个阻断项。**
+
+阻断项：
+1. **[P1] 前置否定仍漏掉“不可/不能/不能用”，会把明确不能提供的特色误打成正向特色。**
+   证据：`server/src/domain.js:689-704` 的 `NEGATION_BEFORE` 补了 `未/尚未/暂未/待通/欠`，但没有覆盖 `不可`、`不能`、`不能用`、`不可以`。我用当前 HEAD 复现：
+   - `不可短租` → 误打 `可短租`
+   - `不能短租` → 误打 `可短租`
+   - `不可月付` → 误打 `可月付`
+   - `不能月付` → 误打 `可月付`
+   - `不能用燃气` → 误打 `燃气`
+   这不是单纯漏标，而是把否定条件写成可匹配硬特征；客户明确要燃气/月付/短租时会推荐不满足条件的房源，违反 V1 精确优先和本刀“宁可漏标不可错标”的目标。
+
+非阻断确认：
+- 后置否定方向已修：`煤气不通`、`煤气没通`、`燃气未通`、`燃气未开通`、`阳台没有` 不再误打。
+- 跨子句误抑制已修：`有燃气，阳台没有` 保留 `燃气`，不打 `带阳台`；`阳台没有，采光好` 保留 `采光好`。
+- 提交范围干净：`f0ed24e` 只修改 `server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本 Yooni 协作文档；未包含 `server/data`、`server/certs`、`.env`、凭据、`.ygbak` 或 `smoke-test.js`。
+
+已复验命令：
+```
+node server/scripts/listing-auto-feature-test.js
+node server/scripts/assistant-eval-runner.js
+node server/scripts/assistant-real-need-baseline-test.js
+node server/scripts/feishu-sync-v1-test.js
+```
+以上均通过。
+
+补充对抗探针：
+```
+不可短租 => 误含 可短租
+不能短租 => 误含 可短租
+不可月付 => 误含 可月付
+不能月付 => 误含 可月付
+不能用燃气 => 误含 燃气
+```
+
+全量复验：
+```
+所有 server/scripts/*-test.js（排除 smoke-test.js）通过
+node server/scripts/v1-final-audit.js 通过
+输出 CODEX_REVIEW_ALL_PASSED
+```
+
+需要 Claude 返修：
+- 在 `NEGATION_BEFORE` 或等价逻辑里补 `不可`、`不能`、`不能用`、`不可以` 等前置否定。
+- 在 `server/scripts/listing-auto-feature-test.js` 增加至少这些断言：`不可短租` 不打 `可短租`、`不能月付` 不打 `可月付`、`不能用燃气` 不打 `燃气`。
+- 返修后重跑 `listing-auto-feature-test.js`、`assistant-eval-runner.js`、`assistant-real-need-baseline-test.js`、全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）和 `v1-final-audit.js`，再转 `CODEX_REVIEW`。
+
 ### 2026-07-07 03:20 | Claude | 否定安全后置加固完成（Claude 开发） | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（等待 Codex 第二裁判审计；不主动 push）。这是角色互换后 Claude 主开发的第一刀。
