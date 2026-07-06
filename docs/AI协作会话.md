@@ -27,6 +27,47 @@
 
 ## 最新消息
 
+### 2026-07-07 00:50 | Codex | 飞书备份部署后二裁复核 | THIRD_JUDGE_REQUIRED
+
+状态：`THIRD_JUDGE_REQUIRED`（生产上传链路据 Claude 记录已验证成功；代码与公网健康复核通过；但飞书 App Secret 曾进入聊天，必须由用户在飞书后台轮换后才算安全闭环）
+
+关联 commit：
+- `3729981 fix(backup): 文档模板 BACKUP_REMOTE_CMD 飞书示例加单引号（防 cron 源引把值当命令执行）`
+- `abc00a9 feat(backup): 飞书 folder_token 容错——填云盘文件夹 URL 自动抽 token`
+- `2cb671f docs(collab): 飞书备份真实上传已验证 → DONE（含 App Secret 轮换待办）`
+
+审计范围：
+- 新增部署后 commit：`3729981`、`abc00a9`、`2b5cbed`、`2cb671f`
+- 飞书 folder_token URL 容错逻辑
+- systemd/env 模板中 `BACKUP_REMOTE_CMD` 引号修正
+- 公网健康检查与可见房源数量
+- 全量测试与红线扫描
+
+审计结论：
+- `BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'` 示例加单引号是正确修复：避免 `/etc/default/ynzy-backup` 被 shell source 时把带空格的值拆成命令。
+- `extractFolderToken()` 只从 `/drive/folder/<token>` URL 中抽取 token；纯 token 原样返回。测试覆盖 URL 输入与纯 token 输入，并断言上传 form 的 `parent_node` 是抽出的 token。
+- 公网 `https://zf-api.ynzyqbot.cn/healthz` 正常返回 ok；公网 `/mini/listings` 当前可见房源数为 33。Claude 记录中的生产 db 原始 `listings=72` 与公网 33 属于原始库总数 vs 可见列表口径，需后续继续保持口径说明。
+- 代码层面未发现新增阻断项。
+
+复验结果：
+- `feishu-backup-v1-test` 通过
+- `backup-restore-v1-test` 通过
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）通过：`48/0`
+- `server/scripts/v1-final-audit.js` 通过
+- `git diff --check e942f48..HEAD` 通过
+- 红线文件扫描通过：部署范围无 `smoke-test.js`、`server/data`、`server/certs`、`.env`、`.ygbak`、`.claude`
+- 敏感形态扫描仅命中文档占位示例 `BACKUP_ENCRYPTION_KEY=***`，未发现真实密钥形态
+
+阻断项：
+- 无代码阻断项。
+
+安全待办（用户）：
+- 飞书 App Secret 曾以明文出现在聊天，必须视为泄露。请在飞书后台重新生成 App Secret，使旧值作废；新值只写入服务器 `/etc/default/ynzy-backup`，不要再贴进聊天或提交到仓库。
+- `BACKUP_ENCRYPTION_KEY` 继续只保存在服务器和用户离线/密码管理器备份中，不得进入飞书云盘、聊天或仓库。
+
+遗留下一轮：
+- 自动从飞书下载最新 `.ygbak` 再跑 `restore-drill.js`，形成“上传到飞书 → 拉回 → 恢复演练”的完整自动闭环。
+
 ### 2026-07-07 00:36 | Claude | 飞书备份生产接入·真实上传已验证 | DONE（含 1 项用户安全待办）
 
 状态：`DONE`（飞书异地备份闭环已在生产真实验证）；**遗留 1 项安全待办：用户须轮换飞书 App Secret（见下）**。
