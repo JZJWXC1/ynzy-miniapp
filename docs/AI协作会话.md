@@ -27,6 +27,64 @@
 
 ## 最新消息
 
+### 2026-07-06 22:35 | Codex | P0-1 飞书云盘异地备份接入二裁审计 | THIRD_JUDGE_REQUIRED
+
+状态：`THIRD_JUDGE_REQUIRED`（代码层面通过；继续到真实生产接入需要用户提供/配置飞书自建应用凭据与云盘文件夹，属于第三方平台凭据介入，自动推进需停止）
+
+关联分支/commit：
+- `51fe0fb feat(backup): 飞书云盘异地备份接入（BACKUP_REMOTE_CMD 上传 .ygbak）`
+- `8228b4d docs: 补 README 飞书云盘异地备份章节（配合 51fe0fb）`
+- `59d2c17 docs(collab): 飞书云盘异地备份接入 → CODEX_REVIEW 交接`
+- 注意：当前 `v1-broker` 相对 `origin/v1-broker` 还包含并行 commit `0391814 fix: 提升 Yooni 模糊找房路由` 与协作机制 commit；若后续 push，会一起出去。
+
+审计范围：
+- 飞书备份新增代码：`server/src/feishu-backup.js`、`server/scripts/upload-backup-to-feishu.js`、`server/scripts/feishu-backup-v1-test.js`
+- 备份接线文档与模板：`deploy/install-on-server.sh`、`server/.env.example`、`server/README.md`、`docs/db-json-备份与恢复.md`
+- 搭车风险扫描：`0391814` 的助手路由改动与新增测试
+- 红线扫描：ahead 范围内文件名与敏感形态扫描
+
+审计结论：
+- 飞书上传实现满足本轮核心要求：`BACKUP_FILE` 必须存在且扩展名为 `.ygbak`；飞书凭据只从 `FEISHU_BACKUP_*` 环境变量读取；token 与 upload 接口任一步失败都会非零退出。
+- 上传体使用 Node 内置 `FormData`，文件字段用 `new Blob([Buffer])` 保持二进制逐字节一致；测试断言了 body 不是字符串 JSON、未手动设置 `Content-Type`、`Blob.arrayBuffer()` 与源 `.ygbak` 字节一致。
+- 测试 mock 完全替代 `fetch`，意外 URL 直接抛错，未请求飞书公网，且只使用 `mock-*` / `fake-*` 假凭据。
+- `runBackup` 配置 `remoteCmd='node scripts/upload-backup-to-feishu.js'` 时，会通过 `BACKUP_FILE` 环境变量把刚生成的 `.ygbak` 路径传给上传脚本。
+- 文档明确：飞书云盘只保存 `.ygbak`；`BACKUP_ENCRYPTION_KEY` 不得放飞书；用户需另存到本机密码管理器并手抄离线备份；每周手动从飞书下载一份 `.ygbak` 跑 `restore-drill.js --file`。
+- 搭车 commit `0391814` 触碰助手路由，但新增了 `assistant-real-need-baseline-test.js` 与路由测试；局部和全量测试均通过，未发现权限/数据/密钥风险。
+
+阻断项：
+- 无代码阻断项。
+
+非阻断风险：
+- 本轮只做“上传到飞书”，未做“从飞书自动下载再演练”；仍需下一轮补完整闭环。
+- 当前使用飞书 `drive/v1/files/upload_all` 单文件上传路径，未来 `.ygbak` 增长到飞书单文件接口上限以上时，需要升级分片上传。
+- 尚未用真实飞书凭据跑生产上传；进入部署/生产配置前必须由用户提供飞书自建应用 App ID/App Secret、目标文件夹 folder token，并确认应用有云盘上传权限。
+
+复验命令：
+```powershell
+node --check server/src/feishu-backup.js
+node --check server/scripts/upload-backup-to-feishu.js
+node --check server/scripts/feishu-backup-v1-test.js
+Push-Location server
+node scripts/feishu-backup-v1-test.js
+node scripts/backup-restore-v1-test.js
+node scripts/assistant-intent-router-test.js
+node scripts/assistant-real-need-baseline-test.js
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+git diff --check origin/v1-broker..HEAD
+```
+
+实际复验结果：
+- 局部测试通过：`feishu-backup-v1-test`、`backup-restore-v1-test`、`assistant-intent-router-test`、`assistant-real-need-baseline-test passed: 16/16`
+- 全量测试通过：`48/0`，`v1-final-audit.js` 通过
+- 红线文件扫描通过：ahead 范围无 `smoke-test.js`、`server/data`、`server/certs`、`.env`、`.ygbak`、`.claude`
+- 敏感形态扫描未发现真实密钥；命中的 `BACKUP_ENCRYPTION_KEY=***`、rsync/OSS 示例均为文档示例，不是凭据
+
+需要第三裁判/用户介入：
+- 用户需要在飞书后台创建/确认自建应用、权限、云盘文件夹与 folder token，并把真实 `FEISHU_BACKUP_*` 写入服务器 `/etc/default/ynzy-backup`，这些真实凭据不得进入仓库或聊天。
+- 若用户决定现在部署接入飞书，应先提供凭据配置方式；若要继续保持 mock 级代码审计，本轮可视为代码审计通过但生产异地闭环未完成。
+
 ### 2026-07-06 22:10 | Claude | P0-1 飞书云盘异地备份接入 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
