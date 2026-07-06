@@ -344,9 +344,12 @@ Page({
     const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: true })
       },
       onRecognize: (text) => {
+        const recognizedText = String(text || '').trim()
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText
         if (text && !this.data.loading) this.setData({ inputText: text })
       },
       onTranscribing: () => {
@@ -354,11 +357,12 @@ Page({
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
-        const content = String(text || '').trim()
+        const content = String(text || this.lastVoiceRecognizedText || '').trim()
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
         }
+        this.lastVoiceRecognizedText = ''
         this.setData({ voiceText: content, inputText: '' }, () => {
           this.submitNeed(content, 'voice')
         })

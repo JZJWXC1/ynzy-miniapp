@@ -150,12 +150,15 @@ Page({
     const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        this.lastVoiceRecognizedText = ''
         this.setData({
           isVoiceListening: true,
           voiceTip: '正在听，请说出租客需求'
         })
       },
       onRecognize: (text) => {
+        const recognizedText = String(text || '').trim()
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText
         this.applyVoiceNeed(text, false)
       },
       onTranscribing: () => {
@@ -166,11 +169,13 @@ Page({
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
-        if (!text) {
+        const content = String(text || this.lastVoiceRecognizedText || '').trim()
+        if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
         }
-        this.applyVoiceNeed(text, true)
+        this.lastVoiceRecognizedText = ''
+        this.applyVoiceNeed(content, true)
       },
       onError: (error) => {
         this.setData({

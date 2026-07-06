@@ -214,13 +214,21 @@ function createController(handlers = {}) {
   let pendingFrames = []
   let lastRecordResult = null
   let errored = false
+  let lastCaptionText = ''
+  let stopDelivered = false
 
   function isActive() {
     return activeControllerId === controllerId
   }
 
+  function localBusy() {
+    return Boolean(starting || listening || transcribing || socketTask || finalTimer)
+  }
+
   function currentCaption() {
-    return `${confirmedSegments.join('')}${draftText}`.trim()
+    const text = `${confirmedSegments.join('')}${draftText}`.trim()
+    if (text) lastCaptionText = text
+    return text || lastCaptionText
   }
 
   function clearFinalTimer() {
@@ -237,6 +245,18 @@ function createController(handlers = {}) {
     closeSocket(task)
   }
 
+  function resetPreemptedSession() {
+    if (isActive() || !localBusy()) return false
+    cancelled = true
+    socketFailed = true
+    starting = false
+    listening = false
+    transcribing = false
+    clearFinalTimer()
+    closeRealtimeSocket()
+    return true
+  }
+
   function stopRecorderQuietly() {
     if (!listening) return
     try {
@@ -247,7 +267,8 @@ function createController(handlers = {}) {
   }
 
   function finishWithCurrentCaption() {
-    if (!transcribing || cancelled) return
+    if (!transcribing || cancelled || stopDelivered) return
+    stopDelivered = true
     clearFinalTimer()
     transcribing = false
     const text = currentCaption()
@@ -290,7 +311,10 @@ function createController(handlers = {}) {
   }
 
   function handleSocketMessage(message) {
-    if (!isActive()) return
+    if (!isActive()) {
+      resetPreemptedSession()
+      return
+    }
     let event = {}
     try {
       event = JSON.parse(message && message.data ? message.data : '{}')
@@ -338,7 +362,10 @@ function createController(handlers = {}) {
     if (!socketTask) return false
 
     socketTask.onOpen(() => {
-      if (!isActive()) return
+      if (!isActive()) {
+        resetPreemptedSession()
+        return
+      }
       socketReady = true
       sendSocketMessage(socketTask, JSON.stringify({
         type: 'start',
@@ -349,12 +376,18 @@ function createController(handlers = {}) {
     })
     socketTask.onMessage(handleSocketMessage)
     socketTask.onError((error) => {
-      if (!isActive()) return
+      if (!isActive()) {
+        resetPreemptedSession()
+        return
+      }
       const url = socketTask && socketTask.realtimeAsrUrl ? `WebSocket ${socketTask.realtimeAsrUrl}` : 'WebSocket'
       failRealtime(createVoiceError(`${url} 连接失败`, errorMessage(error), 'asr-socket-error'))
     })
     socketTask.onClose(() => {
-      if (!isActive()) return
+      if (!isActive()) {
+        resetPreemptedSession()
+        return
+      }
       socketReady = false
       if (listening && !socketFailed) {
         failRealtime(new Error('实时语音识别连接已断开'))
@@ -369,7 +402,10 @@ function createController(handlers = {}) {
     activeControllerId = controllerId
 
   recorder.onStart(() => {
-    if (!isActive()) return
+    if (!isActive()) {
+      resetPreemptedSession()
+      return
+    }
     starting = false
     listening = true
     transcribing = false
@@ -377,17 +413,25 @@ function createController(handlers = {}) {
     errored = false
     confirmedSegments = []
     draftText = ''
+    lastCaptionText = ''
+    stopDelivered = false
     lastRecordResult = null
     safeCall(handlers.onStart)
   })
 
   recorder.onFrameRecorded((res) => {
-    if (!isActive()) return
+    if (!isActive()) {
+      resetPreemptedSession()
+      return
+    }
     if (res && res.frameBuffer) pushFrame(res.frameBuffer)
   })
 
   recorder.onStop((res) => {
-    if (!isActive()) return
+    if (!isActive()) {
+      resetPreemptedSession()
+      return
+    }
     listening = false
     if (cancelled) {
       transcribing = false
@@ -402,7 +446,10 @@ function createController(handlers = {}) {
   })
 
   recorder.onError((error) => {
-    if (!isActive()) return
+    if (!isActive()) {
+      resetPreemptedSession()
+      return
+    }
     errored = true
     starting = false
     listening = false
@@ -418,10 +465,17 @@ function createController(handlers = {}) {
 
   return {
     start() {
+      resetPreemptedSession()
       if (starting || listening || transcribing) return
       starting = true
       cancelled = false
       errored = false
+      confirmedSegments = []
+      draftText = ''
+      lastCaptionText = ''
+      stopDelivered = false
+      lastRecordResult = null
+      pendingFrames = []
       bindRecorderHandlers()
       ensureRecordAuthorized((authError) => {
         if (cancelled || !starting || !isActive()) return
@@ -446,19 +500,28 @@ function createController(handlers = {}) {
       })
     },
     stop() {
-      if (!isActive() || !listening) return
+      if (!isActive()) {
+        resetPreemptedSession()
+        return
+      }
+      if (!listening) return
       recorder.stop()
     },
     cancel() {
-      if (!starting && !listening && !transcribing && !socketTask && !finalTimer) return
+      if (!localBusy() && !isActive()) return
       const shouldReleaseRecorder = isActive()
+      const shouldStopRecorder = shouldReleaseRecorder && listening
       cancelled = true
       socketFailed = true
       starting = false
       transcribing = false
       clearFinalTimer()
       closeRealtimeSocket()
-      if (shouldReleaseRecorder) stopRecorderQuietly()
+      if (shouldStopRecorder) {
+        stopRecorderQuietly()
+      } else {
+        listening = false
+      }
       if (shouldReleaseRecorder) {
         activeControllerId = ''
         bindRecorderNoop(recorder)
@@ -466,7 +529,7 @@ function createController(handlers = {}) {
       safeCall(handlers.onCancel)
     },
     release() {
-      if (starting || listening || transcribing || socketTask || finalTimer) {
+      if (localBusy()) {
         this.cancel()
         return
       }
@@ -480,7 +543,7 @@ function createController(handlers = {}) {
       }
     },
     isBusy() {
-      return isActive() && (starting || listening || transcribing)
+      return localBusy()
     },
     isErrored() {
       return errored

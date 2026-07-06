@@ -1,4 +1,5 @@
 const domain = require('./domain')
+const config = require('./config')
 const { normalizeAsrText } = require('./asr-normalizer')
 const {
   DEFAULT_RADIUS_KM,
@@ -292,6 +293,36 @@ function asrVocabularyFromCandidates(candidates = [], extraTerms = []) {
   ])
 }
 
+function configuredBlockNames() {
+  const location = (config && config.location) || {}
+  const districtBlocks = location.districtBlocks || {}
+  return unique(Object.keys(location.blockCenters || {})
+    .concat(Object.keys(location.blockDistrictMap || {}))
+    .concat(Object.values(districtBlocks).flat()))
+}
+
+function structuredScopeNames(candidates = []) {
+  return unique((candidates || []).flatMap((listing) => [
+    listing.community,
+    listing.block
+  ]).concat(configuredBlockNames()))
+}
+
+function knownScopeNames(db = {}, candidates = []) {
+  return unique(structuredScopeNames(candidates).concat(placeNames(db, candidates)))
+}
+
+function exactKnownScopeName(value, candidates = [], options = {}) {
+  const target = normalizeCommunity(cleanAnchorName(value))
+  if (!target) return ''
+  return structuredScopeNames(candidates).find((name) => normalizeCommunity(name) === target) || ''
+}
+
+function hasAmbiguousPlaceName(value, candidates = [], options = {}) {
+  const resolution = resolvePlace(options.db || {}, value, candidates)
+  return resolution && resolution.status === 'ambiguous'
+}
+
 function parseBudget(source) {
   const text = compactText(source)
   const budget = {
@@ -397,7 +428,7 @@ function shouldUseNearbyRadius(anchorName) {
   return false
 }
 
-function parseRadiusSearch(source) {
+function parseRadiusSearch(source, candidates = [], options = {}) {
   const text = compactText(source)
   if (!text) return null
   const explicitRadius = parseRadiusValue(text)
@@ -432,6 +463,9 @@ function parseRadiusSearch(source) {
   if (nearbyAnchor) {
     if (/想住|住在|住到/.test(nearbyAnchor[1])) return null
     const anchorName = cleanAnchorName(nearbyAnchor[1])
+    if (anchorName && exactKnownScopeName(anchorName, candidates, options) && !hasAmbiguousPlaceName(anchorName, candidates, options)) {
+      return null
+    }
     if (anchorName && shouldUseNearbyRadius(anchorName)) {
       return {
         searchMode: 'radius_around_place',
@@ -481,7 +515,9 @@ function parseCommunity(source, candidates, options = {}) {
   const text = normalizeCommunity(source)
   if (!text) return ''
   const communities = unique((candidates || []).map((listing) => listing.community)
+    .concat((candidates || []).map((listing) => listing.block))
     .concat(options.communityNames || []))
+    .concat(knownScopeNames(options.db || {}, candidates))
     .filter((item) => normalizeCommunity(item).length >= 2)
     .sort((left, right) => normalizeCommunity(right).length - normalizeCommunity(left).length)
 
@@ -567,7 +603,7 @@ function parseNeed(payload = {}, candidates = [], options = {}) {
         anchorRole: form.anchorRole || 'anchor',
         radiusKm: numberFrom(form.radiusKm) || DEFAULT_RADIUS_KM
       }
-    : parseRadiusSearch(source)
+    : parseRadiusSearch(source, candidates, { db: options.db })
   const budget = parseBudget([form.budget, form.budgetText, source].filter(Boolean).join('，'))
   const formMinBudget = numberFrom(form.minBudget)
   const formMaxBudget = numberFrom(form.maxBudget)
@@ -576,7 +612,7 @@ function parseNeed(payload = {}, candidates = [], options = {}) {
     budget.maxBudget = formMaxBudget
     budget.budgetText = budget.minBudget ? `${budget.minBudget}-${budget.maxBudget}` : `${budget.maxBudget}`
   }
-  const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames }))
+  const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames, db: options.db }))
   const area = normalizeArea(form.area || parseArea(source))
   const layout = form.layout || parseLayout(source)
   const rentMode = form.rentMode || parseRentMode(source)
@@ -739,8 +775,16 @@ function areaMatches(listing, area) {
 function communityMatches(listing, community) {
   if (!community) return true
   const target = normalizeCommunity(community)
-  const current = normalizeCommunity(listing.community)
-  return Boolean(target && current && (current.indexOf(target) !== -1 || target.indexOf(current) !== -1))
+  const listingCommunity = normalizeCommunity(listing.community)
+  if (target && listingCommunity && (listingCommunity.indexOf(target) !== -1 || target.indexOf(listingCommunity) !== -1)) {
+    return true
+  }
+  const strictScopeValues = [
+    listing.block,
+    listing.area,
+    listing.district
+  ].map(normalizeCommunity).filter(Boolean)
+  return Boolean(target && strictScopeValues.some((value) => value === target))
 }
 
 function isNeighborArea(listing, area) {

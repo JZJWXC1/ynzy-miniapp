@@ -118,6 +118,47 @@ assert(idleController, '应能创建空闲语音控制器')
 idleController.release()
 assert.strictEqual(recorder.stopped, 1, '无录音状态下触发 onUnload/release 不得调用 recorder.stop')
 
+const sharedRecorder = makeRecorder()
+const firstSocket = makeSocket()
+const secondSocket = makeSocket()
+currentRecorder = sharedRecorder
+currentSocket = firstSocket
+const firstController = voiceInput.createController({})
+assert(firstController, '应能创建第一个页面语音控制器')
+firstController.start()
+assert.strictEqual(firstController.isBusy(), true, '第一页录音开始后应处于本地忙碌状态')
+currentSocket = secondSocket
+const secondController = voiceInput.createController({})
+assert(secondController, '应能创建第二个页面语音控制器')
+secondController.start()
+assert.strictEqual(secondController.isBusy(), true, '第二页抢占后应处于忙碌状态')
+firstController.release()
+assert.strictEqual(firstController.isBusy(), false, '被抢占的旧页面 release 后不得留下 transcribing/listening 悬空态')
+assert.strictEqual(sharedRecorder.stopped, 0, '被抢占的旧页面 release 不得误停当前页面录音器')
+assert.strictEqual(secondController.isBusy(), true, '旧页面 release 不得破坏当前活跃页面会话')
+secondController.cancel()
+assert.strictEqual(sharedRecorder.stopped, 1, '当前活跃页面 cancel 才能停止录音器')
+
+const captionRecorder = makeRecorder()
+const captionSocket = makeSocket()
+currentRecorder = captionRecorder
+currentSocket = captionSocket
+const recognized = []
+const stoppedTexts = []
+const captionController = voiceInput.createController({
+  onRecognize: (text) => recognized.push(text),
+  onStop: (text) => stoppedTexts.push(text)
+})
+captionController.start()
+captionSocket.open()
+captionSocket.message(JSON.stringify({ type: 'caption', transcript: '东新园附近两室', final: false }))
+captionRecorder.stop()
+captionSocket.message(JSON.stringify({ type: 'finished' }))
+captionSocket.message(JSON.stringify({ type: 'finished' }))
+assert.deepStrictEqual(recognized, ['东新园附近两室'], '实时字幕应把有效识别文本回传给页面')
+assert.deepStrictEqual(stoppedTexts, ['东新园附近两室'], '已有有效字幕时 onStop 不得被空结果覆盖')
+assert.strictEqual(captionController.isBusy(), false, '识别完成后控制器应收尾为空闲态')
+
 const badRecorder = makeRecorder()
 const goodRecorder = makeRecorder()
 const badSocket = makeSocket()
@@ -146,6 +187,7 @@ assert.strictEqual(goodRecorder.started, true, '重建后的控制器应能重�
   assert(source.includes('cleanupVoiceInput()'), `${relativePath} 必须复用 cleanupVoiceInput`)
   assert(source.includes('controller.isBusy'), `${relativePath} 退出时必须先确认本页确有录音/转写会话`)
   assert(source.includes('controller.release'), `${relativePath} 无录音退出时只能释放本页回调，不能空 stop 全局录音器`)
+  assert(source.includes('lastVoiceRecognizedText'), `${relativePath} 必须保留最后一次有效字幕，避免成功识别后弹空内容 toast`)
 })
 
 console.log('voice-client-cleanup-test passed')

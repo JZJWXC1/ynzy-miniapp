@@ -4,6 +4,7 @@ const {
   isReliableCoordinateSource,
   normalizeCommunityName
 } = require('./community-coordinates')
+const config = require('./config')
 
 const DEFAULT_RADIUS_KM = 3
 const SERVICE_AREAS = ['拱墅', '余杭', '上城']
@@ -73,6 +74,24 @@ function entriesFromObjectMap(source = {}, type) {
   }).filter(Boolean)
 }
 
+function entriesFromConfiguredBlockCenters() {
+  const location = (config && config.location) || {}
+  const blockCenters = location.blockCenters || {}
+  const blockDistrictMap = location.blockDistrictMap || {}
+  return Object.keys(blockCenters).map((name) => {
+    const center = blockCenters[name] || {}
+    return entryFromRawPlace({
+      name,
+      type: 'block',
+      area: blockDistrictMap[name] || '',
+      latitude: center.latitude,
+      longitude: center.longitude,
+      source: `block-center:${name}`,
+      coordinateVerified: true
+    })
+  }).filter(Boolean)
+}
+
 function listingCoordinate(listing = {}) {
   const direct = reliableCoordinate(
     listing.mapLatitude || listing.latitude,
@@ -118,6 +137,7 @@ function placeEntries(db = {}, listings = []) {
     .concat(entriesFromObjectMap(db.poiCoordinates || {}, 'poi'))
     .concat((db.places || db.pois || []).map(entryFromRawPlace).filter(Boolean))
     .concat(entriesFromObjectMap(communityCoordinates, 'community'))
+    .concat(entriesFromConfiguredBlockCenters())
     .concat(entriesFromListings(listings))
 }
 
@@ -146,6 +166,22 @@ function entryMatches(entry, query) {
   })
 }
 
+function isBlockCenterEntry(entry = {}) {
+  return /^block-center:/i.test(String(entry.source || ''))
+}
+
+function sameCoordinate(left = {}, right = {}) {
+  return numberFrom(left.latitude).toFixed(6) === numberFrom(right.latitude).toFixed(6) &&
+    numberFrom(left.longitude).toFixed(6) === numberFrom(right.longitude).toFixed(6)
+}
+
+function dropDuplicateBlockCenterEntries(entries = []) {
+  return entries.filter((entry) => {
+    if (!isBlockCenterEntry(entry)) return true
+    return !entries.some((other) => other !== entry && !isBlockCenterEntry(other) && sameCoordinate(entry, other))
+  })
+}
+
 function resolvePlace(db = {}, query = '', listings = []) {
   const text = normalizePlaceName(query)
   if (!text) {
@@ -158,7 +194,7 @@ function resolvePlace(db = {}, query = '', listings = []) {
 
   const matched = placeEntries(db, listings).filter((entry) => entryMatches(entry, text))
   const exact = matched.filter((entry) => entryNames(entry).some((name) => normalizePlaceName(name) === text))
-  const candidates = exact.length ? exact : matched
+  const candidates = dropDuplicateBlockCenterEntries(exact.length ? exact : matched)
   const deduped = []
   const seen = new Set()
   candidates.forEach((entry) => {

@@ -686,21 +686,26 @@ Page({
     }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: true,
           voiceTip: '正在听，请说出租客需求'
         });
       },
       onRecognize: (text) => {
+        const recognizedText = String(text || '').trim();
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText;
         this.applyVoiceText(text, false);
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false });
-        if (!text) {
+        const content = String(text || this.lastVoiceRecognizedText || '').trim();
+        if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' });
           return;
         }
-        this.applyVoiceText(text, true);
+        this.lastVoiceRecognizedText = '';
+        this.applyVoiceText(content, true);
       },
       onError: () => {
         this.setData({
