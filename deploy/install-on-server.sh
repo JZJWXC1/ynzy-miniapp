@@ -140,8 +140,16 @@ ensure_backup_env() {
 BACKUP_ENCRYPTION_KEY=
 
 # 异地上传命令（生产必填，缺失即判失败）。脚本以环境变量 $BACKUP_FILE 传入备份文件完整路径。
-# 例：BACKUP_REMOTE_CMD=rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/
+# 推荐飞书云盘：BACKUP_REMOTE_CMD=node scripts/upload-backup-to-feishu.js
+# 或 rsync：   BACKUP_REMOTE_CMD=rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/
 BACKUP_REMOTE_CMD=
+
+# 飞书云盘异地备份凭据（仅当 BACKUP_REMOTE_CMD 用 upload-backup-to-feishu.js 时需要）。
+# 飞书云盘只放 .ygbak 加密备份，严禁放 BACKUP_ENCRYPTION_KEY/.env/明文 db.json。详见 server/README.md。
+FEISHU_BACKUP_APP_ID=
+FEISHU_BACKUP_APP_SECRET=
+FEISHU_BACKUP_FOLDER_TOKEN=
+FEISHU_BACKUP_UPLOAD_NAME_PREFIX=
 
 # 可选：外部通知命令（企微/飞书 webhook），触发告警时以 $ALERT_KIND/$ALERT_MESSAGE 传入。
 BACKUP_ALERT_CMD=

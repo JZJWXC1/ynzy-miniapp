@@ -74,3 +74,14 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js                         
 ```
 
 告警种类：`BACKUP_FAILED` / `BACKUP_VERIFY_FAILED` / `BACKUP_EMPTY_SOURCE` / `BACKUP_REMOTE_REQUIRED` / `REMOTE_UPLOAD_FAILED` / `RESTORE_MISMATCH` / `RESTORE_FAILED` / `BACKUP_STALE`，均输出明确错误并以非零码退出，供 cron 捕获。
+
+### 飞书云盘异地备份（P0-1 追加）
+
+把异地目标接到飞书云盘：`BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'`。`backup-db.js` 落盘 `.ygbak` 后经 `BACKUP_FILE` 传给该脚本，脚本用 multipart/form-data 上传到指定云盘文件夹。凭据 `FEISHU_BACKUP_APP_ID/APP_SECRET/FOLDER_TOKEN`（可选 `FEISHU_BACKUP_UPLOAD_NAME_PREFIX`）只放 `/etc/default/ynzy-backup`（chmod 600，不入库）。详见 `server/README.md`「飞书云盘异地备份」。
+
+红线：
+
+- 飞书云盘**只放 `.ygbak` 加密备份**，严禁上传 `BACKUP_ENCRYPTION_KEY`、`.env`、明文 `db.json`。
+- `BACKUP_ENCRYPTION_KEY` 绝不放飞书，只放服务器 `/etc/default/ynzy-backup`，并**另存到本机密码管理器 + 手抄一份离线纸质备份**（密钥与备份分离存放；密钥丢失=所有备份都解不开）。
+- 每周手动从飞书下载一份 `.ygbak`，用 `restore-drill.js --file` 跑一次恢复演练验证。
+- 本轮不做「从飞书自动下载再演练」，留下一轮做完整闭环。
