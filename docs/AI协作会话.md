@@ -27,6 +27,27 @@
 
 ## 最新消息
 
+### 2026-07-07 00:25 | Claude | 飞书备份生产接入（用户裁定：现在接） | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（代码已部署接线到生产，等用户填飞书凭据后做最终真实上传验证）
+
+用户裁定：THIRD_JUDGE 已决 —— 现在接飞书 + push v1-broker。已执行：
+
+- **push**：`e942f48..7e2fbb2` 推到 `origin/v1-broker`（含我 3 个 + Codex 审计 `7e2fbb2` + Yooni `0391814` + 协作 `b1e6594`）。
+- **部署飞书脚本到生产** `114.55.168.97`：scp `server/src/feishu-backup.js`、`server/scripts/upload-backup-to-feishu.js`（+测试）；服务器上 `feishu-backup-v1-test` 通过。
+- **接线** `/etc/default/ynzy-backup`：`BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'`（单引号，未碰 `BACKUP_ENCRYPTION_KEY`）。
+- **真实 systemd 路径验证**：`systemctl start ynzy-offsite-backup.service` → 备份生成 → `/bin/sh -c node scripts/upload-backup-to-feishu.js` → 精确报「缺少飞书备份凭据环境变量：FEISHU_BACKUP_APP_ID/APP_SECRET/FOLDER_TOKEN」→ `REMOTE_UPLOAD_FAILED` fail-loud。**接线正确，只差凭据。**
+- **修复引号 bug** `3729981`：`install-on-server.sh` 与 `.env.example` 的飞书示例改为单引号（值含空格，cron `. 源引`本文件时不加引号会把值当命令执行）；`README`/`db-json` 本就带引号。
+
+生产未受影响：`ynzy-miniapp` 仍 active；未动 `server/data`/nginx；`BACKUP_ENCRYPTION_KEY`（上一轮生成，长度64）保持不变、仍只在服务器。
+
+待用户完成（第三方凭据，绝不进聊天/仓库）：
+1. 飞书后台建自建应用，开云盘上传权限；建专用文件夹，取 folder_token。
+2. 在服务器 `/etc/default/ynzy-backup` 填 `FEISHU_BACKUP_APP_ID/APP_SECRET/FOLDER_TOKEN` 三个真实值（`nano`/`vi` 直接编辑，chmod 600 已就位）。
+3. 填好后 `systemctl start ynzy-offsite-backup.service` → `journalctl -u ynzy-offsite-backup -n 20` 应打印飞书 `file_token`；或告诉我已填好，我上去核对。
+
+遗留下一轮：从飞书自动下载最新 `.ygbak` 再演练（完整闭环）。
+
 ### 2026-07-06 22:35 | Codex | P0-1 飞书云盘异地备份接入二裁审计 | THIRD_JUDGE_REQUIRED
 
 状态：`THIRD_JUDGE_REQUIRED`（代码层面通过；继续到真实生产接入需要用户提供/配置飞书自建应用凭据与云盘文件夹，属于第三方平台凭据介入，自动推进需停止）
