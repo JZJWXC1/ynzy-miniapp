@@ -73,13 +73,15 @@ function makeSocket() {
 }
 
 const recorder = makeRecorder()
+let currentRecorder = recorder
 const socket = makeSocket()
+let currentSocket = socket
 
 global.wx = {
-  getRecorderManager: () => recorder
+  getRecorderManager: () => currentRecorder
 }
 
-apiService.createRealtimeAsrSocket = () => socket
+apiService.createRealtimeAsrSocket = () => currentSocket
 
 const voiceInput = require('../../utils/voice-input')
 
@@ -111,6 +113,29 @@ assert.strictEqual(stopCalled, false, '取消清理不应误触发识别完成')
 assert.strictEqual(errorCalled, false, '取消清理不应误报语音错误')
 assert.strictEqual(cancelCalled, true, '取消清理应触发 onCancel 钩子')
 
+const idleController = voiceInput.createController({})
+assert(idleController, '应能创建空闲语音控制器')
+idleController.release()
+assert.strictEqual(recorder.stopped, 1, '无录音状态下触发 onUnload/release 不得调用 recorder.stop')
+
+const badRecorder = makeRecorder()
+const goodRecorder = makeRecorder()
+const badSocket = makeSocket()
+const goodSocket = makeSocket()
+currentRecorder = badRecorder
+currentSocket = badSocket
+const badController = voiceInput.createController({})
+assert(badController, '应能创建错误态前的语音控制器')
+badController.start()
+badRecorder.emitError({ errMsg: 'error PCM record', errType: 1 })
+assert.strictEqual(badController.isErrored(), true, '录音器 PCM 错误后控制器应标记为可重建错误态')
+currentRecorder = goodRecorder
+currentSocket = goodSocket
+const rebuiltController = voiceInput.createController({})
+assert(rebuiltController, '错误态后点击语音入口应能重建控制器')
+rebuiltController.start()
+assert.strictEqual(goodRecorder.started, true, '重建后的控制器应能重新 start 录音器')
+
 ;[
   'pages/index/index.js',
   'pages/match/match.js',
@@ -119,7 +144,8 @@ assert.strictEqual(cancelCalled, true, '取消清理应触发 onCancel 钩子')
   const source = fs.readFileSync(path.join(__dirname, '..', '..', relativePath), 'utf8')
   assert(source.includes('onHide()'), `${relativePath} 必须在 onHide 清理语音输入`)
   assert(source.includes('cleanupVoiceInput()'), `${relativePath} 必须复用 cleanupVoiceInput`)
-  assert(source.includes('voiceController.cancel'), `${relativePath} 必须调用控制器 cancel 关闭录音和 WebSocket`)
+  assert(source.includes('controller.isBusy'), `${relativePath} 退出时必须先确认本页确有录音/转写会话`)
+  assert(source.includes('controller.release'), `${relativePath} 无录音退出时只能释放本页回调，不能空 stop 全局录音器`)
 })
 
 console.log('voice-client-cleanup-test passed')

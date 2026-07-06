@@ -517,6 +517,7 @@ function chatAssistant(payload) {
     path: '/mini/assistant/chat',
     method: 'POST',
     data: requestPayload,
+    timeout: LLM_MATCH_TIMEOUT_MS,
     mock: () => localResult
   }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, localResult)).catch((error) => {
     if (shouldUseLocalFallbackAfterError()) {

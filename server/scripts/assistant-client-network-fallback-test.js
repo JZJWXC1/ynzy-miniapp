@@ -51,7 +51,7 @@ async function main() {
     assert.strictEqual(item.timeout, llmService.LLM_MATCH_TIMEOUT_MS, '/mini/llm/match 必须单独放宽到 60 秒')
   })
   const assistantChat = requestOptions.find((item) => /\/mini\/assistant\/chat$/.test(item.url || ''))
-  assert.strictEqual(assistantChat.timeout, 1, '非 /mini/llm/match 接口仍沿用全局超时')
+  assert.strictEqual(assistantChat.timeout, llmService.LLM_MATCH_TIMEOUT_MS, '/mini/assistant/chat 必须和找房 LLM 链路一样放宽到 60 秒')
 
   console.log('assistant-client-network-fallback-test passed')
 }

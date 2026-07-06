@@ -3,6 +3,8 @@ const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
 
+const ASSISTANT_CHAT_TIMEOUT_MS = 60000
+
 function isMissingEndpoint(error) {
   const message = error && error.message ? error.message : ''
   return Boolean(error && (error.statusCode === 404 || message.indexOf('接口不存在') !== -1 || message.indexOf('404') !== -1))
@@ -460,6 +462,7 @@ function chatAssistant(payload) {
     path: '/mini/assistant/chat',
     method: 'POST',
     data,
+    timeout: ASSISTANT_CHAT_TIMEOUT_MS,
     mock: () => {
       const need = data.need || data.form || {}
       const result = mockData.matchListings(need)

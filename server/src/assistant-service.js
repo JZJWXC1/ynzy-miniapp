@@ -1,9 +1,16 @@
 const { runAssistantGraph } = require('./assistant/graph')
 const threadStore = require('./assistant/state-store')
 const assistantFeedback = require('./assistant-feedback')
+const matchService = require('./match-service')
+const {
+  safeNeed,
+  safeListings,
+  safePlaceResolution,
+  scrubSensitiveText
+} = require('./assistant/safety')
 
 async function chat(db, payload = {}, context = {}) {
-  const threadId = threadStore.resolveThreadId(payload.threadId)
+  const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
   const previous = threadStore.getThread(threadId) || {}
   const result = await runAssistantGraph(db, payload, {
     ...context,
@@ -32,6 +39,48 @@ async function chat(db, payload = {}, context = {}) {
   }
 
   return result.response
+}
+
+function fallbackChat(db, payload = {}, context = {}, options = {}) {
+  const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
+  const local = matchService.buildLocalMatch(db, payload)
+  const response = {
+    threadId,
+    reply: scrubSensitiveText(local.reply || ''),
+    nextQuestion: scrubSensitiveText(local.followUpQuestion || ''),
+    intent: 'rental_match',
+    need: safeNeed(local.need || {}),
+    placeResolution: safePlaceResolution(local.placeResolution),
+    listings: safeListings(local.listings || []),
+    exactListings: safeListings(local.exactListings || []),
+    nearbyListings: safeListings(local.nearbyListings || []),
+    needParserMode: 'local-fallback',
+    needParserWarnings: [],
+    replyMode: 'local-fallback',
+    llmWarning: scrubSensitiveText(options.reason || ''),
+    mode: 'local-graph-assistant-v1',
+    degraded: true,
+    degradedNotice: '智能解读稍后重试',
+    degradedReason: options.code || 'assistant_chat_fallback'
+  }
+
+  threadStore.saveThread(threadId, {
+    need: response.need,
+    lastIntent: response.intent,
+    lastTraceSummary: null
+  })
+
+  const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, response, {
+    threadId,
+    traceSummary: null
+  })
+  if (typeof context.persistTrace === 'function') {
+    context.persistTrace(writeTraceLog)
+  } else {
+    writeTraceLog(db)
+  }
+
+  return response
 }
 
 function feedback(db, payload = {}, context = {}) {
@@ -75,6 +124,7 @@ function traceRows(db, options = {}) {
 
 module.exports = {
   chat,
+  fallbackChat,
   feedback,
   feedbackRows,
   reviewFeedback,

@@ -31,6 +31,7 @@ const COMPANY_SOURCE = '公司房源'
 const GUEST_RATE_WINDOW_MS = 60 * 1000
 const GUEST_RATE_LIMIT = 80
 const MINI_AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS = Number(process.env.ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS) || 24000
 const guestRateBuckets = new Map()
 let lastGuestBucketSweep = 0
 
@@ -65,6 +66,24 @@ function sendError(res, error) {
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
   })
   res.end(JSON.stringify({ code: statusCode, message: error.message || '服务异常', data: error.data || null }))
+}
+
+function timeoutAfter(ms, code) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error('assistant chat timeout')
+      error.statusCode = 504
+      error.code = code || 'TIMEOUT'
+      reject(error)
+    }, ms)
+    if (timer && typeof timer.unref === 'function') timer.unref()
+  })
+}
+
+function safeLogError(error) {
+  return String((error && (error.code || error.name || error.message)) || 'unknown')
+    .replace(/\s+/g, '_')
+    .slice(0, 120)
 }
 
 function sendJsonDownload(res, filename, data) {
@@ -960,18 +979,38 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'POST' && pathname === '/mini/assistant/chat') {
+    const startedAt = Date.now()
     const body = await parseBody(req)
-    // 慢速 LLM 调用在一份 clone 的私有请求快照上只读执行：readDb 命中缓存返回共享对象，直接
-    // 交给数秒级 await 的 graph 会让期间的并发写在共享对象上被这次请求读到（半成品状态）；
-    // clone 隔离之。留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
-    // 消除“读快照→await 数秒→整库回写覆盖并发写入”的丢数据竞态。
-    const snapshot = dbStore.clone(db)
-    const persistTrace = (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
-    if (isGuestUser(userId)) {
-      assertGuestRateLimit(req, 'mini-assistant-chat', 30)
-      return sendJson(res, await assistantService.chat(companyOnlyDb(snapshot), body, { userId: '', persistTrace }))
+    const guest = isGuestUser(userId)
+    try {
+      // 慢速 LLM 调用在一份 clone 的私有请求快照上只读执行：readDb 命中缓存返回共享对象，直接
+      // 交给数秒级 await 的 graph 会让期间的并发写在共享对象上被这次请求读到（半成品状态）；
+      // clone 隔离之。留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
+      // 消除“读快照→await 数秒→整库回写覆盖并发写入”的丢数据竞态。
+      const snapshot = dbStore.clone(db)
+      const resultDb = guest ? companyOnlyDb(snapshot) : snapshot
+      const resultBody = guest ? guestListingFilter(body) : body
+      const persistTrace = (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
+      if (guest) assertGuestRateLimit(req, 'mini-assistant-chat', 30)
+      const context = { userId: guest ? '' : userId, persistTrace }
+      const result = await Promise.race([
+        assistantService.chat(resultDb, resultBody, context),
+        timeoutAfter(ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS, 'ASSISTANT_CHAT_TIMEOUT')
+      ]).catch((error) => {
+        if (error && error.code === 'ASSISTANT_CHAT_TIMEOUT') {
+          return assistantService.fallbackChat(resultDb, resultBody, context, {
+            code: 'assistant_chat_timeout',
+            reason: error.message
+          })
+        }
+        throw error
+      })
+      console.log(`[assistant-chat] status=200 durationMs=${Date.now() - startedAt} guest=${guest} degraded=${Boolean(result && result.degraded)}`)
+      return sendJson(res, result)
+    } catch (error) {
+      console.log(`[assistant-chat] status=${error.statusCode || 500} durationMs=${Date.now() - startedAt} guest=${guest} error=${safeLogError(error)}`)
+      throw error
     }
-    return sendJson(res, await assistantService.chat(snapshot, body, { userId, persistTrace }))
   }
 
   if (method === 'POST' && pathname === '/mini/asr/transcribe') {

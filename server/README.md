@@ -390,8 +390,9 @@ POST /mini/assistant/feedback
 ```
 
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
-生产服务会为 `POST /mini/llm/match` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`，用于排查真实 LLM 链路耗时；日志不记录请求正文、手机号、地址或房源敏感字段。
-`/mini/llm/match` 的客户端超时单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
+生产服务会为 `POST /mini/llm/match` 和 `POST /mini/assistant/chat` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`；助手对话还会记录 `degraded`，用于确认真机登录态是否到达后端。日志不记录请求正文、手机号、地址或房源敏感字段。
+`/mini/llm/match` 与 `/mini/assistant/chat` 的客户端超时都单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
+`/mini/assistant/chat` 额外有入口级兜底超时，默认 `24` 秒，可用 `ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS` 覆盖；触发时走同一套本地真实房源匹配，不返回 mock。
 `GET /admin/launch-check` 会检查当前 `llmConfig.secretName` 对应的服务端环境变量是否存在；缺失时明示变量名，不返回密钥值。
 
 模型密钥只从服务端环境变量读取：

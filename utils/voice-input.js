@@ -57,6 +57,8 @@ const RECORD_OPTIONS = {
 }
 
 const FINAL_WAIT_MS = 2200
+let nextControllerId = 1
+let activeControllerId = ''
 
 function createVoiceError(message, detail, code) {
   const cleanMessage = String(message || '语音识别失败').trim()
@@ -184,12 +186,21 @@ function closeSocket(socketTask) {
   }
 }
 
+function bindRecorderNoop(recorder) {
+  if (!recorder) return
+  if (typeof recorder.onStart === 'function') recorder.onStart(() => {})
+  if (typeof recorder.onFrameRecorded === 'function') recorder.onFrameRecorded(() => {})
+  if (typeof recorder.onStop === 'function') recorder.onStop(() => {})
+  if (typeof recorder.onError === 'function') recorder.onError(() => {})
+}
+
 function createController(handlers = {}) {
   const support = getSupportStatus()
   if (!support.ok) return null
   const recorder = getRecorderManager()
   if (!recorder) return null
 
+  const controllerId = `voice-${nextControllerId++}`
   let starting = false
   let listening = false
   let transcribing = false
@@ -202,6 +213,11 @@ function createController(handlers = {}) {
   let draftText = ''
   let pendingFrames = []
   let lastRecordResult = null
+  let errored = false
+
+  function isActive() {
+    return activeControllerId === controllerId
+  }
 
   function currentCaption() {
     return `${confirmedSegments.join('')}${draftText}`.trim()
@@ -246,6 +262,7 @@ function createController(handlers = {}) {
   }
 
   function failRealtime(error) {
+    errored = true
     socketFailed = true
     cancelled = true
     starting = false
@@ -273,6 +290,7 @@ function createController(handlers = {}) {
   }
 
   function handleSocketMessage(message) {
+    if (!isActive()) return
     let event = {}
     try {
       event = JSON.parse(message && message.data ? message.data : '{}')
@@ -320,6 +338,7 @@ function createController(handlers = {}) {
     if (!socketTask) return false
 
     socketTask.onOpen(() => {
+      if (!isActive()) return
       socketReady = true
       sendSocketMessage(socketTask, JSON.stringify({
         type: 'start',
@@ -330,10 +349,12 @@ function createController(handlers = {}) {
     })
     socketTask.onMessage(handleSocketMessage)
     socketTask.onError((error) => {
+      if (!isActive()) return
       const url = socketTask && socketTask.realtimeAsrUrl ? `WebSocket ${socketTask.realtimeAsrUrl}` : 'WebSocket'
       failRealtime(createVoiceError(`${url} 连接失败`, errorMessage(error), 'asr-socket-error'))
     })
     socketTask.onClose(() => {
+      if (!isActive()) return
       socketReady = false
       if (listening && !socketFailed) {
         failRealtime(new Error('实时语音识别连接已断开'))
@@ -344,11 +365,16 @@ function createController(handlers = {}) {
     return true
   }
 
+  function bindRecorderHandlers() {
+    activeControllerId = controllerId
+
   recorder.onStart(() => {
+    if (!isActive()) return
     starting = false
     listening = true
     transcribing = false
     cancelled = false
+    errored = false
     confirmedSegments = []
     draftText = ''
     lastRecordResult = null
@@ -356,10 +382,12 @@ function createController(handlers = {}) {
   })
 
   recorder.onFrameRecorded((res) => {
+    if (!isActive()) return
     if (res && res.frameBuffer) pushFrame(res.frameBuffer)
   })
 
   recorder.onStop((res) => {
+    if (!isActive()) return
     listening = false
     if (cancelled) {
       transcribing = false
@@ -374,6 +402,8 @@ function createController(handlers = {}) {
   })
 
   recorder.onError((error) => {
+    if (!isActive()) return
+    errored = true
     starting = false
     listening = false
     transcribing = false
@@ -382,14 +412,19 @@ function createController(handlers = {}) {
     closeRealtimeSocket()
     safeCall(handlers.onError, createVoiceError('录音器报错', errorMessage(error), 'recorder-error'))
   })
+  }
+
+  bindRecorderHandlers()
 
   return {
     start() {
       if (starting || listening || transcribing) return
       starting = true
       cancelled = false
+      errored = false
+      bindRecorderHandlers()
       ensureRecordAuthorized((authError) => {
-        if (cancelled || !starting) return
+        if (cancelled || !starting || !isActive()) return
         if (authError) {
           starting = false
           safeCall(handlers.onError, authError)
@@ -403,6 +438,7 @@ function createController(handlers = {}) {
         try {
           recorder.start(RECORD_OPTIONS)
         } catch (error) {
+          errored = true
           starting = false
           closeRealtimeSocket()
           safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
@@ -410,22 +446,44 @@ function createController(handlers = {}) {
       })
     },
     stop() {
-      if (!listening) return
+      if (!isActive() || !listening) return
       recorder.stop()
     },
     cancel() {
       if (!starting && !listening && !transcribing && !socketTask && !finalTimer) return
+      const shouldReleaseRecorder = isActive()
       cancelled = true
       socketFailed = true
       starting = false
       transcribing = false
       clearFinalTimer()
       closeRealtimeSocket()
-      stopRecorderQuietly()
+      if (shouldReleaseRecorder) stopRecorderQuietly()
+      if (shouldReleaseRecorder) {
+        activeControllerId = ''
+        bindRecorderNoop(recorder)
+      }
       safeCall(handlers.onCancel)
     },
+    release() {
+      if (starting || listening || transcribing || socketTask || finalTimer) {
+        this.cancel()
+        return
+      }
+      cancelled = true
+      socketFailed = true
+      clearFinalTimer()
+      closeRealtimeSocket()
+      if (isActive()) {
+        activeControllerId = ''
+        bindRecorderNoop(recorder)
+      }
+    },
     isBusy() {
-      return starting || listening || transcribing
+      return isActive() && (starting || listening || transcribing)
+    },
+    isErrored() {
+      return errored
     }
   }
 }

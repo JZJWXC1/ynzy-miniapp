@@ -658,18 +658,32 @@ Page({
   },
 
   cleanupVoiceInput() {
-    if (!this.voiceController) return;
-    if (typeof this.voiceController.cancel === 'function') {
-      this.voiceController.cancel();
-    } else if (this.data.isVoiceListening) {
-      this.voiceController.stop();
+    const controller = this.voiceController;
+    if (!controller) return;
+    const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening;
+    if (busy && typeof controller.cancel === 'function') {
+      controller.cancel();
+    } else if (busy && typeof controller.stop === 'function') {
+      controller.stop();
+    } else if (typeof controller.release === 'function') {
+      controller.release();
     }
     if (this.data.isVoiceListening) {
       this.setData({ isVoiceListening: false });
     }
   },
 
+  ensureVoiceInput() {
+    if (!this.voiceController || (typeof this.voiceController.isErrored === 'function' && this.voiceController.isErrored())) {
+      this.initVoiceInput();
+    }
+    return this.voiceController;
+  },
+
   initVoiceInput() {
+    if (this.voiceController && typeof this.voiceController.release === 'function') {
+      this.voiceController.release();
+    }
     this.voiceController = voiceInput.createController({
       onStart: () => {
         this.setData({
@@ -857,16 +871,17 @@ Page({
   },
 
   toggleVoiceInput() {
-    if (!this.voiceController) {
+    const controller = this.ensureVoiceInput();
+    if (!controller) {
       wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' });
       return;
     }
     try {
       if (this.data.isVoiceListening) {
-        this.voiceController.stop();
+        controller.stop();
         return;
       }
-      this.voiceController.start();
+      controller.start();
     } catch (error) {
       this.setData({ isVoiceListening: false });
       wx.showToast({ title: '语音输入启动失败', icon: 'none' });
