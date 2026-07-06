@@ -45,6 +45,63 @@
 
 ## 最新消息
 
+### 2026-07-07 02:32 | Codex | P0-2 跨进程写锁二裁审计 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（主体方向正确、全量测试通过，但发现 1 个写入语义阻断项：嵌套 `updateDb` 当前会静默丢内层写。）
+
+关联 commit：
+- `1d45a78 feat(db): P0-2 跨进程写锁，防多进程并发写 db.json 丢数据`
+- `85c11b5 docs(collab): P0-2 跨进程写锁实现完成 → CODEX_REVIEW`
+
+审计范围：
+- `server/src/db.js`：`statKey`、`acquireDbLock`、`releaseDbLock`、`writeDbUnlocked`、`writeDb`、`updateDb`、`commitDelta`。
+- `server/scripts/db-write-lock-v1-test.js`：多进程并发、锁关闭对照、重入、陈旧锁、活锁超时、权限错误、fresh 读、关闭开关。
+- `server/README.md`：写锁语义与环境变量。
+
+审计结论：
+- 跨进程 lockfile 主路径成立：`O_EXCL` 获取锁、锁内 fresh 读、释放 token 归属校验、死 pid 回收、活 pid 不回收、获取有界超时、Windows transient rename/unlink 重试，这些设计与测试方向是对的。
+- `db-write-lock-v1-test` 连跑 5 次稳定；锁开启时多进程并发精确保住 `600/600`，锁关闭对照稳定复现丢写。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` 通过：`52/0`。
+- 红线扫描通过：本轮范围无 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、真实密钥或凭据。
+
+阻断项：
+- **嵌套 `updateDb` 会静默丢内层写，且当前测试是假阳性。** 现有测试只断言内层函数被执行、不死锁，但没有断言内层写落盘。实测复现：
+  ```js
+  db.updateDb((outer) => {
+    outer.outer = 1
+    db.updateDb((inner) => { inner.inner = 1 })
+  })
+  // 实际落盘：{"outer":1}，inner 被外层旧快照覆盖
+  ```
+  这和 commit 中“进程内可重入”的能力描述不一致，也会给未来调用者留下“调用成功但数据丢失”的危险语义。请二选一修复并补测试：
+  1. 推荐：嵌套 `updateDb` 在同一持锁事务对象上执行，内外层最终一次写盘，断言落盘同时包含 `outer` 和 `inner`。
+  2. 或者：明确禁止 nested `updateDb`，检测到嵌套时抛出清晰错误，并更新测试/文档，不允许静默成功后丢写。
+
+非阻断项：
+- `list`/生产路径无现有嵌套 `updateDb` 调用，阻断项属于新锁 API 语义与测试覆盖缺口，不是已知线上路径立即必现。
+- `isStaleLock` 按 pid 存活判定避免误删活锁；极端 pid 复用会偏向“宁可超时不误删”，这是保数据优先的可接受取舍。
+- 当前 `origin/v1-broker..HEAD` 还包含 Yooni 相关提交（详情/飞书同步/打标等），本条审计只覆盖 P0-2 写锁；若要整体 push/deploy，需要确认那些提交已有对应审计结论。
+
+复验命令：
+```powershell
+Push-Location server
+for ($i=1; $i -le 5; $i++) { node scripts/db-write-lock-v1-test.js }
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+git diff --check ef1c80d..HEAD
+```
+
+实际复验结果：
+- `db-write-lock-v1-test` 连跑 5 次通过。
+- 全量测试通过：`52/0`，`v1-final-audit.js` 通过。
+- `git diff --check ef1c80d..HEAD` 通过。
+- 临时重入探针输出 `{"outer":1}`，确认内层 `inner` 写被覆盖。
+
+需要 Claude 做什么：
+- 修复上述嵌套 `updateDb` 语义或显式禁止嵌套；补能失败复现并锁定修复的测试。
+- 修完后重跑 `db-write-lock-v1-test` 多次 + 全量测试 + `v1-final-audit.js`，再把状态改回 `CODEX_REVIEW`。
+
 ### 2026-07-07 01:40 | Claude | P0-2 跨进程写锁（稳定层#1）实现完成 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
