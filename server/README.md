@@ -59,6 +59,87 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 - `latest.json` 是指向最新备份的软链。
 - 备份前会先用 Node 解析 JSON，避免把损坏文件当成有效备份。
 
+上面是**本地明文**备份（防误删/回滚用）。在此之上另有一层 **异地加密备份 + 恢复演练 + 失败告警**（P0-1），用于机器损毁/勒索/整机丢失时的异地恢复：
+
+### 异地加密备份（P0-1）
+
+- 核心库：`server/src/backup.js`（零外部依赖，仅用 Node 内置 `crypto`/`zlib`）。
+- 备份 CLI：`server/scripts/backup-db.js`
+  - 读 `DATA_FILE` 指向的 `db.json` → gzip 压缩 → **AES-256-GCM 加密**（口令经 scrypt+随机 salt 派生密钥）→ 以 `db-backup-<UTC时间戳>.ygbak` 落盘。
+  - 落盘后**即时自检**：立刻解密演练并做往返数量校验，自检不过的备份会被删除、不外发。
+  - 自检通过后调用**异地上传钩子**，再执行**保留清理**。
+- 恢复演练 CLI：`server/scripts/restore-drill.js`
+  - 解密最新（或 `--file` 指定）备份到系统临时目录，**绝不写回生产 `db.json`**。
+  - 校验 JSON 可解析，输出 `listings/users/reports/deals/commissionRecords/footprints` 六项数量。
+  - **往返一致性校验**：恢复出的六项数量必须与备份时刻记录的源数量逐项相等，任一不符即判失败。
+  - 顺带做**新鲜度巡检**：最近一份备份超过 `BACKUP_MAX_AGE_HOURS`（默认 24h）即告警。
+  - 说明：`reports`/`deals` 对应库内真实键 `clientReports`/`dealRecords`，计数已按真实键统计。
+
+#### 环境变量
+
+密钥、异地目标、外部通知命令**只从环境变量读取**，仓库内不写任何真实值：
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | 是 | 加密/解密口令；缺失时备份 CLI 直接拒绝运行，绝不产出明文备份。请用强随机串并妥善异地保管——**丢失即无法恢复**。 |
+| `DATA_FILE` | 否 | 源 `db.json` 路径，默认 `server/data/db.json`（沿用既有变量）。 |
+| `BACKUP_STAGE_DIR` | 否 | 本地加密备份暂存目录，默认 `server/backups/`（已在 `.gitignore`）。若自定义，**必须指向仓库外目录或保持默认**，切勿指到仓库内其他位置——加密备份仍是生产数据，禁止入库。`.gitignore` 另加了 `*.ygbak` 全局忽略作纵深防线，但仍以「暂存目录在仓库外」为准。 |
+| `BACKUP_RETENTION_DAYS` | 否 | 保留天数，默认 `30`，过期自动清理。 |
+| `BACKUP_MAX_AGE_HOURS` | 否 | 新鲜度阈值小时数，默认 `24`。 |
+| `BACKUP_REMOTE_CMD` | **生产必填** | 异地上传命令模板；脚本会以环境变量 `BACKUP_FILE`（完整路径）、`BACKUP_FILENAME` 传入，命令内用 `$BACKUP_FILE` 引用。远端目标与凭据全部落在此命令/其引用的凭据文件里，**不写入仓库**。**默认未配置即判失败**（触发 `BACKUP_REMOTE_REQUIRED` 告警、非零退出）——因为 P0-1 目标是「异地备份」，只做本机加密备份不算达成。 |
+| `BACKUP_ALLOW_LOCAL_ONLY` | 否 | 显式设为 `1` 时，允许「未配置 `BACKUP_REMOTE_CMD`、仅本地加密备份」成功退出（供本地演练/临时用）。**生产禁止开启**：开启即失去异地容灾能力。 |
+| `BACKUP_ALERT_CMD` | 否 | 外部通知命令模板（如企业微信/飞书 webhook 推送）；触发告警时以环境变量 `ALERT_KIND`、`ALERT_MESSAGE`、`ALERT_DETAIL` 传入。**只在此文档说明，不写入仓库**。未配置时告警仍会打到 stderr。 |
+
+`BACKUP_REMOTE_CMD` 示例（放服务器环境文件，勿入库）：
+
+```bash
+# rsync 到异地主机（SSH 私钥仅本机保存，开 IP 白名单）
+BACKUP_REMOTE_CMD='rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@offsite.example.com:/data/ynzy-db-backups/'
+# 或：阿里云 ossutil 传到与生产不同地域的 Bucket（异地容灾）
+BACKUP_REMOTE_CMD='ossutil cp "$BACKUP_FILE" oss://ynzy-dr-backup-shenzhen/db/ -f'
+```
+
+#### 手动备份 / 手动恢复演练
+
+```bash
+cd server
+# 生产手动异地加密备份（必须带异地目标，否则判失败）
+BACKUP_ENCRYPTION_KEY=*** BACKUP_REMOTE_CMD='...' node scripts/backup-db.js
+# 本地演练/临时（无异地目标）必须显式允许仅本地，否则默认判失败
+BACKUP_ENCRYPTION_KEY=*** BACKUP_ALLOW_LOCAL_ONLY=1 node scripts/backup-db.js
+
+# 手动恢复演练（默认演练最新一份；也可 --file 指定）。纯演练用完即删，不残留明文。
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup-20260706T120000Z.ygbak
+
+# 真恢复取数：带 --out 把解密出的 db.restored.json 保留到指定目录（演练同时校验一致性）
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup-20260706T120000Z.ygbak --out /tmp/ynzy-restore
+```
+
+真要**恢复到生产**时（区别于只读演练）：先用带 `--out` 的命令确认目标备份可解密、数量吻合并把 `db.restored.json` 落到指定目录，再停服、把该文件覆盖到 `server/data/db.json`，重启并核对 `listings` 数量。恢复前务必先按「本地明文备份」一节把当前 `server/data` 另存，便于回滚。注意：不带 `--out` 的纯演练会把解密产物用完即删，绝不残留明文，因此真恢复必须用 `--out`。
+
+#### 定时任务（cron 示例）
+
+```cron
+# 每 6 小时异地加密备份一次（环境变量建议写在 /etc/default/ynzy-backup 并 source）
+0 */6 * * * . /etc/default/ynzy-backup; cd /opt/ynzy-miniapp/server && node scripts/backup-db.js >> /var/log/ynzy-backup.log 2>&1
+# 每天 03:10 跑一次恢复演练 + 新鲜度巡检（失败会以非零码退出并触发告警）
+10 3 * * * . /etc/default/ynzy-backup; cd /opt/ynzy-miniapp/server && node scripts/restore-drill.js >> /var/log/ynzy-restore-drill.log 2>&1
+```
+
+#### 告警条件（均输出明确错误、非零退出）
+
+- `BACKUP_FAILED`：读源/加密/写盘失败。
+- `BACKUP_VERIFY_FAILED`：新备份即时自检不过（已删除坏备份）。
+- `BACKUP_EMPTY_SOURCE`：跨备份计数回归——本次备份六项计数全为 0 但上一份备份仍有数据，疑似源被截断/读空（已删除该空备份并判失败）。
+- `BACKUP_REMOTE_REQUIRED`：未配置 `BACKUP_REMOTE_CMD` 且未显式 `BACKUP_ALLOW_LOCAL_ONLY=1`，未达成异地目标（本地可信备份已保留，但本轮判失败）。
+- `REMOTE_UPLOAD_FAILED`：异地上传命令失败。
+- `RESTORE_MISMATCH`：恢复演练往返数量不符。
+- `RESTORE_FAILED`：演练解密/解析失败或无备份可演练。
+- `BACKUP_STALE`：最近一次备份超过 `BACKUP_MAX_AGE_HOURS`。
+
+上述条件均有锁定测试：`server/scripts/backup-restore-v1-test.js`。
+
 足迹留痕写入统一经过后端截断。代码默认 `FOOTPRINT_MAX_ROWS=5000`，最低不会低于 `1000`；生产 systemd 服务显式设置为：
 
 ```ini

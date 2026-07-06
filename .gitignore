@@ -1,6 +1,8 @@
 server/.env
 server/certs/
 server/data/
+server/backups/
+*.ygbak
 server/server.log
 server/server.err.log
 node_modules/
