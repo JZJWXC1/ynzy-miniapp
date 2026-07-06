@@ -231,6 +231,100 @@ async function main() {
     押一付一: '1800'
   }), 2)
   assert.strictEqual(parsedGongshuBlock.area, '拱墅区', '非上城配置板块应自动归入拱墅区')
+
+  assert.strictEqual(
+    feishuSync._internal.roomIdentityKey({ community: '棠润府', building: '17', unit: '1', roomNumber: '1004A' }),
+    '棠润府|17|1|1004A',
+    '完整小区、楼栋、单元、房号应生成稳定物理键'
+  )
+  assert.strictEqual(
+    feishuSync._internal.roomIdentityKey({ community: '棠润府', building: '-', unit: '无', roomNumber: '1004A' }),
+    '',
+    '楼栋占位值不应生成物理合并键'
+  )
+  assert.strictEqual(
+    feishuSync._internal.roomIdentityKey({ community: '棠润府', building: 'null', roomNumber: '1004A' }),
+    '',
+    'null 占位值不应生成物理合并键'
+  )
+  assert.strictEqual(
+    feishuSync.normalizeRecord(record('placeholder-room', {
+      区域: '东新园',
+      小区: '棠润府',
+      几栋: '-',
+      几单元: '无',
+      房号: 'null',
+      户型: '一室一厅一卫',
+      押一付一: '3200'
+    }), 4).roomIdentityKey,
+    '',
+    '飞书占位楼栋/房号归一后不得写入物理键'
+  )
+
+  const sparseDb = makeDb()
+  sparseDb.listings.push(
+    {
+      id: 'SPARSE_A',
+      externalSource: 'feishu',
+      feishuRecordId: 'old-a',
+      feishuRoomIdentityKey: '',
+      community: '同小区',
+      building: '',
+      unit: '',
+      roomNumber: '',
+      status: '在租',
+      lifecycleStatus: 'active'
+    },
+    {
+      id: 'SPARSE_B',
+      externalSource: 'feishu',
+      feishuRecordId: 'old-b',
+      feishuRoomIdentityKey: '',
+      community: '同小区',
+      building: '',
+      unit: '',
+      roomNumber: '',
+      status: '在租',
+      lifecycleStatus: 'active'
+    }
+  )
+  const sparseIndex = feishuSync._internal.existingByExternalId(sparseDb)
+  assert.strictEqual(sparseIndex.get('同小区'), undefined, '稀疏旧房源不得退化成小区名物理键')
+  assert.strictEqual(sparseIndex.get('old-a').id, 'SPARSE_A', '稀疏旧房源仍应保留 record_id 精确索引')
+  assert.strictEqual(sparseIndex.get('old-b').id, 'SPARSE_B', '稀疏旧房源不得互相覆盖')
+
+  const reuseDb = makeDb()
+  const reuseFirst = await feishuSync.applySync(reuseDb, [
+    record('stable-a', {
+      区域: '东新园',
+      小区: '棠润府',
+      几栋: '17',
+      几单元: '1',
+      房号: '1004A',
+      户型: '一室一厅一卫',
+      押一付一: '3200'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(reuseFirst.created, 1, '完整物理键首次同步应创建房源')
+  const stableListingId = reuseDb.listings[0].id
+  assert.strictEqual(reuseDb.listings[0].feishuRoomIdentityKey, '棠润府|17|1|1004A', '完整物理键应持久保存')
+
+  const reuseSecond = await feishuSync.applySync(reuseDb, [
+    record('stable-b', {
+      区域: '东新园',
+      小区: '棠润府',
+      几栋: '17',
+      几单元: '1',
+      房号: '1004A',
+      户型: '一室一厅一卫',
+      押一付一: '3300'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(reuseSecond.updated, 1, '同一物理房源 record_id 变化仍应复用原房源')
+  assert.strictEqual(reuseDb.listings.length, 1, '物理键复用不应创建重复房源')
+  assert.strictEqual(reuseDb.listings[0].id, stableListingId, 'record_id 变化后 listing.id 应保持稳定')
+  assert.strictEqual(reuseDb.listings[0].feishuRecordId, 'stable-b', '复用后应更新为新的飞书 record_id')
+  assert.strictEqual(reuseDb.listings[0].rent, 3300, '复用更新应写入新租金')
 }
 
 main().then(() => {

@@ -350,8 +350,19 @@ function roomAddressFromParts(parts = {}) {
   return [parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('-')
 }
 
+function roomIdentityPart(value) {
+  const text = normalizeText(value)
+  if (!text || /^(-|无|null)$/i.test(text)) return ''
+  return text
+}
+
 function roomIdentityKey(parts = {}) {
-  return [parts.community, parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('|')
+  const community = roomIdentityPart(parts.community)
+  const building = roomIdentityPart(parts.building)
+  const unit = roomIdentityPart(parts.unit)
+  const roomNumber = roomIdentityPart(parts.roomNumber)
+  if (!community || !building || !roomNumber) return ''
+  return [community, building, unit, roomNumber].filter(Boolean).join('|')
 }
 
 function normalizeRecord(rawRecord, index) {
@@ -1040,7 +1051,7 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.externalSource = 'feishu'
   listing.feishuRecordId = String(row.externalId)
   listing.feishuMatchKey = row.matchKey
-  listing.feishuRoomIdentityKey = row.roomIdentityKey || row.matchKey
+  listing.feishuRoomIdentityKey = row.roomIdentityKey || ''
   listing.feishuRowNumber = row.rowNumber
   listing.feishuStatusText = row.statusText
   listing.source = COMPANY_SOURCE
@@ -1306,5 +1317,9 @@ module.exports = {
   refreshSheetSnapshot,
   normalizeRecord,
   applySync,
-  sanitizeSheetSnapshot
+  sanitizeSheetSnapshot,
+  _internal: {
+    roomIdentityKey,
+    existingByExternalId
+  }
 }
