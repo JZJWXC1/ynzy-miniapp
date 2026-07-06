@@ -93,11 +93,47 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 `BACKUP_REMOTE_CMD` 示例（放服务器环境文件，勿入库）：
 
 ```bash
-# rsync 到异地主机（SSH 私钥仅本机保存，开 IP 白名单）
+# 飞书云盘异地备份（推荐；见下「飞书云盘异地备份」一节）
+BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'
+# 或 rsync 到异地主机（SSH 私钥仅本机保存，开 IP 白名单）
 BACKUP_REMOTE_CMD='rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@offsite.example.com:/data/ynzy-db-backups/'
-# 或：阿里云 ossutil 传到与生产不同地域的 Bucket（异地容灾）
+# 或阿里云 ossutil 传到与生产不同地域的 Bucket（异地容灾）
 BACKUP_REMOTE_CMD='ossutil cp "$BACKUP_FILE" oss://ynzy-dr-backup-shenzhen/db/ -f'
 ```
+
+#### 飞书云盘异地备份
+
+`server/scripts/upload-backup-to-feishu.js` 把 `backup-db.js` 落盘的 `.ygbak` 通过飞书开放平台以 **multipart/form-data** 上传到指定云盘文件夹（Node 内置 `fetch`/`FormData`，零依赖）。接线方式就是把上面的 `BACKUP_REMOTE_CMD` 设成 `node scripts/upload-backup-to-feishu.js`——`backup-db.js` 会把刚生成的备份路径经 `BACKUP_FILE` 环境变量传给它。
+
+飞书凭据只从环境变量读取（连同 `/etc/default/ynzy-backup` 一起，chmod 600，不入库）：
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `FEISHU_BACKUP_APP_ID` | 是 | 飞书自建应用 App ID（建议为备份单独建一个应用，权限最小化） |
+| `FEISHU_BACKUP_APP_SECRET` | 是 | 该应用 App Secret |
+| `FEISHU_BACKUP_FOLDER_TOKEN` | 是 | 目标云盘文件夹 token（folder_token，从飞书云盘该文件夹 URL 取） |
+| `FEISHU_BACKUP_UPLOAD_NAME_PREFIX` | 否 | 上传文件名前缀（如 `prod-`），便于区分环境 |
+| `FEISHU_BACKUP_API_BASE_URL` | 否 | 飞书开放平台地址，默认 `https://open.feishu.cn/open-apis` |
+
+飞书后台需要用户提供/配置：① 建自建应用拿 App ID / App Secret；② 开通云盘（drive）文件上传权限（`drive:drive` 或等价的文件写权限）；③ 建一个专用文件夹并把该应用加为协作者（可编辑），取 folder_token。
+
+**红线（务必遵守）：**
+
+- 飞书云盘**只存 `.ygbak` 加密备份文件**，严禁上传 `BACKUP_ENCRYPTION_KEY`、`.env`、明文 `db.json` 或任何凭据。
+- `BACKUP_ENCRYPTION_KEY` **绝不放飞书**，只放服务器 `/etc/default/ynzy-backup`；并请把它**另存到本机密码管理器 + 手抄一份离线纸质备份**——密钥与加密备份分离存放，任一处泄露都拿不到明文数据；密钥丢失则所有备份都无法解密。
+
+#### 每周手动恢复演练（从飞书下载验证）
+
+自动演练（`ynzy-restore-drill.timer`）当前用**服务器本机最新 `.ygbak`**。为了验证「飞书那份也真能恢复」，建议每周手动做一次：
+
+```bash
+# 1) 在飞书云盘该文件夹下载一份最新 .ygbak 到本机或服务器临时目录，例如 /tmp/from-feishu.ygbak
+# 2) 用它跑恢复演练（--out 保留解密产物则用于真恢复；纯验证可不带 --out）
+cd /opt/ynzy-miniapp/server
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file /tmp/from-feishu.ygbak
+```
+
+演练会输出 `listings/users/reports/deals/commissionRecords/footprints` 的「备份时刻 vs 恢复出」逐项计数，逐项相等即通过。（下一轮计划：升级为「自动从飞书下载最新 `.ygbak` 再演练」，形成完整闭环。）
 
 #### 手动备份 / 手动恢复演练
 
