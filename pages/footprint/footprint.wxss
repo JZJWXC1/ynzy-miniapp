@@ -15,9 +15,9 @@ page {
   gap: 24rpx;
   padding: 32rpx;
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 40rpx;
-  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.18);
+  box-shadow: 0 18rpx 42rpx rgba(46, 81, 74, 0.18);
 }
 
 .hero-kicker {
@@ -48,10 +48,10 @@ page {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  color: #153f36;
+  color: #182E2A;
   font-size: 42rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 30rpx;
 }
 
@@ -68,20 +68,20 @@ page {
   padding: 22rpx 8rpx;
   text-align: center;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 26rpx;
-  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(36, 62, 56, 0.06);
 }
 
 .stat-value {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
 }
 
 .stat-label {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
 }
 
@@ -100,18 +100,18 @@ page {
 .filter-chip {
   min-height: 62rpx;
   padding: 0 24rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 800;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 22rpx;
 }
 
 .filter-chip.active {
   color: #ffffff;
-  background: #2f6f60;
-  border-color: #2f6f60;
+  background: #2E514A;
+  border-color: #2E514A;
 }
 
 .record-list {
@@ -150,7 +150,7 @@ page {
   height: 46rpx;
   background: rgba(255, 255, 255, 0.72);
   border-radius: 24rpx 24rpx 12rpx 12rpx;
-  box-shadow: 0 -32rpx 0 rgba(47, 111, 96, 0.15);
+  box-shadow: 0 -32rpx 0 rgba(46, 81, 74, 0.15);
 }
 
 .record-cover-light {
@@ -169,7 +169,7 @@ page {
 }
 
 .record-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -178,10 +178,10 @@ page {
 .record-status {
   flex: 0 0 auto;
   padding: 8rpx 12rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 20rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 14rpx;
 }
 
@@ -189,7 +189,7 @@ page {
 .record-customer,
 .record-time {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
 }
 
@@ -201,7 +201,7 @@ page {
 }
 
 .record-price {
-  color: #f2765d;
+  color: #B9655A;
   font-size: 29rpx;
   font-weight: 900;
 }
@@ -221,12 +221,12 @@ page {
   height: 14rpx;
   flex: 0 0 auto;
   margin-top: 12rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 50%;
 }
 
 .task-text {
-  color: #17342e;
+  color: #1E332F;
   font-size: 26rpx;
   line-height: 1.55;
 }

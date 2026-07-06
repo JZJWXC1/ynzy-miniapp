@@ -2,9 +2,9 @@
   margin-top: 22rpx;
   padding: 22rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 24rpx;
-  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(36, 62, 56, 0.06);
 }
 
 .filter-section {
@@ -12,7 +12,7 @@
 }
 
 .filter-label {
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
 }
@@ -41,18 +41,18 @@
   align-items: center;
   justify-content: center;
   padding: 0 18rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 23rpx;
   font-weight: 900;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 16rpx;
 }
 
 .filter-chip.active {
   color: #ffffff;
-  background: #2f6f60;
-  border-color: #2f6f60;
+  background: #2E514A;
+  border-color: #2E514A;
 }
 
 .community-combobox {
@@ -65,11 +65,11 @@
   width: 100%;
   height: 70rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 800;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
 }
 
@@ -81,9 +81,9 @@
   z-index: 8;
   overflow: hidden;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
-  box-shadow: 0 16rpx 32rpx rgba(31, 81, 68, 0.12);
+  box-shadow: 0 16rpx 32rpx rgba(36, 62, 56, 0.12);
 }
 
 .community-option {
@@ -91,7 +91,7 @@
   display: flex;
   align-items: center;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 800;
   border-bottom: 1rpx solid #edf4f1;
@@ -115,26 +115,26 @@
 .price-divider {
   flex: 0 0 18rpx;
   height: 2rpx;
-  background: #aac3bb;
+  background: #B7C5BE;
   border-radius: 999rpx;
 }
 
 .filter-action {
   flex: 0 0 96rpx;
   height: 70rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 18rpx;
 }
 
 .filter-action.primary {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .filter-action.ghost {
-  color: #2f6f60;
-  background: #e9f5f0;
+  color: #2E514A;
+  background: #EDF3EF;
 }

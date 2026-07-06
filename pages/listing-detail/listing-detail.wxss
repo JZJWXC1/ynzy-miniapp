@@ -15,9 +15,9 @@ page {
   align-items: center;
   justify-content: center;
   color: #ffffff;
-  background: linear-gradient(135deg, #153f36, #2f6f60);
+  background: linear-gradient(135deg, #182E2A, #2E514A);
   border-radius: 42rpx;
-  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.2);
+  box-shadow: 0 18rpx 42rpx rgba(46, 81, 74, 0.2);
   overflow: hidden;
 }
 
@@ -35,9 +35,9 @@ page {
   margin-top: 18rpx;
   padding: 18rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 28rpx;
-  box-shadow: 0 14rpx 34rpx rgba(47, 111, 96, 0.12);
+  box-shadow: 0 14rpx 34rpx rgba(46, 81, 74, 0.12);
 }
 
 .video-share-copy {
@@ -46,7 +46,7 @@ page {
 }
 
 .video-share-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -54,7 +54,7 @@ page {
 
 .video-share-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
   line-height: 1.35;
 }
@@ -64,17 +64,17 @@ page {
   height: 72rpx;
   margin: 0;
   padding: 0 12rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 72rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 22rpx;
 }
 
 .video-share-button[disabled] {
-  color: #78918a;
-  background: #e9f5f0;
+  color: #6A7671;
+  background: #EDF3EF;
 }
 
 .video-share-button::after {
@@ -96,9 +96,9 @@ page {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #153f36;
+  color: #182E2A;
   font-size: 48rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 50%;
 }
 
@@ -130,7 +130,7 @@ page {
 
 .listing-title,
 .sensitive-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -139,7 +139,7 @@ page {
 .listing-area,
 .sensitive-desc {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 24rpx;
 }
 
@@ -147,18 +147,18 @@ page {
 .verify-tag {
   flex: 0 1 340rpx;
   padding: 10rpx 14rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 23rpx;
   font-weight: 900;
   line-height: 1.35;
   text-align: center;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 18rpx;
 }
 
 .commission.no-commission {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .source-badges {
@@ -177,13 +177,13 @@ page {
   color: #ffffff;
   font-size: 20rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 14rpx;
 }
 
 .no-commission-badge {
-  color: #153f36;
-  background: #f6bd36;
+  color: #182E2A;
+  background: #C9A45D;
 }
 
 .facts {
@@ -197,13 +197,13 @@ page {
   flex: 1 1 190rpx;
   min-width: 0;
   padding: 18rpx;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 22rpx;
 }
 
 .fact text:first-child {
   display: block;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
 }
@@ -211,7 +211,7 @@ page {
 .fact text:last-child {
   display: block;
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
 }
 
@@ -227,8 +227,8 @@ page {
   min-width: 0;
   min-height: 94rpx;
   padding: 16rpx;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 20rpx;
 }
 
@@ -238,14 +238,14 @@ page {
 
 .location-item text:first-child {
   display: block;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
 }
 
 .location-item text:last-child {
   display: block;
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -254,17 +254,17 @@ page {
 
 .hidden-row {
   padding: 22rpx 0;
-  border-bottom: 1rpx solid #dce9e3;
+  border-bottom: 1rpx solid #DED8CC;
 }
 
 .hidden-label {
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
 }
 
 .hidden-value {
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
   line-height: 1.4;
@@ -273,25 +273,25 @@ page {
 .need-bind-row {
   margin-top: 18rpx;
   padding: 18rpx;
-  background: #fff8e6;
-  border: 1rpx solid #f5df9c;
+  background: #F6E9CE;
+  border: 1rpx solid #DDC994;
   border-radius: 20rpx;
 }
 
 .need-bind-row.bound {
-  background: #e9f5f0;
-  border-color: #dce9e3;
+  background: #EDF3EF;
+  border-color: #DED8CC;
 }
 
 .need-bind-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
 }
 
 .need-bind-desc {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
   line-height: 1.35;
   word-break: break-all;
@@ -305,7 +305,7 @@ page {
   color: #ffffff;
   font-size: 28rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 26rpx;
 }
 
@@ -313,10 +313,10 @@ page {
   width: 100%;
   height: 72rpx;
   margin-top: 14rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 25rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 22rpx;
 }
 
@@ -347,28 +347,28 @@ page {
 }
 
 .log-user {
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
   font-weight: 900;
 }
 
 .log-action,
 .log-time {
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
 }
 
 .deal-button {
-  background: #f2765d;
+  background: #B9655A;
 }
 
 .showing-proof-preview {
   width: 100%;
   height: 260rpx;
   margin-top: 14rpx;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 20rpx;
-  background: #f7fbf8;
+  background: #F6F2EA;
 }
 
 .showing-watermark-canvas {
@@ -387,9 +387,9 @@ page {
   gap: 18rpx;
   margin-top: 16rpx;
   padding: 14rpx 16rpx 14rpx 24rpx;
-  color: #2f6f60;
-  background: #e9f5f0;
-  border: 1rpx solid #dce9e3;
+  color: #2E514A;
+  background: #EDF3EF;
+  border: 1rpx solid #DED8CC;
   border-radius: 26rpx;
 }
 
@@ -406,7 +406,7 @@ page {
 }
 
 .showing-action-title {
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -414,7 +414,7 @@ page {
 
 .showing-action-sub {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 20rpx;
   line-height: 1.25;
 }
@@ -426,11 +426,11 @@ page {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #153f36;
+  color: #182E2A;
   font-size: 18rpx;
   font-weight: 900;
   line-height: 1.15;
-  background: #fff35a;
+  background: #D8BD67;
   border-radius: 20rpx;
 }
 
@@ -447,7 +447,7 @@ page {
   align-items: center;
   justify-content: center;
   padding: calc(28rpx + env(safe-area-inset-top)) 28rpx calc(28rpx + env(safe-area-inset-bottom));
-  background: rgba(21, 63, 54, 0.42);
+  background: rgba(24, 46, 42, 0.42);
   box-sizing: border-box;
 }
 
@@ -457,20 +457,20 @@ page {
   padding: 30rpx;
   background: #ffffff;
   border-radius: 24rpx;
-  box-shadow: 0 16rpx 48rpx rgba(21, 63, 54, 0.22);
+  box-shadow: 0 16rpx 48rpx rgba(24, 46, 42, 0.22);
   box-sizing: border-box;
   overflow: auto;
 }
 
 .v1-modal-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
 }
 
 .modal-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.4;
 }
@@ -487,11 +487,11 @@ page {
   min-height: 68rpx;
   margin: 0;
   padding: 8rpx 14rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 900;
   line-height: 1.25;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 18rpx;
   box-sizing: border-box;
   white-space: normal;
@@ -506,7 +506,7 @@ page {
 
 .purpose-option.active {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .purpose-option::after {
@@ -515,7 +515,7 @@ page {
 
 .need-modal-note {
   margin-top: 16rpx;
-  color: #8a5b00;
+  color: #7A572D;
   font-size: 22rpx;
   font-weight: 800;
   line-height: 1.4;
@@ -527,7 +527,7 @@ page {
 
 .v1-field text {
   display: block;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   font-weight: 800;
 }
@@ -538,10 +538,10 @@ page {
   min-height: 78rpx;
   margin-top: 10rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
   box-sizing: border-box;
 }

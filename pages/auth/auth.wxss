@@ -13,8 +13,8 @@ page {
   gap: 22rpx;
   align-items: center;
   padding: 32rpx;
-  background: linear-gradient(135deg, #ffffff 0%, #e9f5f0 100%);
-  border: 1rpx solid #dce9e3;
+  background: linear-gradient(135deg, #ffffff 0%, #EDF3EF 100%);
+  border: 1rpx solid #DED8CC;
   border-radius: 34rpx;
 }
 
@@ -32,14 +32,14 @@ page {
 }
 
 .auth-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 38rpx;
   font-weight: 900;
 }
 
 .auth-desc {
   margin-top: 12rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 24rpx;
   line-height: 1.5;
 }
@@ -54,18 +54,18 @@ page {
   flex: 1 1 0;
   min-width: 0;
   height: 76rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 27rpx;
   font-weight: 900;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 22rpx;
 }
 
 .mode-switch button.active {
   color: #ffffff;
-  background: #2f6f60;
-  border-color: #2f6f60;
+  background: #2E514A;
+  border-color: #2E514A;
 }
 
 .auth-card {
@@ -79,7 +79,7 @@ page {
 
 .label {
   margin-bottom: 12rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 25rpx;
   font-weight: 900;
 }
@@ -87,10 +87,10 @@ page {
 input {
   height: 76rpx;
   padding: 0 22rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 22rpx;
 }
 
@@ -101,13 +101,13 @@ input {
   color: #ffffff;
   font-size: 28rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 26rpx;
 }
 
 .auth-note {
   margin-top: 22rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.55;
 }

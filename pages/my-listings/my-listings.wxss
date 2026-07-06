@@ -15,7 +15,7 @@ page {
   align-items: center;
   padding: 32rpx;
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 40rpx;
 }
 
@@ -32,16 +32,16 @@ page {
 }
 
 .company-mode .owner-card {
-  background: #153f36;
+  background: #182E2A;
 }
 
 .company-filter-panel {
   margin-top: 22rpx;
   padding: 22rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 24rpx;
-  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(36, 62, 56, 0.06);
 }
 
 .filter-section {
@@ -49,7 +49,7 @@ page {
 }
 
 .filter-label {
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
 }
@@ -72,18 +72,18 @@ page {
   align-items: center;
   justify-content: center;
   padding: 0 18rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 23rpx;
   font-weight: 900;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 16rpx;
 }
 
 .filter-chip.active {
   color: #ffffff;
-  background: #2f6f60;
-  border-color: #2f6f60;
+  background: #2E514A;
+  border-color: #2E514A;
 }
 
 .community-combobox {
@@ -96,11 +96,11 @@ page {
   width: 100%;
   height: 70rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 800;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
 }
 
@@ -112,9 +112,9 @@ page {
   z-index: 8;
   overflow: hidden;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
-  box-shadow: 0 16rpx 32rpx rgba(31, 81, 68, 0.12);
+  box-shadow: 0 16rpx 32rpx rgba(36, 62, 56, 0.12);
 }
 
 .community-option {
@@ -122,7 +122,7 @@ page {
   display: flex;
   align-items: center;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 800;
   border-bottom: 1rpx solid #edf4f1;
@@ -146,27 +146,27 @@ page {
 .price-divider {
   flex: 0 0 18rpx;
   height: 2rpx;
-  background: #aac3bb;
+  background: #B7C5BE;
   border-radius: 999rpx;
 }
 
 .filter-reset-button {
   flex: 0 0 104rpx;
   height: 70rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 18rpx;
 }
 
 .owner-button {
   min-width: 118rpx;
   height: 72rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 24rpx;
 }
 
@@ -183,20 +183,20 @@ page {
   padding: 22rpx 8rpx;
   text-align: center;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 26rpx;
-  box-shadow: 0 12rpx 26rpx rgba(31, 81, 68, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(36, 62, 56, 0.06);
 }
 
 .stat-value {
-  color: #153f36;
+  color: #182E2A;
   font-size: 33rpx;
   font-weight: 900;
 }
 
 .stat-label {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
 }
 
@@ -212,14 +212,14 @@ page {
 }
 
 .empty-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 30rpx;
   font-weight: 900;
 }
 
 .empty-desc {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.45;
 }
@@ -245,7 +245,7 @@ page {
   min-height: 168rpx;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #d8f4f8, #fff6d8);
+  background: linear-gradient(135deg, #E3EFED, #F2E5C8);
   border-radius: 18rpx;
 }
 
@@ -259,7 +259,7 @@ page {
   position: absolute;
   inset: 42rpx 28rpx 24rpx;
   background: rgba(255, 255, 255, 0.62);
-  border: 1rpx solid rgba(47, 111, 96, 0.18);
+  border: 1rpx solid rgba(46, 81, 74, 0.18);
   border-radius: 16rpx;
 }
 
@@ -269,10 +269,10 @@ page {
   top: 14rpx;
   z-index: 1;
   padding: 6rpx 12rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 20rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 999rpx;
 }
 
@@ -299,13 +299,13 @@ page {
   font-size: 22rpx;
   font-weight: 900;
   line-height: 1;
-  background: #c0392b;
+  background: #A94F45;
   border-radius: 6rpx;
 }
 
 .company-listing-title {
   min-width: 0;
-  color: #153f36;
+  color: #182E2A;
   font-size: 30rpx;
   font-weight: 900;
   line-height: 1.28;
@@ -314,7 +314,7 @@ page {
 .company-listing-meta,
 .company-listing-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.35;
   word-break: break-word;
@@ -329,7 +329,7 @@ page {
 }
 
 .company-price {
-  color: #153f36;
+  color: #182E2A;
   font-size: 30rpx;
   font-weight: 900;
 }
@@ -339,10 +339,10 @@ page {
   display: flex;
   align-items: center;
   padding: 0 14rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 21rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 999rpx;
 }
 
@@ -352,7 +352,7 @@ page {
 }
 
 .listing-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 29rpx;
   font-weight: 900;
 }
@@ -361,7 +361,7 @@ page {
 .listing-meta,
 .listing-views {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.45;
   word-break: break-word;
@@ -369,13 +369,13 @@ page {
 
 .verify-line {
   margin-top: 10rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 22rpx;
   font-weight: 900;
 }
 
 .verify-line.warn {
-  color: #b16a00;
+  color: #7A572D;
 }
 
 .listing-actions {
@@ -397,20 +397,20 @@ page {
   min-width: 92rpx;
   height: 56rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 22rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 18rpx;
 }
 
 .edit-button {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .arrow {
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 52rpx;
   font-weight: 300;
 }

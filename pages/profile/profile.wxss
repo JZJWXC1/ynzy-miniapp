@@ -18,7 +18,7 @@ page {
   background: linear-gradient(135deg, #ffffff 0%, var(--brand-cream) 56%, rgba(143, 208, 232, 0.36) 100%);
   border: 1rpx solid var(--brand-line);
   border-radius: 28rpx;
-  box-shadow: 0 16rpx 38rpx rgba(46, 107, 78, 0.1);
+  box-shadow: 0 16rpx 38rpx rgba(46, 81, 74, 0.1);
 }
 
 .user-card > view:nth-child(2) {
@@ -61,7 +61,7 @@ page {
   min-height: 44rpx;
   margin-top: 12rpx;
   padding: 0 14rpx;
-  color: #A16F00;
+  color: #7A572D;
   font-size: 21rpx;
   font-weight: 900;
   background: rgba(248, 208, 107, 0.36);
@@ -94,7 +94,7 @@ page {
 
 .logout-button {
   height: 64rpx;
-  color: #C0392B;
+  color: #A94F45;
   font-size: 23rpx;
   font-weight: 900;
   background: rgba(192, 57, 43, 0.08);
@@ -117,7 +117,7 @@ page {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 22rpx;
-  box-shadow: 0 12rpx 26rpx rgba(46, 107, 78, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(46, 81, 74, 0.06);
 }
 
 .source-value {
@@ -138,7 +138,7 @@ page {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 24rpx;
-  box-shadow: 0 14rpx 30rpx rgba(46, 107, 78, 0.07);
+  box-shadow: 0 14rpx 30rpx rgba(46, 81, 74, 0.07);
 }
 
 .recharge-head {
@@ -164,7 +164,7 @@ page {
   flex: 0 0 auto;
   min-height: 48rpx;
   padding: 0 18rpx;
-  color: #A16F00;
+  color: #7A572D;
   font-size: 22rpx;
   font-weight: 900;
   line-height: 48rpx;
@@ -187,7 +187,7 @@ page {
   font-size: 36rpx;
   font-weight: 900;
   line-height: 72rpx;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(46, 81, 74, 0.1);
   border-radius: 20rpx;
 }
 
@@ -274,7 +274,7 @@ page {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 24rpx;
-  box-shadow: 0 12rpx 26rpx rgba(46, 107, 78, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(46, 81, 74, 0.06);
 }
 
 .workbench-head {
@@ -342,7 +342,7 @@ page {
   color: var(--brand-green);
   font-size: 21rpx;
   font-weight: 900;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(46, 81, 74, 0.1);
   border-radius: 14rpx;
 }
 

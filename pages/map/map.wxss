@@ -1,6 +1,6 @@
 page {
   min-height: 100vh;
-  background: #f7fbf8;
+  background: #F6F2EA;
 }
 
 .map-page {
@@ -14,14 +14,14 @@ page {
 }
 
 .map-kicker {
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 23rpx;
   font-weight: 900;
 }
 
 .map-title {
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 42rpx;
   font-weight: 900;
   line-height: 1.2;
@@ -29,7 +29,7 @@ page {
 
 .map-desc {
   margin-top: 10rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 25rpx;
   line-height: 1.5;
 }
@@ -56,9 +56,9 @@ page {
   min-width: 104rpx;
   height: 58rpx;
   padding: 0 22rpx;
-  color: #2f6f60;
+  color: #2E514A;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 16rpx;
   box-sizing: border-box;
   font-size: 24rpx;
@@ -68,8 +68,8 @@ page {
 
 .filter-chip.active {
   color: #ffffff;
-  background: #2f6f60;
-  border-color: #2f6f60;
+  background: #2E514A;
+  border-color: #2E514A;
 }
 
 .custom-rent-row {
@@ -84,17 +84,17 @@ page {
   min-width: 0;
   height: 62rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 23rpx;
   font-weight: 800;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 16rpx;
   box-sizing: border-box;
 }
 
 .custom-rent-row text {
-  color: #78918a;
+  color: #6A7671;
   font-size: 24rpx;
   font-weight: 900;
 }
@@ -108,7 +108,7 @@ page {
   font-size: 23rpx;
   font-weight: 900;
   line-height: 62rpx;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 16rpx;
 }
 
@@ -119,7 +119,7 @@ page {
   flex-wrap: wrap;
   gap: 18rpx;
   margin-top: 22rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 27rpx;
   font-weight: 900;
 }
@@ -138,8 +138,8 @@ page {
   height: 56rpx;
   margin: 0;
   padding: 0 22rpx;
-  color: #2f6f60;
-  background: #e8f5ef;
+  color: #2E514A;
+  background: #EDF3EF;
   border-radius: 14rpx;
   font-size: 23rpx;
   font-weight: 900;
@@ -151,8 +151,8 @@ page {
   height: 720rpx;
   margin-top: 20rpx;
   overflow: hidden;
-  background: #eef8f3;
-  border: 1rpx solid #dce9e3;
+  background: #EEF3EF;
+  border: 1rpx solid #DED8CC;
   border-radius: 28rpx;
 }
 
@@ -172,28 +172,28 @@ page {
   font-size: 23rpx;
   font-weight: 900;
   line-height: 56rpx;
-  box-shadow: 0 8rpx 22rpx rgba(31, 81, 68, 0.16);
+  box-shadow: 0 8rpx 22rpx rgba(36, 62, 56, 0.16);
 }
 
 .search-area {
   left: 50%;
   top: 22rpx;
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
   transform: translateX(-50%);
 }
 
 .reset-map {
   right: 22rpx;
   bottom: 22rpx;
-  color: #153f36;
+  color: #182E2A;
   background: #ffffff;
 }
 
 .locate-me {
   left: 22rpx;
   bottom: 22rpx;
-  color: #153f36;
+  color: #182E2A;
   background: #ffffff;
 }
 
@@ -203,7 +203,7 @@ page {
   top: 50%;
   width: 560rpx;
   padding: 22rpx 26rpx;
-  color: #78918a;
+  color: #6A7671;
   background: rgba(255, 255, 255, 0.94);
   border-radius: 18rpx;
   box-sizing: border-box;
@@ -227,7 +227,7 @@ page {
 }
 
 .sheet-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -235,7 +235,7 @@ page {
 
 .sheet-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 24rpx;
   font-weight: 800;
 }
@@ -249,7 +249,7 @@ page {
   margin-bottom: 14rpx;
   padding: 22rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
   box-sizing: border-box;
 }
@@ -260,7 +260,7 @@ page {
 }
 
 .listing-price {
-  color: #f2765d;
+  color: #B9655A;
   font-size: 31rpx;
   font-weight: 900;
   line-height: 1.2;
@@ -268,7 +268,7 @@ page {
 
 .listing-meta {
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -283,14 +283,14 @@ page {
 
 .listing-tags text {
   padding: 7rpx 12rpx;
-  color: #2f6f60;
-  background: #e8f5ef;
+  color: #2E514A;
+  background: #EDF3EF;
   border-radius: 12rpx;
   font-size: 21rpx;
   font-weight: 900;
 }
 
 .listing-tags .video-tag {
-  color: #153f36;
-  background: #f6bd36;
+  color: #182E2A;
+  background: #C9A45D;
 }
