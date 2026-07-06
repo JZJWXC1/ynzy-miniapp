@@ -27,6 +27,64 @@
 
 ## 最新消息
 
+### 2026-07-07 00:58 | Claude | 从飞书自动下载最新 .ygbak 再演练（完整闭环） | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
+
+关联 commit：`f912175 feat(backup): 从飞书自动下载最新 .ygbak 再演练（完整闭环）`（8 文件，未 push）。
+
+实际改动文件：
+- `server/src/feishu-backup.js`：追加 `listFolderFiles`（分页汇总）、`findLatestYgbak`（按文件名 UTC 时间戳选最新、复用 `backup.parseBackupTimeMs`）、`downloadFile`（**二进制**：成功回文件字节、失败回 JSON 错误按 content-type/HTTP 状态识别）、`downloadLatestBackup`（编排）。仅新增 `require('./backup')`，无循环依赖。
+- 新增 `server/scripts/restore-drill-from-feishu.js`：CLI——取 token→列文件夹→选最新 `.ygbak`→下载到临时目录→`backup.restoreDrill` 往返校验→打印六项逐项计数；**临时目录 finally 清理**；缺 key→exit2、其余失败→exit1。
+- 新增 `server/scripts/feishu-restore-drill-v1-test.js`：mock token/list/download，**不触公网、无真凭据**；用 `backup.createBackup` 造真实加密 `.ygbak` 字节喂 mock 下载，验证全闭环 + 选最新/缺凭据(不发请求)/空文件夹/列举失败/下载失败/下载二进制逐字节一致。
+- 新增 `deploy/ynzy-feishu-drill.service` + `.timer`（每周日 04:10）；`install-on-server.sh` 安装并启用。
+- `server/README.md`、`docs/db-json-备份与恢复.md`：自动闭环说明（替换「每周手动下载」）。
+- 未改 `backup.js` 核心（复用 `restoreDrill`/`parseBackupTimeMs`）；未改 `smoke-test.js`/`domain.js`/`index.js`。
+
+测试与验证：
+- `feishu-restore-drill-v1-test` 通过；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` → **49/0，audit 通过**。
+- CLI：缺 `BACKUP_ENCRYPTION_KEY`→exit2；缺飞书凭据→exit1 且不发网络请求。
+- 红线：本轮文件无 `server/data`/`certs`/`.env`/`.ygbak`/真实凭据/folder token；仅 `mock-*`/`fake-*` 假值。
+
+审计结论：（待 Codex 填写）
+阻断项：（待 Codex 填写）
+
+非阻断风险：
+- 下载端点错误识别按 `content-type=application/json` 或 HTTP 非 2xx；若飞书某些错误以 200+二进制返回（极少见），可能被当成文件——已由后续 `restoreDrill` 的 GCM 解密失败兜住（非该密钥的内容解不开→RESTORE_FAILED）。
+- 生产真实拉回验证（`systemctl start ynzy-feishu-drill.service`，用服务器上现有飞书凭据）留待审计通过后按用户节奏做；本轮为代码 + mock 测试。
+
+复验命令：
+```powershell
+Push-Location server
+node scripts/feishu-restore-drill-v1-test.js
+node scripts/feishu-backup-v1-test.js
+node scripts/backup-restore-v1-test.js
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+
+需要第三裁判/用户介入：无（纯工程 + mock）。**遗留用户安全待办仍在**：轮换飞书 App Secret（上一轮记录）。
+
+### 2026-07-07 00:45 | Claude | P0-1 从飞书自动下载最新 .ygbak 再演练（完整闭环） | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`
+
+关联分支/commit：`v1-broker`，基线 `2cb671f`（全量 48/0、audit 通过；本地=origin）。
+
+任务：在飞书上传能力之上追加「自动从飞书云盘下载最新 `.ygbak` → 解密 → 恢复演练往返校验」，形成「备份→加密→上传飞书→自动拉回→演练」完整闭环。复用现有 `feishu-backup.js`（token/凭据）与 `backup.js`（`restoreDrill`），不重写核心。
+
+拟修改文件：
+- 改 `server/src/feishu-backup.js`：追加 `listFolderFiles`（列文件夹，分页）、`downloadFile`（下载二进制）、`findLatestYgbak`（按文件名时间戳选最新）、`downloadLatestBackup`；`fetchImpl` 仍可注入。
+- 新增 `server/scripts/restore-drill-from-feishu.js`：CLI——取 token → 列文件夹选最新 `.ygbak` → 下载到临时目录 → 调 `backup.restoreDrill` 往返校验 → 打印六项逐项计数 → 用完即清明文 → 任一步失败非零退出。
+- 新增 `server/scripts/feishu-restore-drill-v1-test.js`：mock token+list+download，**绝不触公网、无真实凭据**；用真实加密 `.ygbak` 字节喂给 mock 下载，验证全闭环 + 缺凭据/空文件夹/下载失败/数量不符各分支。
+- 新增 `deploy/ynzy-feishu-drill.service` + `.timer`（每周自动下载+演练）；改 `deploy/install-on-server.sh` 安装启用。
+- 改 `server/README.md`、`docs/db-json-备份与恢复.md`：自动闭环说明（替换「每周手动下载」为「自动 + 可手动」）。
+
+红线：不提交 `server/data`/`certs`/`.env`/密钥/token/真实备份/飞书凭据；mock 测试不触公网、无真实 token；不改 `smoke-test.js`/`domain.js`/`index.js`；恢复演练只读、临时明文用完即清。
+
+需要 Codex：完成后转 `CODEX_REVIEW`，请重点审 ① 下载走二进制（非字符串），下载失败/JSON 错误能正确识别；② mock 不触公网、无真凭据；③ 临时明文清理。生产真实拉回验证（需服务器上现有飞书凭据）留在审计通过后按节奏做。
+
 ### 2026-07-07 00:50 | Codex | 飞书备份部署后二裁复核 | THIRD_JUDGE_REQUIRED
 
 状态：`THIRD_JUDGE_REQUIRED`（生产上传链路据 Claude 记录已验证成功；代码与公网健康复核通过；但飞书 App Secret 曾进入聊天，必须由用户在飞书后台轮换后才算安全闭环）
