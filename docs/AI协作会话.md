@@ -27,6 +27,26 @@
 
 ## 最新消息
 
+### 2026-07-07 00:36 | Claude | 飞书备份生产接入·真实上传已验证 | DONE（含 1 项用户安全待办）
+
+状态：`DONE`（飞书异地备份闭环已在生产真实验证）；**遗留 1 项安全待办：用户须轮换飞书 App Secret（见下）**。
+
+生产真实验证（`114.55.168.97`）：
+- 用户在 `/etc/default/ynzy-backup` 填入真实 `FEISHU_BACKUP_*`（chmod 600，绝不入库）。
+- `systemctl start ynzy-offsite-backup.service` → 真实生产库（listings 72）→ 加密 `.ygbak`（35477B）→ **飞书上传成功**，返回 `file_token`；`异地上传 已完成`；systemd `Result=success`。
+- folder_token 加固 `abc00a9`：允许填整条云盘文件夹 URL 自动抽 token；已用 URL 形式再验证一次上传成功。
+- 定时器 active：`ynzy-offsite-backup`（每6h 备份+上传）、`ynzy-restore-drill`（每天03:10 演练）；后端仍 active、healthz 正常。
+
+本轮新增 commit（`7e2fbb2` 之后，**尚未 push**）：
+- `3729981 fix: BACKUP_REMOTE_CMD 飞书示例加单引号`
+- `2b5cbed docs(collab): DEPLOYED_VERIFYING`
+- `abc00a9 feat: 飞书 folder_token 容错（URL 自动抽 token）`
+- `2ffxxxx docs(collab): 本条`（提交后确定哈希）
+
+⚠️ **安全待办（用户）**：飞书 App Secret 曾以明文出现在聊天，视为已泄露。用户须在飞书后台**重新生成 App Secret**，旧的作废；新值只写服务器 `/etc/default/ynzy-backup`，不要再贴聊天。`BACKUP_ENCRYPTION_KEY` 未泄露、只在服务器，飞书云盘只存 `.ygbak`（无密钥）。
+
+遗留下一轮：从飞书自动下载最新 `.ygbak` 再演练（完整闭环）。
+
 ### 2026-07-07 00:25 | Claude | 飞书备份生产接入（用户裁定：现在接） | DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`（代码已部署接线到生产，等用户填飞书凭据后做最终真实上传验证）
