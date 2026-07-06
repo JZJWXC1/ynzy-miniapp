@@ -45,6 +45,46 @@
 
 ## 最新消息
 
+### 2026-07-07 01:40 | Claude | P0-2 跨进程写锁（稳定层#1）实现完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
+
+关联 commit：`1d45a78 feat(db): P0-2 跨进程写锁，防多进程并发写 db.json 丢数据`（3 文件，未 push）。
+
+用户裁定方向：方案 A 跨进程 lockfile。
+
+实际改动文件：
+- `server/src/db.js`：写路径加零依赖 O_EXCL 跨进程 advisory 锁（`db.json.lock`）。要点：① 锁内 `updateDb` 强制 `parseCache=null` fresh 读 + `statKey` 纳入 `inode` → 杜绝缓存键别名化丢写；② 陈旧锁按持有者 pid `process.kill(pid,0)` 存活探测回收（存活绝不误删活锁；自身 pid 孤儿自愈；内容无 pid 才退 age）；③ 获取有界超时、每轮 `sleepSync`（真权限错误也只超时不无限自旋冻死服务）；④ release 按 token 归属只删自己的锁；⑤ Windows 瞬时 EPERM/EBUSY 的 rename/unlink 重试；⑥ 进程内可重入；⑦ `DB_WRITE_LOCK=0` 紧急关。保留 `commitDelta` 处理单进程 await 窗口并发。
+- 新增 `server/scripts/db-write-lock-v1-test.js`：多进程并发不丢写（锁开 600/600 vs 锁关约 100/600 印证缺口）、重入、liveness 回收（死 pid）、活锁不误删超时（存活子进程持锁）、真权限错不死循环（monkeypatch openSync EACCES）、强制 fresh 读、关闭开关。
+- `server/README.md`：写锁语义与环境变量。
+- 未改 `smoke-test.js`/`domain.js`/`index.js`；`updateDb` 保持同步 API、45+ 调用点无需改。
+
+过程（透明）：先跑多方案设计评审定方向；实现后自跑一轮**对抗审查 workflow**，发现并已修复 3 个真缺陷——① 缓存键 `mtime:size` 别名化导致「持锁仍丢写」；② 陈旧锁仅按 age 回收会误删活锁+release 按路径盲删；③ 我为 Windows 加的 EPERM 容错引入「真权限错误无 sleep 无超时死自旋冻死服务」。三者均已修 + 各有专项测试。
+
+测试与验证：`db-write-lock-v1-test` 单独跑 20/20 稳定；全量 `server/scripts/*-test.js`（排除 smoke）+ `v1-final-audit.js` → **52/0，audit 通过**（连跑 3 次稳定）。红线：本轮文件无 data/certs/.env/密钥/凭据。
+
+审计结论：（待 Codex 填写）  阻断项：（待 Codex 填写）
+
+请 Codex 重点审：跨进程锁的丢写正确性、陈旧锁回收的活锁围栏、获取路径是否真的绝不死锁/死自旋、release 归属校验、以及 Windows 与 Linux 语义差异。复验：`node scripts/db-write-lock-v1-test.js`（可多跑几次看稳定性）+ 全量。
+
+需要第三裁判/用户介入：无（纯工程；未触生产/凭据）。本轮**未部署**——db.js 改动需 Codex 通过后再按节奏灰度到生产（生产是 Linux，锁语义更干净）。
+
+### 2026-07-07 01:15 | Claude | P0-2 并发写保护（稳定层#1，设计阶段） | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（**设计先行**：db.js 是核心独占资源，先出方案给用户+Codex 审批再动手，本条不含代码改动）
+
+关联分支/commit：`v1-broker`，基线 `ef1c80d`（全量 49/0、audit 通过）。总目标「稳定层#1」+ 我第一轮明确推迟的 P0-2。
+
+现状测绘（未改代码）：
+- `updateDb` 是**同步**（readCachedDb→mutator→writeDb，中间无 await）→ 单进程内两次 updateDb 被事件循环串行化、不会互相穿插。
+- `commitDelta` 三方合并处理「clone→长 await→落盘」窗口的并发（在单进程内成立）。
+- `readCachedDb` 以 mtimeMs+size 为缓存键，能感知外部进程写入并重读。
+- **真正缺口=跨进程写**：`scripts/backfill-listing-districts.js`、`scripts/geocode-listing-communities.js` 等运维脚本若在服务器运行时执行，updateDb 各自「读 fresh→改→原子 rename」之间无锁 → 后写覆盖先写、整块丢数据。commitDelta 不跨进程。
+
+拟定方向（待审批）：给 db.js 写路径加**跨进程 advisory 锁**（零依赖 lockfile：O_EXCL 创建 + 有界获取超时 + 陈旧锁按 age 回收），锁内强制重读 fresh 再改写；单进程内锁几乎无争用（updateDb 同步、瞬时持锁）；保留 commitDelta 的 await 窗口合并不动。先跑设计评审（多方案对比）再定稿。
+
+需要用户/Codex：批准方向后我再写实现 + 并发测试（child_process 多进程模拟丢写、锁争用、陈旧锁回收、超时）+ 转 CODEX_REVIEW。
+
 ### 2026-07-07 01:09 | Claude | 从飞书自动下载再演练·生产真实拉回已验证 | DONE（含 1 项用户安全待办）
 
 状态：`DONE`（完整闭环已在生产真实验证）；**遗留安全待办：用户轮换飞书 App Secret（见下）。**
