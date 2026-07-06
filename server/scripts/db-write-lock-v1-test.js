@@ -117,6 +117,28 @@ async function run() {
     resetLockEnv()
   }
 
+  // 3.2) 嵌套内层 mutator 抛错被外层 catch：内层「抛错前的半截修改」必须回滚、不得落盘；
+  //      外层在 catch 后写的字段仍应落盘（保持「mutator 抛错=该次改动回滚」语义）。
+  {
+    fs.writeFileSync(process.env.DATA_FILE, '{}')
+    db.updateDb((outer) => {
+      outer.outer = 1
+      try {
+        db.updateDb((inner) => {
+          inner.innerBeforeThrow = 1
+          throw new Error('inner boom')
+        })
+      } catch (e) {
+        outer.caught = true
+      }
+    })
+    const disk = JSON.parse(fs.readFileSync(process.env.DATA_FILE, 'utf8'))
+    assert.strictEqual(disk.outer, 1, '外层进入内层前写的字段应落盘')
+    assert.strictEqual(disk.caught, true, '外层 catch 后写的字段应落盘')
+    assert.ok(!('innerBeforeThrow' in disk), '内层抛错前的半截修改必须回滚、不得落盘，实得：' + JSON.stringify(disk))
+    resetLockEnv()
+  }
+
   // 4) 陈旧锁回收（liveness）：锁文件里的持有者 pid 已死 → 应回收后成功；另测内容缺失时的 age 兜底。
   {
     // 4a) 已死 pid（999999 几乎不可能存活）→ 按 liveness 回收，无需等 age。

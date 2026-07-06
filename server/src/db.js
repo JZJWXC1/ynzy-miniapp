@@ -231,8 +231,17 @@ function writeDb(db) {
 function updateDb(mutator) {
   // 嵌套 updateDb（本进程已在一个事务里）：复用同一事务 db 对象、不再单独读/写，由最外层统一落盘，
   // 使内外层改动都持久化，杜绝「嵌套静默丢内层写」。
+  // 进入前对事务对象做深快照；内层 mutator 抛错则就地回滚到进入前状态再 rethrow——保持「mutator 抛错
+  // = 该次改动回滚」语义，避免内层半截脏改动在外层 catch 后被一并提交（外层仍可 catch 并写自己的字段）。
   if (activeTxDb !== null) {
-    return mutator(activeTxDb)
+    const snapshot = clone(activeTxDb)
+    try {
+      return mutator(activeTxDb)
+    } catch (error) {
+      for (const key of Object.keys(activeTxDb)) delete activeTxDb[key] // 就地清空，保持同一对象引用
+      Object.assign(activeTxDb, snapshot) // 恢复到进入前
+      throw error
+    }
   }
   ensureDataFile()
   const fd = acquireDbLock()
