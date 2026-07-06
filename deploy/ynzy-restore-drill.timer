@@ -1,0 +1,10 @@
+[Unit]
+Description=每天 03:10 运行一次恢复演练 + 新鲜度巡检
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+Unit=ynzy-restore-drill.service
+
+[Install]
+WantedBy=timers.target

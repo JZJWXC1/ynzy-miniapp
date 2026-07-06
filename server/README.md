@@ -118,7 +118,11 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 
 真要**恢复到生产**时（区别于只读演练）：先用带 `--out` 的命令确认目标备份可解密、数量吻合并把 `db.restored.json` 落到指定目录，再停服、把该文件覆盖到 `server/data/db.json`，重启并核对 `listings` 数量。恢复前务必先按「本地明文备份」一节把当前 `server/data` 另存，便于回滚。注意：不带 `--out` 的纯演练会把解密产物用完即删，绝不残留明文，因此真恢复必须用 `--out`。
 
-#### 定时任务（cron 示例）
+#### 定时任务（systemd，部署脚本自动安装）
+
+`deploy/install-on-server.sh` 会自动安装并启用 `ynzy-offsite-backup.timer`（每 6h 备份）与 `ynzy-restore-drill.timer`（每天 03:10 演练+新鲜度巡检），二者从 `/etc/default/ynzy-backup`（chmod 600，含密钥/异地目标，**不入库**）读环境。在该文件填好 `BACKUP_ENCRYPTION_KEY` 与 `BACKUP_REMOTE_CMD` 前，备份会 fail-loud（属预期）。手动验证：`systemctl start ynzy-offsite-backup.service && journalctl -u ynzy-offsite-backup -n 20`。
+
+#### 定时任务（cron 示例，非 systemd 环境）
 
 ```cron
 # 每 6 小时异地加密备份一次（环境变量建议写在 /etc/default/ynzy-backup 并 source）

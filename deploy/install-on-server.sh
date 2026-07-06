@@ -124,12 +124,52 @@ install_zf_api_nginx_config() {
   grep -q 'proxy_pass http://127.0.0.1:3101' "$zf_api_conf"
 }
 
+# 异地加密备份（P0-1）：密钥/异地目标/通知命令只从 /etc/default/ynzy-backup 读取，绝不入库。
+# 首次安装生成空模板（chmod 600）；已存在则不覆盖（保留运维已填的真实值）。
+BACKUP_ENV_FILE="/etc/default/ynzy-backup"
+ensure_backup_env() {
+  if [ -f "$BACKUP_ENV_FILE" ]; then
+    echo "已存在 $BACKUP_ENV_FILE，保留现有内容（不覆盖）。"
+    return
+  fi
+  cat > "$BACKUP_ENV_FILE" <<'EOF'
+# 寓你 db.json 异地加密备份环境（本文件含密钥/异地目标，chmod 600，绝不入库/外发）
+# 详见 server/README.md「异地加密备份（P0-1）」。填好后 systemctl start ynzy-offsite-backup.service 验证。
+
+# 加密口令：强随机串，务必再异地保管一份——丢失即无法解密任何备份。缺失时备份脚本拒绝运行。
+BACKUP_ENCRYPTION_KEY=
+
+# 异地上传命令（生产必填，缺失即判失败）。脚本以环境变量 $BACKUP_FILE 传入备份文件完整路径。
+# 例：BACKUP_REMOTE_CMD=rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/
+BACKUP_REMOTE_CMD=
+
+# 可选：外部通知命令（企微/飞书 webhook），触发告警时以 $ALERT_KIND/$ALERT_MESSAGE 传入。
+BACKUP_ALERT_CMD=
+
+# 可选调优：本地暂存目录/保留天数/新鲜度阈值(小时)
+BACKUP_STAGE_DIR=/opt/ynzy-miniapp/server/backups
+BACKUP_RETENTION_DAYS=30
+BACKUP_MAX_AGE_HOURS=24
+EOF
+  chmod 600 "$BACKUP_ENV_FILE"
+  echo "已生成 $BACKUP_ENV_FILE 模板（chmod 600）。上线前必须填 BACKUP_ENCRYPTION_KEY 与 BACKUP_REMOTE_CMD。"
+}
+
 cp "$APP_DIR/deploy/ynzy-miniapp.service" /etc/systemd/system/ynzy-miniapp.service
 cp "$APP_DIR/deploy/ynzy-db-backup.service" /etc/systemd/system/ynzy-db-backup.service
 cp "$APP_DIR/deploy/ynzy-db-backup.timer" /etc/systemd/system/ynzy-db-backup.timer
+# 异地加密备份 + 恢复演练（P0-1）
+cp "$APP_DIR/deploy/ynzy-offsite-backup.service" /etc/systemd/system/ynzy-offsite-backup.service
+cp "$APP_DIR/deploy/ynzy-offsite-backup.timer" /etc/systemd/system/ynzy-offsite-backup.timer
+cp "$APP_DIR/deploy/ynzy-restore-drill.service" /etc/systemd/system/ynzy-restore-drill.service
+cp "$APP_DIR/deploy/ynzy-restore-drill.timer" /etc/systemd/system/ynzy-restore-drill.timer
+ensure_backup_env
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl enable --now ynzy-db-backup.timer
+# 异地备份/演练定时器（在 /etc/default/ynzy-backup 填好密钥+异地目标前会 fail-loud，属预期）
+systemctl enable --now ynzy-offsite-backup.timer
+systemctl enable --now ynzy-restore-drill.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
@@ -142,3 +182,5 @@ systemctl restart nginx
 curl -fsS http://127.0.0.1:3101/healthz
 
 echo "Server install finished."
+echo "提醒：异地加密备份需在 $BACKUP_ENV_FILE 填 BACKUP_ENCRYPTION_KEY 与 BACKUP_REMOTE_CMD（异地目标），"
+echo "     否则 ynzy-offsite-backup 会 fail-loud。填好后：systemctl start ynzy-offsite-backup.service && journalctl -u ynzy-offsite-backup -n 20"

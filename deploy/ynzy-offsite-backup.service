@@ -1,0 +1,12 @@
+[Unit]
+Description=Ynzy Miniapp 异地加密备份 (P0-1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ynzy-miniapp/server
+# 密钥 BACKUP_ENCRYPTION_KEY、异地目标 BACKUP_REMOTE_CMD、可选通知命令 BACKUP_ALERT_CMD
+# 只从该环境文件读取，禁止写入仓库；该文件需 chmod 600，仅 root 可读。
+EnvironmentFile=/etc/default/ynzy-backup
+ExecStart=/usr/bin/env node scripts/backup-db.js
