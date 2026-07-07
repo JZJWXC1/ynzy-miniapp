@@ -788,6 +788,11 @@ function tokenHitsRule(token, rule) {
   // 刻意不做任何子串命中：否则「阳台山/电梯华都/免押金时代」(别名+任意后缀专名) 与「无电梯/非首次出租/不可短租」(否定形)
   // 都会被子串命中冒充硬特征 → 对硬条件撒谎。真实描述里的特征已由 domain.inferListingFeatures 烘焙进 features（整词），仍命中。
   if (token === rule.name || rule.aliases.indexOf(token) !== -1) return true
+  // 安全正向前缀归一：剥掉正向标记(有/带/自带/配/支持/接受/可)后若余部整词等于别名则算真标签——
+  // 覆盖「有阳台/有电梯/有燃气/带电梯/支持月付」等房东正向写法；剥后必须整词等于别名，故「阳台山/电梯华都」(专名)
+  // 与「无电梯/没有阳台/非首次出租」(否定，前缀不在正向集里) 仍不命中。
+  const core = token.replace(/^(有|带|自带|配|支持|接受|可)/, '')
+  if (core !== token && (core === rule.name || rule.aliases.indexOf(core) !== -1)) return true
   // 唯一例外：近地铁的真号线标签「2号线口/紧邻2号线」，用强语境正则识别（排除「X号线+专名后缀」如 一号线公寓）。
   if (rule.name === '近地铁' && NEAR_METRO_TAG_RE.test(token)) return true
   return false

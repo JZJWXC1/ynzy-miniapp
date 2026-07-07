@@ -754,7 +754,11 @@ const ANCHORED_FEATURE_RES = FEATURE_INFERENCE_RULES.map((rule) => ({
 }))
 function tagTokenMatchesFeature(token, ruleName) {
   const entry = ANCHORED_FEATURE_RES.find((item) => item.name === ruleName)
-  return Boolean(entry) && entry.anchored.test(token)
+  if (!entry) return false
+  if (entry.anchored.test(token)) return true
+  // 安全正向前缀归一（与 match-service tokenHitsRule 同口径）：有阳台→阳台、带电梯→电梯；否定/专名后缀仍不命中。
+  const core = token.replace(/^(有|带|自带|配|支持|接受|可)/, '')
+  return core !== token && entry.anchored.test(core)
 }
 
 function inferListingFeatures(listing = {}) {

@@ -270,6 +270,34 @@ async function main() {
   assert(yrItem && yrItem.matchGroup === 'exact', '真带「带露台（阁楼）」的房应精确推荐')
   checks += 1
 
+  // ⑲ 正向真标签召回固化（Codex 四轮复审 P2）：房东正向写法「有阳台/有电梯/有燃气/带电梯/支持月付」应归一并 exact；
+  //    同时反例守护：整词护栏不得被此归一破坏——「无电梯/没有阳台/阳台山/电梯华都」仍不得 exact。
+  const positiveTagCases = [
+    { tags: ['有阳台'], feat: '带阳台', q: '必须带阳台' },
+    { tags: ['有电梯'], feat: '电梯', q: '必须电梯' },
+    { tags: ['有燃气'], feat: '燃气', q: '必须有燃气' },
+    { tags: ['带电梯'], feat: '电梯', q: '必须电梯' },
+    { tags: ['支持月付'], feat: '可月付', q: '必须可月付' }
+  ]
+  for (const c of positiveTagCases) {
+    const good = { id: 'PAR-PT', community: '金色家园', block: '金色家园', area: '拱墅', title: '', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: [], tags: c.tags }
+    const it = ((await needResult('想找拱墅两室整租，' + c.q, [good])).listings || []).find((x) => x.id === 'PAR-PT')
+    assert(it && it.matchGroup === 'exact', `正向真标签「${c.tags[0]}」应归一到「${c.feat}」并 exact（不漏推）`)
+    checks += 1
+  }
+  const stillGuarded = [
+    { tags: ['无电梯'], feat: '电梯', q: '必须电梯' },
+    { tags: ['没有阳台'], feat: '带阳台', q: '必须带阳台' },
+    { tags: ['阳台山'], feat: '带阳台', q: '必须带阳台' },
+    { tags: ['电梯华都'], feat: '电梯', q: '必须电梯' }
+  ]
+  for (const c of stillGuarded) {
+    const bait = { id: 'PAR-SG', community: '金色家园', block: '金色家园', area: '拱墅', title: '', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: [], tags: c.tags }
+    const it = ((await needResult('想找拱墅两室整租，' + c.q, [bait])).listings || []).find((x) => x.id === 'PAR-SG')
+    assert(!(it && (it.features || []).includes(c.feat)), `正向归一不得放行否定/专名「${c.tags[0]}」烘焙成「${c.feat}」`)
+    checks += 1
+  }
+
   console.log(`assistant-need-feature-parity-test passed: ${checks} checks`)
 }
 
