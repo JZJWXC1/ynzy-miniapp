@@ -45,6 +45,44 @@
 
 ## 最新消息
 
+### 2026-07-07 16:06 | Codex | 游客免登录浏览优化补充审计 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（核心方向正确，但补充发现 1 个阻断体验回归；不主动 push）。
+
+审计范围：
+- `b98e722 fix(auth): 游客浏览不再因 401 被强制弹去登录页`：`utils/api-client.js`。
+- `6600c18 docs(collab): 游客免登录浏览优化（api-client 不再对游客强跳登录）→ CODEX_REVIEW`：本协作板交接记录。
+- 对照读取：`pages/listing-detail/listing-detail.js`、`pages/upload/upload.js`、`pages/profile/profile.js`、`server/src/index.js`、`server/src/domain.js`、`app.json`、`pages/index/index.wxml`。
+
+结论：**未通过，除 15:49 已指出“缺少固化回归测试”外，另有 1 个阻断项。** `handleUnauthorized` 改成“游客无 token 不自动跳登录、已有 token 失效才跳登录”的主方向是对的；客户端探针验证了游客不跳、过期登录态会跳、非 401 不跳。后端权限也没放开：游客列表/匹配仍只看公司房源，非公司详情仍 401，上传/足迹/报备/签单等接口仍 `assertMiniLogin`。但这次把原先依赖全局 401 跳转的“上传房源”入口一起改掉了，导致首页可见的敏感入口不再有登录引导。
+
+阻断项：
+1. **[P1] 游客从首页点“上传房源”会进入表单并可填写，最后提交才失败，失去登录引导。**
+   - 证据：`pages/index/index.wxml` 的“上传房源”入口直接 `data-url="/pages/upload/upload"`。
+   - 证据：`pages/upload/upload.js:167-190` 进入页面只调用 `loadCurrentUser()`，401 被 catch 后仅设置 `currentUser=null/isAdmin=false`，没有弹登录引导或跳登录。
+   - 证据：`pages/upload/upload.js:591-597` 提交失败统一弹“上传失败”，没有对 401 做“去登录”引导。
+   - 变更触发点：`utils/api-client.js:87-95` 现在游客无 token 的 401 不再 `redirectToAuth()`。这解决了公司房源详情被 `/mini/profile` 误弹登录的问题，但也移除了上传页原先依赖的兜底跳转。
+   - 影响：游客可以从首页进入受保护上传流程，花时间填表/选视频，最后只看到失败弹窗；这与 Claude 交接里“敏感操作（上传/看地址电话/报备）各页面仍有显式登录引导，不受影响”的结论不一致。权限没有泄漏，但生产体验会明显卡住。
+
+非阻断确认：
+- 公司房源详情页方向正确：`pages/listing-detail/listing-detail.js:168-215` 已把 `getProfileState()` 作为辅助请求 catch 掉，`companyListing` 时 `sensitiveVisible=true`；游客不会再因 profile 401 被全局带走。
+- 非公司房源仍受保护：`server/src/index.js:1246-1265` 对游客详情执行 `assertGuestListingAllowed(detail)`，非公司详情仍返回 401。
+- 游客范围仍收敛：`server/src/index.js:928-999` 的列表/匹配/LLM 找房对游客使用 `guestListingFilter` / `companyOnlyDb`。
+- 敏感写接口仍有后端登录线：`server/src/index.js:1078-1299` 的足迹、需求、我的房源、上传、报备、签单等仍走 `assertMiniLogin`。
+- 文件范围干净：`b98e722` 只改 `utils/api-client.js`；`6600c18` 只改本协作板；未触碰 `server/data`、`server/certs`、`.env`、凭据或 `server/scripts/smoke-test.js`。
+
+复验结果：
+- 客户端 401 探针通过：游客无 token 不 navigate；全局 token / storage token 会清登录态并 navigate；403 不 navigate。
+- `git diff --check b98e722^..b98e722` 与 `git diff --check 6600c18^..6600c18` 均通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js` 全部通过。
+
+建议返修：
+- 给 `pages/upload/upload.js` 补显式登录引导：进入创建模式时若 `getCurrentUser()` 返回 401，弹“登录后上传房源 / 去登录”；或至少在 `submitWithVideo()` 的 401 catch 分支弹带“去登录”的 modal。
+- 保留 `utils/api-client.js` 现在的游客无 token 不全局跳转逻辑，不要回退为所有 401 自动跳。
+- 返修时一并落实 15:49 的测试要求：新增轻量测试或探针，覆盖“游客打开/提交上传时有登录引导，而公司房源详情的 profile 401 不触发全局跳转”。
+
+需要 Claude 做什么：补上传页显式登录引导和固化测试，完成后转回 `CODEX_REVIEW`。不要主动 push。
+
 ### 2026-07-07 15:49 | Codex | 游客免登录浏览优化审计 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（代码行为复核通过，但缺少固化回归测试；按 AGENTS.md“验收断言必须固化进测试脚本”要求返修）。
