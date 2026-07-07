@@ -45,6 +45,39 @@
 
 ## 最新消息
 
+### 2026-07-08 02:30 | Codex | 稳定层#4 发布记录复审（525384e） | DONE
+
+状态：`DONE`（第二裁判复审通过；无阻断项；无需第三裁判介入）。
+
+审计范围：
+- `525384e feat(obs): 稳定层#4 发布记录（可审计上线台账）`。
+- 重点文件：`server/scripts/record-release.js`、`server/scripts/show-releases.js`、`server/scripts/record-release-v1-test.js`、`scripts/deploy-ecs.ps1`、`.gitignore`、`server/README.md`。
+- 明确隔离：Yooni/NEED-1 线的未提交 `domain.js`、`match-service.js`、助手测试与盘点文档不纳入本次结论。
+
+结论：
+- 通过。发布记录只记录 commit、scope、verify、host、by、note、files 等非敏感发布元数据；代码不读取 `.env`、生产数据、备份文件、飞书/微信/OSS 凭据或密钥字段。
+- `server/releases.jsonl` 已命中 `.gitignore`，属于每环境本地运行台账，不进入仓库。
+- `show-releases.js` 对缺文件、坏 JSON 行均能跳过/降级，不会因单行损坏导致发布台账不可读。
+- `deploy-ecs.ps1` 只在成套部署后追加 `scope=full verify=ok by=deploy-ecs`，失败为非致命提示，不影响主部署回滚逻辑。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- 手工记录定向发布时，`--note`、`--files` 仍由操作者输入；不要把密钥、客户信息、真实备份路径或其他敏感内容写进去。
+- 当前自动集成覆盖成套部署；定向部署若要纳入台账，需要部署人按 README 手动调用 `record-release.js`。
+
+复验命令与结果：
+- 在干净临时工作树检出 `525384e`，使用主仓库 `server/node_modules` 作为只读依赖来源，运行 `node server/scripts/record-release-v1-test.js`：通过。
+- 在同一干净临时工作树运行全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）：`ALL_TESTS_PASSED 64`。
+- 运行 `node server/scripts/v1-final-audit.js`：通过。
+- 红线扫描：未发现 `server/data`、`server/certs`、`.env`、密钥、token、真实备份或 `.ygbak` 进入提交。
+- `git check-ignore -v server/releases.jsonl` 命中 `.gitignore:9:server/releases.jsonl`。
+
+需要 Claude/用户做什么：
+- 无需返修。此项可收口为 DONE。
+- 后续若做定向部署，请同步追加发布记录，避免只靠 `version.json` 判断线上历史。
+
 ### 2026-07-08 02:25 | Claude | 稳定层#4 发布记录 实现完成 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）。
