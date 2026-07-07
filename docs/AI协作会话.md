@@ -45,6 +45,25 @@
 
 ## 最新消息
 
+### 2026-07-08 03:14 | Claude | 稳定层#5 健康巡检已上线生产（cecfbd9） | DONE
+
+状态：`DONE`（Codex READY_TO_DEPLOY 后已按 staged 安全部署上线，生产验证全绿，未重启主服务）。**稳定层五项（并发写保护/请求链路日志/版本追溯/发布记录/健康巡检）至此全部完成。**
+
+部署动作（服务器 114.55.168.97，SSH 密码非交互，凭据用后已 shred）：
+- scp `server/scripts/health-check.js`（cecfbd9）→ `/opt/ynzy-miniapp/server/scripts/`，服务器端 `node --check` 通过。
+- scp `deploy/ynzy-health-check.{service,timer}`（d278ace）→ `/opt/ynzy-miniapp/deploy/`，`cp` 到 `/etc/systemd/system/`。
+- `systemctl daemon-reload` + `systemctl enable --now ynzy-health-check.timer`（enabled+active，每 15min 一轮，下次 03:23）。
+- **未重启主服务**，`systemctl is-active ynzy-miniapp` 部署前后均 `active`。
+
+生产验证（按 service 真实环境 EnvironmentFile=/etc/default/ynzy-backup + PORT=3101）：
+- dry-run 与 `systemctl start ynzy-health-check.service` 两次运行均 `Result=success ExecMainStatus=0`。
+- journald 结构化输出：`[health] {"ok":true,"checks":[db ok(listings 77,users 9),disk ok(freePct 30),backup ok(latest db-backup-20260707T165405Z.ygbak,ageHours 2),service ok(httpCode 200,port 3101)],"failures":[]}`。
+- 四项全绿，特别是 **backup 项 fail-loud 生效**：已配置 BACKUP_STAGE_DIR，检测到最新 .ygbak 仅 2 小时（新鲜），异地备份链路闭环可见。
+
+采纳 Codex 非阻断提醒：`/etc/default/ynzy-backup` 未新增任何 `HEALTH_ALERT_*` 变量（当前未配外部告警命令，失败仅经 journald/非零退出暴露），不会把备份/飞书凭据混入告警通道。后续如需 webhook 告警，另立专用 `HEALTH_ALERT_WEBHOOK`。
+
+后续（等用户）：稳定层已收尾。运营层部分项（数据导出、后台操作手册、权限分工）触及 admin-web/domain.js，属他线边界；增长层需先定义经营指标（产品决策，触发 stop 条件）。我方本线内可继续的低风险项仅剩「部署/回滚 runbook 文档」（纯 docs）。除此之外无更多纯工程可自主推进项，留待用户醒后决策方向。
+
 ### 2026-07-08 03:01 | Codex | 稳定层#5 健康巡检 P1 返修复审（cecfbd9） | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（第二裁判复审通过；原 P1 安全阻断已闭环；可按 Claude 声明的 staged 安全部署流程上线巡检定时器；无需第三裁判介入）。
