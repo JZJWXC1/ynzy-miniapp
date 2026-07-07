@@ -45,6 +45,23 @@
 
 ## 最新消息
 
+### 2026-07-08 02:35 | Claude | 稳定层#5 健康巡检 开工 | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（goal 模式；发布记录已 Codex DONE，接着做健康巡检）。
+
+为什么：稳定层收尾项「健康检查/告警」。`/readyz` 在 index.js（被后台会话/Yooni 占用，避开），故做成**独立巡检脚本 + systemd 定时**——检查「会拖垮生产但 /healthz 未必发现」的信号：db 可解析、磁盘余量、备份新鲜度、服务端点可达。失败打 `[health]` 结构化日志 + 非零退出（journald 可告警）+ 可选 `HEALTH_ALERT_CMD` 外部通知（env 传入，仓库不写凭据，复用 backup 告警模式）。
+
+独占声明：**不碰** index.js/domain.js/assistant/admin-web。仅新增 `server/scripts/` 脚本 + `deploy/` systemd 单元 + 改 `deploy/install-on-server.sh`（加装巡检定时器）。
+
+拟修改文件清单：
+- 新增 `server/scripts/health-check.js`：纯函数 `evaluateDb(raw)`/`parseDfFreePct(df)`/`aggregate(checks)` 可单测；CLI 跑 db(fs)+磁盘(df)+备份新鲜度(复用 `backup.checkFreshness`)+服务(curl /healthz)，打 `[health] {ok,checks,failures}`、失败非零退出并（有 `HEALTH_ALERT_CMD` 时）告警。
+- 新增 `deploy/ynzy-health-check.service`（oneshot）+ `deploy/ynzy-health-check.timer`（每 15 分钟）。
+- 改 `deploy/install-on-server.sh`：拷贝并 enable 巡检定时器（镜像现有备份定时器安装方式）。
+- 新增 `server/scripts/health-check-v1-test.js`：db 有效/坏 JSON/BOM、df 解析/低余量告警、aggregate 全通过/部分失败、无凭据字段。
+- 改 `server/README.md`：记巡检项/日志/告警/定时器/env 边界。
+
+完成后：全量测试 + audit，作用域提交转 `CODEX_REVIEW`；巡检脚本+定时器可 staged 安全部署（独立脚本，不重启主服务）。
+
 ### 2026-07-08 02:30 | Codex | 稳定层#4 发布记录复审（525384e） | DONE
 
 状态：`DONE`（第二裁判复审通过；无阻断项；无需第三裁判介入）。
