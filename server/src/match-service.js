@@ -104,7 +104,9 @@ const FEATURE_RULES = [
   { name: '燃气', aliases: ['燃气', '天然气', '煤气'], missing: '没有燃气', reason: '有燃气' },
   { name: '独卫', aliases: ['独卫', '独立卫生间', '独立卫浴', '独立卫', '独立厨卫', '独厨独卫'], missing: '没有独卫', reason: '有独卫' },
   { name: '电梯', aliases: ['电梯'], missing: '没有电梯', reason: '有电梯' },
-  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁', '号线'], missing: '离地铁较远', reason: '近地铁' },
+  // 近地铁：aliases 供「需求侧」解析（用户说「号线/地铁」＝要地铁）；房源侧只做整词精确命中（见 tokenHitsRule），
+  // 裸「地铁/号线」只有当标签 token 恰好整词等于时才算，故「地铁明珠苑/一号线公寓」不会误判；真号线标签(2号线口)另经 NEAR_METRO_TAG_RE。
+  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁旁', '地铁边', '靠地铁', '临地铁', '挨地铁', '地铁', '号线'], missing: '离地铁较远', reason: '近地铁' },
   { name: '朝南', aliases: ['朝南', '南向'], missing: '不是朝南', reason: '朝南' },
   // NEED-1：与房源侧 LISTING_FEATURE_OPTIONS 对齐（别名同房源侧自动打标签口径），让中介说得出、系统点得动
   { name: '干湿分离', aliases: ['干湿分离', '干湿分区'], missing: '不是干湿分离', reason: '干湿分离' },
@@ -113,10 +115,40 @@ const FEATURE_RULES = [
   { name: '可月付', aliases: ['可月付', '月付', '押一付一'], missing: '不支持月付', reason: '可月付' },
   { name: '首次出租', aliases: ['首次出租', '首租', '第一次出租'], missing: '非首次出租', reason: '首次出租' },
   { name: '民水民电', aliases: ['民水民电', '民水', '民电'], missing: '非民水民电', reason: '民水民电' },
-  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '露台', '阁楼', '带花园', '有花园', '花园房', '带院子'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
+  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '带阁楼', '露台', '阁楼', '带花园', '有花园', '花园房', '带院子'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
   { name: '可养宠', aliases: ['可养宠', '养宠', '养猫', '养狗', '宠物'], missing: '不能养宠', reason: '可养宠' },
   { name: DEPOSIT_FREE_FEATURE, aliases: ['免押金', '无押金', '零押金', '押金0', '押金为0'], missing: '不免押金', reason: '免押金' }
 ]
+
+// 特征别名全集 + 需求前缀，用于把「必须带花园/一定要带院子」这类特征需求短语挡在「小区名」抽取之外。
+// 只剥离纯需求词（必须/一定/要/想…），不剥「带/有」——它们是「带花园/有花园」别名的组成部分。
+const FEATURE_ALIAS_SET = new Set(FEATURE_RULES.reduce((acc, rule) => acc.concat(rule.aliases, rule.name), []))
+const DEMAND_PREFIX_RE = /^(想要有|想要|需要|必须要|必须|一定要|一定|得要|得|最好|优先|尽量|偏好|看重|希望|想找|想住|要有|要)/
+
+function isFeatureDemandPhrase(value) {
+  let text = String(value || '').trim()
+  let prev
+  do { prev = text; text = text.replace(DEMAND_PREFIX_RE, '') } while (text && text !== prev)
+  return Boolean(text) && FEATURE_ALIAS_SET.has(text)
+}
+
+// 在「小区名抽取」之前，先把「必须带花园/一定要有院子/要阁楼」这类『需求前缀+特征别名』片段从文本里擦掉。
+// 否则花园/院子/阁楼等以社区后缀（园/苑/院/阁）收尾的特征别名会被 parseExplicitCommunity 的后缀正则误当小区名
+// （尤其无逗号长句被 整租/两室 截断后，守卫看不到完整特征短语），导致真有该特征的房源被当地点过滤而漏推。
+// 要求必带需求前缀，才不会误伤「地铁明珠苑」这种正常小区名（其 地铁 前没有需求词）。
+// 前缀与特征别名之间允许可选量词（个/套/间…）：覆盖「找个带花园/找套带花园/想找个带院子」等中文最自然问法，
+// 否则量词打断相邻性会让「个带花园」以社区后缀『园』被误当小区名 → 真房漏推。
+const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g
+const DEMAND_PREFIX_ALT = '必须要?|一定要?|想要有?|需要有?|得要?|最好|优先|尽量|偏好|看重|想找|想住|帮我?找|找|希望|想|要有|要|来'
+const DEMAND_QUANTIFIER = '(?:来?个|来?套|间|栋|处)?'
+const FEATURE_DEMAND_FRAGMENT_RE = new RegExp(
+  '(?:' + DEMAND_PREFIX_ALT + ')' + DEMAND_QUANTIFIER + '(?:' +
+  [...FEATURE_ALIAS_SET].filter(Boolean).sort((a, b) => b.length - a.length).map((a) => a.replace(ESCAPE_RE, '\\$&')).join('|') +
+  ')', 'g'
+)
+function eraseFeatureDemands(text) {
+  return String(text || '').replace(FEATURE_DEMAND_FRAGMENT_RE, ' ')
+}
 
 function unique(values) {
   const seen = new Set()
@@ -495,16 +527,20 @@ function parseArea(source) {
 
 function cleanExplicitCommunity(value) {
   const candidate = normalizeCommunity(value)
-    .replace(/^(想住|住在|住到|想看|看看|看下|找|有没有|有无)/, '')
+    .replace(/^(想住|住在|住到|想看|看看|看下|帮我?找|找|有没有|有无)/, '')
+    .replace(/^(来?个|来?套|间|栋|处)/, '') // 剥掉残留量词（「个带花园」→「带花园」），交给下方 isFeatureDemandPhrase 拦截
     .replace(/(有|有没有|附近|周边|旁边|一室|两室|三室|四室|单间|整租|合租|预算|\d{3,5}).*$/, '')
   if (!candidate || candidate.length < 3 || candidate.length > 24) return ''
   if (['小区', '公寓', '家园', '花园'].indexOf(candidate) !== -1) return ''
   if (AREA_WORDS.map(normalizeArea).indexOf(normalizeArea(candidate)) !== -1) return ''
+  // 「必须带花园/一定要带院子」等特征需求短语不是小区名，剥离需求前缀后若命中特征别名则拒判为小区，避免真有该特征的房源漏推。
+  if (isFeatureDemandPhrase(candidate)) return ''
   return candidate
 }
 
 function parseExplicitCommunity(source) {
-  const text = normalizeCommunity(source)
+  // 先擦除「必须带花园」等特征需求片段，再抽小区名，避免特征别名的社区后缀（园/苑/院/阁）被误当小区名（导致真房漏推）。
+  const text = eraseFeatureDemands(normalizeCommunity(source))
   if (!text) return ''
   const suffix = '(?:小区|公寓|家园|花园|新村|苑|府|园|城|湾|庭|轩|里|坊|庄|村|郡|阁|寓|邸)'
   const patterns = [
@@ -731,6 +767,36 @@ function listingSearchText(listing = {}) {
   ].map((item) => String(item || '')).join(' ')
 }
 
+// 房源侧特征判定 —— 硬特征满足(exact)只来自「可信标签字段」features/rawFeatures 的【整词精确】命中（守精确优先北极星）：
+// - 逐 token（标签本是数组）：token 整词等于某别名/特征名 → 真标签；否则不算。不做任何子串命中——
+//   否则「阳台山/电梯华都/免押金时代」(别名+任意专名后缀) 与「无电梯/非首次出租/不可短租」(否定形) 都会子串冒充硬特征。
+// - 描述性 title/meta（多为专名/营销名）不支撑 exact；description 里的真实特征已由 domain.inferListingFeatures
+//   走【非锚定+否定判定】烘焙进 features（整词）、自由标签走【整词锚定】，二者结果都以整词进入本判定。宁可漏标不可错标。
+// - 唯一例外：近地铁的真号线标签(2号线口/紧邻2号线)用强语境正则识别，排除「X号线+专名后缀(公寓/苑/家园…)」如 一号线公寓。
+const NAME_SUFFIX_ALT = '公寓|公馆|花园|家园|嘉园|雅苑|华府|华庭|山庄|大厦|名邸|新村|小区|苑|园|城|府|庄|座|幢|邸|里|巷|弄|路|桥|馆|居|庭|轩|湾|郡|墅|寓|阁'
+const NEAR_METRO_TAG_RE = new RegExp('(?:近|紧邻|临|靠|挨)?(?:地铁)?[\\d一二三四五六七八九十两]号线(?!' + NAME_SUFFIX_ALT + ')')
+
+function listingFeatureTokens(listing = {}) {
+  return parseFeatureInput(listing.features)
+    .concat(parseFeatureInput(listing.rawFeatures))
+    .map((token) => String(token || '').trim())
+    .filter(Boolean)
+}
+
+function tokenHitsRule(token, rule) {
+  // 房源侧只认『整词精确等于别名/特征名』的可信标签 token（features/rawFeatures 逐 token）。
+  // 刻意不做任何子串命中：否则「阳台山/电梯华都/免押金时代」(别名+任意后缀专名) 与「无电梯/非首次出租/不可短租」(否定形)
+  // 都会被子串命中冒充硬特征 → 对硬条件撒谎。真实描述里的特征已由 domain.inferListingFeatures 烘焙进 features（整词），仍命中。
+  if (token === rule.name || rule.aliases.indexOf(token) !== -1) return true
+  // 唯一例外：近地铁的真号线标签「2号线口/紧邻2号线」，用强语境正则识别（排除「X号线+专名后缀」如 一号线公寓）。
+  if (rule.name === '近地铁' && NEAR_METRO_TAG_RE.test(token)) return true
+  return false
+}
+
+function ruleHitsListing(rule, listing) {
+  return listingFeatureTokens(listing).some((token) => tokenHitsRule(token, rule))
+}
+
 function getFeatureRule(feature) {
   return FEATURE_RULES.find((rule) => rule.name === feature) || {
     name: feature,
@@ -741,14 +807,11 @@ function getFeatureRule(feature) {
 }
 
 function listingFeatureSet(listing = {}) {
-  const text = listingSearchText(listing)
   const featureNames = parseFeatureInput(listing.features)
     .concat(parseFeatureInput(listing.rawFeatures))
     .filter((item) => item !== NO_FEATURE)
   FEATURE_RULES.forEach((rule) => {
-    if (rule.aliases.some((alias) => text.indexOf(alias) !== -1)) {
-      featureNames.push(rule.name)
-    }
+    if (ruleHitsListing(rule, listing)) featureNames.push(rule.name)
   })
   return new Set(unique(featureNames.concat([listing.type, listing.rentMode]).filter(Boolean)))
 }
@@ -756,8 +819,7 @@ function listingFeatureSet(listing = {}) {
 function featureMatched(listing, feature) {
   const set = listingFeatureSet(listing)
   if (set.has(feature)) return true
-  const text = listingSearchText(listing)
-  return getFeatureRule(feature).aliases.some((alias) => text.indexOf(alias) !== -1)
+  return ruleHitsListing(getFeatureRule(feature), listing)
 }
 
 function rentOfListing(listing = {}) {

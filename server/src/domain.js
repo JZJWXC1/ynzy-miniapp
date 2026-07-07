@@ -44,16 +44,21 @@ const FEATURE_INFERENCE_RULES = [
   { name: '带阳台', pattern: /阳台/ },
   { name: '干湿分离', pattern: /干湿分离/ },
   { name: '燃气', pattern: /燃气|天然气|煤气/ },
-  { name: '带露台（阁楼）', pattern: /阁楼|露台|带花园|有花园|花园房|带院子/ },
-  { name: '近地铁', pattern: /近地铁|地铁口|地铁站|号线/ },
+  { name: '带露台（阁楼）', pattern: /带露台|带阁楼|阁楼|露台|带花园|有花园|花园房|带院子/ },
+  // 近地铁（自动打标签）：「地铁+方位」强语境词，或「X号线」（description 里"紧邻2号线"等真写法）——
+  // 但「X号线」后紧跟专名后缀(公寓/苑/园…)视为楼盘名(一号线公寓)不打标签。因本函数已不读 title/tags/community，仅从 description 等推断，安全。
+  { name: '近地铁', pattern: /近地铁|地铁口|地铁站|地铁旁|地铁边|靠地铁|临地铁|挨地铁|[\d一二三四五六七八九十两]号线(?!公寓|公馆|花园|家园|苑|园|城|府|庄|阁|座|幢|邸|里|巷|弄|路|桥|楼|号|馆|居|庭|轩|湾|郡|墅|寓)/ },
   { name: '朝南', pattern: /朝南|南向/ },
-  { name: '独卫', pattern: /独卫|独立卫|独立卫生间|独立厨卫|独厨独卫/ },
+  // 独卫：裸「独立卫」加负向前瞻，排除「独立卫星电视/独立卫视」等撞词。
+  { name: '独卫', pattern: /独卫|独立卫生间|独立厨卫|独厨独卫|独立卫(?![星视])/ },
   { name: '电梯', pattern: /电梯/ },
   { name: '采光好', pattern: /采光好|采光佳|采光很好|光线好|南北通透|通透/ },
-  { name: '可短租', pattern: /可短租|短租/ },
+  // 可短租：要求「可/接受/支持/短住」等服务语境，去掉裸「短租」——否则地名（短租桥/短租弄/短租路）会被误打标签。宁可漏标不可错标。
+  { name: '可短租', pattern: /可短租|接受短租|支持短租|短租可|可短住/ },
   { name: '可月付', pattern: /可月付|月付|押一付一/ },
   { name: '首次出租', pattern: /首次出租|首租|第一次出租/ },
-  { name: '民水民电', pattern: /民水民电|民水|民电/ },
+  // 民水民电：只认完整「民水民电」，去掉裸「民水/民电」——否则撞「居民电梯/便民电话」等词。宁可漏标不可错标。
+  { name: '民水民电', pattern: /民水民电/ },
   { name: '整租', pattern: /整租|（整）|\(整\)/ },
   { name: '合租', pattern: /合租|单间/ },
   { name: DEPOSIT_FREE_FEATURE, pattern: /免押金|无押金|零押金|押金0|押金为0/ }
@@ -653,10 +658,24 @@ function featureSourceText(value) {
   return String(value || '')
 }
 
+// 自由标签字段拆 token（数组或分隔串）。
+function featureTagTokens(value) {
+  if (Array.isArray(value)) return value.reduce((acc, item) => acc.concat(featureTagTokens(item)), [])
+  return String(value || '').split(/[，,、|/\s]+/).map((token) => token.trim()).filter(Boolean)
+}
+// 收集本房源的自由标签 token（tags/rawFeatures 等，不含 canonical features），供『整词锚定』推断使用。
+function listingFreeTagTokens(listing = {}) {
+  return [listing.tags, listing.rawFeatures, listing.rawFeatureText, listing.featureText, listing.featureTags]
+    .reduce((acc, field) => acc.concat(featureTagTokens(field)), [])
+}
+
 function listingTextForFeatures(listing = {}) {
-  return [
-    listing.title,
-    listing.shortTitle,
+  // 自动打标签的『描述性文本』= 真正的描述(description/detail/remark…) + 结构字段(整租/户型) + canonical features。
+  // 走【非锚定+否定判定】的模糊推断（"精装带阳台"→带阳台，"无燃气"→不打燃气）。
+  // 刻意排除：地名命名字段 community/locationSummary/address、标题 title/shortTitle（多为专名/营销名）；
+  // 自由标签字段 tags/rawFeatures/featureText/featureTags 不进本 blob，改由 inferListingFeatures 走【整词锚定】——
+  // 因为自由标签常被填进小区/楼盘名(阳台名邸/阳台山/电梯华都)或否定词(无电梯/非首次出租)，子串模糊匹配会撒谎。
+  const descBlob = [
     listing.layout,
     listing.type,
     listing.rentMode,
@@ -665,9 +684,6 @@ function listingTextForFeatures(listing = {}) {
     listing.bath,
     listing.source,
     listing.status,
-    listing.community,
-    listing.locationSummary,
-    listing.address,
     listing.description,
     listing.desc,
     listing.detail,
@@ -675,15 +691,19 @@ function listingTextForFeatures(listing = {}) {
     listing.remark,
     listing.note,
     listing.memo,
-    listing.rawFeatures,
-    listing.rawFeatureText,
-    listing.featureText,
-    listing.featureTags,
-    listing.tags,
     listing.features,
     listing.paymentMode,
     listing.payMode
   ].map(featureSourceText).join(' ')
+  let text = descBlob
+  const names = [listing.community, listing.block, listing.area, listing.district, listing.city]
+    .map((value) => String(value || '').trim())
+    .filter((value) => value.length >= 2)
+    .sort((left, right) => right.length - left.length)
+  for (const name of names) {
+    if (text.indexOf(name) !== -1) text = text.split(name).join(' ')
+  }
+  return text
 }
 
 // 否定判定＝「否定字捕获 + 少量褒义例外」，取代无穷尽的否定动词枚举：
@@ -726,12 +746,24 @@ function patternMatchesFeature(text, pattern) {
   return false
 }
 
+// 自由标签 token 走整词锚定：token 必须整体是某特征词才算命中，杜绝「阳台山/电梯华都/免押金时代」(别名+任意后缀)
+// 与「无电梯/非首次出租/不可短租」(否定形) 冒充特征——它们都不等于任何整词别名。
+const ANCHORED_FEATURE_RES = FEATURE_INFERENCE_RULES.map((rule) => ({
+  name: rule.name,
+  anchored: new RegExp('^(?:' + rule.pattern.source + ')$')
+}))
+function tagTokenMatchesFeature(token, ruleName) {
+  const entry = ANCHORED_FEATURE_RES.find((item) => item.name === ruleName)
+  return Boolean(entry) && entry.anchored.test(token)
+}
+
 function inferListingFeatures(listing = {}) {
   const text = listingTextForFeatures(listing)
+  const tagTokens = listingFreeTagTokens(listing)
   const inferred = FEATURE_INFERENCE_RULES
-    .filter((rule) => patternMatchesFeature(text, rule.pattern))
+    .filter((rule) => patternMatchesFeature(text, rule.pattern) || tagTokens.some((token) => tagTokenMatchesFeature(token, rule.name)))
     .map((rule) => rule.name)
-  if (/合租/.test(text) && inferred.indexOf('整租') !== -1) {
+  if ((/合租/.test(text) || tagTokens.indexOf('合租') !== -1) && inferred.indexOf('整租') !== -1) {
     inferred.splice(inferred.indexOf('整租'), 1)
   }
   return uniqueTextList(normalizeListingFeatures(inferred))
