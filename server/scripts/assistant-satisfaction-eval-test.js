@@ -72,8 +72,8 @@ function scoreCase(c, r) {
   const exp = c.expect.behavior
   if (exp === 'ask') return { score: b === 'ask' ? 1 : 0, lie: b === 'recommend', detail: `期望追问，实际=${b}` }
   if (exp === 'no_result') {
-    const rec = (r.listings || []).length > 0
-    return { score: rec ? 0 : 1, lie: rec, detail: `期望无房，实际=${b}` }
+    // 严格：只有真"无房"(诚实空结果、不追问不FAQ)才满分；错误地追问/落FAQ均0分，误推算撒谎
+    return { score: b === 'no_result' ? 1 : 0, lie: b === 'recommend', detail: `期望无房，实际=${b}` }
   }
   // recommend
   if (b !== 'recommend') return { score: 0, lie: false, detail: `期望推荐，实际=${b}（漏推/答非所问）` }
@@ -117,10 +117,13 @@ async function main() {
   console.log('----- 分类满意率 -----')
   Object.keys(byCat).forEach((k) => console.log(`  ${k}: ${Math.round((byCat[k].sum / byCat[k].n) * 1000) / 10}%  (${byCat[k].n}条)`))
   console.log(`===== 总满意率：${rate}%  （${results.length} 条种子用例）=====`)
-  console.log(`精确优先红线：撒谎(误推硬条件不满足) ${lies} 条` + (lies ? '  ❌ 违反精确优先' : '  ✅ 无'))
-  console.log('注：种子集，应扩到 100–200 条真实中介需求；满意率数字用于每次改动前后对比。')
+  const zeros = results.filter((x) => x.score === 0 && !x.c.knownGap).length
+  console.log(`精确优先红线：撒谎(误推硬条件不满足) ${lies} 条` + (lies ? '  ❌ 违反精确优先' : '  ✅ 无') +
+    `；满意率0分(漏推/答非所问/无房却追问) ${zeros} 条` + (zeros ? '  ❌' : '  ✅'))
+  console.log('注：种子集(受控 makeDb)，应扩到 100–200 条真实中介需求；满意率数字用于每次改动前后对比。')
 
-  if (lies > 0) process.exit(1) // 精确优先回归门：任一撒谎即失败
+  // 准星回归门：任一撒谎 或 任一非「已知缺口(knownGap)」用例得 0 分即失败；0.5(诚实相邻降级)为允许的半分
+  if (lies > 0 || zeros > 0) process.exit(1)
 }
 
 if (require.main === module) {
