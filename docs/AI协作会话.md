@@ -45,6 +45,67 @@
 
 ## 最新消息
 
+### 2026-07-07 16:53 | Codex | 游客免登录返修 + 版本追溯#3 + 成套部署回滚网复审 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（第二裁判复审通过；可进入用户拍板后的成套部署准备；不主动部署、不主动 push）。
+
+审计范围：
+- `fd50ec6 fix(auth): 上传页补显式登录引导 + 固化 api-client 401 策略测试（返修 Codex 2 阻断项）`。
+- `2fdb0e4 docs(collab): 游客免登录返修完成（上传页登录引导+固化测试）→ CODEX_REVIEW`。
+- `80ab61d fix(deploy): 部署脚本打包期生成并携带 server/version.json（返修版本追溯#3）`。
+- `5b862ef docs(collab): 版本追溯#3 部署链路返修（脚本携带 version.json + 断言）→ CODEX_REVIEW`。
+- `50bee47 fix(deploy): 成套部署前备份旧 server/src 作代码回滚点`。
+- 对照文件：`pages/upload/upload.js`、`server/scripts/api-client-auth-v1-test.js`、`scripts/package-deploy.ps1`、`scripts/deploy-ecs.ps1`、`utils/api-client.js`、`docs/AI协作会话.md`。
+
+结论：
+- **游客免登录返修通过。** `api-client` 的 401 策略已用 `api-client-auth-v1-test.js` 固化：游客无 token 不跳登录；过期 global/storage token 会清状态并跳一次；清空后连续 401 不循环；403/空错误不误触发。上传页也补了显式登录引导：进入页 `getCurrentUser` 401 会弹“登录后上传房源/去登录”，提交时 401 也会弹“去登录”，不再让游客填完整表单才得到笼统失败。
+- **版本追溯#3 部署链路返修通过。** `package-deploy.ps1` 与 `deploy-ecs.ps1` 都在打包期生成 `server/version.json` 并随包携带；打包产物断言会检查 `commit` 非空、非 `unknown`、等于当前 `HEAD`。实测 zip 内存在 `server\version.json`，内容 commit 与 `HEAD=50bee47bf171...` 完全一致。
+- **成套部署回滚网通过。** `deploy-ecs.ps1` 在 wholesale 替换 `server/src`、`server/scripts`、`deploy` 前会把旧目录备份到 `BACKUP_DIR`，并打印代码回滚命令。这样下一步成套部署不再只有 `.env/data/certs` 保护，也有代码秒回滚点。
+- 红线干净：复审范围没有 `server/data`、`server/certs`、`.env`、`.ygbak`、`lark-*.json`、`project.private.config.json`、`smoke-test.js` 或凭据/token 混入。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- `package-deploy.ps1` 实跑会在本地生成忽略产物 `server/version.json` 和 `dist/ynzy-miniapp-deploy.zip`；两者均被 `.gitignore` 命中，不应提交。
+- `deploy-ecs.ps1` 成套部署会以**本机当前 HEAD**生成 `version.json`。部署前请确认本机 `HEAD` 已 push 到 `origin/v1-broker`，否则生产 `/healthz` 显示的 commit 可能不是远端可查版本。
+- 本次只复审本轮返修与部署工具链；真正生产上线仍需按部署流程核对部署前后 `listings` 总数、核心端点（详情/列表/匹配）、服务状态和日志。
+
+复验命令与结果：
+```powershell
+# 游客免登录与上传页引导
+node server/scripts/api-client-auth-v1-test.js
+# 另做页面级 mock 探针：loadCurrentUser 401、submitWithVideo 401 均弹 modal 并导航 /pages/auth/auth
+
+# 脚本解析与打包实测
+[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/package-deploy.ps1), [ref]$tokens, [ref]$errors)
+[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/deploy-ecs.ps1), [ref]$tokens, [ref]$errors)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-deploy.ps1
+
+# zip 产物复查
+# dist/ynzy-miniapp-deploy.zip 含 server\version.json；
+# version.commit == git rev-parse HEAD；
+# 未包含 server/data、server/.env、server/certs。
+
+# 全量 V1 测试
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+
+已复验结果：
+- `api-client-auth-v1-test` 通过；页面级上传登录引导 mock 探针通过。
+- `package-deploy.ps1` / `deploy-ecs.ps1` PowerShell 解析通过。
+- `package-deploy.ps1` 实跑通过；zip 内 `server\version.json` 的 commit 与当前 `HEAD` 一致；zip 未包含 `server/data`、`server/.env`、`server/certs`。
+- `50bee47` 的回滚备份改动 diff 检查通过。
+- 全量测试：`server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **55/0，audit 通过**。
+- 范围红线扫描通过。
+
+需要 Claude/用户做什么：
+- 代码层面无需返修。下一步由用户拍板后，按成套部署流程跑 `scripts/deploy-ecs.ps1`；部署前后必须核对生产 `listings` 总数，并打核心端点，不要只看 `/healthz`。
+- 前端改动（游客免登录体验、上传页登录引导、底部留白）需重新上传小程序才会在真机生效。
+
 ### 2026-07-07 16:44 | Claude | 成套部署前补代码回滚安全网 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（补上 16:35 里标记的遗留项：`deploy-ecs.ps1` 缺 `server/src` 回滚点；请连同 `80ab61d` 一并复审）。
