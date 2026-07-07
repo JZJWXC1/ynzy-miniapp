@@ -1774,12 +1774,9 @@ async function handleWechatPayNotify(req, res) {
 }
 
 async function router(req, res) {
-  if (req.method === 'OPTIONS') {
-    sendOptions(res)
-    return
-  }
-
-  // 请求链路日志：分配 traceId、回 X-Trace-Id 头，响应结束时打一行结构化日志（下方回填 path）。
+  // 请求链路日志放在最开头：确保所有进入应用的请求——含 OPTIONS 预检、以及畸形 URL 走 400 的分支——
+  // 都能拿到 X-Trace-Id 响应头并打一行 [req] 日志。CORS 预检失败本身就是「前端报网络错、后端查无请求」
+  // 的重要来源，若漏掉 OPTIONS，本功能的核心目标（对齐定位）就有缺口。
   const reqLog = requestLog.startRequestLog(req, res, { trustProxy: config.trustProxy })
 
   // URL 解析放在独立 try 内：畸形百分号转义（如 /%zz）会让 decodeURIComponent 抛
@@ -1794,6 +1791,13 @@ async function router(req, res) {
   } catch (error) {
     error.statusCode = 400
     sendError(res, error)
+    return
+  }
+
+  // OPTIONS 预检移到 URL 解析之后：此时 reqLog.path 已回填 pathname（仍不含 query/body），
+  // 预检响应带 X-Trace-Id 头、finish 时打一行 [req] 日志，覆盖 CORS 定位场景。
+  if (req.method === 'OPTIONS') {
+    sendOptions(res)
     return
   }
 

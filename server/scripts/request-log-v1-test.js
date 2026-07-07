@@ -98,7 +98,94 @@ function run() {
     }
   }
 
-  console.log('request-log-v1-test passed')
+  console.log('request-log-v1-test unit passed')
 }
 
-run()
+// 轮询等待缓冲区里出现匹配文本（服务器 stdout），超时抛错。
+function waitForLog(getBuf, re, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now()
+    const tick = () => {
+      if (re.test(getBuf())) return resolve()
+      if (Date.now() - start > timeoutMs) return reject(new Error('等待超时：' + re))
+      setTimeout(tick, 50)
+    }
+    tick()
+  })
+}
+
+// 6) 集成锁定：真实 index.js 服务器下，OPTIONS 预检与 GET 都必须回 X-Trace-Id 头 + 打一行 [req] 日志。
+//    这是 router 注入点的回归测试——修复前 OPTIONS 在 startRequestLog 之前就提前返回，漏掉了预检链路。
+async function integration() {
+  const os = require('os')
+  const fs = require('fs')
+  const path = require('path')
+  const cp = require('child_process')
+  const http = require('http')
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-reqlog-'))
+  const dataFile = path.join(tmp, 'db.json')
+  const port = 3200 + (process.pid % 500)
+  const srv = cp.spawn(process.execPath, [path.resolve(__dirname, '..', 'src', 'index.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      DATA_FILE: dataFile,
+      AUTH_TOKEN_SECRET: 'test-auth',
+      ADMIN_TOKEN_SECRET: 'test-admin',
+      REQUEST_LOG: '1'
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  let out = ''
+  srv.stdout.on('data', (d) => { out += String(d) })
+  srv.stderr.on('data', (d) => { out += String(d) })
+
+  const request = (method) => new Promise((resolve) => {
+    const r = http.request({ host: '127.0.0.1', port, path: '/healthz', method, timeout: 4000 }, (res) => {
+      res.resume()
+      res.on('end', () => resolve({ headers: res.headers, status: res.statusCode }))
+    })
+    r.on('error', () => resolve(null))
+    r.on('timeout', () => { r.destroy(); resolve(null) })
+    r.end()
+  })
+
+  try {
+    await waitForLog(() => out, /后端已启动/, 8000)
+    const opt = await request('OPTIONS')
+    const get = await request('GET')
+    await waitForLog(() => out, /\[req\].*"method":"OPTIONS"/, 3000)
+    await waitForLog(() => out, /\[req\].*"method":"GET"/, 3000)
+
+    assert.ok(opt && opt.headers['x-trace-id'], 'OPTIONS 预检响应必须含 X-Trace-Id 头')
+    assert.ok(get && get.headers['x-trace-id'], 'GET 响应必须含 X-Trace-Id 头')
+
+    const reqLines = out.split('\n').filter((l) => l.startsWith('[req] ')).map((l) => JSON.parse(l.slice(6)))
+    const optLog = reqLines.find((e) => e.method === 'OPTIONS')
+    const getLog = reqLines.find((e) => e.method === 'GET')
+    assert.ok(optLog, 'OPTIONS 应产生一行 [req] 日志')
+    assert.ok(getLog, 'GET 应产生一行 [req] 日志')
+    assert.strictEqual(optLog.path, '/healthz', 'OPTIONS 日志应回填 pathname')
+    assert.strictEqual(optLog.trace, opt.headers['x-trace-id'], 'OPTIONS 日志 trace 与响应头一致（可对齐定位）')
+    // 红线：无 query/body 字段、path 不带查询串。
+    for (const e of reqLines) {
+      assert.ok(!('query' in e) && !('body' in e), '[req] 不得含 query/body 字段')
+      assert.ok(!/\?/.test(e.path || ''), '[req] path 不含查询串')
+    }
+  } finally {
+    srv.kill()
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch (cleanupError) { /* 忽略清理失败 */ }
+  }
+}
+
+async function main() {
+  run()
+  await integration()
+  console.log('request-log-v1-test (含 OPTIONS 集成) passed')
+}
+
+main().then(() => process.exit(0)).catch((error) => {
+  console.error(error && error.stack ? error.stack : error)
+  process.exit(1)
+})
