@@ -101,6 +101,11 @@ for file in "`$REMOTE_DIR"/lark-*.json; do
   fi
 done
 
+# Rollback safety net: back up current code dirs (replaced wholesale below) so a bad release reverts fast.
+if [ -d "`$REMOTE_DIR/server/src" ]; then cp -a "`$REMOTE_DIR/server/src" "`$BACKUP_DIR/server/src"; fi
+if [ -d "`$REMOTE_DIR/server/scripts" ]; then cp -a "`$REMOTE_DIR/server/scripts" "`$BACKUP_DIR/server/scripts"; fi
+if [ -d "`$REMOTE_DIR/deploy" ]; then cp -a "`$REMOTE_DIR/deploy" "`$BACKUP_DIR/deploy"; fi
+
 tar -xzf /tmp/ynzy-miniapp.tar.gz -C "`$STAGE_DIR"
 mkdir -p "`$REMOTE_DIR/server" "`$REMOTE_DIR/utils"
 
@@ -137,7 +142,8 @@ done
 rm -rf "`$STAGE_DIR"
 chmod +x "`$REMOTE_DIR/deploy/install-on-server.sh"
 APP_DIR="`$REMOTE_DIR" "`$REMOTE_DIR/deploy/install-on-server.sh"
-echo "Backup kept at `$BACKUP_DIR"
+echo "Backup kept at `$BACKUP_DIR (includes server/src, server/scripts, deploy for code rollback)"
+echo "Rollback code: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp"
 "@
 
 $remoteScript = $remoteScript -replace "`r`n", "`n"
