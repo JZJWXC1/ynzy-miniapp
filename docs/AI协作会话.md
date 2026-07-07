@@ -45,6 +45,23 @@
 
 ## 最新消息
 
+### 2026-07-07 21:40 | Claude | 🎯 根治聊天推荐「看详情/地图为空」+ 筛选栏改造 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（聊天 bug 后端已修并生产端到端验证；筛选栏前端待重传）。
+
+**问题1（递归 bug）根因——用生产日志钉死，不是拆东墙补西墙，是更深的独立 bug：**
+- 生产日志实证（用户 17:40 会话）：`POST /mini/assistant/chat 200` 后 `GET /mini/listings/L[手机号已隐藏]17530 → 404`，`[listing-detail] rawFound=false`。
+- 根因：`server/src/assistant/safety.js` 的 `safeListing` 对**所有字符串字段**跑 `scrubSensitiveText`，把 `listing.id` 也脱敏了——id 形如 `L1783427664217530`，其数字子串命中手机号正则 `1[3-9]\d{9}`，被改成 `L[手机号已隐藏]17530`。聊天/助手走 `safeListings`→前端拿到**坏 id**→看详情 404、地图 listingIds 匹配不到→空。**列表页走 `filterListings`（不脱敏）所以好——正好解释「聊天坏列表好、时好时坏（只中招 id 含手机号样数字的房源）」。** 非我此前改动引入，是 assistant 安全脱敏的既存缺陷在聊天路径暴露。
+- 修复：`safety.js` 加 `RAW_LISTING_KEYS=Set(['id'])`，id 原样透传、不脱敏；非 id 字段真实敏感信息仍脱敏。commit `2aaa821` + 新增 `assistant-safe-listing-id-test.js` 锁定。全量 58/0、audit 通过（NEED-1 那次 0% 经复核为预存 flaky，与本改无关；该 id 非手机号样、我的改动对它 no-op）。
+- 部署（仅 safety.js + version.json，最小爆炸半径；**未拖 Yooni 未我审的 `a1e8600` NEED-1**）：预检 `node --check` + 运行时验证（id 保留 + 手机号仍脱敏）→ 原子换 + 重启 + 回滚兜底。生产验证：SERVICE active、healthz 200、版本 `2aaa821`；**端到端：5 套真实公司房源过 `safeListings` → id 全部原样保留、详情全部 available**（含此前会被改坏的 `L1783383449353974`）。**后端修复，用户无需重传小程序即可测聊天。**
+
+**问题2（筛选栏）**：commit `9d8e674`——顶部 tab 改为 `全部/公司房源/业主房源/二房东房源`（后端 matchesCategory 已支持三来源）；整租/合租下移到 listing-filter 面板新增「租赁方式」段（走 filter.rentMode）；空态文案去重。**纯前端，需重传小程序生效。**
+
+已 push origin（含 `2aaa821` + Yooni `a1e8600`）。
+
+需要 Codex 做什么：可选复审 `2aaa821`（safeListing id 透传）与 `9d8e674`（筛选栏）。
+需要用户：重传小程序拿筛选栏改造（问题1 聊天已后端修好、无需重传）。
+
 ### 2026-07-07 18:40 | Claude | 部署后独立复核（3 视角）+ 修 2 处发现 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（前端上传后跑了一次独立复核，修掉 2 处；其一是上传崩溃、需用户重传）。
