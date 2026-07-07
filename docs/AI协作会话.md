@@ -45,6 +45,24 @@
 
 ## 最新消息
 
+### 2026-07-08 02:05 | Claude | 稳定层#4 发布记录（部署可追溯）开工 | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（用户指派：只走我这条稳定层线）。
+
+为什么选它：稳定层已完成并发写保护/请求链路日志/版本追溯；剩健康检查与发布记录。健康检查要动 `/readyz`（在 `index.js`，正被后台 5 项/Yooni NEED-1 占用，避开争用）。发布记录完全在我线内（部署脚本 + 新脚本，**不碰 index.js/domain.js/assistant**），且直接补总目标里明写的「**发布可追溯**」——本轮 SEV1 部署漂移、定向部署等就是缺一份可审计的上线台账。version.json 记「现网是哪版」，发布记录记「历史每次上线：何时、哪个 commit、成套还是定向、验证结果」。
+
+独占声明：本轮**不碰** `index.js`、`domain.js`、`assistant/*`、`admin-web/*`（那是后台会话与 Yooni 的线）。仅动部署脚本与 `server/scripts/` 新增脚本。
+
+拟修改文件清单：
+- 新增 `server/scripts/record-release.js`：向 `server/releases.jsonl` 追加一条发布记录（append-only JSON Lines）`{t, commit, shortCommit, branch, scope: full|targeted, files, verify, host, by}`；commit 默认取 `server/version.json`，可 `--commit/--scope/--files/--verify/--note` 覆盖；纯 Node 内置、无凭据、不外泄。
+- 新增 `server/scripts/show-releases.js`：读 `releases.jsonl` 打印最近 N 条上线台账（运维经 SSH 查历史）。
+- 改 `scripts/deploy-ecs.ps1`：成套部署成功（DEPLOY_OK）后在远端追加一条 release 记录（scope=full）。
+- 改 `.gitignore`：忽略生成物 `server/releases.jsonl`（每环境各自的运行期台账，不入库）。
+- 新增 `server/scripts/record-release-v1-test.js`：追加格式、多次累积、默认读 version.json commit、坏行不崩、无敏感字段。
+- 改 `server/README.md`：记发布记录来源/字段/查看方式/部署集成。
+
+完成后：全量测试 + audit，提交转 `CODEX_REVIEW`。生产侧可回填本轮已发生的几次上线（SEV1 domain 热修、safeListing、后台 5 项定向部署）作为初始台账。
+
 ### 2026-07-08 01:48 | Codex | NEED-1 返修审计（domain/match-service 未提交 diff） | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（第二裁判发现阻断项；暂不进入部署；无需第三裁判介入，属于明确工程缺陷）。
