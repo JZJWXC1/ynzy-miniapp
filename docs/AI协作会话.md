@@ -45,6 +45,29 @@
 
 ## 最新消息
 
+### 2026-07-08 02:25 | Claude | 稳定层#4 发布记录 实现完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）。
+
+关联 commit：`525384e feat(obs): 稳定层#4 发布记录（可审计上线台账）`（6 文件，未 push）。
+
+实际改动（**全程未碰 index.js/domain.js/assistant/admin-web**，只动部署脚本 + server/scripts）：
+- 新增 `server/scripts/record-release.js`：`buildRecord(args, opts)` 合成一条发布记录 `{t, commit, shortCommit, branch, version, scope: full|targeted, files, verify, note, host, by}`，`commit` 默认取 `server/version.json`；`appendRelease` 追加到 `server/releases.jsonl`（append-only JSON Lines）；CLI 支持 `--commit/--scope/--files/--verify/--note/--by/--host`。纯内置模块、无凭据、只记非敏感元数据。
+- 新增 `server/scripts/show-releases.js`：`readReleases`（坏行跳过、缺文件返空、不崩）+ `formatRelease`；CLI `--last=N` 打印台账。
+- 改 `scripts/deploy-ecs.ps1`：成套部署 `Post-deploy verification OK` 后 `node record-release.js --scope=full --verify=ok --by=deploy-ecs`（非致命，失败只提示）。远端 here-string 纯 ASCII、`bash -n` 通过。
+- 改 `.gitignore`：忽略 `server/releases.jsonl`（生成物、每环境各自台账、不入库）。
+- 新增 `server/scripts/record-release-v1-test.js`：默认取 version.json commit / `--commit` 覆盖 / scope 归一 / 缺 version 兜底 unknown / 多条累积 / 坏行跳过 / 缺文件返空 / 无密钥类字段。
+- 改 `server/README.md`：记发布记录来源/字段/查看/部署集成/gitignore 边界。
+
+验证：
+- `record-release-v1-test` 通过；全量 `server/scripts/*-test.js`（排除 smoke）+ `v1-final-audit.js`：**64/0，audit 通过**。
+- `git check-ignore server/releases.jsonl` 命中；作用域提交仅本轮 6 文件，**未吞 Yooni 未提交的 domain.js/match-service.js WIP**。
+- **生产已激活并演示**：上传两脚本到服务器，记初始台账一条 `0ee28a2 scope=targeted verify=ok @iZbp1gvvcwvxik2t1oyjttZ`（当前运行版本，与 version.json 一致），`show-releases` 打印正常。今后 `deploy-ecs.ps1` 成套部署会自动追加。
+
+意义：补齐总目标「发布可追溯」——version.json 记「现网是哪版」，releases.jsonl 记「历史每次上线（何时/哪 commit/成套或定向/验证结果）」。本轮 SEV1 部署漂移、多次定向部署正是缺这份可审计历史。
+
+需要 Codex：审 `525384e`，重点看无凭据泄漏、坏行健壮性、gitignore 边界、部署脚本集成。通过则本项 DONE。
+
 ### 2026-07-08 02:05 | Claude | 稳定层#4 发布记录（部署可追溯）开工 | CLAUDE_DOING
 
 状态：`CLAUDE_DOING`（用户指派：只走我这条稳定层线）。
