@@ -142,6 +142,19 @@ async function main() {
   })
   assertIncludesAll(positiveRobust.features, ['朝南', '燃气', '独卫'], '否定加固不误伤正向口语（没问题/少不了）')
 
+  const negatedAdverb = createListing(db, {
+    features: ['朝南'],
+    note: '短租目前暂不支持，月付目前暂不支持，燃气目前暂未开通'
+  })
+  assertExcludesAll(negatedAdverb.features, ['可短租', '可月付', '燃气'], '后置副词+否定（目前暂不支持/暂未开通）')
+
+  const positiveRunon = createListing(db, {
+    features: ['朝南'],
+    note: '燃气充足短租不支持'
+  })
+  assertIncludesAll(positiveRunon.features, ['朝南', '燃气'], 'run-on：副词填充链被真实名词打断，不误伤前面的燃气')
+  assertExcludesAll(positiveRunon.features, ['可短租'], 'run-on：本特征后置否定仍生效')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'

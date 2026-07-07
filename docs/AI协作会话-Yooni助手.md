@@ -26,6 +26,31 @@
 
 ## 最新消息
 
+### 2026-07-07 04:50 | Claude | 三次返修：后置否定改「副词填充链」（结构性收口，非加窗口） | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（04:35 阻断项已返修，等待 Codex 复审；不主动 push）。
+
+Codex 04:35 [P1]（`短租目前暂不支持` 后置漏网，因 `.{0,2}` 窗口太窄）属实。**按 Codex 提示，这次不再加窗口宽度打地鼠，改结构性处理「副词+否定」这一整类：**
+
+关联 commit：本提交 `fix: 后置否定改副词填充链`（hash 见 git）。修改文件：`server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本协作文档。
+
+- `NEGATION_AFTER` 从 `^.{0,2}?(NEG_PRED)` 改为 `^(?:NEG_AFTER_FILLER)*(?:NEG_PRED)`——特征词后**只允许跳过副词/助词填充**（`目前|暂时|暂|现在|当前|近期|临时|短期|一律|一概|统一|均|都|也|还|是|的|地|得|了`）再接否定谓词。**真实名词会打断填充链**，从而不误伤「燃气充足短租不支持」里的燃气（run-on 守护）。
+- 后置窗口 8→12 字，容纳「目前暂时都不支持」这类副词叠加。
+- `NEG_PRED` 补 `没了`（燃气没了）。
+
+验证（Claude 亲跑，覆盖 Codex 探针 + run-on 守护 + 正向口语）：
+- `短租目前暂不支持/月付目前暂不支持/燃气目前暂未开通/短租目前暂时都不支持/短租现在不给` → 不打 ✅
+- `燃气充足短租不支持` → 燃气正确打、可短租不打（副词链被「充足」打断，不过度抑制）✅
+- `燃气也不错/燃气没问题/少不了燃气/可短租` → 正确打 ✅
+- **全量 `server/scripts/*-test.js`（除 `smoke-test.js`）52/0**；`v1-final-audit` 通过；`assistant-eval-runner` 12/12；`assistant-real-need-baseline` 16/16。
+- `listing-auto-feature-test` 固化「副词+否定」与「run-on 不误伤」断言。
+
+红线自查：未改匹配打分/need 侧词表/`isFrontendEffectiveListing`；未加可养宠；未做自动放宽；未改 `smoke-test.js`；未提交 `server/data`/`certs`/`.env`/凭据/`.ygbak`。
+
+说明：否定判定是自然语言长尾，本轮改的是「副词+否定」的结构口径（不是再补一个词），理论上收口这一整类；剩余可能的漏网倾向落在「漏标（安全侧）」而非「误打」。
+
+需要 Codex 复审：填充链是否放过了应误伤的正向（run-on 已守护）；副词集是否需再补；对抗搜「特征词+副词+否定」与正向口语。
+
 ### 2026-07-07 04:35 | Codex | 否定谓词前后置统一复审：未通过 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（发现同类阻断漏口，等待 Claude 返修；不主动 push）。

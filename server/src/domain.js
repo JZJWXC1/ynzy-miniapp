@@ -687,15 +687,18 @@ function listingTextForFeatures(listing = {}) {
 }
 
 // 明确的否定谓词（多字、少歧义）——【前置与后置共用同一套】，避免两侧词表分叉每轮漏一份
-const NEG_PRED = '不带|不含|不通|没通|未通|未开通|未开|没开|没有|不能用|不可用|用不了|做不了|不能|不可以|不可|无法|不给|不让|不支持|不允许|不接受|不提供|禁止|不行|待通|欠费|坏了|未装|没装'
+const NEG_PRED = '不带|不含|不通|没通|未通|未开通|未开|没开|没了|没有|不能用|不可用|用不了|做不了|不能|不可以|不可|无法|不给|不让|不支持|不允许|不接受|不提供|禁止|不行|待通|欠费|坏了|未装|没装'
 // 仅【前置】使用的单字否定：无燃气/没燃气/非朝南/缺电梯/未通——放到后置会误伤「燃气没问题」「少不了燃气」等正向表达
 const NEG_PREFIX_ONLY = '无|没|非|缺|未|尚未|暂未'
+// 特征词与后置否定之间【只允许副词/助词填充】：目前暂不支持 / 也不通 / 都不给——真实名词会打断填充链，
+// 从而不误伤「燃气充足短租不支持」里的燃气（结构性处理「副词+否定」类，取代脆弱的固定 .{0,2}）
+const NEG_AFTER_FILLER = '目前|暂时|暂|现在|当前|近期|临时|短期|一律|一概|统一|均|都|也|还|是|的|地|得|了'
 // 特征词【前】：本子句内、词前一小段以否定收尾（无燃气 / 不能用燃气 / 不支持短租 …）
 const NEGATION_BEFORE = new RegExp(`(?:${NEG_PRED}|${NEG_PREFIX_ONLY}).{0,2}$`)
 // 特征词前【紧贴】的单否定字：不可短租/不可月付（否定字「不」直接贴在以「可…」开头的特征词前，词级规则切窗口后只剩「不」需单独兜住）
 const NEGATION_ADJACENT = /不$/
-// 特征词【后】：本子句内、词后一小段以否定开头（燃气不通 / 短租不支持 / 月付不允许 / 燃气用不了 …）
-const NEGATION_AFTER = new RegExp(`^.{0,2}?(?:${NEG_PRED})`)
+// 特征词【后】：本子句内，跳过若干副词/助词后紧接否定谓词（燃气不通 / 短租不支持 / 短租目前暂不支持 …）
+const NEGATION_AFTER = new RegExp(`^(?:${NEG_AFTER_FILLER})*(?:${NEG_PRED})`)
 // 同子句/同字段边界：后置否定只在本子句内生效（空格也算边界，因为特征文本由多字段空格拼接，
 // 避免下一子句或下一字段的否定误伤本特征，如「有燃气，阳台没有」不应抹掉燃气）
 const CLAUSE_SEP = /[，。、；：！？,.;!?|/\s]/
@@ -706,7 +709,7 @@ function isNegatedFeatureMatch(text, index, matchLength = 0) {
   const beforeClause = text.slice(Math.max(0, index - 8), index).split(CLAUSE_SEP).pop()
   if (NEGATION_BEFORE.test(beforeClause) || NEGATION_ADJACENT.test(beforeClause)) return true
   // 后置否定：只看本子句内、特征词后的一小段
-  const afterClause = text.slice(index + matchLength, index + matchLength + 8).split(CLAUSE_SEP)[0]
+  const afterClause = text.slice(index + matchLength, index + matchLength + 12).split(CLAUSE_SEP)[0]
   return NEGATION_AFTER.test(afterClause)
 }
 
