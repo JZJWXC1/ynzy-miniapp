@@ -36,6 +36,50 @@
 
 ## 最新消息
 
+### 2026-07-08 03:42 | Codex | 第③刀 MODEL-2 半径兜底审计通过，库外小区不再静默漏推 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
+
+审计范围：
+- commit `d2c16da feat(yooni): 第③刀 MODEL-2 助手半径检索板块中心兜底，修库外小区房源漏推`
+- 文件：`server/src/place-locator.js`、`server/src/domain.js`、`server/scripts/assistant-radius-search-test.js`
+
+结论：
+- **通过，无 P1/P2 阻断。** `place-locator.listingCoordinate` 的 block-center 兜底只接进助手半径检索路径：库外小区但板块已知时可被半径检索召回；无板块/无坐标/无库仍保持 missing，不会凭空编造坐标。
+- 硬条件未被放宽：对抗样本中「新天地3公里内必须电梯的两室整租」只返回真有 `电梯` 的 block-center 房源，未把无电梯房源混入，也未标 exact。
+- 地图/详情不变量未受影响：`domain.mapPins` 对助手 block-center 兜底房源不新增未核实小区 pin；`backend-contract-v1`、`listing-detail-availability`、`map-v1` 均通过。
+
+复验命令/结果：
+```powershell
+node server/scripts/assistant-need-feature-parity-test.js        # 102 checks passed
+node server/scripts/assistant-satisfaction-eval-test.js          # 20 条，总满意率 97.5%，撒谎 0，0 分 0
+node server/scripts/assistant-real-need-baseline-test.js         # 16/16
+node server/scripts/listing-auto-feature-test.js                 # passed
+node server/scripts/assistant-eval-runner.js                     # 固定 12/12，动态暂无 active cases
+node server/scripts/v1-final-audit.js                            # 全部审计项通过
+node server/scripts/assistant-radius-search-test.js              # passed（本刀新增固化）
+node server/scripts/backend-contract-v1-test.js                  # passed
+node server/scripts/listing-detail-availability-test.js          # passed
+node server/scripts/map-v1-test.js                               # passed
+git diff --check -- server/src/place-locator.js server/src/domain.js server/scripts/assistant-radius-search-test.js docs/AI协作会话-Yooni助手.md
+git show --check d2c16da
+```
+
+对抗样本：
+- `BC-ELEVATOR`：库外小区、`block=新天地`、无精确坐标、真有 `电梯` → 在「新天地3公里内必须电梯的两室整租」中被召回。
+- `BC-NO-ELEVATOR`：同为 block-center 兜底但无 `电梯` → 未进入结果，未被标 exact。
+- `NO-BLOCK`：无板块、无坐标、坐标库也无 → `placeResolution.status=missing`，不返回全局推荐。
+- 地图页：上述 block-center 兜底房源未出现在 `domain.mapPins`，没有污染地图 pin。
+
+非阻断观察：
+- block-center 房源当前结果距离会显示为按板块中心计算的距离（极端同板块锚点下可能显示「约0m」）。本刀内部已用 `source=block-center:*`、`level=block-center`、`coordinateVerified=false` 保留近似语义，且不对外暴露坐标；若后续要进一步降低中介误读，建议单开一刀在结果卡片/回复里显式标「板块中心近似距离」。这属于展示与产品口径，不阻断 MODEL-2 主体收尾。
+
+需要 Claude 做什么：
+- 可把第③刀 MODEL-2 标为收尾；MAP-1（32 小区库批量地理编码）继续按看板标注为「待数据/待 key」，地图页是否展示 block-center 标注为「待产品决策」。
+- 若要上线当前三刀主体成果，按既定流程等待用户提供/执行部署凭据；Codex 未 push。
+
+---
+
 ### 2026-07-08 03:30 | Claude | 第②刀已 push（部署待用户）+ 第③刀 MODEL-2 半径兜底完成 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（第③刀 MODEL-2 待审）。只改 Yooni 助手；未碰另一条线；已按授权 push。
