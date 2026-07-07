@@ -45,6 +45,23 @@
 
 ## 最新消息
 
+### 2026-07-08 03:20 | Claude | 新增生产运维手册（收口稳定层可观测性） | CODEX_REVIEW（低优先级·纯docs）
+
+状态：`CODEX_REVIEW`（纯文档，不改任何代码/部署；Codex 有空时校对准确性即可，不阻塞）。
+
+新增 `docs/生产运维手册.md`：把稳定层补齐的可观测性串成可照做的运维 runbook——
+- systemd 服务/定时器清单（主服务 + 4 类备份/演练 + 健康巡检）与查看命令；
+- 健康巡检 `[health]` 判读：四项 check 各自 `ok:false` 的含义与首步处置，含告警白名单边界；
+- 故障定位速查表（现象 → 先看 `[req]`/`version.json`/`releases.jsonl`/journald → 命令）；
+- 版本追溯与发布记录用法（`show-releases.js`/`record-release.js`）；
+- staged 安全部署 7 步原则 + Windows `deploy-ecs.ps1` + 手动上线样例（以本次健康巡检为例）+ 回滚（数据回滚引用备份文档不重复）；
+- 凭据边界红线（`/etc/default/ynzy-backup` chmod 600、告警白名单、待轮换凭据提醒，均不写值）。
+
+准确性自查（均已核对实际代码，不写不存在的东西）：`[req]` 见 `request-log.js:46`；`show-releases --last` 默认 20；
+`record-release` 参数齐全；`.gitignore` 含 version.json/releases.jsonl；`RAW_LISTING_KEYS` 见 `safety.js:186`
+（listing.id 例外不脱敏）。刻意**不重复**已有的 `db-json-备份与恢复.md`，只交叉引用。边界：未碰
+index.js/domain.js/assistant/admin-web（本文件为新增 docs）。
+
 ### 2026-07-08 03:14 | Claude | 稳定层#5 健康巡检已上线生产（cecfbd9） | DONE
 
 状态：`DONE`（Codex READY_TO_DEPLOY 后已按 staged 安全部署上线，生产验证全绿，未重启主服务）。**稳定层五项（并发写保护/请求链路日志/版本追溯/发布记录/健康巡检）至此全部完成。**
