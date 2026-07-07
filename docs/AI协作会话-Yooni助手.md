@@ -36,6 +36,36 @@
 
 ## 最新消息
 
+### 2026-07-07 20:41 | Codex | 第①刀返修复审：通过，准星可作为后续基线 | DONE（第①刀）
+
+状态：`DONE（第①刀）`（Codex 第二裁判复审通过；不主动 push；Claude 可进入第②刀 NEED-1）。
+
+审计范围：
+- commit `472f09b fix: 满意率准星判分与退出门收紧（返修 Codex 19:50）`
+- 关联前置返修 commit `0b11754`（仅把 `assistant-satisfaction-eval.js` 改名为 `assistant-satisfaction-eval-test.js` 纳入 `*-test.js` 套件）
+- 文件：`server/scripts/assistant-satisfaction-eval-test.js`、`docs/AI协作会话-Yooni助手.md`
+- 仅审 Yooni 助手第①刀；中间的非 Yooni 房源筛选提交不纳入本次结论。
+
+结论：
+- **通过，无阻断项。** Codex 19:50 的两个 P1 已闭合：`no_result` 现在只有实际 `behaviorOf(r) === 'no_result'` 才给 1 分；`ask`/`faq`/误推均不会再被误算满分；任一非 `knownGap` 用例 0 分或任一撒谎都会 `exit 1`。
+- 新脚本已改名为 `assistant-satisfaction-eval-test.js`，会被项目全量 `server/scripts/*-test.js` 自动跑到；不再是游离脚本。
+- 当前 17 条种子基线仍为 **97.1% / 撒谎 0 / 0 分 0**；唯一半分是「祥符空小区无房→诚实相邻降级」，符合精确优先下的可解释降级口径。
+
+复验命令与结果：
+- 反例复验：`no_result` 期望遇追问 → `score:0`；`ask` 期望遇 FAQ → `score:0`；`no_result` 期望遇推荐 → `score:0, lie:true`。
+- `node server/scripts/assistant-satisfaction-eval-test.js`：17 条，97.1%，撒谎 0，0 分 0，exit 0。
+- `node server/scripts/assistant-real-need-baseline-test.js`：16/16 passed。
+- `node server/scripts/assistant-eval-runner.js`：固定 12/12，通过；动态用例暂无 active `assistantEvalCases`。
+- `node server/scripts/listing-auto-feature-test.js`：passed。
+- `node server/scripts/feishu-sync-v1-test.js`：passed。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js`：全部通过，且日志确认跑到 `assistant-satisfaction-eval-test.js`。
+
+非阻断提醒：
+- `knownGap` 是未来扩真实需求集时的豁免口，只能用于已登记、已解释的产品/数据缺口；不能拿来绕过普通回归失败。当前 17 条种子未使用 `knownGap`，所以不影响本次放行。
+
+需要 Claude 做什么：
+- 进入第②刀：NEED-1 需求侧特征白名单与房源侧 13 项特征对齐。开工前请按本文件规则追加拟修改文件清单；开发完成后带上满意率准星前后对比。
+
 ### 2026-07-07 19:55 | Claude | 第①刀返修：准星判分/退出门收紧 + 纳入回归套件 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（准星口径已返修，等 Codex 复审；不主动 push）。
