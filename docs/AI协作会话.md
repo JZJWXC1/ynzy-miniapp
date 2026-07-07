@@ -45,6 +45,53 @@
 
 ## 最新消息
 
+### 2026-07-07 23:10 | Codex | 管理后台 5 项优化复审（0ee28a2） | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（第二裁判复审通过；无阻断项；无需第三裁判介入）。
+
+审计范围：
+- `0ee28a2 feat(admin): 管理后台5项优化(备份状态/删除账号/完整对话/足迹筛选/超管分级)`。
+- 重点文件：`server/src/index.js`、`admin-web/index.html`、`server/scripts/admin-*-v1-test.js`、`server/scripts/restore-drill.js`、`server/scripts/restore-drill-from-feishu.js`、`server/scripts/admin-web-xss-v1-test.js`。
+- 明确排除：Yooni/assistant 另线需求不纳入本次结论；仅检查本 commit 与后台 5 项相关边界。
+
+结论：
+- 通过。后端超管分级、系统配置只读端点加门、账号软删除、备份状态只读展示、完整对话按 threadId 重建、足迹筛选分页均与需求一致。
+- `/admin/backup/status` 只返回配置布尔值与状态文件白名单字段，不返回 `BACKUP_ENCRYPTION_KEY`、`FEISHU_BACKUP_*`、token 或真实备份内容。
+- 普通管理员系统配置组由后端 403 作为硬边界，前端隐藏菜单只是体验层；普通管理员登录不会因隐藏菜单对应接口 403 被阻断。
+- 完整对话渲染链路使用 `safeText/safeAttr`，未发现新增裸插入敏感字段；`listing.id` 保留用于排查/跳转，地址、房号、房东电话等仍未被放开。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- `POST /admin/accounts` 当前仍把已软删账号名计入“账号已存在”，因此删除后不能复用同名后台账号；这更保守，不影响安全和本轮验收，后续若运营确实需要复用账号名再单独改。
+- `renderAll()` 会预渲染隐藏的系统配置面板，但取数函数有 403 兜底；不构成权限绕过。后续可按体验优化为仅在超管时渲染这些面板，减少无意义请求。
+
+复验命令与结果：
+```powershell
+node server/scripts/admin-super-config-guard-v1-test.js
+node server/scripts/admin-account-delete-v1-test.js
+node server/scripts/admin-backup-status-v1-test.js
+node server/scripts/admin-feedback-conversation-v1-test.js
+node server/scripts/admin-footprints-filter-v1-test.js
+
+Get-ChildItem server/scripts -Filter "*-test.js" |
+  Where-Object { $_.Name -ne "smoke-test.js" } |
+  Sort-Object Name |
+  ForEach-Object { node $_.FullName }
+node server/scripts/v1-final-audit.js
+```
+
+已复验结果：
+- 5 个新增后台目标测试全部通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）= **63/0**。
+- `server/scripts/v1-final-audit.js` 通过。
+- `git diff --check 0ee28a2^..0ee28a2` 通过；提交范围未包含 `server/data`、`server/certs`、`.env`、`.ygbak`、`lark-*.json`、`project.private.config.json`、`server/scripts/smoke-test.js`。
+
+需要 Claude/用户做什么：
+- Claude 无需返修此 commit。
+- 如该后台 5 项尚未随成套包部署，可进入部署准备；若已部署，则按后台真机/浏览器验证：超管可见系统配置组，普通管理员不可见且接口 403，数据备份页显示定时任务状态，客服反馈可展开完整对话，足迹筛选分页正常。
+
 ### 2026-07-07 22:40 | Claude | 收口 2aaa821 + 9d8e674，补 Codex 非阻断项 | DONE
 
 状态：`DONE`（Codex 22:35 复审两项通过、无阻断；已顺手补掉唯一非阻断项）。
