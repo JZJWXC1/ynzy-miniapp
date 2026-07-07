@@ -24,7 +24,48 @@
 - **已拍板路线：保持 V1 精确优先不变。** 不放宽硬条件、不在硬条件不满足时推近似、不编造小区/坐标/特征。够不到的需求（学区、通勤时间等）用**主动追问澄清**或**诚实告知暂不支持**来处理，而不是静默丢弃后拿不相关房源充数。
 - **禁止**在未经用户重新拍板前，做任何「查不到就自动放宽/自动推近似」的改动——`server/scripts/assistant-eval-runner.js:382`「已知地点完整条件无房时不能放宽乱推」这类断言必须继续全过。
 
+## 总目标 · 优化路线图（用户 2026-07-07 拍板：三刀都做，Claude 主开发 / Codex 审计）
+
+**总目标**：把 Yooni 从"能用"推到"好用"，用北极星「推荐满意率」度量。满意率由三个杠杆决定，本轮三刀各攻一个：
+
+- **第①刀（杠杆0·准星）建满意率评测集**：把"推荐满意率"从 0 个数字变成可测的百分比。抽真实需求标注期望硬/软条件与行为，灌进 `assistantEvalCases`（当前空），扩 `assistant-eval-runner`（或新增脚本）输出满意率%，并作为后续每刀的对比基线。**先有准星，再谈提升。**
+- **第②刀（杠杆1·理解需求）NEED-1 需求侧对齐**：房源侧已能标 13 项特征（干湿分离/采光好/可短租/可月付/首次出租/民水民电/带露台等），但需求侧 `CANONICAL_FEATURES`/`FEATURE_RULES` 仍只 8 项——中介说了也点不动。把需求侧白名单补齐到房源侧，闭合"房源能标、需求点不动"的断裂。纯扩表、低风险、闭环已有数据。
+- **第③刀（杠杆2·找到房源·MODEL-2/MAP-1 blocker）坐标层**：坐标库仍仅 32 小区、`blockCenterForListing` 未接进运行时上图链路 → 库外小区房源被半径检索静默过滤。运行时补 block-center 兜底 + 小区库批量地理编码，抬高地图/半径找房满意率。
+
+**顺序**：①→②→③，每刀独立 commit + Codex 审计通过后再进下一刀。学区/通勤时间（NEED-2/3、MODEL-1/3，用户最初两例）属更大数据模型工程，留到三刀见效、有满意率数字后再评估。**全程守精确优先。**
+
 ## 最新消息
+
+### 2026-07-07 18:25 | Codex | Yooni 后端上线闭环复核 | DONE（后端）
+
+状态：`DONE（后端）`（第二裁判复核通过；前端小程序整包重传仍待用户手动执行）。
+
+审计范围：
+- Claude 17:12 “Yooni 后端上线闭环确认”记录。
+- 生产部署 commit：`0238d978658b04940449b2af747a781dc882627b`。
+- 已审 Yooni 后端目标：`4b6fbd5`。
+- 文件范围：`server/src/domain.js`、`server/src/feishu-sync.js`、`server/src/index.js`、`server/src/assistant/`。
+
+结论：
+- **通过。** `4b6fbd5` 是 `0238d978` 祖先，且 `git diff 0238d978 4b6fbd5 -- server/src/domain.js server/src/feishu-sync.js server/src/index.js server/src/assistant/` 为空，说明生产部署的 Yooni 后端代码与已审目标一致。
+- 公网 `/healthz` 与 `/readyz` 均 200，且都暴露运行版本 `0238d978658b/version.json`；该 commit 已在 `origin/v1-broker`，版本可追溯。
+- 公网公开列表 200、真实详情样本 200；不存在房源 404 新文案 `房源不存在`，说明 P1 详情死路修复已上线，未复现详情 500。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- 自动打标签/否定安全/飞书 id 稳定等内部行为，本次主要以“生产代码与已审代码字节一致 + 本地全量测试”确证；未通过生产构造备注房源二次验证。
+- 前端仍待整包重传：`pages/listing-detail/*`、`utils/api-service.js` 以及其它已放行前端改动需微信开发者工具上传后才在真机闭环。
+
+复验结果：
+- `git diff 0238d978 4b6fbd5 -- server/src/domain.js server/src/feishu-sync.js server/src/index.js server/src/assistant/` 为空。
+- `git branch -r --contains 0238d978...` 命中 `origin/v1-broker`。
+- 生产只读探针：`/healthz` 200、`/readyz` 200、`/mini/listings` 200、真实详情样本 200、`/mini/listings/L-NOT-EXIST` 404 `房源不存在`。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **55/0，audit 通过**。
+
+需要用户：
+- 重传小程序后真机复验详情 unavailable 空态、Yooni 助手指代/推荐链路和游客公司房源详情浏览。
 
 ### 2026-07-07 17:12 | Claude | Yooni 后端上线闭环确认（部署 commit == 已审 4b6fbd5）| DONE（后端）
 
