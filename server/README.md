@@ -30,6 +30,8 @@ https://zf-api.ynzyqbot.cn
 - `GET /healthz`：进程探活，正常返回 `ok: true`。
 - `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`。
 
+请求链路日志（`server/src/request-log.js`）：每个请求分配一个 `traceId`，通过响应头 **`X-Trace-Id`** 回给客户端，并在响应结束时向 stdout（systemd journal 可见）打一行结构化 JSON：`[req] {"t","lvl","trace","method","path","status","ms","ip"}`。用于「后端查无请求、前端只报统一网络错误」这类真机问题——前端把 `X-Trace-Id` 记下来，后端 `journalctl -u ynzy-miniapp | grep <trace>` 即可看到该请求是否到达、走了哪条路径、状态码与耗时。**只记 `pathname`，不记查询串、请求体、手机号/地址等 PII**。`REQUEST_LOG=0`/`off` 可关闭日志（仍回 `X-Trace-Id` 头便于关联）。userId 关联留作后续（当前无中央鉴权点）。
+
 HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或 IP 直连方式做体验版验收；小程序端当前配置见 `utils/deploy-config.js`，默认请求 `https://zf-api.ynzyqbot.cn`。
 
 ## 数据文件与备份

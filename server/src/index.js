@@ -14,6 +14,7 @@ const assistantService = require('./assistant-service')
 const oss = require('./oss')
 const wxpay = require('./wxpay')
 const { parseMultipartForm } = require('./multipart')
+const requestLog = require('./request-log')
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -1778,6 +1779,9 @@ async function router(req, res) {
     return
   }
 
+  // 请求链路日志：分配 traceId、回 X-Trace-Id 头，响应结束时打一行结构化日志（下方回填 path）。
+  const reqLog = requestLog.startRequestLog(req, res, { trustProxy: config.trustProxy })
+
   // URL 解析放在独立 try 内：畸形百分号转义（如 /%zz）会让 decodeURIComponent 抛
   // URIError，畸形 Host 头会让 new URL 抛 TypeError。逃逸到 async router 之外会变成
   // unhandledRejection 使进程退出（Node>=15 默认），任意游客一条 curl 即可打死服务。
@@ -1786,6 +1790,7 @@ async function router(req, res) {
   try {
     url = new URL(req.url, `http://${req.headers.host}`)
     pathname = decodeURIComponent(url.pathname)
+    reqLog.path = pathname // 回填路径到链路日志（只记 pathname，不记 query，避免 PII）
   } catch (error) {
     error.statusCode = 400
     sendError(res, error)
