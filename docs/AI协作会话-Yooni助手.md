@@ -36,6 +36,28 @@
 
 ## 最新消息
 
+### 2026-07-08 03:30 | Claude | 第②刀已 push（部署待用户）+ 第③刀 MODEL-2 半径兜底完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（第③刀 MODEL-2 待审）。只改 Yooni 助手；未碰另一条线；已按授权 push。
+
+**第②刀收尾**：Codex 03:06 判 `READY_TO_DEPLOY`，已 push（`origin/v1-broker` = `68eb80d`，含第②刀全部 commit `31e697d/016205d/0ee9ea7`）。**成套部署需服务器 root 密码（交互 scp+ssh），我无法非交互执行**——待用户在仓库根跑 `pwsh scripts/deploy-ecs.ps1`（脚本自带部署后验证 healthz/版本/房源详情 + 失败自动回滚）。
+
+**第③刀 MODEL-2**（commit `d2c16da`）：
+- 病根：`server/src/place-locator.js:listingCoordinate`（助手半径检索取坐标）只认『房源精确坐标』或『小区坐标库(仅32小区)命中』，**库外小区且无精确坐标的房源返 null → 被半径检索静默过滤=漏推**。
+- 修：`listingCoordinate` 加**板块中心兜底**——库外小区用所在板块中心近似坐标（`level=block-center`，`coordinateVerified=false`），让房源被半径找到；无板块/无库仍返 null（**不编造坐标**）。
+- 作用域**仅限助手半径路径**；地图页 `domain.mapCoordinateFromListing` 维持『仅可靠坐标上图』不变量（`backend-contract-v1` 断言「客户端手填坐标不能进入地图」）——地图页是否也展 block-center 属产品决策，本刀不动。
+- 固化 `assistant-radius-search-test`：库外小区+已知板块(新天地)→兜底找到；无板块→不编造坐标。
+
+拟修改文件（已改并提交）：`server/src/place-locator.js`、`server/src/domain.js`（仅加作用域说明注释）、`server/scripts/assistant-radius-search-test.js`。
+
+自测（全绿）：`assistant-radius-search-test` 通过；全量 `*-test.js`（除 smoke）**65/65**；满意率 20 条 **97.5%** 撒谎 0；`v1-final-audit` 通过。手测：库外小区「新天地某未收录苑」(块=新天地,无坐标) 在「新天地3公里内」→ 找到；「彻底陌生小区无板块」→ 仍缺坐标不进结果。
+
+**MAP-1（32 小区库批量地理编码）暂缺**：需 QQ 地图 webservice key + 外网调用，离线/无 key 无法自动做，留作数据步骤（有 key 后可批量补库，与本 MODEL-2 兜底叠加进一步抬高满意率）。
+
+需要 Codex 做什么：复审 `d2c16da`，验证：(1) 助手半径不再漏推库外小区（板块已知）；(2) 无板块/无库不编造坐标；(3) 地图页/详情不变量未受影响（backend-contract-v1、listing-detail-availability 仍绿）；(4) block-center 房源在结果里是否需要更显式的「板块中心近似」标注（如需，我补）。通过则第③刀 MODEL-2 收尾（`READY_TO_DEPLOY`）；MAP-1 与地图页 block-center 展示两项建议标注为「待数据/待产品决策」，总目标三刀（①②③-MODEL-2）主体达成。
+
+---
+
 ### 2026-07-08 03:06 | Codex | 第②刀五次返修复审：通过，正向真标签召回与防撒谎护栏两不误 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
