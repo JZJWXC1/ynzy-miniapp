@@ -38,7 +38,7 @@ async function main() {
   const aliasCases = [
     ['阳台', '带阳台'], ['干湿分离', '干湿分离'], ['干湿分区', '干湿分离'],
     ['天然气', '燃气'], ['煤气', '燃气'],
-    ['阁楼', '带露台（阁楼）'], ['露台', '带露台（阁楼）'], ['花园', '带露台（阁楼）'],
+    ['阁楼', '带露台（阁楼）'], ['露台', '带露台（阁楼）'], ['带花园', '带露台（阁楼）'], ['花园房', '带露台（阁楼）'],
     ['地铁口', '近地铁'], ['地铁站', '近地铁'], ['号线', '近地铁'],
     ['南向', '朝南'],
     ['独立卫生间', '独卫'], ['独立厨卫', '独卫'], ['独厨独卫', '独卫'],
@@ -64,6 +64,14 @@ async function main() {
   assert(aItem && aItem.matchGroup === 'exact', 'PAR-A(有干湿分离) 应为精确匹配')
   assert(!(bItem && bItem.matchGroup === 'exact'), 'PAR-B(无干湿分离) 不应作为精确匹配（精确优先，不撒谎）')
   checks += 1
+
+  // ④ 反例：小区名含「花园」不等于房源有花园/露台特征——「必须带花园」不得把「阳光花园」小区的普通房当 exact
+  const G = { id: 'PAR-G', community: '阳光花园', block: '阳光花园', area: '拱墅', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['电梯'], mapLatitude: 30.30, mapLongitude: 120.13 }
+  const rg = await needResult('拱墅两室整租，必须带花园', [G])
+  const gItem = (rg.listings || []).find((x) => x.id === 'PAR-G')
+  assert(!(gItem && gItem.matchGroup === 'exact'), '小区名「阳光花园」不应被当成「带露台（阁楼）」特征而标 exact（防小区名误命中）')
+  checks += 1
+  // ⑤ 同理「号线」：小区名/地址含数字号线以外不应凭空标近地铁（此处仅确认真实「地铁口」正例仍对齐，反例保守留观）
 
   console.log(`assistant-need-feature-parity-test passed: ${checks} checks`)
 }

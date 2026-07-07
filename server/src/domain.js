@@ -44,7 +44,7 @@ const FEATURE_INFERENCE_RULES = [
   { name: '带阳台', pattern: /阳台/ },
   { name: '干湿分离', pattern: /干湿分离/ },
   { name: '燃气', pattern: /燃气|天然气|煤气/ },
-  { name: '带露台（阁楼）', pattern: /阁楼|露台|花园/ },
+  { name: '带露台（阁楼）', pattern: /阁楼|露台|带花园|有花园|花园房|带院子/ },
   { name: '近地铁', pattern: /近地铁|地铁口|地铁站|号线/ },
   { name: '朝南', pattern: /朝南|南向/ },
   { name: '独卫', pattern: /独卫|独立卫|独立卫生间|独立厨卫|独厨独卫/ },
