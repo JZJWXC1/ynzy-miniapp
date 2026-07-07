@@ -86,8 +86,12 @@ function redirectToAuth() {
 
 function handleUnauthorized(error) {
   if (!error || Number(error.statusCode) !== 401) return
+  // 游客（从未登录、无 token）浏览时，不要因为某个后台请求 401（如详情页的 getProfileState、
+  // 或点到非公司房源）就被强制弹去登录页——那正是「一直跳转登录」的根源。只有原本已登录、
+  // token 失效的用户才自动跳登录重新认证；游客只清理状态、不跳转，敏感操作各页面会显式引导登录。
+  const hadToken = Boolean(getAuthToken())
   clearAuthState()
-  redirectToAuth()
+  if (hadToken) redirectToAuth()
 }
 
 function request(options) {
