@@ -8,6 +8,12 @@ const {
   normalizeListingFeatures
 } = require('../../utils/listing-features')
 
+// 上传是受保护操作：游客（401）进入或提交时需显式引导登录。api-client 已不再对游客
+// 全局强跳登录，故上传页要自己兜底，避免游客填完表单提交才失败、失去登录引导。
+function isAuthError(error) {
+  return Boolean(error) && Number(error.statusCode) === 401
+}
+
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
 const FALLBACK_MAX_VIDEO_MB = 300 // 与服务端 OSS 策略默认上限对齐的前端预检兜底值
 const DEFAULT_COMMISSION_CONFIG = {
@@ -181,11 +187,27 @@ Page({
         currentUser: user,
         isAdmin: Boolean(user && user.isAdmin)
       })
-    }).catch(() => {
+    }).catch((error) => {
       this.setData({
         currentUser: null,
         isAdmin: false
       })
+      // 游客进入上传页即引导登录，别让其填完整张表单提交才失败。
+      if (isAuthError(error)) {
+        this.promptLoginGuide('登录后上传房源', '上传房源需要先登录内部中介账号，登录后即可发布房源。')
+      }
+    })
+  },
+
+  promptLoginGuide(title, content) {
+    wx.showModal({
+      title: title || '需要登录',
+      content: content || '该操作需要先登录内部中介账号后继续。',
+      confirmText: '去登录',
+      cancelText: '再看看',
+      success: (res) => {
+        if (res.confirm) wx.navigateTo({ url: '/pages/auth/auth' })
+      }
     })
   },
 
@@ -590,11 +612,16 @@ Page({
       }
     } catch (error) {
       wx.hideLoading()
-      wx.showModal({
-        title: this.data.mode === 'edit' ? '修改失败' : '上传失败',
-        content: error.message || '请检查视频存储配置和网络后重试',
-        showCancel: false
-      })
+      // 兜底：提交时才暴露的 401（如游客未登录）给出「去登录」引导，而不是笼统的失败提示。
+      if (isAuthError(error)) {
+        this.promptLoginGuide('登录后上传房源', '上传房源需要先登录内部中介账号。')
+      } else {
+        wx.showModal({
+          title: this.data.mode === 'edit' ? '修改失败' : '上传失败',
+          content: error.message || '请检查视频存储配置和网络后重试',
+          showCancel: false
+        })
+      }
     } finally {
       this.setData({ submitting: false })
     }
