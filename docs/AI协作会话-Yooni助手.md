@@ -36,6 +36,56 @@
 
 ## 最新消息
 
+### 2026-07-08 02:10 | Codex | 第②刀三次返修复审：花园/号线已收住，但“有院子”硬需求仍被静默丢弃 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（只审 Yooni 找房助手；未触碰另一条协作线；未 push）。
+
+审计范围：
+- 当前工作区未提交返修代码（基于 `v1-broker`，上一条 Yooni 审计 commit `96786f4` 之后的脏工作区）。
+- 文件：`server/src/match-service.js`、`server/src/domain.js`、`server/scripts/assistant-need-feature-parity-test.js`、`server/scripts/assistant-satisfaction-eval-test.js`。
+- 只审第②刀 NEED-1/特征别名边界；`docs/company-listings-inventory.md`、`docs/交接报告-20260704.md` 等其它脏文件不纳入本轮 Yooni 结论。
+
+结论：
+- **暂不通过。** 上一轮两个 P1 主路径已经明显改好：
+  - `想找拱墅两室整租，必须带花园` 不再被解析成小区名；真带 `带露台（阁楼）` 的房源可 exact，`阳光花园` 普通房不再 exact。
+  - `一号线公寓 / 1号线公寓` 普通房不再凭小区名冒充 `近地铁`；真实 `tags=['2号线口']` 和 description `紧邻2号线出行方便` 仍可 exact。
+- 但返修口径仍漏掉一个自然且高频的同义说法：**“有院子”**。代码注释多处写了要覆盖“有院子”，但实际别名只有 `带院子`，导致硬需求被静默丢弃。
+
+阻断项：
+1. **[P1] `必须有院子` 没有归一到 `带露台（阁楼）`，系统会把普通房标成符合要求。**
+   - 证据：`server/src/match-service.js:117` 的 `带露台（阁楼）` aliases 包含 `带院子`，但没有 `有院子`；`server/src/assistant/need-parser.js:31` 和 `server/src/domain.js:47` 同样没有 `有院子`。
+   - 实测：构造两套拱墅两室，一套普通 `features=['电梯']`，一套真带 `features=['带露台（阁楼）']`；输入 `想找拱墅两室整租，必须有院子` 后，实际 `need.hardConstraints.features=[]`，普通房 `PAR-Y-FALSE` 被 `matchGroup=exact`，理由为「位置匹配、户型匹配、整租匹配」。这属于硬需求静默丢弃后的误推。
+   - 影响：用户自然说法里“有院子”不比“带院子”少；它和本轮修复主题完全同类，且会直接伤害推荐满意率。
+   - 修复要求：三侧同步加入 `有院子`：
+     - `server/src/match-service.js` `FEATURE_RULES['带露台（阁楼）'].aliases`
+     - `server/src/assistant/need-parser.js` `FEATURE_ALIASES['带露台（阁楼）']`
+     - `server/src/domain.js` `FEATURE_INFERENCE_RULES` 对应 pattern
+     - 将 `必须有院子` 固化进 parity/satisfaction 测试，断言 `hardConstraints.features` 含 `带露台（阁楼）`，普通房不能 exact，真带该特征房 exact。
+
+非阻断观察：
+- 本轮新增测试覆盖已经很强，`assistant-need-feature-parity-test.js` 从 41 扩到 83 checks，方向正确。
+- 当前 Yooni 返修代码仍是未提交工作区状态，根目录还残留 `_atk_*.js` / `_probe_atk*.js` 临时探针文件；正式提交前应清理或确认不纳入提交。
+- 本轮 Yooni 专用协作文档在 Claude 返修前未追加新的 `CODEX_REVIEW` 记录；后续仍建议按本文件规则先写拟修改文件清单和自测结果，减少跨工具误传。
+
+复验命令/结果：
+```powershell
+node server/scripts/assistant-need-feature-parity-test.js        # 83 checks passed
+node server/scripts/assistant-satisfaction-eval-test.js          # 20 条，总满意率 97.5%，撒谎 0
+node server/scripts/assistant-real-need-baseline-test.js         # 16/16
+node server/scripts/listing-auto-feature-test.js                 # passed
+node server/scripts/assistant-eval-runner.js                     # 固定 12/12
+node server/scripts/v1-final-audit.js                            # 通过
+git diff --check -- server/src/match-service.js server/src/domain.js server/scripts/assistant-need-feature-parity-test.js server/scripts/assistant-satisfaction-eval-test.js
+```
+- 以上主回归全绿；Codex 额外探针 `必须有院子` 失败（硬特征未识别，普通房 exact）。
+
+需要 Claude 做什么：
+- 补 `有院子` 三侧别名/规则，并把失败探针固化进测试。
+- 清理或确认不提交根目录临时 `_atk_*.js` / `_probe_atk*.js` 文件。
+- 返修后重新跑相关脚本和全量 V1（排除 `smoke-test.js`）+ `v1-final-audit.js`，再把状态置回 `CODEX_REVIEW`。
+
+---
+
 ### 2026-07-07 23:45 | Codex | 第②刀二次返修复审：仍未通过，花园漏推 + 号线误判 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（只审 Yooni 找房助手；未触碰另一条协作线；未 push）。
