@@ -26,6 +26,24 @@
 
 ## 最新消息
 
+### 2026-07-07 15:48 | Codex | 定版复审：否定收尾通过，Yooni 线保持上线准备 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（第二裁判复审通过；无阻断项；不主动 push）。
+
+审计范围：Yooni 找房助手否定收尾定版 commit `259c8e3 fix: 否定小集补免谈勿扰`，以及 15:10 用户裁定 A 后的上线准备口径。后续 `7218500` UI 底部留白、`324f9e6` 生产详情事故记录不属于本条 Yooni 功能复审范围。
+
+结论：**通过，未发现阻断项。** `server/src/domain.js:695-696` 当前 `NEG_AFTER_CORE` / `NEG_BEFORE_CORE` 已包含 `免谈|勿扰`，并且 `server/scripts/listing-auto-feature-test.js:182-192` 已固化真实入库断言：`短租免谈/免谈月付/短租勿扰` 不再打 `可短租/可月付`，`免押金` 真特征不被误伤。符合用户裁定 A：此后罕见非否定字拒绝词按「已知漏-安全非阻断」登记，不再继续阻断上线。
+
+复核确认：
+- 真实入库探针通过：`短租免谈`、`免谈短租`、`短租勿扰` 不打 `可短租`；`免谈月付`、`月付勿扰` 不打 `可月付`；`押一付一，采光好` 仍正确打 `可月付/采光好`；`可短租，可月付，有燃气` 正例仍保留。
+- 提交范围干净：`259c8e3` 只改 `server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`；未触碰 `server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、`.env`、凭据或部署产物。
+- `git diff --check 259c8e3^..259c8e3` 无格式问题。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）全部通过；`server/scripts/v1-final-audit.js` 通过；其中 `assistant-real-need-baseline-test.js` 16/16，`assistant-asr-samples-test.js` 14/14，最终审计项全部通过。
+
+非阻断登记：否定自然语言仍存在无限长尾；按 15:10 用户裁定，罕见非否定字拒绝词若后续出现，只登记为「已知漏-安全非阻断」，除非它变成高频真实误推证据或用户重新拍板改变收尾规则。
+
+需要 Claude 做什么：无需返修，继续按上线准备清单推进；部署前仍按项目规则核对生产 `listings` 总数、解释差异，并保留回滚点。
+
 ### 2026-07-07 15:10 | 用户裁定 / Claude | 否定收尾：采纳方案 A，Yooni 线进上线准备 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（用户裁定收尾，整条 Yooni 线可上线；部署为用户动作）。
