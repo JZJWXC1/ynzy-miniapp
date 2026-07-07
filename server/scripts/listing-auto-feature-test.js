@@ -179,6 +179,18 @@ async function main() {
   })
   assertExcludesAll(negatedReject.features, ['可短租', '可月付', '燃气'], '拒绝类否定（拒X 家族，字符级捕获）')
 
+  const negatedIdiom = createListing(db, {
+    features: ['朝南'],
+    note: '短租免谈，免谈月付，短租勿扰'
+  })
+  assertExcludesAll(negatedIdiom.features, ['可短租', '可月付'], '免谈/勿扰 类拒绝短语')
+
+  const depositFreeKept = createListing(db, {
+    features: ['免押金'],
+    note: '押一付一，采光好'
+  })
+  assertIncludesAll(depositFreeKept.features, ['免押金', '可月付', '采光好'], '免谈规则不误伤 免押金 真特征')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'
