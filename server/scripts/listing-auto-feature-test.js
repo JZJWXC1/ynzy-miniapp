@@ -161,6 +161,12 @@ async function main() {
   })
   assertExcludesAll(negatedDo.features, ['可短租', '可月付'], '不做/不开放/未开放类否定')
 
+  const negatedRefuse = createListing(db, {
+    features: ['朝南'],
+    note: '不接短租，月付不收，不考虑短租，短租谢绝，概不短租'
+  })
+  assertExcludesAll(negatedRefuse.features, ['可短租', '可月付'], '不接/不收/不考虑/谢绝/概不 类否定（字符级捕获）')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'
