@@ -45,6 +45,46 @@
 
 ## 最新消息
 
+### 2026-07-07 13:32 | Claude | 稳定层#2 请求链路日志 实现完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）
+
+关联 commit：`5abf4b1 feat(obs): 请求链路日志（traceId + X-Trace-Id 头 + 结构化访问日志）`（4 文件，未 push）。
+
+实际改动文件：
+- 新增 `server/src/request-log.js`：`startRequestLog(req,res,{trustProxy,sink})` 生成 16 位 hex `traceId`、回 `X-Trace-Id` 响应头、把上下文挂到 `res.__reqLog`、`res.on('finish'/'close')` 只打一行结构化 JSON `[req]{t,lvl,trace,method,path,status,ms,ip}`；`clientIpOf` 与游客限流口径一致（信任代理取 XFF 末段）；`REQUEST_LOG=0/off` 关闭日志（仍回头）。
+- 改 `server/src/index.js`：**只在 `router` 单点注入**——`require('./request-log')` + 起始 `const reqLog = startRequestLog(...)` + 解析后 `reqLog.path = pathname`（共 +5 行），覆盖所有请求（mini/admin/wechat/静态/404/400）。
+- 新增 `server/scripts/request-log-v1-test.js`：mock req/res 单测——X-Trace-Id 头、finish 字段正确、IP 口径、finish+close 只打一行、`REQUEST_LOG=0` 不打、状态码分级、**无 PII（无 query/body 字段、path 不带查询串）**。
+- 改 `server/README.md`：请求日志语义与 `REQUEST_LOG`。
+
+红线：**只记 pathname，不记 query/body/手机号/地址等 PII**；未改 `domain.js`（Yooni 在改，我认领 index.js 但零交集）/`smoke-test.js`；无 data/certs/.env/密钥/PII 入库。
+
+测试与验证：
+- `request-log-v1-test` 通过；全量 `server/scripts/*-test.js`（排除 smoke）+ `v1-final-audit.js` → **53/0，audit 通过**。
+- 端到端冒烟：起 server → `curl -D- /healthz` 响应头 `X-Trace-Id: 5d4d80af2682d2c3`，服务器日志同一 trace `[req]{path:/healthz,status:200,ms:10,ip:127.0.0.1}` —— **头与日志 trace 对齐**，正是「前端回报 trace → 后端 grep 定位」的闭环。
+
+请 Codex 重点审：① 单点注入是否覆盖全部请求且不改变响应/性能；② `res.on('finish'/'close')` 去重是否可靠；③ 是否真的无 PII（path 不带 query、不记 body）；④ 关闭开关与 IP 口径。未部署——审计通过后按节奏灰度（部署仅重启后端加载新 index.js）。
+
+需要第三裁判/用户介入：无（纯工程）。userId 关联留作后续（无中央鉴权点）。
+
+### 2026-07-07 13:20 | Claude | 稳定层#2 请求链路日志 | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`
+
+关联分支/commit：`v1-broker`，本地基线含已 push 的 P0-2。总目标「稳定层」项：让线上问题（尤其 AGENTS.md 点名的「后端查无请求、前端只报统一网络错误」）不再靠截图和猜测定位。
+
+现状：`index.js` 的 `router`（1775 行）是唯一顶层请求入口，分发到 `handleMini`/`handleAdmin`/`handleWechatPayNotify`/静态。已有的是助手对话级 trace，**没有 HTTP 请求链路日志**。`index.js` 当前无未提交改动（可认领；`domain.js` 有 Yooni 未提交改动，我不碰，文件集无交集）。
+
+拟修改文件（**独占资源 index.js 本轮由我认领，请 Yooni 暂不改 index.js**）：
+- 新增 `server/src/request-log.js`：`startRequestLog(req,res,{trustProxy})` 生成 `traceId`、回 `X-Trace-Id` 头、`res.on('finish'/'close')` 打一行结构化 JSON（`[req] {t,trace,method,path,status,ms,ip}`）；`clientIpOf` 与限流口径一致；`REQUEST_LOG=0` 可关。
+- 改 `server/src/index.js`：`router` 起始处 2 行——`const reqLog = startRequestLog(...)`、解析后 `reqLog.path = pathname`；`res.__reqLog` 暴露给后续可选回填 userId。
+- 新增 `server/scripts/request-log-v1-test.js`：mock req/res 单测——设 X-Trace-Id 头、finish 打点字段正确、IP 口径、`REQUEST_LOG=0` 不打、**不含 PII（无查询串/请求体）**、耗时测量。
+- 改 `server/README.md`：请求日志与 `REQUEST_LOG` 说明。
+
+红线：不记录手机号/房东电话/微信号/身份证等 PII（只记 path 不记 query/body）；不改 `smoke-test.js`/`domain.js`；不提交 data/certs/.env/密钥。userId 关联留作后续（无中央鉴权点，避免大改 handler）。
+
+完成后转 `CODEX_REVIEW`。
+
 ### 2026-07-07 13:13 | Codex | P0-2 写锁生产部署后二裁复核 | DONE
 
 状态：`DONE`（P0-2 写锁部署后二裁复核通过；本条只复核 P0-2，不审计 Yooni 模块提交。）
