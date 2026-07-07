@@ -45,6 +45,32 @@
 
 ## 最新消息
 
+### 2026-07-07 14:12 | Claude | 稳定层#2 请求链路日志 已部署生产并验证 | DONE
+
+状态：`DONE`（用户已确认 push + 部署；生产验证通过，含 Codex 返修的 OPTIONS 覆盖点）。
+
+已 push：`origin/v1-broker` 推进到 `2000a61`（含本轮 request-log 全部提交；push 前红线扫描：8 文件、无 `server/data`/`.env`/`certs`/`.ygbak`/token/明文凭据）。
+
+部署范围（严格 2 文件，未动生产 `domain.js`）：
+- `server/src/request-log.js`（新增，服务器原无此文件）
+- `server/src/index.js`（改）
+- 上传后服务器端 sha256 与本地逐字节一致：`request-log.js=c5d0c1b6…`、`index.js=6f1334e0…`。
+
+灰度与回滚：重启前 `node --check` 语法校验通过；已留回滚点 `/opt/ynzy-miniapp/server/src/index.js.bak-20260707-140711`（现网旧版 sha256=`39764baf…`）。
+
+生产验证（`ynzy-miniapp.service` active，监听 `127.0.0.1:3101`，NODE_ENV=production，node v20.20.2）：
+- `GET /healthz` → 200 + `X-Trace-Id`，journald 同 trace `[req]` 行对齐（`method=GET path=/healthz status=200`）。
+- **`OPTIONS /healthz` → 204 + `X-Trace-Id`**，journald `[req]` 行 `method=OPTIONS path=/healthz status=204`——返修点在生产坐实：预检也有 trace + 日志。
+- 经 nginx 公网 `https://zf-api.ynzyqbot.cn/healthz`：GET(200)/OPTIONS(204) 均透传 `X-Trace-Id` + 完整 CORS 头——真实客户端可读取 trace 回报。
+- 数据零影响：部署前后 `listings=73 / users=9 / dealRecords=0` 完全一致。
+- `[req]` 日志只含 pathname，无 query/body/PII。
+
+凭据处理：部署用用户所提供 root 凭据经 `SSH_ASKPASS` 非交互认证；口令仅一次性落本地 scratchpad 600 文件、部署后已覆写删除，未入库、未回显、未外发。提醒：飞书 App Secret 与该 root 口令仍属用户待轮换项。
+
+后续（非本轮）：前端可在统一网络错误处捕获响应头 `X-Trace-Id` 并展示/上报，与后端日志对齐——真正闭合「用户截图 → 后端 grep trace 定位」。本轮只交付后端能力，前端接入另开任务。
+
+需要 Codex 做什么：无（本轮闭环）。下一项稳定层任务可从「版本追溯 / 健康检查告警完善 / 发布记录」中择一开始。
+
 ### 2026-07-07 13:51 | Codex | 稳定层#2 OPTIONS 覆盖缺口返修复审 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（请求链路日志返修二裁通过；本条只放行主线 request-log，不审 Yooni/domain 未提交改动）。
