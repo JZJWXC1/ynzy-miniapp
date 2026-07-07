@@ -27,8 +27,10 @@ https://zf-api.ynzyqbot.cn
 
 健康检查：
 
-- `GET /healthz`：进程探活，正常返回 `ok: true`。
-- `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`。
+- `GET /healthz`：进程探活，正常返回 `ok: true`，并在 `data.version` 返回当前运行版本。
+- `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`；同样带 `data.version`。
+
+版本追溯（`server/src/version.js` + `server/scripts/gen-version.js`）：`/healthz`、`/readyz` 的 `data.version` 与启动日志都会给出当前运行的代码版本 `{version, commit, shortCommit, branch, builtAt, committedAt, source}`，用于把「链路日志定位到哪条请求」补上「当时跑的是哪版代码」。因为部署是 scp 单文件、生产目录 `/opt/ynzy-miniapp` **不是 git 仓库**，运行时无法 `git rev-parse`，版本信息按优先级来源：① 环境变量 `APP_VERSION`/`APP_COMMIT`/`APP_BRANCH`/`APP_BUILT_AT`；② `server/version.json`（部署/构建期生成）；③ 兜底 `package.json` 的 version + `commit=unknown`。`server/version.json` 为**生成物、已 gitignore、不入库**；部署时在有 git 的本地执行 `node scripts/gen-version.js` 生成它，再随 `src/` 一起 scp 到服务器。缺文件/坏 JSON 均优雅降级、不阻断启动。`source` 字段标明本次版本信息取自哪一层。
 
 请求链路日志（`server/src/request-log.js`）：每个请求分配一个 `traceId`，通过响应头 **`X-Trace-Id`** 回给客户端，并在响应结束时向 stdout（systemd journal 可见）打一行结构化 JSON：`[req] {"t","lvl","trace","method","path","status","ms","ip"}`。用于「后端查无请求、前端只报统一网络错误」这类真机问题——前端把 `X-Trace-Id` 记下来，后端 `journalctl -u ynzy-miniapp | grep <trace>` 即可看到该请求是否到达、走了哪条路径、状态码与耗时。**只记 `pathname`，不记查询串、请求体、手机号/地址等 PII**。`REQUEST_LOG=0`/`off` 可关闭日志（仍回 `X-Trace-Id` 头便于关联）。userId 关联留作后续（当前无中央鉴权点）。
 

@@ -15,6 +15,7 @@ const oss = require('./oss')
 const wxpay = require('./wxpay')
 const { parseMultipartForm } = require('./multipart')
 const requestLog = require('./request-log')
+const appVersion = require('./version')
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -833,6 +834,7 @@ function buildHealth(db) {
     ok: launch.summary.todo === 0,
     time: new Date().toLocaleString('zh-CN', { hour12: false }),
     service: 'ynzy-house-miniapp',
+    version: appVersion.getVersion(), // 版本追溯：/readyz 也带上当前版本
     checks: launch.summary,
     pending: launch.items
       .filter((item) => item.status !== '通过')
@@ -1811,7 +1813,8 @@ async function router(req, res) {
       sendJson(res, {
         ok: true,
         time: new Date().toLocaleString('zh-CN', { hour12: false }),
-        service: 'ynzy-house-miniapp'
+        service: 'ynzy-house-miniapp',
+        version: appVersion.getVersion() // 版本追溯：现网跑的是哪版代码，供 curl / 巡检直接看到
       })
       return
     }
@@ -1923,7 +1926,9 @@ process.on('uncaughtException', (error) => {
 })
 
 server.listen(config.port, config.host, () => {
+  const v = appVersion.getVersion()
   console.log(`寓你住一起后端已启动：http://${config.host}:${config.port}`)
+  console.log(`版本 ${v.version} commit ${v.shortCommit}${v.branch ? ` (${v.branch})` : ''} built ${v.builtAt || '-'} [来源 ${v.source}]`)
   console.log(`管理后台：http://${config.host}:${config.port}/admin-web/`)
   startFeishuSyncTimer()
 })

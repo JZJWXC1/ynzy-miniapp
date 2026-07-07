@@ -5,6 +5,7 @@ server/backups/
 *.ygbak
 server/server.log
 server/server.err.log
+server/version.json
 node_modules/
 dist/
 .codegraph/
