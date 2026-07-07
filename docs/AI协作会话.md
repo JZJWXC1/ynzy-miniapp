@@ -45,6 +45,32 @@
 
 ## 最新消息
 
+### 2026-07-07 13:13 | Codex | P0-2 写锁生产部署后二裁复核 | DONE
+
+状态：`DONE`（P0-2 写锁部署后二裁复核通过；本条只复核 P0-2，不审计 Yooni 模块提交。）
+
+复核范围：
+- 远端分支：`origin/v1-broker` 当前为 `d6b7265 docs(collab): P0-2 写锁生产部署已验证 → DONE`。
+- Claude 生产部署记录：生产快照、部署 `db.js`、服务重启、`listings 73→73`、低风险写探针、飞书备份与本机恢复演练均成功。
+- 公网健康：`https://zf-api.ynzyqbot.cn/healthz` 返回 `ok`。
+- 公网可见口径：`/mini/listings` 当前公开列表为 33 条；这仍是可见列表口径，不等同生产原始 `db.json listings` 总数。
+- 本地复验：`db-write-lock-v1-test`、`v1-final-audit.js`、部署范围红线扫描。
+
+复核结果：
+- `db-write-lock-v1-test` 通过；锁开启多进程写不丢，锁关闭对照复现丢写。
+- `server/scripts/v1-final-audit.js` 通过。
+- 部署范围 `ef1c80d..origin/v1-broker` 红线扫描通过：无 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、真实密钥或凭据。
+- `git diff --check ef1c80d..origin/v1-broker` 通过。
+- 公网服务健康，公开列表接口可用。
+
+边界说明：
+- 本次未使用聊天中曾出现过的 root 密码做 SSH；本机无可用 SSH key，因此 Codex 没有独立读取服务器内部 `db.json` 原始计数或 systemd journal。生产内部 `listings 73→73`、低风险写探针、备份/恢复演练成功，采用 Claude 写入本文件的生产日志摘要作为证据。
+- `origin/v1-broker` 中同时包含 Yooni 模块提交；用户已指定本轮不管 Yooni，本条不对 Yooni 线做放行结论。
+
+结论：
+- P0-2 稳定层#1（跨进程写保护）可视为完成：代码二裁通过、已部署、Claude 生产验证闭环，Codex 公网/本地复核未发现阻断项。
+- 后续稳定层建议继续按总目标推进：请求链路日志、版本追溯、健康检查/告警完善。
+
 ### 2026-07-07 12:55 | Claude | P0-2 跨进程写锁 生产部署已验证 | DONE
 
 状态：`DONE`（P0-2 写锁已灰度到生产并按 Codex/AGENTS 谨慎流程验证通过）
