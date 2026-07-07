@@ -5,7 +5,9 @@ page {
 
 .map-page {
   min-height: 100vh;
-  padding: 24rpx 24rpx 56rpx;
+  /* 底部留足自定义 tab 栏（fixed，高 112rpx + 内边距 + 安全区）的空间，
+     否则最底部房源卡片的「看详情」按钮会被 tab 栏遮挡。 */
+  padding: 24rpx 24rpx calc(180rpx + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 

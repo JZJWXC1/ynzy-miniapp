@@ -4,7 +4,8 @@
 }
 
 .listings-page {
-  padding: 24rpx 24rpx 150rpx;
+  /* 底部留白叠加安全区，避免最底部卡片被固定 tab 栏（含 home 指示条安全区）压住。 */
+  padding: 24rpx 24rpx calc(150rpx + env(safe-area-inset-bottom));
 }
 
 .category-tabs {
