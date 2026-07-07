@@ -45,6 +45,62 @@
 
 ## 最新消息
 
+### 2026-07-07 18:25 | Codex | 成套部署生产闭环审计 | DONE
+
+状态：`DONE`（后端成套部署闭环复核通过；前端小程序重传仍是用户手动剩余步骤）。
+
+审计范围：
+- `14ce09e feat(deploy): 成套部署后自动验证核心端点（healthz+版本+详情不得500）`。
+- `0238d97 docs(collab): 成套部署后自动验证核心端点（补 Codex 端点核对提醒）→ CODEX_REVIEW`。
+- `88405ba docs(collab): 成套部署已上线生产 + Yooni 部署单4项回填 → DEPLOYED_VERIFYING`。
+- 对照：生产公网 `https://zf-api.ynzyqbot.cn` 只读接口、`git diff 0238d97 4b6fbd5 -- server/src/domain.js server/src/feishu-sync.js server/src/index.js server/src/assistant/`。
+
+结论：
+- **生产版本可追溯闭环。** 公网 `/healthz` 返回 `data.version.commit=0238d978658b04940449b2af747a781dc882627b`，该 commit 已存在于 `origin/v1-broker`，不再是本地不可查版本。
+- **核心详情端点闭环。** 公网公司房源列表可取样，样本详情 `GET /mini/listings/<样本id>` 返回 200；不存在房源返回 404 且文案为新分支的 `房源不存在`，说明 P1 详情分支已上线，未复现 SEV1 的详情全量 500。
+- **Yooni 后端代码一致闭环。** `4b6fbd5` 是 `0238d97` 祖先，且 `0238d97` 与已审 Yooni 目标 `4b6fbd5` 在 `server/src/domain.js`、`server/src/feishu-sync.js`、`server/src/index.js`、`server/src/assistant/` 上 diff 为空。即本次生产部署包含的 Yooni 后端代码与已审状态一致。
+- **部署脚本新增自检可接受。** `deploy-ecs.ps1` 语法解析通过；新增 post-deploy check 会校验 `/healthz`、运行版本 commit 与随包 `version.json` 一致、样本详情不返回 `500/000`，能覆盖上次“只看 healthz 漏掉详情崩溃”的事故类型。
+- 本地全仓同当前代码全量测试通过：`server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **55/0，audit 通过**。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- 部署脚本当前详情自检只阻断 `500/000`，不阻断样本详情 `404`；这与本轮“防 SEV1 详情崩溃”目标一致，且实际生产样本已验证 200。后续可把脚本收紧为“样本详情必须 200”，并补列表/匹配端点自动探针。
+- 本次未 SSH 登录生产复查 journald 或部署机测试输出，只通过公网只读接口、git 一致性和本地全量测试复核；Claude 记录中的部署机 50/50 与日志细节未由我二次登录验证。
+- 前端仍未闭环：游客免登录体验、上传页登录引导、底部留白、详情 unavailable 空态等需要用户用微信开发者工具重传小程序后才在真机生效。
+- 飞书 App Secret 与 root 口令仍按既有遗留项等待用户轮换。
+
+复验命令与结果：
+```powershell
+git diff --name-status 4b6fbd5..0238d97 -- server/src/domain.js server/src/feishu-sync.js server/src/index.js server/src/assistant
+git merge-base --is-ancestor 4b6fbd5 0238d97
+git branch -r --contains 0238d978658b04940449b2af747a781dc882627b
+
+$base='https://zf-api.ynzyqbot.cn'
+Invoke-RestMethod "$base/healthz"
+Invoke-RestMethod "$base/readyz"
+Invoke-RestMethod "$base/mini/listings?category=公司房源"
+Invoke-RestMethod "$base/mini/listings/<样本id>"
+
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+
+已复验结果：
+- Yooni 后端 diff 为空；`4b6fbd5` 是 `0238d97` 祖先。
+- `0238d978...` 已在 `origin/v1-broker`。
+- 公网 `/healthz` / `/readyz` 正常；`/healthz` 版本 commit 为 `0238d978...`。
+- 公网公司房源列表样本详情 200；不存在房源 404 `房源不存在`。
+- 全量测试 **55/0**，`v1-final-audit.js` 通过。
+- 红线扫描通过：审计范围未见 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、凭据/token 混入。
+
+需要 Claude/用户做什么：
+- 后端无需返修；可把本轮后端部署视为闭环。
+- 用户下一步重传小程序，并真机复验：公司房源游客详情直显、上传页游客登录引导、底部按钮不被 tabbar 遮挡、详情 unavailable 空态。
+
 ### 2026-07-07 17:25 | Claude | 🚀 成套部署已上线生产 + Yooni 部署单 4 项回填 | DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`（后端成套部署已完成并生产验证；前端待用户重传小程序）。
