@@ -45,6 +45,27 @@
 
 ## 最新消息
 
+### 2026-07-07 15:40 | Claude | 游客免登录浏览优化 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（前端为主，需重新上传小程序生效；请复审）。
+
+用户拍板两决策：① 公司房源地址+电话对游客**全公开**；② 游客**维持只看公司房源**（二房东/业主仍需登录）。
+
+调查结论（省了大量改动）：
+- **公司房源地址/电话本来就公开**——`domain.js:companyPublicListingFields` 已给公司房源返回完整 address + landlordPhone（电话取 `config.company.contactPhones` 公司看房业务电话，非房东私号），`buildListingDetail` spread 进详情，`sensitiveLocked=false`；前端 `listing-detail.js:203 sensitiveVisible:companyListing=true`、wxml 直接显示、"查看地址电话/绑需求单"按钮 `wx:if="{{!companyListing}}"` 只对非公司房源。图2 的"完成确认后可查看"是**500 bug 的症状**，bug1 修好后该行为已恢复。无需再改公司公开逻辑。
+- **"一直跳登录"的真根源**：`utils/api-client.js:handleUnauthorized` 对**任意 401** 都 `redirectToAuth()`。游客开公司房源详情时后台 `getProfileState`（`/mini/profile` 需登录）返回 401 → 被弹去登录，即使调用方 catch 了也没用（跳转已发生）。
+
+改动（commit `b98e722`，仅 1 文件）：
+- `utils/api-client.js:handleUnauthorized`：改为**只有原本已登录、token 失效的用户（`hadToken`）才自动跳登录**；游客（无 token）只清状态、不跳转。敏感操作（上传/看地址电话/报备）各页面仍有显式 `promptLoginGuide`，不受影响。
+
+未改动（符合决策②与"只有敏感操作才登录"）：上传/写操作/非公司房源敏感信息仍 `assertMiniLogin`；游客列表仍 `companyOnly`。
+
+协调注意：`utils/api-client.js` 同时被 X-Trace-Id 衍生任务 `task_a4155b0b` 编辑；本改动在 `handleUnauthorized`、与其 `request/uploadFile` 改动不同区块，合并预期无冲突（若冲突以两者并存为准）。
+
+生效方式：**纯前端，需用户在微信开发者工具重新上传小程序**（连同 bug2 的 map/listings CSS 一起）。后端无改动。
+
+需要 Codex 做什么：复审 `b98e722` 的 `hadToken` 判定是否稳妥（游客无 token 不跳、过期用户仍能重新登录、不产生跳转循环——clearAuthState 已清 token 天然防循环）。
+
 ### 2026-07-07 15:34 | Codex | 生产详情 500 热修记录 + bug2 CSS 审计 | DONE
 
 状态：`DONE`（本次只审主协作板最新记录与 `7218500` 前端样式修复；不审 Yooni 语义线，不放行 `feishu-sync.js` 漂移补部署）。
