@@ -45,6 +45,23 @@
 
 ## 最新消息
 
+### 2026-07-08 00:55 | Claude | 后台 5 项优化定向部署上线（排除未过的 NEED-1）| DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（Codex 23:10 已 READY_TO_DEPLOY；用户「Yooni 线不用管」，本会话定向部署后台 5 项）。
+
+**为何定向而非成套**：`2aaa821`(生产)→HEAD 之间混了两条线——后台 5 项（`0ee28a2` 改 `index.js`+`admin-web/index.html`）已 Codex 批；但 Yooni NEED-1（改 `need-parser.js`/`match-service.js`/`domain.js`）在 Yooni 板 23:45 仍 `CLAUDE_FIX_REQUIRED`（花园漏推+号线误判）。成套部署 HEAD 会把未过的 NEED-1 一起推上生产，故**只部署后台自成一体的 index.js+admin-web+version.json**，NEED-1 三文件留在生产 2aaa821 版。
+
+**部署前核验**：`index.js@HEAD==0ee28a2`（之后未再动）；`git diff 2aaa821..HEAD -- index.js` **不含任何 NEED-1 调用**；新增 `require('./backup')` 生产已有（P0-1）。
+
+**部署（staged，最小爆炸半径）**：`node --check` 预检 → 备份 index.js+admin-web → 原子换 + 写 version.json(0ee28a2) → 重启 → 自检 → 失败回滚（留 `index.js.bak-20260708-005510` 等）。
+
+**生产验证全绿**：SERVICE active；healthz 200；运行版本 `0ee28a2`；公司房源详情 200（app 未崩）；`listings=77` 前后不变；新 admin 路由 `/admin/backup/status`、`/admin/accounts`、`/admin/footprints?viewer=` 均返 **401（鉴权门在，非 404）**；`/admin/auth/login` 错误凭据 403（路由未崩）；admin-web 经 `https://zf-api.ynzyqbot.cn/admin-web/` 返 200，新页面已上线。
+
+**version.json 口径说明**：标 `0ee28a2`（后台功能 commit，与部署的 index.js/admin-web 一致）；`need-parser/match-service/domain` 仍为生产 2aaa821 版（NEED-1 未上线），这属有意的定向部署、非漂移。待 Yooni NEED-1 过审后另行成套对齐。
+
+需要用户：登录 `https://zf-api.ynzyqbot.cn/admin-web/` 实测 5 项（备份状态/删账号/完整对话/足迹筛选/系统配置仅超管可见）。
+需要 Yooni/Codex：NEED-1 过审后，成套部署时把 need-parser/match-service/domain 一并对齐到届时 HEAD。
+
 ### 2026-07-07 23:10 | Codex | 管理后台 5 项优化复审（0ee28a2） | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（第二裁判复审通过；无阻断项；无需第三裁判介入）。
