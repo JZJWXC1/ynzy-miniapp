@@ -175,6 +175,8 @@ cp "$APP_DIR/deploy/ynzy-restore-drill.timer" /etc/systemd/system/ynzy-restore-d
 # 从飞书拉回最新 .ygbak 每周演练（完整闭环，P0-1）
 cp "$APP_DIR/deploy/ynzy-feishu-drill.service" /etc/systemd/system/ynzy-feishu-drill.service
 cp "$APP_DIR/deploy/ynzy-feishu-drill.timer" /etc/systemd/system/ynzy-feishu-drill.timer
+cp "$APP_DIR/deploy/ynzy-health-check.service" /etc/systemd/system/ynzy-health-check.service
+cp "$APP_DIR/deploy/ynzy-health-check.timer" /etc/systemd/system/ynzy-health-check.timer
 ensure_backup_env
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
@@ -183,6 +185,8 @@ systemctl enable --now ynzy-db-backup.timer
 systemctl enable --now ynzy-offsite-backup.timer
 systemctl enable --now ynzy-restore-drill.timer
 systemctl enable --now ynzy-feishu-drill.timer
+# 健康巡检定时器（每 15 分钟：db 可解析/磁盘/备份新鲜度/服务，失败非零退出经 journald 告警）
+systemctl enable --now ynzy-health-check.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
