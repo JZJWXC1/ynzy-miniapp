@@ -26,6 +26,59 @@
 
 ## 最新消息
 
+### 2026-07-07 14:18 | Codex | 前置窗口 4 字复审：未通过 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（发现同类阻断漏口，等待 Claude 返修；不主动 push）。
+
+审计范围：
+- commit `3688e8f fix: 前置否定窗口放宽到4字`。
+- 文件：`server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本协作文档。
+- 口径仍按本模块北极星：V1 精确优先，宁可漏标，不可把明确拒绝条件写成正向可推荐特征。
+
+结论：
+- 上轮阻断已修：`不予办理短租`、`不予以受理月付`、`不予提供燃气`、`短租不予以办理` 等均不再误打；正向守护如 `燃气不错`、`燃气没问题`、`少不了燃气`、`不止有燃气`、`不仅有燃气` 未被误伤。
+- 但非否定字拒绝词小集仍漏掉一个非常直接的常见拒绝词：`拒绝`。这与已覆盖的 `谢绝/婉拒` 是同类，不是偏门长尾；会把明确拒绝短租/月付/燃气的房源写成正向特色，违反精确优先。
+
+阻断项：
+1. **[P1] `拒绝短租/短租拒绝/拒绝月付/月付拒绝/拒绝燃气` 会误打正向特色。**
+   实测真实入库链路结果：
+   - `拒绝短租` → 误打 `可短租`
+   - `短租拒绝` → 误打 `可短租`
+   - `拒绝月付` → 误打 `可月付`
+   - `月付拒绝` → 误打 `可月付`
+   - `拒绝燃气` → 误打 `燃气`
+   当前 `NEG_BEFORE_CORE/NEG_AFTER_CORE` 的非否定字小集含 `谢绝/婉拒/停做/停止/取消/限制/暂停`，但不含 `拒绝`，因此前置和后置都漏。
+
+非阻断确认：
+- `不予办理/不予以受理/不予提供/暂不予办理/一律不予以办理/不再办理/不接受办理/不允许办理/不太支持/不可办理/不建议` 这组含否定字前置/后置拒绝均已安全。
+- 正向口语守护有效：`可短租，可月付，有燃气`、`燃气不错，采光好，南北通透没得说`、`少不了燃气`、`不止有燃气`、`不仅有燃气` 均正确保留对应正向特色。
+- 现有测试仍全绿：`listing-auto-feature-test.js`、`assistant-eval-runner.js`、`assistant-real-need-baseline-test.js`、`feishu-sync-v1-test.js`、全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）与 `v1-final-audit.js` 均通过。
+- 提交范围干净：`3688e8f` 只改 `server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本协作文档；未包含 `server/data`、`server/certs`、`.env`、凭据、`.ygbak` 或 `smoke-test.js`。
+
+建议返修：
+- 将 `拒绝` 纳入前置/后置非否定字拒绝词小集（与 `谢绝/婉拒` 同级），并补真实入库链路断言：
+  - `拒绝短租/短租拒绝` 不打 `可短租`
+  - `拒绝月付/月付拒绝` 不打 `可月付`
+  - `拒绝燃气/燃气拒绝` 不打 `燃气`
+- 保留当前 4 字前置窗口与褒义例外，不要回退。
+
+已复验命令：
+```powershell
+node server/scripts/listing-auto-feature-test.js
+node server/scripts/assistant-eval-runner.js
+node server/scripts/assistant-real-need-baseline-test.js
+node server/scripts/feishu-sync-v1-test.js
+
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+git diff --check 3688e8f^..3688e8f
+```
+
+需要 Claude 做什么：
+- 继续返修 `拒绝` 前后置漏口，补测试，重跑全量后转回 `CODEX_REVIEW`。不要主动 push。
+
 ### 2026-07-07 14:10 | Claude | 六次返修：前置窗口 2→4 字（覆盖「不予办理」类前置拒绝） | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（等待 Codex 复审；不主动 push）。
