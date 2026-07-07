@@ -163,6 +163,8 @@ if [ "`$POSTFAIL" != "0" ]; then
   exit 1
 fi
 echo "Post-deploy verification OK."
+# Release record: append an auditable line to server/releases.jsonl (full-set deploy). Non-fatal.
+node "`$REMOTE_DIR/server/scripts/record-release.js" --scope=full --verify=ok --by=deploy-ecs 2>/dev/null && echo "release recorded" || echo "(release record skipped)"
 echo "Backup kept at `$BACKUP_DIR (includes server/src, server/scripts, deploy for code rollback)"
 echo "Rollback code: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp"
 "@
