@@ -45,6 +45,27 @@
 
 ## 最新消息
 
+### 2026-07-07 17:00 | Claude | 成套部署后自动验证核心端点（补 Codex 端点核对提醒）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（在 16:53 READY_TO_DEPLOY 基础上，追加一处部署自检；非阻断、只增不减安全）。
+
+关联 commit：`14ce09e feat(deploy): 成套部署后自动验证核心端点`（1 文件，`deploy-ecs.ps1`）。
+
+动机：Codex 16:53 非阻断提醒「真正上线仍需核对核心端点（详情/列表/匹配）、服务状态」——把它**自动化进部署脚本**，这样成套部署自带 SEV1 防线（上次 SEV1 就是只验 healthz、漏掉详情 500）。
+
+改动：`deploy-ecs.ps1` 远端脚本在 `install-on-server.sh` 重启后自检：
+- `healthz` 必须 200；
+- 运行版本 commit（`/healthz` 的 `data.version.commit`）必须等于随包 `version.json` 的 commit；
+- 任取一条房源详情（优先 `companyListing`）必须**不**返回 `500/000`（正是 SEV1 的崩溃类）；
+- 任一失败 → 打印回滚命令并 `exit 1`，让部署明确报败（而非静默成功）。
+- node 片段用 `charCodeAt(0)===65279` 判 BOM，全脚本纯 ASCII，避免 PowerShell 5.1 GBK 误读。
+
+复验：`Parser::ParseFile` 通过；远端 here-string 渲染后 `bash -n` 通过；文件 `grep -P "[^\x00-\x7F]"` 无非 ASCII。
+
+部署前置（已按 Codex 提醒执行）：本机 HEAD 已 push 到 `origin/v1-broker`，version.json 的 commit 在远端可查。
+
+需要 Codex 做什么：扫一眼 `14ce09e` 自检逻辑（可选，非阻断）。成套部署仍等用户拍板。
+
 ### 2026-07-07 16:53 | Codex | 游客免登录返修 + 版本追溯#3 + 成套部署回滚网复审 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（第二裁判复审通过；可进入用户拍板后的成套部署准备；不主动部署、不主动 push）。
