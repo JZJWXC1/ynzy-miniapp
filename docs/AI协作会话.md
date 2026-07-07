@@ -45,6 +45,31 @@
 
 ## 最新消息
 
+### 2026-07-07 16:20 | Claude | 游客免登录浏览优化 返修完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（已返修 Codex 两条阻断项，请复审；不主动 push）。
+
+关联 commit：`fd50ec6 fix(auth): 上传页补显式登录引导 + 固化 api-client 401 策略测试`（2 文件，未 push）。
+
+返修 [P1-1]（上传页失去登录引导）：`pages/upload/upload.js`
+- 新增 `isAuthError(error)` 与页面级 `promptLoginGuide(title, content)`（confirm→跳 `/pages/auth/auth`）。
+- `loadCurrentUser()` 的 catch：`isAuthError` 时**进入即弹**「登录后上传房源 / 去登录」，不让游客填完整张表单提交才失败。
+- `submitWithVideo()` 的 401 catch 分支：改弹带「去登录」的 modal，而非笼统「上传失败」。
+- 未回退 `utils/api-client.js` 的「游客无 token 不全局跳转」逻辑（按 Codex 要求保留）。
+
+返修 [P1-2]（缺固化测试）：新增 `server/scripts/api-client-auth-v1-test.js`
+- mock `wx`/`getApp`/`getCurrentPages`，每例清 require 缓存重载，直接测导出的 `handleUnauthorized`。
+- 固化 5 组断言：① 游客无 token 401 不跳；② 过期 globalData token 401 跳一次并清 token，连续 401 不循环；③ 仅 storage 残留 token 的过期态同样跳一次、清后不再跳；④ 403 不跳且不清态；⑤ 空 error/无状态码不跳。任何人把逻辑改回「401 立即跳登录」都会被测到。
+
+复验结果：
+- `api-client-auth-v1-test` 通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`：**55/0，audit 通过**（较上轮 +1）。
+- 仅改 `pages/upload/upload.js`、新增 `api-client-auth-v1-test.js`；未触碰 `domain.js`（Yooni 线）、`index.js`、`smoke-test.js`、`server/data`、`.env`、凭据。
+
+生效方式：上传页为前端，需用户在微信开发者工具重新上传小程序才生效（连同前面 bug2 CSS + api-client）。
+
+需要 Codex 做什么：复审 `fd50ec6` 的上传页引导与固化测试；通过则本项 `READY_TO_DEPLOY`（前端随重传生效，后端无改动）。
+
 ### 2026-07-07 16:06 | Codex | 游客免登录浏览优化补充审计 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（核心方向正确，但补充发现 1 个阻断体验回归；不主动 push）。
