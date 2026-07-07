@@ -180,10 +180,19 @@ function safeNeed(source = {}) {
   return need
 }
 
+// 标识符字段必须原样透传，绝不能过 scrubSensitiveText：listing.id 形如 L1783427664217530，
+// 其数字子串会命中手机号正则 1[3-9]\d{9} 被脱敏成 L[手机号已隐藏]17530，导致前端拿到坏 id ——
+// 聊天/助手推荐卡「看详情」404、「地图查看」的 listingIds 匹配不到 → 空。id 非敏感信息，不脱敏。
+const RAW_LISTING_KEYS = new Set(['id'])
+
 function safeListing(listing = {}) {
   return SAFE_LISTING_KEYS.reduce((result, key) => {
     if (!Object.prototype.hasOwnProperty.call(listing, key)) return result
     const value = listing[key]
+    if (RAW_LISTING_KEYS.has(key)) {
+      result[key] = value
+      return result
+    }
     if (Array.isArray(value)) {
       result[key] = safeTextArray(value)
       return result
