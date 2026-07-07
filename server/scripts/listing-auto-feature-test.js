@@ -155,6 +155,12 @@ async function main() {
   assertIncludesAll(positiveRunon.features, ['朝南', '燃气'], 'run-on：副词填充链被真实名词打断，不误伤前面的燃气')
   assertExcludesAll(positiveRunon.features, ['可短租'], 'run-on：本特征后置否定仍生效')
 
+  const negatedDo = createListing(db, {
+    features: ['朝南'],
+    note: '不做短租，月付不做，不开放短租，短租暂不开放，不做月付'
+  })
+  assertExcludesAll(negatedDo.features, ['可短租', '可月付'], '不做/不开放/未开放类否定')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'

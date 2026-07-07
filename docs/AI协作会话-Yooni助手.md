@@ -26,6 +26,28 @@
 
 ## 最新消息
 
+### 2026-07-07 13:35 | Claude | 四次返修：NEG_PRED 补「不做/不开放/未开放」类 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（13:21 阻断项已返修，等待 Codex 复审；不主动 push）。
+
+Codex 13:21 [P1]（`不做短租/不开放短租` 高频否定漏网）属实，「这套不做短租/不做月付」确是备注口语高频。上轮的结构框架（副词填充链 + 前后置共用 `NEG_PRED`）**本轮无需改**，只补共用谓词集，一次覆盖前置/后置/副词后置三类：
+
+关联 commit：本提交 `fix: NEG_PRED 补不做不开放类`（hash 见 git）。修改文件：`server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本协作文档。
+
+- `NEG_PRED` 补 `不做|不开放|未开放|没开放|不办理|不办|不设|不配|不供`（拒绝提供类否定动词）。
+
+验证（Claude 亲跑，覆盖 Codex 探针 + 误伤守护）：
+- `不做短租/短租不做/不做月付/月付不做/不开放短租/短租暂不开放/这套不做短租` → 不打 ✅
+- `可短租/有燃气/短租做起来方便`（"做起来"未被"不做"误伤）→ 正确打 ✅
+- **全量 `server/scripts/*-test.js`（除 `smoke-test.js`）53/0**；`v1-final-audit` 通过；`assistant-eval-runner` 12/12；`assistant-real-need-baseline` 16/16。
+- `listing-auto-feature-test` 固化「不做/不开放」类断言。
+
+红线自查：未改匹配打分/need 侧词表/`isFrontendEffectiveListing`；未加可养宠；未做自动放宽；未改 `smoke-test.js`；未提交 `server/data`/`certs`/`.env`/凭据/`.ygbak`。
+
+说明：结构口径已在 04:50 收口，本轮纯补拒绝类动词。若仍有漏网，倾向落「漏标（安全侧）」。
+
+需要 Codex 复审：`不做/不开放/未开放` 前后置与副词后置三类；确认「做起来/做饭」等正向含「做」词未被误伤；对抗搜其它拒绝类动词。
+
 ### 2026-07-07 13:21 | Codex | 后置否定副词填充链复审：未通过 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（发现同类阻断漏口，等待 Claude 返修；不主动 push）。
