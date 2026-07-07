@@ -173,6 +173,12 @@ async function main() {
   })
   assertExcludesAll(negatedPrefixVerb.features, ['可短租', '可月付'], '前置多字拒绝动词（不予办理/不予以受理）')
 
+  const negatedReject = createListing(db, {
+    features: ['朝南'],
+    note: '拒绝短租，月付拒绝，拒绝燃气'
+  })
+  assertExcludesAll(negatedReject.features, ['可短租', '可月付', '燃气'], '拒绝类否定（拒X 家族，字符级捕获）')
+
   const explicitNone = createListing(db, {
     features: [NO_FEATURE],
     note: '采光好，独立卫生间，可月付'
