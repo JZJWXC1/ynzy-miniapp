@@ -10,6 +10,7 @@
 //   - 纯演练（不带 --out）：解密产物落到系统临时目录，用完即删，不残留明文。
 //   - 真恢复取数（带 --out <目录>）：把解密出的 db.restored.json 保留到你指定的目录，供人工覆盖生产库。
 
+const fs = require('fs')
 const path = require('path')
 const config = require('../src/config')
 const backup = require('../src/backup')
@@ -62,6 +63,21 @@ function main() {
     if (outDir && result.drill.restoredPath) {
       process.stdout.write(`[恢复演练] 已保留解密产物（真恢复请人工覆盖生产库）：${result.drill.restoredPath}\n`)
     }
+  }
+
+  // 演练状态落盘到备份目录，供后台「数据备份」页只读展示（仅非敏感元数据：结果/时间/文件名/计数是否匹配）。
+  try {
+    const mismatches = (result.drill && result.drill.mismatches) || []
+    fs.writeFileSync(path.join(resolveStageDir(), 'restore-drill-status.json'), JSON.stringify({
+      ok: result.alerts.length === 0,
+      atMs: Date.now(),
+      kind: 'local',
+      fileName: result.target ? path.basename(result.target) : '',
+      countsMatch: mismatches.length === 0,
+      note: result.alerts.map((a) => a.kind).join(',')
+    }))
+  } catch (statusError) {
+    process.stderr.write(`[恢复演练] 状态写入失败（不影响演练结果）：${statusError.message}\n`)
   }
 
   if (result.alerts.length === 0) {

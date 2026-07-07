@@ -12,7 +12,7 @@ const innerHtmlAssignments = lines
 
 assert.strictEqual(
   innerHtmlAssignments.length,
-  25,
+  29,
   `admin-web/index.html innerHTML sink count changed; review every new sink and update this test.\n${innerHtmlAssignments.map(({ lineNo, line }) => `${lineNo}: ${line.trim()}`).join('\n')}`
 )
 
@@ -35,7 +35,12 @@ const requiredEscapes = [
   ['launch title', /\$\{safeText\(item\.title\)\}/],
   ['launch detail', /\$\{safeText\(item\.detail\s*\|\|[^)]*\)\}/],
   ['feishu sync name', /feishuSyncRows[\s\S]*\$\{safeText\(item\.name\)\}/],
-  ['feishu sync note', /feishuSyncRows[\s\S]*\$\{safeText\(item\.note\s*\|\|[^)]*\)\}/]
+  ['feishu sync note', /feishuSyncRows[\s\S]*\$\{safeText\(item\.note\s*\|\|[^)]*\)\}/],
+  ['footprint viewer', /\$\{safeText\(item\.viewer\s*\|\|\s*item\.user\)\}/],
+  ['footprint action', /\$\{safeText\(item\.action\s*\|\|\s*item\.status\)\}/],
+  ['conversation user input', /\$\{safeText\(turn\.userInput\)\}/],
+  ['conversation assistant reply', /\$\{safeText\(turn\.assistantReply\)\}/],
+  ['backup latest file', /\$\{safeText\(offsite\.latestFile[^)]*\)\}/]
 ]
 
 requiredEscapes.forEach(([label, pattern]) => assertPattern(label, pattern))

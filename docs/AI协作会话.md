@@ -45,6 +45,36 @@
 
 ## 最新消息
 
+### 2026-07-07 22:10 | Claude | 管理后台 admin-web + 后端 5 项优化（备份状态/删除账号/完整对话/足迹筛选/超管分级）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（5 项已实现 + 测试固化，全量 63/0 + audit 通过；本地已作用域提交，未 push、未部署；请第二裁判复审）。
+
+**独占声明**：本轮独占 `server/src/index.js`（admin 路由与权限 helper 区段）。`server/src/domain.js` **不改**（足迹筛选放 index.js 层做，避开与 Yooni domain.js 争用）；`server/src/assistant/*` **只读不改**（完整对话复用既有 trace log 重建）。请 Yooni 线本轮暂勿改 index.js。
+
+**现状勘察结论（关键）**：
+- 权限模型已存在：`assertAdminCapability`（index.js 532-553）= 超管/存量账号放行、`区域查看权限`等受限账号 403；`/admin/auth/me` 已返回 `permission`。写操作已受门约束，**缺的是「系统配置组只读端点」未设门 + 前端未按角色隐藏菜单 + `/admin/llm-config/test` 漏门**。
+- 反馈记录已带 `threadId`；`db.assistantTraceLogs` 每条即一轮对话（`sourceText`用户输入/`reply`助手回复/`listings`推荐，落库时已脱敏、`id` 原样保留）→ 完整对话可按 threadId 重建，**无需新增持久化、无需改小程序**。
+- `backup.js` 的 `checkFreshness`/`listBackups` 只读文件名+时间戳、不解密、零凭据 → 备份状态天然安全。
+- `domain.adminLogs` 返回 `{viewer,listing,action,needId,purpose,uploader,sync,time}`。
+- `smoke-test.js`（禁改）依赖 `/admin/footprints` 顶层为**数组**、`/admin/users` 含 `users` 字段 → 做兼容。
+
+**拟修改文件清单**：
+- `server/src/index.js`（独占）：①抽 `isSuperAdmin(account)`，`assertAdminCapability` 复用之；②`/admin/auth/me` 增 `isSuperAdmin` 布尔；③系统配置组只读端点加超管门（`launch-check`/`assistant/feedbacks`/`eval-cases`/`traces`/`feishu-sync/status`/`env-template`/`llm-config` GET/`llm-config/test`/新 `backup/status`/新 `accounts`）；④新 `DELETE /admin/accounts/:id` 软删（防删自己、防删到零个可用超管、留痕 `deletedBy/deletedAt`）；⑤`assertAdminRequest` 排除 `deleted`；⑥新 `GET /admin/accounts`（超管，供前端账号列表）；`/admin/users` 的 `admins` 字段仅超管可见（`users` 不变，保 smoke-test）；⑦新 `GET /admin/backup/status`（复用 backup.js，仅返回非敏感元数据）；⑧新 `GET /admin/assistant/feedbacks/:id/conversation`（按 threadId 重建对话）；⑨`/admin/footprints` 带查询参数时筛选（查看人/房源关键词/内容类型/时间范围）+ 分页返回对象，无参时兼容返回数组。
+- `admin-web/index.html`：数据备份页加同步状态块；账号管理加「删除」按钮并改用 `/admin/accounts`；客服反馈加「查看完整对话」展开；敏感查看足迹加筛选栏+分页；登录后按 `isSuperAdmin` 隐藏系统配置组菜单（后端已硬拦，前端隐藏仅为体验）。新增渲染一律 `safeText/safeAttr`。
+- 新增测试：`admin-backup-status-v1-test.js`、`admin-account-delete-v1-test.js`、`admin-feedback-conversation-v1-test.js`、`admin-footprints-filter-v1-test.js`、`admin-super-config-guard-v1-test.js`；更新 `admin-web-xss-v1-test.js`（innerHTML sink 计数随新增渲染上调并补转义断言）。
+
+**安全红线**：`/admin/backup/status` 绝不返回 `BACKUP_ENCRYPTION_KEY`/`FEISHU_BACKUP_*`/任何 token；对话与足迹沿用既有脱敏、不外泄手机号等 PII、`listing.id` 不误脱；不碰 `server/data`/`.env`/`certs`/真实 `.ygbak`；不改 `smoke-test.js`。基线已核：全量 58/0 + audit 通过。
+
+**完成情况（待 Codex 复审）**：
+- 5 项全部实现：后端 `server/src/index.js`（新 `isSuperAdmin`、系统配置组只读端点加超管门、`/admin/auth/me` 返回 `isSuperAdmin`、`DELETE /admin/accounts/:id` 软删、新 `GET /admin/accounts`、`/admin/users` 的 admins 字段超管可见、新 `GET /admin/backup/status`、新 `GET /admin/assistant/feedbacks/:id/conversation`、`/admin/footprints` 筛选+分页兼容）；前端 `admin-web/index.html`（数据备份同步状态块、账号删除按钮改走 `/admin/accounts`、客服反馈完整对话、足迹筛选栏+分页、按角色隐藏系统配置菜单）；`restore-drill.js`/`restore-drill-from-feishu.js` 落盘非敏感演练状态供状态页读取。
+- 顺手修 2 个既存缺陷：① `/admin/llm-config/test` 漏能力门（已补超管门）；② admin 登录只判 `status!==禁用` 未排除软删账号（已补 `!deleted`，否则删号后仍能登录——被 `admin-account-delete` 测试抓出并修）。
+- 测试固化（新增 5）：`admin-super-config-guard`（超管分级门 + auth/me 角色 + /admin/users 收敛）、`admin-account-delete`（软删 + 防删自己 + 防删到零超管 + 旧 token/再登录失效）、`admin-feedback-conversation`（按 threadId 重建 + 时序 + listing.id 保留 + 滚动清理降级 + 权限门 + 404）、`admin-footprints-filter`（查看人/关键词/内容类型/时间筛选 + 分页 + 无参数组兼容）、`admin-backup-status`（新鲜度 + 配置布尔 + 演练结果 + **凭据零泄露断言**）；更新 `admin-web-xss`（innerHTML sink 25→29 + 新增渲染的 safeText 转义断言）。
+- 全量：`server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **63/0，audit 通过**（基线 58 + 新增 5）。
+- 作用域提交本轮文件，未吞 Yooni 的 `server/src/match-service.js` 与其 docs；未 push、未部署。
+
+需要 Codex：复审权限门有无遗漏端点、软删红线、备份状态零凭据、足迹数组兼容、XSS sink；确认无回归。
+需要用户：拍板后再部署（后端随成套部署上线，`admin-web` 由后端提供、无需微信重传；演练状态文件在服务器下次定时演练后才有数据，此前状态页对应字段显示「暂无记录」为正常降级）。
+
 ### 2026-07-07 21:40 | Claude | 🎯 根治聊天推荐「看详情/地图为空」+ 筛选栏改造 | DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`（聊天 bug 后端已修并生产端到端验证；筛选栏前端待重传）。

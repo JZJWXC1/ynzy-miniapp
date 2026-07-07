@@ -11,6 +11,7 @@ const llm = require('./llm')
 const asrService = require('./asr-service')
 const asrRealtime = require('./asr-realtime')
 const assistantService = require('./assistant-service')
+const backup = require('./backup')
 const oss = require('./oss')
 const wxpay = require('./wxpay')
 const { parseMultipartForm } = require('./multipart')
@@ -520,7 +521,7 @@ function assertAdminRequest(req, db) {
   }
 
   const accounts = db.adminAccounts || defaultAdminAccounts(db)
-  const account = accounts.find((item) => item.id === payload.id && item.status !== '禁用')
+  const account = accounts.find((item) => item.id === payload.id && item.status !== '禁用' && !item.deleted)
   if (!account) {
     const error = new Error('无管理员权限')
     error.statusCode = 403
@@ -529,14 +530,11 @@ function assertAdminRequest(req, db) {
   return account
 }
 
-function assertAdminCapability(account) {
-  // 存量管理员账号历史上没有 permission/capabilities 字段；这类账号按超级管理员兼容，
-  // 只拦截显式标为受限权限的账号，避免老账号编辑房源被误判 403。
-  if (!account) {
-    const error = new Error('当前管理员无权执行该操作')
-    error.statusCode = 403
-    throw error
-  }
+function isSuperAdmin(account) {
+  // 超级管理员判定（与 assertAdminCapability 同源，避免两套口径漂移）：存量管理员账号历史上没有
+  // permission/capabilities 字段，这类账号按超级管理员兼容；只把显式标为受限权限（如「区域查看权限」）
+  // 的账号视为普通管理员，避免锁死老账号。
+  if (!account) return false
   const permission = String(account.permission || '').trim()
   const capabilities = Array.isArray(account.capabilities)
     ? account.capabilities.map((item) => String(item || '').trim()).filter(Boolean)
@@ -546,10 +544,191 @@ function assertAdminCapability(account) {
   ) || (
     capabilities.length && capabilities.indexOf('*') === -1 && capabilities.indexOf('all') === -1
   )
-  if (!explicitlyRestricted) return
-  const error = new Error('当前管理员无权执行该操作')
-  error.statusCode = 403
-  throw error
+  return !explicitlyRestricted
+}
+
+function assertAdminCapability(account) {
+  // 高危写操作 + 「系统配置」整组（飞书同步/LLM配置/客服反馈/客服Trace/上线检查/账号管理/数据备份）
+  // 只允许超级管理员访问；普通管理员一律 403。前端隐藏菜单只是体验，这里才是真正的安全边界。
+  if (!isSuperAdmin(account)) {
+    const error = new Error('当前管理员无权执行该操作')
+    error.statusCode = 403
+    throw error
+  }
+}
+
+// ---------- 客服反馈完整对话重建（需求3） ----------
+// 完整对话直接由既有 trace log（db.assistantTraceLogs）按 threadId 重建：每条 trace log 即一轮
+// （用户输入 sourceText / 助手回复 reply / 推荐 listings），落库时已脱敏、listing.id 原样保留，
+// 无需二次脱敏、无需新增持久化、无需改小程序。
+function buildFeedbackConversation(db, feedbackId) {
+  const id = String(feedbackId || '').trim()
+  const feedback = (db.assistantFeedbacks || []).find((item) => item.id === id)
+  if (!feedback) {
+    const error = new Error('assistant feedback not found')
+    error.statusCode = 404
+    throw error
+  }
+  const threadId = String(feedback.threadId || '').trim()
+  const rows = threadId
+    ? assistantService.traceRows(db, { threadId, limit: 200 }).slice().reverse()
+    : []
+  const turns = rows.map((row, index) => ({
+    round: index + 1,
+    time: row.createdAt || '',
+    intent: row.intent || '',
+    userInput: row.sourceText || '',
+    assistantReply: row.reply || '',
+    nextQuestion: row.nextQuestion || '',
+    need: row.need || {},
+    listings: Array.isArray(row.listings) ? row.listings : [],
+    replyMode: row.replyMode || ''
+  }))
+  return {
+    feedbackId: feedback.id,
+    threadId,
+    status: feedback.status || '',
+    feedbackType: feedback.feedbackType || '',
+    createdAt: feedback.createdAt || '',
+    turnCount: turns.length,
+    // threadId 存在却取不到轮次：多为 trace log 达上限（500 条）被滚动清理，如实告知运营。
+    truncated: Boolean(threadId) && turns.length === 0,
+    turns
+  }
+}
+
+// ---------- 数据备份/异地同步状态（需求1，只读非敏感元数据） ----------
+function backupStageDir() {
+  return process.env.BACKUP_STAGE_DIR
+    ? path.resolve(process.env.BACKUP_STAGE_DIR)
+    : path.join(config.rootDir, 'backups')
+}
+
+// 演练/上传脚本可选写入的状态文件；只按白名单透出非敏感字段——即便文件里混入了别的键，
+// 也不会被返回。缺失/损坏一律降级为 null，不抛错、不泄露路径。
+function readSafeStatusFile(dir, name) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return null
+    const at = typeof parsed.at === 'string' ? parsed.at
+      : (Number.isFinite(parsed.atMs) ? new Date(parsed.atMs).toISOString() : '')
+    return {
+      ok: Boolean(parsed.ok),
+      at,
+      kind: typeof parsed.kind === 'string' ? parsed.kind.slice(0, 40) : '',
+      fileName: typeof parsed.fileName === 'string' ? parsed.fileName.slice(0, 120) : '',
+      countsMatch: parsed.countsMatch === undefined ? null : Boolean(parsed.countsMatch),
+      note: typeof parsed.note === 'string' ? parsed.note.slice(0, 200) : ''
+    }
+  } catch (error) {
+    return null
+  }
+}
+
+function buildBackupStatus() {
+  // 全程不解密备份、不联网、不读取任何凭据。绝不返回 BACKUP_ENCRYPTION_KEY / FEISHU_BACKUP_* / token。
+  const dir = backupStageDir()
+  const maxAgeHours = Number(process.env.BACKUP_MAX_AGE_HOURS) > 0 ? Number(process.env.BACKUP_MAX_AGE_HOURS) : 24
+  const retentionDays = Number(process.env.BACKUP_RETENTION_DAYS) > 0 ? Number(process.env.BACKUP_RETENTION_DAYS) : 30
+  let backupCount = 0
+  let fresh = { ok: false, latest: null, latestMs: null, ageMs: null, reason: '备份目录不可读或为空' }
+  try {
+    backupCount = backup.listBackups(dir).length
+    fresh = backup.checkFreshness({ dir, maxAgeHours })
+  } catch (error) {
+    // 目录不存在等：保持默认「无备份」结论，不抛错。
+  }
+  return {
+    now: new Date().toISOString(),
+    offsite: {
+      encryptionConfigured: Boolean(process.env.BACKUP_ENCRYPTION_KEY),
+      remoteConfigured: Boolean(process.env.BACKUP_REMOTE_CMD),
+      backupCount,
+      latestFile: fresh.latest || null,
+      latestAt: Number.isFinite(fresh.latestMs) ? new Date(fresh.latestMs).toISOString() : null,
+      ageHours: Number.isFinite(fresh.ageMs) ? Math.round((fresh.ageMs / 3600000) * 10) / 10 : null,
+      maxAgeHours,
+      retentionDays,
+      fresh: Boolean(fresh.ok),
+      stale: !fresh.ok,
+      reason: fresh.reason || ''
+    },
+    feishu: {
+      configured: Boolean(
+        process.env.FEISHU_BACKUP_APP_ID &&
+        process.env.FEISHU_BACKUP_APP_SECRET &&
+        process.env.FEISHU_BACKUP_FOLDER_TOKEN
+      ),
+      lastUpload: readSafeStatusFile(dir, 'feishu-upload-status.json'),
+      lastDrill: readSafeStatusFile(dir, 'feishu-drill-status.json')
+    },
+    localDrill: readSafeStatusFile(dir, 'restore-drill-status.json')
+  }
+}
+
+// ---------- 敏感查看足迹筛选 + 分页（需求4） ----------
+// 无任何查询参数时返回旧的完整数组，保 smoke-test 与旧调用兼容；带参数时返回
+// { rows, total, page, pageSize, totalPages, actions } 分页对象。筛选在 index.js 层对
+// domain.adminLogs 的输出做，不改与 Yooni 争用的 domain.js。
+const FOOTPRINT_QUERY_KEYS = ['viewer', 'keyword', 'action', 'startDate', 'endDate', 'page', 'pageSize']
+
+function parseFootprintTimeMs(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+  // 足迹时间是 zh-CN 本地串（如「2026/7/4 23:17:24」），日期筛选参数是「YYYY-MM-DD」；统一把
+  // 短横替换成斜杠再交给 Date 解析，两种格式 V8 都能按本地时区解析。
+  const ms = new Date(raw.replace(/-/g, '/')).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
+function filterAdminFootprints(rows, searchParams) {
+  const all = Array.isArray(rows) ? rows : []
+  const hasQuery = FOOTPRINT_QUERY_KEYS.some((key) => (
+    searchParams.has(key) && String(searchParams.get(key) || '').trim() !== ''
+  ))
+  // 内容类型候选值（去重）基于全量算，方便前端渲染筛选下拉，无论是否分页都返回。
+  const actions = Array.from(new Set(all.map((item) => String(item.action || '').trim()).filter(Boolean)))
+  if (!hasQuery) return all
+
+  const viewer = String(searchParams.get('viewer') || '').trim().toLowerCase()
+  const keyword = String(searchParams.get('keyword') || '').trim().toLowerCase()
+  const action = String(searchParams.get('action') || '').trim()
+  const startMs = parseFootprintTimeMs(searchParams.get('startDate'))
+  let endMs = parseFootprintTimeMs(searchParams.get('endDate'))
+  // 结束日期若是纯日期，按当天 23:59:59.999 闭区间，避免把当天记录漏掉。
+  if (endMs != null && /^\d{4}-\d{2}-\d{2}$/.test(String(searchParams.get('endDate') || '').trim())) {
+    endMs += 86400000 - 1
+  }
+
+  const filtered = all.filter((item) => {
+    if (viewer && !String(item.viewer || '').toLowerCase().includes(viewer)) return false
+    if (action && String(item.action || '').trim() !== action) return false
+    if (keyword) {
+      const hay = `${item.listing || ''} ${item.uploader || ''} ${item.needId || ''} ${item.purpose || ''}`.toLowerCase()
+      if (!hay.includes(keyword)) return false
+    }
+    if (startMs != null || endMs != null) {
+      const t = parseFootprintTimeMs(item.time)
+      if (t == null) return false
+      if (startMs != null && t < startMs) return false
+      if (endMs != null && t > endMs) return false
+    }
+    return true
+  })
+
+  const total = filtered.length
+  const pageSize = Math.min(Math.max(Number(searchParams.get('pageSize')) || 50, 1), 500)
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(Math.max(Number(searchParams.get('page')) || 1, 1), totalPages)
+  const startIndex = (page - 1) * pageSize
+  return {
+    rows: filtered.slice(startIndex, startIndex + pageSize),
+    total,
+    page,
+    pageSize,
+    totalPages,
+    actions
+  }
 }
 
 function serveAdminWeb(req, res, pathname) {
@@ -1345,7 +1524,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     const account = String(body.account || '').trim()
     const password = String(body.password || '')
     const accounts = db.adminAccounts || defaultAdminAccounts(db)
-    const admin = accounts.find((item) => item.account === account && adminPasswordMatches(item, password) && item.status !== '禁用')
+    const admin = accounts.find((item) => item.account === account && adminPasswordMatches(item, password) && item.status !== '禁用' && !item.deleted)
     if (!admin) {
       const error = new Error('账号或密码错误，或无管理员权限')
       error.statusCode = 403
@@ -1366,7 +1545,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const adminAccount = assertAdminRequest(req, db)
 
   if (method === 'GET' && pathname === '/admin/auth/me') {
-    return sendJson(res, publicAdminAccount(adminAccount))
+    return sendJson(res, { ...publicAdminAccount(adminAccount), isSuperAdmin: isSuperAdmin(adminAccount) })
   }
 
   if (method === 'GET' && pathname === '/admin/dashboard') {
@@ -1393,9 +1572,11 @@ async function handleAdmin(req, res, pathname, searchParams) {
     )))
   }
   if (method === 'GET' && pathname === '/admin/launch-check') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, buildLaunchCheck(db))
   }
   if (method === 'GET' && pathname === '/admin/assistant/feedbacks') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, assistantService.feedbackRows(db, {
       status: searchParams.get('status') || '',
       feedbackType: searchParams.get('feedbackType') || searchParams.get('type') || '',
@@ -1403,17 +1584,24 @@ async function handleAdmin(req, res, pathname, searchParams) {
     }))
   }
   if (method === 'GET' && pathname === '/admin/assistant/eval-cases') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, assistantService.evalCaseRows(db, {
       status: searchParams.get('status') || '',
       limit: searchParams.get('limit') || ''
     }))
   }
   if (method === 'GET' && pathname === '/admin/assistant/traces') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, assistantService.traceRows(db, {
       threadId: searchParams.get('threadId') || '',
       intent: searchParams.get('intent') || '',
       limit: searchParams.get('limit') || ''
     }))
+  }
+  const assistantFeedbackConversationMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/conversation$/)
+  if (method === 'GET' && assistantFeedbackConversationMatch) {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, buildFeedbackConversation(db, assistantFeedbackConversationMatch[1]))
   }
   const assistantFeedbackReviewMatch = pathname.match(/^\/admin\/assistant\/feedbacks\/([^/]+)\/review$/)
   if (method === 'POST' && assistantFeedbackReviewMatch) {
@@ -1436,11 +1624,13 @@ async function handleAdmin(req, res, pathname, searchParams) {
     )))
   }
   if (method === 'GET' && pathname === '/admin/env-template') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, {
       template: buildMissingEnvTemplate(db)
     })
   }
   if (method === 'GET' && pathname === '/admin/feishu-sync/status') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, feishuSync.status(db))
   }
   if (method === 'POST' && pathname === '/admin/feishu-sync/run') {
@@ -1548,7 +1738,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     )))
   }
   if (method === 'GET' && pathname === '/admin/footprints') {
-    return sendJson(res, domain.adminLogs(db))
+    return sendJson(res, filterAdminFootprints(domain.adminLogs(db), searchParams))
   }
   if (method === 'GET' && pathname === '/admin/commissions') {
     return sendJson(res, domain.commissionRows(db))
@@ -1624,15 +1814,30 @@ async function handleAdmin(req, res, pathname, searchParams) {
     }))
   }
   if (method === 'GET' && pathname === '/admin/users') {
+    // users 列表保持对所有已登录管理员开放（smoke-test、带看审核额度核对等依赖）；admins 账号清单
+    // 属敏感，仅超级管理员可见，普通管理员拿到空数组（账号管理页对普通管理员本就隐藏）。
     return sendJson(res, {
       users: domain.adminUsers(db),
-      admins: (db.adminAccounts || defaultAdminAccounts(db)).map(publicAdminAccount)
+      admins: isSuperAdmin(adminAccount)
+        ? (db.adminAccounts || defaultAdminAccounts(db)).filter((item) => !item.deleted).map(publicAdminAccount)
+        : []
     })
   }
   if (method === 'GET' && pathname === '/admin/data/export') {
     assertAdminCapability(adminAccount)
     const date = new Date().toISOString().slice(0, 10)
     return sendJsonDownload(res, `ynzy-backup-${date}.json`, db)
+  }
+  if (method === 'GET' && pathname === '/admin/backup/status') {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, buildBackupStatus())
+  }
+  if (method === 'GET' && pathname === '/admin/accounts') {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, {
+      users: domain.adminUsers(db),
+      admins: (db.adminAccounts || defaultAdminAccounts(db)).filter((item) => !item.deleted).map(publicAdminAccount)
+    })
   }
   if (method === 'POST' && pathname === '/admin/accounts') {
     assertAdminCapability(adminAccount)
@@ -1674,7 +1879,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
       })
       return {
         users: domain.adminUsers(nextDb),
-        admins: nextDb.adminAccounts.map(publicAdminAccount)
+        admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
       }
     }))
   }
@@ -1701,7 +1906,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
       account.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
       return {
         users: domain.adminUsers(nextDb),
-        admins: nextDb.adminAccounts.map(publicAdminAccount)
+        admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
       }
     }))
   }
@@ -1733,11 +1938,52 @@ async function handleAdmin(req, res, pathname, searchParams) {
       account.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
       return {
         users: domain.adminUsers(nextDb),
-        admins: nextDb.adminAccounts.map(publicAdminAccount)
+        admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  const adminDeleteMatch = pathname.match(/^\/admin\/accounts\/([^/]+)$/)
+  if (method === 'DELETE' && adminDeleteMatch) {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      nextDb.adminAccounts = nextDb.adminAccounts || defaultAdminAccounts(nextDb)
+      const target = nextDb.adminAccounts.find((item) => (
+        (item.id === adminDeleteMatch[1] || item.account === adminDeleteMatch[1]) && !item.deleted
+      ))
+      if (!target) {
+        const error = new Error('未找到管理员账号')
+        error.statusCode = 404
+        throw error
+      }
+      // 红线①：不能删除当前登录账号（防误删自己 + 防自锁）。
+      if (target.id === adminAccount.id) {
+        const error = new Error('不能删除当前登录账号')
+        error.statusCode = 400
+        throw error
+      }
+      // 红线②：不能删到零个可用超级管理员（可用 = 未删除且未禁用）。
+      const targetIsActiveSuper = target.status !== '禁用' && isSuperAdmin(target)
+      const activeSuperCount = nextDb.adminAccounts.filter((item) => (
+        !item.deleted && item.status !== '禁用' && isSuperAdmin(item)
+      )).length
+      if (targetIsActiveSuper && activeSuperCount <= 1) {
+        const error = new Error('至少保留一个可用的超级管理员，不能删除最后一个')
+        error.statusCode = 400
+        throw error
+      }
+      // 软删归档：保留记录留痕（deletedAt/deletedBy），登录与列表都会排除已删除账号。
+      target.deleted = true
+      target.status = '已删除'
+      target.deletedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+      target.deletedBy = adminAccount.account || adminAccount.id
+      return {
+        users: domain.adminUsers(nextDb),
+        admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
       }
     }))
   }
   if (method === 'GET' && pathname === '/admin/llm-config') {
+    assertAdminCapability(adminAccount)
     return sendJson(res, normalizeLlmConfig(db.llmConfig || {}))
   }
   if (method === 'PUT' && pathname === '/admin/llm-config') {
@@ -1746,6 +1992,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     return sendJson(res, dbStore.updateDb((nextDb) => saveLlmConfig(nextDb, body)))
   }
   if (method === 'POST' && pathname === '/admin/llm-config/test') {
+    assertAdminCapability(adminAccount)
     const body = await parseBody(req)
     const tempDb = { ...db, llmConfig: { ...normalizeLlmConfig({ ...(db.llmConfig || {}), ...body }), enabled: body.enabled !== false } }
     return sendJson(res, await assistantService.chat(tempDb, {

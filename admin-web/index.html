@@ -469,6 +469,26 @@
       font-weight: 700;
     }
 
+    .conversation-turn {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border, #eee);
+    }
+
+    .conversation-line {
+      margin: 3px 0;
+      line-height: 1.5;
+    }
+
+    .conversation-role {
+      display: inline-block;
+      min-width: 40px;
+      margin-right: 8px;
+      font-weight: 700;
+    }
+
+    .conversation-role.user { color: #2563eb; }
+    .conversation-role.assistant { color: #059669; }
+
     .row-actions {
       display: flex;
       flex-wrap: wrap;
@@ -1044,14 +1064,14 @@
       <div class="menu-title">风控记录</div>
       <button class="nav-button" data-panel="logs">敏感查看足迹</button>
       <button class="nav-button" data-panel="showingUploads">带看审核</button>
-      <div class="menu-title">系统配置</div>
-      <button class="nav-button" data-panel="feishuSync">飞书同步</button>
-      <button class="nav-button" data-panel="llmConfig">LLM配置</button>
-      <button class="nav-button" data-panel="assistantFeedback">客服反馈</button>
-      <button class="nav-button" data-panel="assistantTraces">客服Trace</button>
-      <button class="nav-button" data-panel="launchCheck">上线检查</button>
-      <button class="nav-button" data-panel="admins">账号管理</button>
-      <button class="nav-button" data-panel="dataBackup">数据备份</button>
+      <div class="menu-title" data-super="1">系统配置</div>
+      <button class="nav-button" data-panel="feishuSync" data-super="1">飞书同步</button>
+      <button class="nav-button" data-panel="llmConfig" data-super="1">LLM配置</button>
+      <button class="nav-button" data-panel="assistantFeedback" data-super="1">客服反馈</button>
+      <button class="nav-button" data-panel="assistantTraces" data-super="1">客服Trace</button>
+      <button class="nav-button" data-panel="launchCheck" data-super="1">上线检查</button>
+      <button class="nav-button" data-panel="admins" data-super="1">账号管理</button>
+      <button class="nav-button" data-panel="dataBackup" data-super="1">数据备份</button>
     </aside>
 
     <main class="main">
@@ -1211,11 +1231,43 @@
       </section>
 
       <section class="panel" id="logs">
+        <div class="config-card">
+          <div class="filter-bar">
+            <label class="filter-item">
+              <span>查看人</span>
+              <input id="footprintViewer" placeholder="按查看人姓名">
+            </label>
+            <label class="filter-item">
+              <span>房源/小区</span>
+              <input id="footprintKeyword" placeholder="房源/小区/上传人关键词">
+            </label>
+            <label class="filter-item">
+              <span>查看内容</span>
+              <select id="footprintAction"><option value="">全部</option></select>
+            </label>
+            <label class="filter-item">
+              <span>开始日期</span>
+              <input id="footprintStart" type="date">
+            </label>
+            <label class="filter-item">
+              <span>结束日期</span>
+              <input id="footprintEnd" type="date">
+            </label>
+            <button id="footprintSearch">查询</button>
+            <button class="ghost-button" id="footprintReset">重置</button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>查看人</th><th>房源</th><th>查看内容</th><th>需求/用途</th><th>上传人</th><th>同步状态</th><th>时间</th></tr></thead>
             <tbody id="adminLogRows"></tbody>
           </table>
+          <div class="empty" id="adminLogEmpty" hidden>没有符合条件的足迹</div>
+        </div>
+        <div class="inline-actions" id="footprintPager" hidden>
+          <button class="ghost-button" id="footprintPrev">上一页</button>
+          <span id="footprintPageInfo" class="sub-cell"></span>
+          <button class="ghost-button" id="footprintNext">下一页</button>
         </div>
       </section>
 
@@ -1378,6 +1430,11 @@
           </table>
           <div class="empty" id="assistantFeedbackEmpty" hidden>暂无客服反馈</div>
         </div>
+        <div class="config-card" id="assistantConversationCard" hidden>
+          <h3>完整对话上下文</h3>
+          <div class="status-box" id="assistantConversationMeta">点击某条反馈的「查看对话」按钮，展示该反馈对应会话的完整多轮对话（已脱敏，不含手机号等隐私）。</div>
+          <div id="assistantConversationBox"></div>
+        </div>
         <div class="config-card">
           <h3>评估样本</h3>
           <div class="status-box">从反馈沉淀出的 eval case，会保留输入、期望需求、期望房源和必须经过的关键节点。</div>
@@ -1476,6 +1533,14 @@
           <div class="status-box">导出当前房源、用户、足迹、报备、签单、分佣和后台账号数据。建议上线前、批量导入前、每日下班前各备份一次。</div>
           <div class="inline-actions">
             <button id="exportDataBackup">导出 JSON 备份</button>
+          </div>
+        </div>
+        <div class="config-card">
+          <h3>异地备份 / 同步状态</h3>
+          <div class="status-box">展示服务端加密异地备份的新鲜度、飞书云盘最近备份与恢复演练结果。仅显示时间、文件名、成功与否等非敏感元数据，不含任何密钥。</div>
+          <div id="backupSyncStatus"><div class="sub-cell">加载中…</div></div>
+          <div class="inline-actions">
+            <button class="ghost-button" id="refreshBackupStatus">刷新状态</button>
           </div>
         </div>
       </section>
@@ -1661,6 +1726,8 @@
       companyRate: 0
     };
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
+    let currentAdminId = '';
+    let currentAdminIsSuper = true;
     let llmConfigInitialized = false;
     let listingReviewItems = [];
     let expiredListingItems = [];
@@ -2423,9 +2490,41 @@
       showExpiredListingList();
     }
 
-	    async function renderAdminLogs() {
-	      const rows = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
-	      document.getElementById('adminLogRows').innerHTML = rows.map((item) => `
+	    let footprintPage = 1;
+
+	    function readFootprintFilters() {
+	      const val = (id) => {
+	        const el = document.getElementById(id);
+	        return el ? String(el.value || '').trim() : '';
+	      };
+	      return {
+	        viewer: val('footprintViewer'),
+	        keyword: val('footprintKeyword'),
+	        action: val('footprintAction'),
+	        startDate: val('footprintStart'),
+	        endDate: val('footprintEnd')
+	      };
+	    }
+
+	    function fillFootprintActionOptions(actions) {
+	      const select = document.getElementById('footprintAction');
+	      if (!select || !Array.isArray(actions)) return;
+	      const current = select.value;
+	      // 用 DOM API 构造选项（不走 innerHTML）：action 值来自足迹数据，textContent 天然防注入。
+	      while (select.options.length > 1) select.remove(1);
+	      actions.forEach((action) => {
+	        const option = document.createElement('option');
+	        option.value = action;
+	        option.textContent = action;
+	        select.appendChild(option);
+	      });
+	      if (current && actions.indexOf(current) !== -1) select.value = current;
+	    }
+
+	    function renderFootprintRows(rows) {
+	      const body = document.getElementById('adminLogRows');
+	      const empty = document.getElementById('adminLogEmpty');
+	      body.innerHTML = (rows || []).map((item) => `
 	        <tr>
 	          <td>${safeText(item.viewer || item.user)}</td>
 	          <td>${safeText(item.listing || item.title)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
@@ -2436,6 +2535,33 @@
 	          <td>${safeText(item.time)}</td>
 	        </tr>
 	      `).join('');
+	      if (empty) empty.hidden = (rows || []).length > 0;
+	    }
+
+	    async function renderAdminLogs() {
+	      const filters = readFootprintFilters();
+	      const query = buildQuery(Object.assign({ page: footprintPage, pageSize: 50 }, filters));
+	      const payload = await getAdminData(`/admin/footprints${query}`, () => dataCenter.getAdminLogs());
+	      // 兼容两种返回：旧数组（无参/本地预览 fallback）或 { rows,total,page,pageSize,totalPages,actions } 分页对象。
+	      const isPaged = payload && !Array.isArray(payload) && Array.isArray(payload.rows);
+	      const rows = isPaged ? payload.rows : (Array.isArray(payload) ? payload : []);
+	      fillFootprintActionOptions(isPaged
+	        ? payload.actions
+	        : Array.from(new Set(rows.map((r) => r.action).filter(Boolean))));
+	      renderFootprintRows(rows);
+	      const pager = document.getElementById('footprintPager');
+	      const info = document.getElementById('footprintPageInfo');
+	      const prev = document.getElementById('footprintPrev');
+	      const next = document.getElementById('footprintNext');
+	      if (isPaged) {
+	        footprintPage = payload.page || 1;
+	        if (pager) pager.hidden = (payload.totalPages || 1) <= 1;
+	        if (info) info.textContent = `第 ${payload.page} / ${payload.totalPages} 页 · 共 ${payload.total} 条`;
+	        if (prev) prev.disabled = payload.page <= 1;
+	        if (next) next.disabled = payload.page >= payload.totalPages;
+	      } else if (pager) {
+	        pager.hidden = true;
+	      }
 	    }
 
     function getLocalReportRows() {
@@ -2626,12 +2752,39 @@
               <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="resolved">解决</button>
               <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="ignored">忽略</button>
               <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}">加入评估</button>
+              <button class="table-action assistant-conversation-button" data-id="${safeAttr(item.id)}">查看对话</button>
             </div>
           </td>
         </tr>
       `).join('');
       empty.hidden = rows.length > 0;
       await renderAssistantEvalCases();
+    }
+
+    async function renderFeedbackConversation(feedbackId) {
+      if (!feedbackId) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再查看完整对话：/admin-web/');
+        return;
+      }
+      const card = document.getElementById('assistantConversationCard');
+      const box = document.getElementById('assistantConversationBox');
+      const meta = document.getElementById('assistantConversationMeta');
+      const data = await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(feedbackId)}/conversation`);
+      const turns = (data && data.turns) || [];
+      meta.textContent = `会话 ${data && data.threadId ? data.threadId : '(无)'} · 共 ${data && data.turnCount || 0} 轮`
+        + (data && data.truncated ? '（对话记录已滚动清理，仅存最近若干轮）' : '');
+      box.innerHTML = turns.length ? turns.map((turn) => `
+        <div class="conversation-turn">
+          <div class="conversation-line"><span class="conversation-role user">用户</span>${safeText(turn.userInput)}</div>
+          <div class="conversation-line"><span class="conversation-role assistant">助手</span>${safeText(turn.assistantReply)}</div>
+          ${turn.nextQuestion ? `<div class="conversation-line sub-cell">追问：${safeText(turn.nextQuestion)}</div>` : ''}
+          ${(turn.listings || []).length ? `<div class="conversation-line sub-cell">推荐：${safeText((turn.listings || []).map((l) => l.title || l.community || l.id).join('、'))}</div>` : ''}
+          <div class="conversation-line sub-cell">${safeText(turn.intent || '', '')} · ${safeText(turn.time || '', '')}</div>
+        </div>
+      `).join('') : '<div class="sub-cell">没有可展示的对话（会话可能已过期清理）。</div>';
+      card.hidden = false;
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function assistantTraceToolText(item = {}) {
@@ -2739,7 +2892,7 @@
     }
 
     async function renderAdmins() {
-      const payload = await getAdminData('/admin/users', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
+      const payload = await getAdminData('/admin/accounts', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
       const users = Array.isArray(payload) ? payload : payload.users || [];
       const admins = Array.isArray(payload) ? adminAccounts : payload.admins || adminAccounts;
       fillAdminUserSelect(users);
@@ -2774,6 +2927,7 @@
               <div class="row-actions">
                 <button class="table-action password-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">修改密码</button>
                 <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
+                ${item.id === currentAdminId ? '' : `<button class="table-action reject delete-admin-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">删除</button>`}
               </div>
             ` : '-'}</td>
           </tr>
@@ -2864,6 +3018,42 @@
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+    }
+
+    async function renderBackupStatus() {
+      const box = document.getElementById('backupSyncStatus');
+      if (!box) return;
+      if (!canUseAdminApi()) {
+        box.innerHTML = '<div class="sub-cell">请通过后端地址打开后台后查看真实备份状态：/admin-web/</div>';
+        return;
+      }
+      let data;
+      try {
+        data = await adminRequest('/admin/backup/status');
+      } catch (statusError) {
+        box.innerHTML = `<div class="sub-cell">${safeText(statusError.message || '备份状态获取失败')}</div>`;
+        return;
+      }
+      const offsite = (data && data.offsite) || {};
+      const feishu = (data && data.feishu) || {};
+      const localDrill = data && data.localDrill;
+      const feishuUpload = feishu.lastUpload;
+      const feishuDrill = feishu.lastDrill;
+      const boolText = (v) => (v ? '已配置' : '未配置');
+      // 演练结论文本：ok/失败 + 时间 + 文件名，动态部分全部 safeText，静态部分为字面量，拼接后可直接入 innerHTML。
+      const drillText = (d) => (d
+        ? `${d.ok ? '成功' : '失败'}${d.at ? ' · ' + safeText(d.at) : ''}${d.fileName ? ' · ' + safeText(d.fileName) : ''}${d.countsMatch === false ? ' · 计数不符' : ''}`
+        : '暂无记录');
+      box.innerHTML = `
+        <div class="status-box">
+          <div>最近异地备份：${safeText(offsite.latestFile || '（无）')}　<span class="sub-cell">${safeText(offsite.latestAt || '', '')} ${offsite.ageHours != null ? '· ' + safeText(String(offsite.ageHours), '') + ' 小时前' : ''}</span></div>
+          <div>新鲜度：<span class="${pillClass(offsite.fresh ? '通过' : '需要处理')}">${offsite.fresh ? '新鲜' : '已超期/缺失'}</span>　<span class="sub-cell">阈值 ${safeText(String(offsite.maxAgeHours || ''), '')} 小时 · 共 ${safeText(String(offsite.backupCount || 0), '')} 份 · 保留 ${safeText(String(offsite.retentionDays || ''), '')} 天${offsite.reason ? ' · ' + safeText(offsite.reason) : ''}</span></div>
+          <div class="sub-cell">加密：${boolText(offsite.encryptionConfigured)} · 异地命令：${boolText(offsite.remoteConfigured)} · 飞书上传：${boolText(feishu.configured)}</div>
+          <div>飞书云盘最近备份：${safeText((feishuDrill && feishuDrill.fileName) || (feishuUpload && feishuUpload.fileName) || '（无记录）')}　<span class="sub-cell">${safeText((feishuUpload && feishuUpload.at) || (feishuDrill && feishuDrill.at) || '', '')}</span></div>
+          <div>本地恢复演练：${drillText(localDrill)}</div>
+          <div>飞书恢复演练：${drillText(feishuDrill)}</div>
+        </div>
+      `;
     }
 
     async function reviewShowingUpload(id, action) {
@@ -3022,6 +3212,21 @@
       });
       await renderAdmins();
       await renderLaunchCheck();
+    }
+
+    async function deleteAdminAccount(id, account) {
+      if (!id) return;
+      if (!window.confirm(`确认删除后台账号 ${account}？删除后该账号将无法登录（软删归档、保留操作留痕）。`)) return;
+      if (!canUseAdminApi()) {
+        const index = adminAccounts.findIndex((admin) => (admin.id || admin.account) === id);
+        if (index !== -1) adminAccounts.splice(index, 1);
+        await renderAdmins();
+        return;
+      }
+      await adminRequest(`/admin/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await renderAdmins();
+      await renderLaunchCheck();
+      alert('账号已删除。');
     }
 
     // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
@@ -3509,13 +3714,40 @@
       renderAdmins();
       renderFeishuSync();
       renderLaunchCheck();
+      renderBackupStatus();
       initLlmConfigPanel();
+    }
+
+    function applyAdminRole(admin) {
+      admin = admin || {};
+      currentAdminId = admin.id || currentAdminId || '';
+      // 角色来源优先用后端 /admin/auth/me 的 isSuperAdmin；登录返回的 admin 无该字段时用 permission 兜底
+      // （与后端 isSuperAdmin 同源：仅「全部后台权限」或无显式受限权限视为超管）。file:// 预览默认超管。
+      if (typeof admin.isSuperAdmin === 'boolean') {
+        currentAdminIsSuper = admin.isSuperAdmin;
+      } else if (!canUseAdminApi()) {
+        currentAdminIsSuper = true;
+      } else if (admin.permission !== undefined) {
+        const permission = String(admin.permission || '').trim();
+        currentAdminIsSuper = !permission || permission === '全部后台权限';
+      }
+      document.querySelectorAll('[data-super="1"]').forEach((el) => {
+        el.style.display = currentAdminIsSuper ? '' : 'none';
+      });
     }
 
     async function openAdminApp(admin) {
       loginScreen.style.display = 'none';
       app.style.display = 'block';
       document.querySelector('.admin-tag').textContent = `管理员：${admin.account}`;
+      applyAdminRole(admin);
+      if (canUseAdminApi()) {
+        try {
+          applyAdminRole(await adminRequest('/admin/auth/me'));
+        } catch (roleError) {
+          // 拉取角色失败时沿用登录返回信息，不阻断进入后台。
+        }
+      }
       await renderAll();
     }
 
@@ -3571,6 +3803,14 @@
         return;
       }
 
+      const deleteAdminButton = event.target.closest('.delete-admin-button');
+      if (deleteAdminButton && !deleteAdminButton.disabled) {
+        deleteAdminAccount(deleteAdminButton.dataset.id, deleteAdminButton.dataset.account).catch((error) => {
+          alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
       const confirmDealButton = event.target.closest('.confirm-deal-button');
       if (confirmDealButton && !confirmDealButton.disabled) {
         confirmAdminDeal(confirmDealButton.dataset.id).catch((error) => {
@@ -3594,6 +3834,14 @@
       if (assistantFeedbackEvalButton && !assistantFeedbackEvalButton.disabled) {
         promoteAssistantFeedbackToEval(assistantFeedbackEvalButton.dataset.id).catch((error) => {
           alert(error.message || '加入评估集失败');
+        });
+        return;
+      }
+
+      const assistantConversationButton = event.target.closest('.assistant-conversation-button');
+      if (assistantConversationButton && !assistantConversationButton.disabled) {
+        renderFeedbackConversation(assistantConversationButton.dataset.id).catch((error) => {
+          alert(error.message || '查看完整对话失败');
         });
         return;
       }
@@ -3761,6 +4009,35 @@
       exportDataBackup().catch((error) => {
         alert(error.message || '数据导出失败');
       });
+    });
+    document.getElementById('refreshBackupStatus').addEventListener('click', () => {
+      renderBackupStatus().catch((error) => {
+        alert(error.message || '备份状态刷新失败');
+      });
+    });
+    document.getElementById('footprintSearch').addEventListener('click', () => {
+      footprintPage = 1;
+      renderAdminLogs().catch((error) => alert(error.message || '足迹查询失败'));
+    });
+    document.getElementById('footprintReset').addEventListener('click', () => {
+      ['footprintViewer', 'footprintKeyword', 'footprintStart', 'footprintEnd'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      const actionSelect = document.getElementById('footprintAction');
+      if (actionSelect) actionSelect.value = '';
+      footprintPage = 1;
+      renderAdminLogs().catch((error) => alert(error.message || '足迹查询失败'));
+    });
+    document.getElementById('footprintPrev').addEventListener('click', () => {
+      if (footprintPage > 1) {
+        footprintPage -= 1;
+        renderAdminLogs().catch(() => {});
+      }
+    });
+    document.getElementById('footprintNext').addEventListener('click', () => {
+      footprintPage += 1;
+      renderAdminLogs().catch(() => {});
     });
     document.getElementById('copyEnvTemplate').addEventListener('click', () => {
       const text = document.getElementById('launchEnvTemplate').textContent || '';
