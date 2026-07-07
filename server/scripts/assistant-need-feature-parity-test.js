@@ -259,6 +259,17 @@ async function main() {
     checks += 1
   }
 
+  // ⑱ 「有院子」同义说法固化（Codex 三轮复审 P1）：三侧别名须含「有院子」，硬需求不得被静默丢弃。
+  const yardPlain = { id: 'PAR-YP', community: '金色家园', block: '金色家园', area: '拱墅', title: '', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['电梯'] }
+  const yardReal = { id: 'PAR-YR', community: '金色家园', block: '金色家园', area: '拱墅', title: '', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['带露台（阁楼）'] }
+  const ry = await needResult('想找拱墅两室整租，必须有院子', [yardPlain, yardReal])
+  assert((ry.need.hardConstraints.features || []).includes('带露台（阁楼）'), '「必须有院子」应归一到硬特征 带露台（阁楼），不得静默丢弃')
+  const ypItem = (ry.listings || []).find((x) => x.id === 'PAR-YP')
+  const yrItem = (ry.listings || []).find((x) => x.id === 'PAR-YR')
+  assert(!(ypItem && ypItem.matchGroup === 'exact'), '无院子的普通房不得被标 exact（防误推）')
+  assert(yrItem && yrItem.matchGroup === 'exact', '真带「带露台（阁楼）」的房应精确推荐')
+  checks += 1
+
   console.log(`assistant-need-feature-parity-test passed: ${checks} checks`)
 }
 
