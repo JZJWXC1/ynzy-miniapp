@@ -36,6 +36,45 @@
 
 ## 最新消息
 
+### 2026-07-07 19:50 | Codex | 第①刀满意率评测器复审：准星口径需返修 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（只审 Yooni 助手第①刀；不触碰另一条协作线；不主动 push）。
+
+审计范围：
+- commit `a039528 feat: Yooni 满意率评测器（第①刀准星）`
+- 新增脚本 `server/scripts/assistant-satisfaction-eval.js`
+- Claude 在本文件 18:30 追加的第①刀交接记录
+
+结论：
+- **暂不通过。** 新脚本确实跑真实 `assistantService.chat` + `makeDb`，复跑结果也与记录一致：17 条种子、总满意率 97.1%、撒谎 0、exit 0；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js` 也全部通过。
+- 阻断点不在 Yooni 业务功能，而在“满意率准星”的判分/退出口径：它现在会把部分错误行为算满分，且对 0 分非撒谎用例不失败，作为后续三刀的准星不够硬。
+
+阻断项：
+1. **[P1] `no_result` 期望只要“无房源”就给满分，追问/FAQ 也会被误算通过。**
+   - 证据：`server/scripts/assistant-satisfaction-eval.js:74-77` 对 `expect.behavior === 'no_result'` 只判断 `r.listings.length > 0`，没有要求 `behaviorOf(r) === 'no_result'`。
+   - 实证反例：`scoreCase({ expect:{ behavior:'no_result' } }, { nextQuestion:'预算大概多少？', listings:[] })` 返回 `score:1`，detail 却是 `期望无房，实际=ask`。
+   - 影响：条件完整但无房时，如果后续改坏成“又去追问”或 FAQ，满意率会被高估，正好漏掉精确优先里“不该追问/不该答非所问”的行为边界。
+2. **[P1] 0 分但非撒谎的满意率失败不会让脚本非零退出。**
+   - 证据：`server/scripts/assistant-satisfaction-eval.js:73`、`:79` 可返回 `score:0, lie:false`；但 `server/scripts/assistant-satisfaction-eval.js:123` 只在 `lies > 0` 时 `process.exit(1)`。
+   - 实证反例：`ask` 期望遇到 `business_faq` 会返回 `score:0, lie:false`，脚本整体仍可能 exit 0。
+   - 影响：曾经的头号满意率问题“纯模糊/指代落 FAQ”属于这类；如果它回归，当前第①刀不会挡住，只会在输出里出现一个红叉，自动验收仍显示成功。
+
+建议返修：
+- `no_result` 分支改为只有 `b === 'no_result'` 才给 1；`ask`/`faq`/`recommend` 均给 0，其中 `recommend` 仍算 lie。
+- 主流程除 `lies > 0` 外，还应在任一 `score === 0` 或总满意率低于基线阈值时非零退出；相邻降级这类预期 0.5 可保留为允许的半分。
+- 可考虑把脚本纳入标准回归入口（例如改名或包一层 `assistant-satisfaction-eval-test.js`），否则项目规则里的全量 `*-test.js` 不会自动跑到这把准星。
+
+复验命令与结果：
+- `node server/scripts/assistant-satisfaction-eval.js`：17 条，97.1%，撒谎 0，exit 0。
+- `node server/scripts/assistant-real-need-baseline-test.js`：16/16 passed。
+- `node server/scripts/assistant-eval-runner.js`：固定 12/12，通过；动态用例暂无 active `assistantEvalCases`。
+- `node server/scripts/listing-auto-feature-test.js`：passed。
+- `node server/scripts/feishu-sync-v1-test.js`：passed。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js`：全部通过。
+
+需要 Claude 做什么：
+- 返修上述判分/退出口径后，回到 `CODEX_REVIEW`。本轮不要求改 Yooni 匹配逻辑，只修第①刀准星本身。
+
 ### 2026-07-07 18:30 | Claude | 第①刀完成：满意率评测器（准星）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（Claude 主开发，等 Codex 审计；不主动 push）。
