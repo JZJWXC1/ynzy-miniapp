@@ -45,6 +45,51 @@
 
 ## 最新消息
 
+### 2026-07-07 22:35 | Codex | 复审 safeListing id 修复（2aaa821）+ 房源来源筛选栏（9d8e674）| DONE
+
+状态：`DONE`（第二裁判复审通过；无需第三裁判介入）。
+
+审计范围：
+- `2aaa821 fix(assistant): safeListing 不再脱敏 listing.id（修聊天推荐看详情/地图为空根因）`。
+- `9d8e674 feat(listings): 顶部分类改为房源来源，整租/合租下移到筛选面板`。
+- 重点复核 `server/src/assistant/safety.js`、`server/scripts/assistant-safe-listing-id-test.js`、`pages/listings/listings.js`、`components/listing-filter/listing-filter.js`、`components/listing-filter/listing-filter.wxml`，并核对服务端 `/mini/listings` 的 `category + rentMode` 过滤链路。
+
+结论：
+- **`2aaa821` 通过。** `RAW_LISTING_KEYS` 只放行 `id`，没有顺手放开 `cardTitle`、`title`、`matchReason` 等展示字段；`address`、`building`、`unit`、`roomNumber`、`landlordPhone`、`videoUrl` 等敏感字段仍不在 `SAFE_LISTING_KEYS` 或继续走脱敏。新增 `assistant-safe-listing-id-test.js` 能锁定「id 原样 + 非 id 敏感信息继续脱敏」。
+- **`9d8e674` 生产链路通过。** 顶部 tab 只发 `公司房源 / 业主房源 / 二房东房源`；`整租 / 合租` 已进入 `filter.rentMode`。生产后端 `/mini/listings` 会将 `category` 和 `rentMode` 一起传给 `domain.filterListings`；样例验证公司、业主、二房东互不串，来源与租赁方式组合过滤正确。
+- 红线扫描通过：本次复审范围未见 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、凭据/token 混入。
+
+阻断项：
+- 无。
+
+非阻断提醒：
+- `utils/mock-data.js` 的前端 mock `getListings` 仍未同步 `rentMode` 过滤。线上生产接口不受影响，但微信开发者工具离线/mock fallback 时，整租/合租筛选可能看起来不准；后续顺手补即可，不影响这两项收口。
+
+复验命令与结果：
+```powershell
+node server/scripts/assistant-safe-listing-id-test.js
+node server/scripts/assistant-need-feature-parity-test.js
+
+# 额外边界样例：safeListing 只保留 id，电话/微信/地址类内容仍脱敏或不输出。
+# 额外服务端样例：domain.filterListings(db, { category, rentMode }) 验证公司/业主/二房东与整租/合租组合过滤。
+
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+
+已复验结果：
+- `assistant-safe-listing-id-test` 通过。
+- `assistant-need-feature-parity-test` 通过：39 checks。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **58/0，audit 通过**。
+- safeListing 边界样例通过：`id` 原样，电话/微信/地址类内容无泄露。
+- 服务端筛选样例通过：`公司房源`、`业主房源`、`二房东房源`互不串；`category + rentMode` 组合过滤符合预期。
+
+需要 Claude/用户做什么：
+- Claude 无需返修 `2aaa821` 与 `9d8e674`。
+- 用户仍需重传小程序以让筛选栏前端改造生效；聊天推荐看详情/地图为空属于后端修复，已无需重传即可生效。
+
 ### 2026-07-07 22:10 | Claude | 管理后台 admin-web + 后端 5 项优化（备份状态/删除账号/完整对话/足迹筛选/超管分级）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（5 项已实现 + 测试固化，全量 63/0 + audit 通过；本地已作用域提交，未 push、未部署；请第二裁判复审）。
