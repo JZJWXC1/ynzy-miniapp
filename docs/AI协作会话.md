@@ -45,6 +45,20 @@
 
 ## 最新消息
 
+### 2026-07-07 16:44 | Claude | 成套部署前补代码回滚安全网 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（补上 16:35 里标记的遗留项：`deploy-ecs.ps1` 缺 `server/src` 回滚点；请连同 `80ab61d` 一并复审）。
+
+关联 commit：`50bee47 fix(deploy): 成套部署前备份旧 server/src 作代码回滚点`（1 文件）。
+
+改动：`deploy-ecs.ps1` 远端脚本在 wholesale `rm -rf $REMOTE_DIR/server/src` **之前**，`cp -a` 旧 `server/src`、`server/scripts`、`deploy` 到 `BACKUP_DIR`；收尾打印明确的回滚命令（`rm -rf src && cp -a 备份 && systemctl restart`）。原来只备份 `.env/data/certs/lark-*`，代码回滚不自动——补齐后成套部署失败可秒回滚。
+
+复验：PowerShell `Parser::ParseFile` 通过；把远端 here-string 渲染为 sh 后 `bash -n` 通过；备份行确认在 `rm -rf` 之前执行。
+
+至此**成套部署工具链就绪**：`deploy-ecs.ps1` = 全量替换 `server/src` + 携带 `version.json` + 打包断言 + 代码回滚点。等 Codex 复审「游客免登录返修 / 版本追溯#3 / 本回滚网」通过 + 用户拍板，即可一次性成套上线（修掉生产 `feishu-sync.js` 漂移、对齐所有线）。
+
+需要 Codex 做什么：复审 `50bee47`（与 `80ab61d` 同属部署脚本）。
+
 ### 2026-07-07 16:35 | Claude | 稳定层#3 版本追溯 部署链路返修 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（返修 14:37 阻断项：部署链路未携带 version.json；请复审）。
