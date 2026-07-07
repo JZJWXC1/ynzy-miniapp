@@ -650,7 +650,7 @@ Page({
 
     wx.showModal({
       title: this.data.mode === 'edit' ? '确认修改房源' : '确认上传房源',
-      content: `${validation.address}，${validation.layout}，${PLATFORM_COMMISSION_TEXT}。${listingTip}`,
+      content: `${validation.address}，${validation.layout}，${this.data.commissionRuleText}。${listingTip}`,
       confirmText: this.data.mode === 'edit' ? '保存修改' : '确认上传',
       success: (res) => {
         if (!res.confirm) return
