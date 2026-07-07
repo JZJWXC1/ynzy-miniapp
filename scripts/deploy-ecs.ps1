@@ -30,6 +30,17 @@ if ($IncludeData) {
 Copy-Item -Path (Join-Path $root "server\scripts") -Destination (Join-Path $tempDir "server\scripts") -Recurse
 Copy-Item -Path (Join-Path $root "server\package.json") -Destination (Join-Path $tempDir "server\package.json")
 Copy-Item -Path (Join-Path $root "server\README.md") -Destination (Join-Path $tempDir "server\README.md")
+
+# Version tracking: generate server/version.json at package time and ship it. Production dir is not a
+# git repo, so runtime cannot git rev-parse; missing this file degrades /healthz and startup log to commit=unknown.
+& node (Join-Path $root "server\scripts\gen-version.js")
+if ($LASTEXITCODE -ne 0) { throw "gen-version.js failed to produce server/version.json" }
+Copy-Item -Path (Join-Path $root "server\version.json") -Destination (Join-Path $tempDir "server\version.json")
+$headCommit = (& git -C $root rev-parse HEAD).Trim()
+$stageVersion = Get-Content -LiteralPath (Join-Path $tempDir "server\version.json") -Raw | ConvertFrom-Json
+if (-not $stageVersion.commit -or $stageVersion.commit -eq "unknown") { throw "server/version.json commit is empty/unknown" }
+if ($stageVersion.commit -ne $headCommit) { throw "server/version.json commit ($($stageVersion.commit)) does not match HEAD ($headCommit)" }
+Write-Host "version.json OK: commit $($stageVersion.commit.Substring(0, 12)) branch $($stageVersion.branch)"
 Copy-Item -Path (Join-Path $root "admin-web\*") -Destination (Join-Path $tempDir "admin-web") -Recurse
 Copy-Item -Path (Join-Path $root "utils\mock-data.js") -Destination (Join-Path $tempDir "utils\mock-data.js")
 Copy-Item -Path (Join-Path $root "deploy\*") -Destination (Join-Path $tempDir "deploy") -Recurse
@@ -100,6 +111,7 @@ cp -a "`$STAGE_DIR/admin-web" "`$REMOTE_DIR/admin-web"
 cp -a "`$STAGE_DIR/deploy" "`$REMOTE_DIR/deploy"
 cp "`$STAGE_DIR/server/package.json" "`$REMOTE_DIR/server/package.json"
 cp "`$STAGE_DIR/server/README.md" "`$REMOTE_DIR/server/README.md"
+cp "`$STAGE_DIR/server/version.json" "`$REMOTE_DIR/server/version.json"
 cp "`$STAGE_DIR/utils/mock-data.js" "`$REMOTE_DIR/utils/mock-data.js"
 
 if [ -f "`$STAGE_DIR/server/.env" ]; then
