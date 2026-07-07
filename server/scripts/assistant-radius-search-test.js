@@ -194,6 +194,17 @@ async function main() {
   assert.strictEqual((result.listings || []).length, 0, '未知小区无坐标时不应返回全局推荐')
   assert.strictEqual(result.placeResolution.status, 'missing', '未知小区应返回 missing 解析状态')
 
+  // MODEL-2 固化（第③刀）：库外小区（坐标库无）但板块已知(新天地)且无精确坐标的房源，
+  // 应经『板块中心近似坐标』兜底被半径检索找到（此前会被静默过滤=漏推）；
+  // 而无板块、坐标库也无的房源不得凭空编造坐标进入半径结果（守精确优先「不编造坐标」）。
+  const bcDb = makeDb()
+  bcDb.listings.push(listing('BC01', { area: '拱墅', block: '新天地', community: '新天地某未收录苑', rent: 3800, layout: '整租两室一厅一卫', rentMode: '整租', room: '两室', latitude: '', longitude: '', features: ['电梯'] }))
+  bcDb.listings.push(listing('BC02', { area: '余杭', block: '', community: '彻底陌生小区无已知板块', rent: 3800, layout: '整租两室一厅一卫', rentMode: '整租', room: '两室', latitude: '', longitude: '', features: ['电梯'] }))
+  result = await ask(bcDb, '新天地3公里内有哪些整租的两室')
+  assert(ids(result).includes('BC01'), 'MODEL-2：库外小区但板块已知(新天地)的房源应经板块中心兜底被半径找到（不漏推）')
+  assert(!ids(result).includes('BC02'), 'MODEL-2：无已知板块、坐标库也无的房源不得凭空编造坐标进入半径结果')
+  assertSafe(result)
+
   console.log('assistant-radius-search-test passed')
 }
 

@@ -92,6 +92,18 @@ function entriesFromConfiguredBlockCenters() {
   }).filter(Boolean)
 }
 
+// 板块中心兜底（与 domain.blockCenterForListing 同口径；本地实现避免 place-locator↔domain 循环依赖）：
+// 小区坐标库覆盖不到时，用房源所在板块的中心近似坐标，让库外小区房源不被半径检索静默过滤（漏推）。
+function blockCenterCoordinate(listing = {}) {
+  const centers = (config.location && config.location.blockCenters) || {}
+  const block = String(listing.block || '').trim()
+  if (block && centers[block]) return { ...centers[block], block }
+  const text = [listing.block, listing.community, listing.address, listing.locationSummary]
+    .map((value) => String(value || '')).join('')
+  const matched = Object.keys(centers).find((item) => item && text.indexOf(item) !== -1)
+  return matched ? { ...centers[matched], block: matched } : null
+}
+
 function listingCoordinate(listing = {}) {
   const direct = reliableCoordinate(
     listing.mapLatitude || listing.latitude,
@@ -102,12 +114,26 @@ function listingCoordinate(listing = {}) {
   if (direct) return direct
 
   const byCommunity = coordinateByCommunity(listing.community)
-  if (!byCommunity) return null
-  return {
-    latitude: byCommunity.latitude,
-    longitude: byCommunity.longitude,
-    source: byCommunity.source
+  if (byCommunity) {
+    return {
+      latitude: byCommunity.latitude,
+      longitude: byCommunity.longitude,
+      source: byCommunity.source
+    }
   }
+
+  // MODEL-2 兜底：库外小区用板块中心近似坐标（level=block-center，不冒充精确点位）。
+  const blockCenter = blockCenterCoordinate(listing)
+  if (blockCenter && Number.isFinite(Number(blockCenter.latitude)) && Number.isFinite(Number(blockCenter.longitude))) {
+    return {
+      latitude: Number(blockCenter.latitude),
+      longitude: Number(blockCenter.longitude),
+      source: `block-center:${blockCenter.block}`,
+      level: 'block-center',
+      coordinateVerified: false
+    }
+  }
+  return null
 }
 
 function entriesFromListings(listings = []) {

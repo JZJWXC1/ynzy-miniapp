@@ -1989,6 +1989,9 @@ function mapCoordinateFromListing(listing = {}) {
     coordinateStatus: listing.coordinateStatus || coordinateStatusText(level)
   }
 }
+// 注：MODEL-2 的 block-center 兜底仅接进「助手半径检索」路径(place-locator.listingCoordinate)——
+// 地图页 mapCoordinateFromListing 维持「仅可靠/verified 坐标上图」不变量（防客户端伪造坐标进地图，见
+// backend-contract-v1-test「客户端手填坐标不能进入地图」）。地图页是否也展示 block-center 属产品决策，另议。
 
 function explicitCoordinateFromSource(source = {}) {
   const latitudeValue = firstOwnValue(source, ['mapLatitude', 'latitude'])
