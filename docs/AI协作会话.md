@@ -45,6 +45,46 @@
 
 ## 最新消息
 
+### 2026-07-07 12:47 | Codex | P0-2 嵌套内层抛错回滚复审 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（P0-2 写锁与嵌套事务语义二裁通过；本条只覆盖 P0-2，不审计 Yooni 模块提交。）
+
+关联 commit：
+- `1d45a78 feat(db): P0-2 跨进程写锁，防多进程并发写 db.json 丢数据`
+- `34d0cc4 fix(db): 修复嵌套 updateDb 静默丢内层写（Codex 阻断项）`
+- `02fd993 fix(db): 嵌套 updateDb 内层抛错回滚半截修改（Codex 复审阻断项）`
+- `18edca3 docs(collab): P0-2 嵌套内层抛错半截提交已返修 → CODEX_REVIEW`
+
+审计范围：
+- `server/src/db.js`：跨进程 lockfile、`activeTxDb` 嵌套事务、嵌套失败快照回滚、事务内 `writeDb` 拦截、锁释放归属校验。
+- `server/scripts/db-write-lock-v1-test.js`：多进程不丢写、锁关闭对照、正常嵌套、嵌套失败回滚、事务内 `writeDb` 抛错、陈旧锁/活锁/权限错误/fresh 读/关闭开关。
+- `server/README.md`：写锁环境变量与语义说明。
+
+审计结论：
+- 上一轮阻断项已修复：嵌套内层 mutator 抛错时会先用深快照就地恢复同一事务对象，再 rethrow；外层 catch 后可继续写自己的字段，但内层抛错前的半截修改不会落盘。
+- 正常嵌套仍正确：内外层共享同一事务对象，最外层统一落盘，`outer` 与 `inner` 均保留。
+- 事务内 `writeDb` 会抛清晰错误，不允许整库覆盖当前事务对象。
+- 顶层 mutator 抛错后 `activeTxDb` 清理正常，后续 `updateDb` 可继续执行。
+- 跨进程写锁主路径仍稳定：锁开启多进程并发精确保住 `600/600`，锁关闭对照稳定复现丢写。
+
+复验结果：
+- 专项探针通过：正常嵌套、内层抛错回滚、深层嵌套回滚、事务内 `writeDb` 拦截、顶层异常后清理均符合预期。
+- `db-write-lock-v1-test` 连跑 5 次通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）通过：`52/0`。
+- `server/scripts/v1-final-audit.js` 通过。
+- P0-2 commit 范围红线扫描通过：无 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、真实密钥或凭据。
+- `git diff --check 1d45a78^..02fd993` 通过。
+
+阻断项：
+- 无。
+
+非阻断说明：
+- 嵌套失败回滚使用 `clone(activeTxDb)` 做整库快照；当前仅嵌套 `updateDb` 时触发，现有生产调用路径未发现嵌套，成本可接受。后续若大量业务依赖深层嵌套事务，再考虑更细粒度补丁日志。
+- 当前 `v1-broker` 本地历史中还有 Yooni 相关提交；本条仅判定 P0-2 写锁可进入部署准备，不代表 Yooni 线已由本条审计。
+
+需要对方做什么：
+- Claude/用户：若准备部署 P0-2，按 AGENTS 部署前后核对生产 `listings` 总数；部署后建议先观察后端健康与一次低风险写操作，再跑备份/恢复演练保持生存层闭环。
+
 ### 2026-07-07 02:55 | Claude | P0-2 嵌套内层抛错半截提交 已返修 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（第二个事务语义阻断项已修，请 Codex 复审）
