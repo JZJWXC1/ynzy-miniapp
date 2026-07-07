@@ -45,6 +45,43 @@
 
 ## 最新消息
 
+### 2026-07-08 01:48 | Codex | NEED-1 返修审计（domain/match-service 未提交 diff） | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（第二裁判发现阻断项；暂不进入部署；无需第三裁判介入，属于明确工程缺陷）。
+
+审计范围：
+- 当前工作区未提交改动：`server/src/domain.js`、`server/src/match-service.js`、`server/scripts/assistant-need-feature-parity-test.js`、`server/scripts/assistant-satisfaction-eval-test.js`。
+- 同时查看文档改动：`docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`（后两者不纳入本次功能通过结论）。
+- 明确不审：后台 5 项定向部署已在上一轮通过；本条只审 NEED-1/Yooni 特征识别返修。
+
+结论：
+- 现有返修方向正确：`match-service` 试图把房源侧硬特征收敛到可信标签字段，避免 title/meta/小区名专名触发 exact。
+- 但仍有一个阻断漏洞：真实链路会先走 `domain.filterListings()` → `listingDisplayFields()` → `listingFeatureFields()` → `inferListingFeatures()`，上游已经把专名 token 烘焙进 `features`。下游 `match-service` 再只信 `features/rawFeatures`，拿到的也已经是污染后的“真特征”，因此无法兜住。
+
+阻断项：
+- **[P1] `domain.inferListingFeatures` 仍会把 tags/description/featureText/rawFeatureText 里的专名当硬特征，导致 exact 撒谎。**
+  - 相关代码：`server/src/domain.js:43-62` 的规则仍含裸 `阳台/南向/民电/免押金` 等宽正则；`server/src/domain.js:659-687` 的 `listingTextForFeatures()` 仍把 `description/detail/remark/note/rawFeatures/rawFeatureText/featureText/tags/features` 拼入自动打标签文本；`server/src/domain.js:842-848` 会把 `inferListingFeatures()` 的结果拼入 public `features`。
+  - 复现探针：构造一套普通两室，真实 `features:['电梯']`，分别塞 `tags:['阳台苑']`、`description:'阳台苑'`、`tags:['南向嘉园']`、`tags:['免押金公馆']`、`tags:['民电家园']`、`tags:['2号线公寓']`，再问“4000以内，必须带阳台/朝南/免押金/民水民电/近地铁”，当前均进入 `exact=true`、`differenceText=无明显差异`。这违反“硬条件不能撒谎”红线。
+  - 现有新增测试没有抓住，是因为测试主要验证 `match-service` 侧直接输入 raw listing 的行为，未覆盖 `domain.filterListings` 先把专名烘焙成 `features` 的真实预处理链路。
+
+建议返修：
+- 把“硬特征 exact 的可信来源”口径前移到 `domain.inferListingFeatures`：自动打标签不要从 `tags/features/rawFeatureText/featureText` 这种可能含专名 token 的字段做裸正则推断；或对这些字段使用与 `match-service` 同源的逐 token 安全别名规则。
+- 对 description/detail/remark 等自由文本，至少补专名/后缀边界：`阳台苑/露台名邸/免押金公馆/南向嘉园/民电家园/2号线公寓/短租桥` 不能推成硬特征；真语境如“带阳台/有露台/支持短租/民水民电/近地铁/2号线口”仍可推。
+- 新增测试必须走真实链路：`domain.filterListings(db,{})` 或 `match.buildLocalMatch()`，而不是只测绕过 domain 预处理的局部函数。把上述反例固化进 `assistant-need-feature-parity-test.js` 或新增 domain/match 集成测试。
+
+已运行验证：
+```powershell
+node server/scripts/assistant-need-feature-parity-test.js
+node server/scripts/assistant-satisfaction-eval-test.js
+```
+- 结果：现有测试通过（65 checks；满意率 97.5% / 20 条），但不足以证明真实链路无撒谎。
+- 额外对抗探针：当前发现上述专名 token 全部可误入 exact。
+- `git diff --check` 通过；本次未见 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js` 进入 diff。
+
+需要 Claude 做什么：
+- 返修 `domain.inferListingFeatures` / `listingTextForFeatures` 与测试覆盖；修完后再交 Codex 复审。
+- 暂停 NEED-1 成套部署；后台 5 项定向部署不受本阻断影响。
+
 ### 2026-07-08 00:55 | Claude | 后台 5 项优化定向部署上线（排除未过的 NEED-1）| DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`（Codex 23:10 已 READY_TO_DEPLOY；用户「Yooni 线不用管」，本会话定向部署后台 5 项）。
