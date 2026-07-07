@@ -142,6 +142,27 @@ done
 rm -rf "`$STAGE_DIR"
 chmod +x "`$REMOTE_DIR/deploy/install-on-server.sh"
 APP_DIR="`$REMOTE_DIR" "`$REMOTE_DIR/deploy/install-on-server.sh"
+
+# Post-deploy verification: healthz + running version commit + a listing detail must not 500.
+# The SEV1 (all detail endpoints 500 from a cross-module deploy mismatch) slipped past a healthz-only check.
+sleep 4
+PORT=3101
+HZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/healthz" || echo 000)
+WANT=`$(node -e 'try{process.stdout.write(String(JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})()).commit||""))}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/version.json" 2>/dev/null)
+RUN=`$(curl -s "http://127.0.0.1:`$PORT/healthz" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String((j.data&&j.data.version&&j.data.version.commit)||""))}catch(e){process.stdout.write("")}})' 2>/dev/null)
+LID=`$(node -e 'try{const d=JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})());const L=(d.listings||[]);const l=L.find(x=>x&&x.id&&x.companyListing)||L.find(x=>x&&x.id);process.stdout.write(l?String(l.id):"")}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/data/db.json" 2>/dev/null)
+DZ="skip"
+if [ -n "`$LID" ]; then DZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/mini/listings/`$LID" || echo 000); fi
+echo "Post-deploy check: healthz=`$HZ version(run=`$RUN want=`$WANT) listing-detail(`$LID)=`$DZ"
+POSTFAIL=0
+if [ "`$HZ" != "200" ]; then echo "!! healthz not 200" >&2; POSTFAIL=1; fi
+if [ -n "`$WANT" ] && [ "`$RUN" != "`$WANT" ]; then echo "!! running version commit mismatch (run=`$RUN want=`$WANT)" >&2; POSTFAIL=1; fi
+if [ "`$DZ" = "500" ] || [ "`$DZ" = "000" ]; then echo "!! listing detail crashed (`$DZ) -- likely cross-module inconsistency" >&2; POSTFAIL=1; fi
+if [ "`$POSTFAIL" != "0" ]; then
+  echo "!! POST-DEPLOY VERIFICATION FAILED. Rollback: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp" >&2
+  exit 1
+fi
+echo "Post-deploy verification OK."
 echo "Backup kept at `$BACKUP_DIR (includes server/src, server/scripts, deploy for code rollback)"
 echo "Rollback code: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp"
 "@
