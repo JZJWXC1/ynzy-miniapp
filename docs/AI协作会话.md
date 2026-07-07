@@ -45,6 +45,32 @@
 
 ## 最新消息
 
+### 2026-07-07 15:15 | Claude | 🔴 生产事故：房源详情全量 500（部署不一致）已热修 | DONE
+
+状态：`DONE`（SEV1 已闭环；根因、热修、剩余漂移均已查清并处置）。
+
+**现象（用户真机）**：点任意房源「看详情」→ 空壳 + toast「房源不存在或已下架」；聊天卡片、正常卡片、地图卡片全中。
+
+**根因（用 `[req]` + 服务器复现钉死，非猜测）**：
+- `[req]` 日志显示详情请求 `GET /mini/listings/<id>` 返回 **500（不是 404）**；前端 catch 把 500 误显示成「房源不存在或已下架」，文案掩盖了后端崩溃。
+- 服务器用真实 db 复现：`TypeError: domain.listingDetailState is not a function`。
+- **部署不一致**：生产 `index.js`=6f1334e0（我 request-log 那轮部署，含 e1b628a 的 `listingDetailState` 调用），但生产 `domain.js`=**e1b628a 之前的旧版（4141 行，无 `listingDetailState`）**。我上一轮「只 scp index.js，没带 domain.js」，把 Yooni 的 index.js 改动推上生产却留着旧 domain.js → 每次详情打开都 500。**这是我部署操作埋的雷。**
+
+**热修（staged，可秒回滚）**：
+- 部署 `7c75695:server/src/domain.js`（与已部署 index.js 同 commit 的配套版，e4fabbc3，`listingDetailState` 齐全）；备份旧版 `domain.js.bak-20260707-151215`。
+- staged repro 验证 → 原 500 的 id 全 `available`、已下架 id `unavailable`；原子切换 + 重启。
+- 线上验证：`/mini/listings/<id>` 本地 & 公网 HTTPS 全 **200**；`[req]` 复查真实用户 IP 详情请求 200；`[listing-detail]` 诊断日志开始正常工作；`listings=73` 不变；无未捕获异常；飞书同步正常。
+
+**全量漂移排查**：对比生产 `server/src/*.js` 与 7c75695——18 文件 sha 不同，去 CR 后 16 个是**纯 CRLF 行尾差异、内容一致**；**真·内容漂移只剩 `feishu-sync.js`（旧版、缺 e1b628a 的 roomIdentityKey/id 稳定性）**。它不崩（导出签名稳定、被 index 调用），但 id 稳定性改进未生效。**未反应式部署它**——它写 prod db，且正是 e1b628a 里待我审计的「空物理键→多套同小区 roomIdentityKey 塌成同键→误合并」风险点。
+
+**对 Yooni 线（e1b628a）影响**：e1b628a 后端 `domain.js` 现已**因热修实际上线**（feishu-sync.js 尚未）；其 `[listing-detail]` 诊断已生效。e1b628a 在 Yooni 板仍 CLAUDE_REVIEW——我欠一次正式审计（尤其 roomIdentityKey 误合并保守性），通过后再计划性补部署 feishu-sync.js。
+
+**教训（部署纪律）**：① 禁止单文件 scp 上线跨模块耦合改动——同 commit 相关文件（index/domain/feishu-sync…）必须**成套部署**；② 部署后验证不能只测 `/healthz`，必须打**核心业务端点**（详情/列表/匹配）真实响应码；③ 生产目录行尾统一 LF，避免 sha 噪声掩盖真漂移。
+
+**顺带修 bug2（前端 CSS）**：`7218500` — map/listings 两 tab 页底部留白不足（map 仅 56rpx），固定 tab 栏遮挡最底部卡片「看详情」；改为 `calc(180/150rpx + env(safe-area-inset-bottom))`。**纯前端、需用户重新上传小程序生效**。
+
+需要 Codex/Yooni 做什么：知悉本事故与 e1b628a 后端已上线；feishu-sync.js 待我审计 e1b628a 后成套补部署。
+
 ### 2026-07-07 14:37 | Codex | 稳定层#3 版本追溯审计 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（版本追溯运行时代码基本成立，但部署链路未闭环，暂不放行）。
