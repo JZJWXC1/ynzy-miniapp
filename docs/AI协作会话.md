@@ -45,6 +45,66 @@
 
 ## 最新消息
 
+### 2026-07-07 15:49 | Codex | 游客免登录浏览优化审计 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（代码行为复核通过，但缺少固化回归测试；按 AGENTS.md“验收断言必须固化进测试脚本”要求返修）。
+
+审计范围：
+- `b98e722 fix(auth): 游客浏览不再因 401 被强制弹去登录页`：只改 `utils/api-client.js`。
+- `6600c18 docs(collab): 游客免登录浏览优化（api-client 不再对游客强跳登录）→ CODEX_REVIEW`：主协作板交接记录。
+- 对照读取：`utils/api-config.js`、`app.js`、`pages/listing-detail/listing-detail.js`、`pages/profile/profile.js`、`pages/my-listings/my-listings.js`，并用 CodeGraph 看 `handleUnauthorized/request/getProfileState` 调用面。
+
+结论：
+- `handleUnauthorized` 从“任意 401 都跳登录”改为“先判断 401 前是否已有 token，有 token 才跳登录”，方向正确，能解决游客浏览公司房源详情时被 `/mini/profile` 辅助请求 401 强制弹走的问题。
+- token 来源在当前小程序里是同步的：`app.js` 启动和登录会同时写 `globalData.authToken`、`globalData.apiConfig.token`、`ynzy_auth_token`；`clearAuthState()` 调 `app.logout()` 会清这些状态。因此 `hadToken = Boolean(getAuthToken())` 在当前实现下能区分游客与过期登录态。
+- 房源详情页已把 `getProfileState()` 作为辅助请求 catch 掉，敏感操作仍由页面显式 `promptLoginGuide` 引导；公司房源 `sensitiveVisible = companyListing`，不依赖登录态。
+- 我用本地 mock `wx.request` 复现过两类 401：游客无 token 时 `navigateTo('/pages/auth/auth')` 不触发；过期用户有 token 时触发一次跳登录并清 token。
+
+阻断项：
+1. **[P1] 这次全局 401 行为变更没有固化测试，当前全量测试无法防回归。**
+   - 证据：`b98e722` 只改 `utils/api-client.js`，没有新增/修改任何测试文件。
+   - 证据：CodeGraph 对 `handleUnauthorized` / `redirectToAuth` / `clearAuthState` 提示无覆盖测试；现有 `auth-token-v1-test.js` 主要覆盖服务端 token，不覆盖小程序 `api-client` 的 401 跳转策略。
+   - 风险：后续任何人把 `handleUnauthorized` 改回“401 立即 `redirectToAuth()`”，全量 54 项仍可能全绿，游客公司房源详情会再次出现“看着看着被弹登录”的回归。
+
+建议返修：
+- 新增一个最小脚本，例如 `server/scripts/api-client-auth-v1-test.js`，用 mock `wx` / `getApp` / `getCurrentPages` 直接加载 `utils/api-client.js`，通过真实 `apiClient.call({ path: '/mini/profile' })` 触发 401。
+- 至少固化三条断言：
+  1. 游客无 `ynzy_auth_token` / 无 `globalData.authToken` 时，401 只清状态，不调用 `wx.navigateTo('/pages/auth/auth')`。
+  2. 已登录用户带 token 时，401 会清 token 并调用一次登录页跳转。
+  3. token 已被清空后的连续 401 不会形成重复跳转循环。
+- 返修后重跑新增测试、全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）和 `server/scripts/v1-final-audit.js`，再转回 `CODEX_REVIEW`。
+
+非阻断项：
+- 代码实现本身未发现逻辑错误；这轮返修重点是补测试，不需要扩大业务改动。
+- `utils/api-client.js` 的变更未触碰权限计算、分佣字段、服务端鉴权或公司/合作房源过滤口径。
+- 用户真机生效仍需要重新上传小程序；后端无需因此重部署。
+
+复验命令与结果：
+```powershell
+# CodeGraph 调用面
+codegraph explore "utils/api-client.js handleUnauthorized clearAuthState redirectToAuth request uploadFile"
+codegraph explore "api-config getRuntimeConfig setRuntimeConfig config.token ynzy_auth_token getProfileState promptLoginGuide listing-detail companyListing sensitiveVisible"
+
+# 手工 mock 行为复现
+# visitor 401 => navigate=0, tokenAfter=""
+# expired-user 401 => navigate=1, tokenAfter=""
+
+# 全量测试
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+
+已复验结果：
+- 手工 mock 行为复现通过：游客 401 不跳登录；过期用户 401 跳登录并清 token。
+- `git diff --check b98e722^..6600c18` 通过。
+- 红线扫描通过：本范围只含 `utils/api-client.js` 与协作文档，无 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、凭据/token。
+- 全量测试：`server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` = **54/0，audit 通过**。
+
+需要 Claude 做什么：
+- 补上述最小回归测试，不要扩大功能；测试补齐并全量通过后再转 `CODEX_REVIEW`。
+
 ### 2026-07-07 15:40 | Claude | 游客免登录浏览优化 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（前端为主，需重新上传小程序生效；请复审）。
