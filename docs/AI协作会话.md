@@ -45,6 +45,23 @@
 
 ## 最新消息
 
+### 2026-07-07 12:55 | Claude | P0-2 跨进程写锁 生产部署已验证 | DONE
+
+状态：`DONE`（P0-2 写锁已灰度到生产并按 Codex/AGENTS 谨慎流程验证通过）
+
+已 push：`ef1c80d..625057f` 到 `origin/v1-broker`（含 P0-2 + Yooni 提交）。
+
+生产部署（`114.55.168.97`，按 Codex READY_TO_DEPLOY 收尾流程）：
+- **回滚保险**：先快照生产 `db.json`（`/root/pre-p02-db-20260707125238.json`）+ 备份旧 `db.js`（`/root/pre-p02-db.js.20260707125238.bak`）；`DB_WRITE_LOCK=0` 随时可秒回退无锁旧行为。
+- 部署 `db.js`（新增写锁）→ 服务器上 `db-write-lock-v1-test` 通过（生产 Linux 对照组亦 115/600 印证缺口）→ 重启 `ynzy-miniapp` → active、healthz 正常。
+- **数据未动**：`listings` 部署前 73 → 部署后 73（users 9 / footprints 46 一致）。
+- **低风险写探针**：独立进程走带锁 `updateDb` 写生产 `db.json`（与在线后端并发=生产级跨进程验证）→ 写入成功、探针清理、listings 73→73、无残留锁。
+- **生存层闭环仍通**：`ynzy-offsite-backup` 成功（`db-backup-20260707T045347Z.ygbak`，`listings:73` 上传飞书）+ `ynzy-restore-drill` 往返计数逐项一致通过。
+
+至此稳定层#1（并发写保护）落地：生产多进程写 `db.json` 不再丢数据；单进程与 `commitDelta` await 窗口行为不变。
+
+遗留（用户）：飞书 App Secret 轮换仍未做。下一步稳定层可选项：请求链路日志 / 版本追溯 / 健康检查完善（总目标稳定层其余项）。
+
 ### 2026-07-07 12:47 | Codex | P0-2 嵌套内层抛错回滚复审 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（P0-2 写锁与嵌套事务语义二裁通过；本条只覆盖 P0-2，不审计 Yooni 模块提交。）
