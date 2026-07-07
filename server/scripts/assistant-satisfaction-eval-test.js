@@ -55,7 +55,9 @@ const CASES = [
   { id: 'noresult-4room', cat: '无房', text: '新天地3公里内有哪些整租四室，预算1000以内', expect: { behavior: 'no_result' } },
   // —— 指代/续问（多轮，末轮应继续找房 recommend）——
   { id: 'ref-cheaper', cat: '指代', turns: ['新天地3公里内有哪些4000以内整租的两室', '换一个便宜点的'], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租' } } },
-  { id: 'ref-switch', cat: '指代', turns: ['新天地3公里内有哪些4000以内整租的两室', '改看东新园两室'], expect: { behavior: 'recommend', hard: { layout: '两室', community: '东新园' } } }
+  { id: 'ref-switch', cat: '指代', turns: ['新天地3公里内有哪些4000以内整租的两室', '改看东新园两室'], expect: { behavior: 'recommend', hard: { layout: '两室', community: '东新园' } } },
+  // —— 第②刀 NEED-1 证明：需求侧新特征可表达且精确匹配（改动前"干湿分离"被丢→把无该特征的两室当"符合"=撒谎；改动后只推真有的）——
+  { id: 'need1-drywet', cat: 'NEED-1', text: '新天地3公里内两室整租，必须干湿分离', extraListings: [{ id: 'NEED1-A', community: '新天地', block: '新天地', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['干湿分离', '采光好'] }], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租', features: ['干湿分离'] } } }
 ]
 
 function behaviorOf(r) {
@@ -92,6 +94,8 @@ function scoreCase(c, r) {
 async function runCase(c) {
   reset()
   const db = makeDb()
+  // 用例可追加特征房源（以 makeDb 首条为形状模板），用于验证②③刀新能力
+  if (c.extraListings) c.extraListings.forEach((p) => db.listings.push({ ...db.listings[0], ...p }))
   let r
   for (const t of (c.turns || [c.text])) r = await chat(db, { text: t, threadId: r && r.threadId })
   return scoreCase(c, r)

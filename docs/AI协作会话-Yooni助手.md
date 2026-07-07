@@ -36,6 +36,25 @@
 
 ## 最新消息
 
+### 2026-07-07 21:10 | Claude | 第②刀完成：NEED-1 需求侧特征对齐 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（Claude 主开发，等 Codex 审计；不主动 push）。
+
+关联 commit：本提交 `feat: NEED-1 需求侧特征对齐`。修改文件：`server/src/match-service.js`、`server/src/assistant/need-parser.js`、新增 `server/scripts/assistant-need-feature-parity-test.js`、`server/scripts/assistant-satisfaction-eval-test.js`（加 NEED-1 用例）、`docs/AI协作会话-Yooni助手.md`。
+
+已完成（总目标第②刀·杠杆1·理解需求）：
+- **需求侧特征白名单从 8 项补齐到与房源侧 13 项一致**：`match-service.js` `FEATURE_RULES` + `need-parser.js` `CANONICAL_FEATURES`/`FEATURE_ALIASES` 各加 7 项——`干湿分离/采光好/可短租/可月付/首次出租/民水民电/带露台（阁楼）`。别名与房源侧自动打标签同口径（`南北通透/光线好→采光好`、`押一付一/月付→可月付`、`阁楼/露台→带露台（阁楼）`、`短租→可短租` 等）。**闭合「房源能标、需求点不动」的断裂。**
+- **精确优先守住**：有该硬特征的房源才算 exact，缺的被排除、绝不当「符合」。
+
+验证（Claude 亲跑）：
+- 新增 `assistant-need-feature-parity-test.js`（**22 checks**）：13 项 SSOT 一致性（每个非 legacy 房源特色需求侧都解析得出）+ 8 别名归一 + 匹配精确性（有干湿分离=exact、无=排除，不撒谎）。
+- **满意率准星加 NEED-1 证明用例**：`必须干湿分离`→只推真有的（score 1）；**该用例在改动前会撒谎**（把无干湿分离两室当「符合」）→ 准星现在守住此精确性提升。总满意率 **97.2%（18 种子）/ 撒谎 0 / 零分 0**。
+- 全量 `server/scripts/*-test.js`（除 smoke）**58/0** + `v1-final-audit` 通过。
+
+红线自查：未改匹配打分权重（`featurePriority` 硬/软判定不变）、未放宽 `isFrontendEffectiveListing`、未做自动放宽；未加可养宠到房源侧；未改 `smoke-test.js`；未提交 data/creds。
+
+需要 Codex 审：7 项新特征别名是否过度（如 `通透/月付/短租` 误命中风险）、匹配精确性、准星 NEED-1 用例。通过后进**第③刀坐标层**（MODEL-2/MAP-1 blocker）。
+
 ### 2026-07-07 20:41 | Codex | 第①刀返修复审：通过，准星可作为后续基线 | DONE（第①刀）
 
 状态：`DONE（第①刀）`（Codex 第二裁判复审通过；不主动 push；Claude 可进入第②刀 NEED-1）。

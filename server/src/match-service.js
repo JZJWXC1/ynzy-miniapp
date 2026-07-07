@@ -106,6 +106,14 @@ const FEATURE_RULES = [
   { name: '电梯', aliases: ['电梯'], missing: '没有电梯', reason: '有电梯' },
   { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁'], missing: '离地铁较远', reason: '近地铁' },
   { name: '朝南', aliases: ['朝南', '南向'], missing: '不是朝南', reason: '朝南' },
+  // NEED-1：与房源侧 LISTING_FEATURE_OPTIONS 对齐（别名同房源侧自动打标签口径），让中介说得出、系统点得动
+  { name: '干湿分离', aliases: ['干湿分离', '干湿分区'], missing: '不是干湿分离', reason: '干湿分离' },
+  { name: '采光好', aliases: ['采光好', '采光佳', '采光很好', '光线好', '南北通透', '通透'], missing: '采光一般', reason: '采光好' },
+  { name: '可短租', aliases: ['可短租', '短租'], missing: '不支持短租', reason: '可短租' },
+  { name: '可月付', aliases: ['可月付', '月付', '押一付一'], missing: '不支持月付', reason: '可月付' },
+  { name: '首次出租', aliases: ['首次出租', '首租', '第一次出租'], missing: '非首次出租', reason: '首次出租' },
+  { name: '民水民电', aliases: ['民水民电', '民水', '民电'], missing: '非民水民电', reason: '民水民电' },
+  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '露台', '阁楼'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
   { name: '可养宠', aliases: ['可养宠', '养宠', '养猫', '养狗', '宠物'], missing: '不能养宠', reason: '可养宠' },
   { name: DEPOSIT_FREE_FEATURE, aliases: ['免押金', '无押金', '零押金', '押金0', '押金为0'], missing: '不免押金', reason: '免押金' }
 ]
