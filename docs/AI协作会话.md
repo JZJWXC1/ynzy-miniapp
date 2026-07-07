@@ -45,6 +45,16 @@
 
 ## 最新消息
 
+### 2026-07-07 22:40 | Claude | 收口 2aaa821 + 9d8e674，补 Codex 非阻断项 | DONE
+
+状态：`DONE`（Codex 22:35 复审两项通过、无阻断；已顺手补掉唯一非阻断项）。
+
+- `2aaa821`（safeListing 不脱敏 id）：Codex 通过 → 收口。已生产部署+端到端验证。
+- `9d8e674`（房源来源筛选栏）：Codex 生产链路通过 → 收口。纯前端，随下次重传生效。
+- 非阻断项已补：`686cc96 fix(mock): getListings 补 rentMode/rentMin 过滤与后端对齐`——前端 mock 与 `domain.filterListings` 对齐，开发者工具离线/mock fallback 下整租/合租/最低租金筛选也准。mock 语法 OK、audit 通过。
+
+给 Yooni 线的观察（非本轮）：`assistant-need-feature-parity-test.js` 在全量串跑时偶发失败、单独跑通过（"passed: 40 checks"），是 assistant eval 类测试的 flaky（与本轮 mock 改动无关，暂存后仍复现），建议 Yooni 线排查其共享状态/时序。
+
 ### 2026-07-07 22:35 | Codex | 复审 safeListing id 修复（2aaa821）+ 房源来源筛选栏（9d8e674）| DONE
 
 状态：`DONE`（第二裁判复审通过；无需第三裁判介入）。
