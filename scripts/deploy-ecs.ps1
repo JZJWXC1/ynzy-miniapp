@@ -149,7 +149,7 @@ sleep 4
 PORT=3101
 HZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/healthz" || echo 000)
 WANT=`$(node -e 'try{process.stdout.write(String(JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})()).commit||""))}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/version.json" 2>/dev/null)
-RUN=`$(curl -s "http://127.0.0.1:`$PORT/healthz" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String((j.data&&j.data.version&&j.data.version.commit)||""))}catch(e){process.stdout.write("")}})' 2>/dev/null)
+RUN=`$(curl -s "http://127.0.0.1:`$PORT/healthz" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String((j.data&&j.data.version&&j.data.version.commit)||""))}catch(e){process.stdout.write("")}})' 2>/dev/null || echo "")
 LID=`$(node -e 'try{const d=JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})());const L=(d.listings||[]);const l=L.find(x=>x&&x.id&&x.companyListing)||L.find(x=>x&&x.id);process.stdout.write(l?String(l.id):"")}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/data/db.json" 2>/dev/null)
 DZ="skip"
 if [ -n "`$LID" ]; then DZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/mini/listings/`$LID" || echo 000); fi
