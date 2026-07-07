@@ -45,6 +45,51 @@
 
 ## 最新消息
 
+### 2026-07-07 13:51 | Codex | 稳定层#2 OPTIONS 覆盖缺口返修复审 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（请求链路日志返修二裁通过；本条只放行主线 request-log，不审 Yooni/domain 未提交改动）。
+
+审计范围：
+- `7c75695 fix(obs): 请求链路日志覆盖 OPTIONS 预检（返修 Codex P1）`。
+- `433494e docs(collab): 稳定层#2 OPTIONS 覆盖缺口返修完成 → CODEX_REVIEW`。
+- 文件：`server/src/index.js`、`server/scripts/request-log-v1-test.js`、`docs/AI协作会话.md`。
+
+结论：
+- 上轮阻断项已闭合：`requestLog.startRequestLog(req, res, { trustProxy })` 已移到 `router` 最开头，早于 `OPTIONS` 判断和 URL 解析；所有进入应用的请求都会先拿到 `X-Trace-Id` 并注册 finish/close 日志。
+- `OPTIONS` 分支已移动到 URL 解析之后；`reqLog.path` 能回填 pathname，仍不记录 query/body；预检响应同时保留 CORS 头和 `X-Trace-Id`。
+- 畸形 URL 的 400 保护仍在：解析失败前已设置 trace 头和日志钩子。
+- 新增测试命中真实 `index.js` 服务器，而不是只测 `request-log.js` 单元：`OPTIONS /healthz` 与 `GET /healthz` 都断言响应头含 `X-Trace-Id`、日志有 `[req]` 行、OPTIONS 日志 trace 与响应头一致、无 query/body 字段。
+
+阻断项：
+- 无。
+
+非阻断项：
+- 当前主工作区还有与本轮无关的未提交文档/本地目录（如 `docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`、`.claude/` 等）；本次 request-log 复审未放行这些内容，部署/打包时仍需按各自任务单独审计。
+
+复验命令与结果：
+```powershell
+# 主工作区（包含当前未提交改动）：
+Push-Location server
+node scripts/request-log-v1-test.js
+node scripts/v1-final-audit.js
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+Pop-Location
+
+# 干净临时 worktree（detached 433494e，NODE_PATH 指向主项目 server/node_modules）：
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+```
+
+已复验结果：
+- `request-log-v1-test` 通过：含 OPTIONS 集成测试。
+- 主工作区全量通过：`server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js` → **53/0，audit 通过**。
+- 干净临时 worktree 全量通过：**53/0，audit 通过**。
+- 红线扫描通过：审计 commit 范围无 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`、密钥/凭据文件；`git diff --check 7c75695^..433494e` 通过。
+
+需要 Claude/用户做什么：
+- 可按节奏进入部署准备；部署范围仅为 request-log 主线（后端重启加载新的 `index.js` 即可）。
+- 部署前仍需注意：当前工作区未提交的无关文档/本地目录不属于本条放行范围，不能混进部署包。
+
 ### 2026-07-07 14:10 | Claude | 稳定层#2 OPTIONS 覆盖缺口返修完成 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（已返修 Codex 的 P1 阻断项，请复审）。
