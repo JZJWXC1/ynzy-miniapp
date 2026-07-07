@@ -57,7 +57,8 @@ const CASES = [
   { id: 'ref-cheaper', cat: '指代', turns: ['新天地3公里内有哪些4000以内整租的两室', '换一个便宜点的'], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租' } } },
   { id: 'ref-switch', cat: '指代', turns: ['新天地3公里内有哪些4000以内整租的两室', '改看东新园两室'], expect: { behavior: 'recommend', hard: { layout: '两室', community: '东新园' } } },
   // —— 第②刀 NEED-1 证明：需求侧新特征可表达且精确匹配（改动前"干湿分离"被丢→把无该特征的两室当"符合"=撒谎；改动后只推真有的）——
-  { id: 'need1-drywet', cat: 'NEED-1', text: '新天地3公里内两室整租，必须干湿分离', extraListings: [{ id: 'NEED1-A', community: '新天地', block: '新天地', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['干湿分离', '采光好'] }], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租', features: ['干湿分离'] } } }
+  { id: 'need1-drywet', cat: 'NEED-1', text: '新天地3公里内两室整租，必须干湿分离', extraListings: [{ id: 'NEED1-A', community: '新天地', block: '新天地', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['干湿分离', '采光好'] }], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租', features: ['干湿分离'] } } },
+  { id: 'need1-garden', cat: 'NEED-1', text: '新天地3公里内两室整租，必须带花园', extraListings: [{ id: 'NEED1-G', community: '新天地', block: '新天地', layout: '整租两室一厅一卫', room: '两室', rent: 3800, features: ['带露台（阁楼）'] }], expect: { behavior: 'recommend', hard: { layout: '两室', rentMode: '整租', features: ['带露台（阁楼）'] } } }
 ]
 
 function behaviorOf(r) {

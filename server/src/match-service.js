@@ -102,9 +102,9 @@ const CN_DIGITS = {
 const FEATURE_RULES = [
   { name: '带阳台', aliases: ['带阳台', '阳台'], missing: '没有阳台', reason: '有阳台' },
   { name: '燃气', aliases: ['燃气', '天然气', '煤气'], missing: '没有燃气', reason: '有燃气' },
-  { name: '独卫', aliases: ['独卫', '独立卫生间', '独立卫浴', '独立卫'], missing: '没有独卫', reason: '有独卫' },
+  { name: '独卫', aliases: ['独卫', '独立卫生间', '独立卫浴', '独立卫', '独立厨卫', '独厨独卫'], missing: '没有独卫', reason: '有独卫' },
   { name: '电梯', aliases: ['电梯'], missing: '没有电梯', reason: '有电梯' },
-  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁'], missing: '离地铁较远', reason: '近地铁' },
+  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁', '号线'], missing: '离地铁较远', reason: '近地铁' },
   { name: '朝南', aliases: ['朝南', '南向'], missing: '不是朝南', reason: '朝南' },
   // NEED-1：与房源侧 LISTING_FEATURE_OPTIONS 对齐（别名同房源侧自动打标签口径），让中介说得出、系统点得动
   { name: '干湿分离', aliases: ['干湿分离', '干湿分区'], missing: '不是干湿分离', reason: '干湿分离' },
@@ -113,7 +113,7 @@ const FEATURE_RULES = [
   { name: '可月付', aliases: ['可月付', '月付', '押一付一'], missing: '不支持月付', reason: '可月付' },
   { name: '首次出租', aliases: ['首次出租', '首租', '第一次出租'], missing: '非首次出租', reason: '首次出租' },
   { name: '民水民电', aliases: ['民水民电', '民水', '民电'], missing: '非民水民电', reason: '民水民电' },
-  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '露台', '阁楼'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
+  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '露台', '阁楼', '花园'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
   { name: '可养宠', aliases: ['可养宠', '养宠', '养猫', '养狗', '宠物'], missing: '不能养宠', reason: '可养宠' },
   { name: DEPOSIT_FREE_FEATURE, aliases: ['免押金', '无押金', '零押金', '押金0', '押金为0'], missing: '不免押金', reason: '免押金' }
 ]
