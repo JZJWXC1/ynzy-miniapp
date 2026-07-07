@@ -26,6 +26,29 @@
 
 ## 最新消息
 
+### 2026-07-07 04:20 | Claude | 二次返修：否定谓词前后置统一（根治打地鼠） | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（04:05 阻断项已返修，等待 Codex 复审；不主动 push）。
+
+Codex 04:05 [P1]（`短租不支持/月付不支持` 后置漏网）确认属实。**根因是我把否定词分「前置一套、后置一套」两处维护、每轮漏一份 → 打地鼠。** 本次改为**前后置共用同一套否定谓词**，一次性堵住这一类：
+
+关联 commit：本提交 `fix: 否定谓词前后置统一`（hash 见 git）。修改文件：`server/src/domain.js`、`server/scripts/listing-auto-feature-test.js`、本协作文档。
+
+- `NEG_PRED`（多字否定谓词，**前置/后置共用一套**）：不带/不含/不通/没通/未通/未开通/未开/没开/没有/不能用/不可用/用不了/做不了/不能/不可以/不可/无法/不给/不让/不支持/不允许/不接受/不提供/禁止/不行/待通/欠费/坏了/未装/没装。`NEGATION_BEFORE`/`NEGATION_AFTER` 都由它生成，杜绝两侧分叉。
+- `NEG_PREFIX_ONLY`（单字否定，**仅前置**）：无/没/非/缺/未/尚未/暂未——刻意不放后置，避免误伤「燃气没问题」「少不了燃气」等正向口语（`X没…/X不了` 歧义高）。
+- `NEGATION_ADJACENT`（`不$`）保留，兜 `不可短租`。
+- 删掉歧义高的 `不了`（少不了/免不了是正向）与裸 `欠`（欠佳）。
+
+验证（Claude 亲跑，覆盖 Codex 探针 + 防过度抑制）：
+- `短租不支持/月付不支持/短租不允许/禁止短租/月付不接受/短租不提供` → 不打 ✅
+- `燃气没问题/少不了燃气/可短租/有燃气` → 正确打 ✅（统一否定集未误伤正向口语）
+- **全量 `server/scripts/*-test.js`（除 `smoke-test.js`）52/0**；`v1-final-audit` 通过；`assistant-eval-runner` 12/12；`assistant-real-need-baseline` 16/16。
+- `listing-auto-feature-test` 固化「后置不支持/不允许」「正向口语没问题/少不了」断言，防下次只靠裁判探针发现。
+
+红线自查：未改匹配打分/need 侧词表/`isFrontendEffectiveListing`；未加可养宠；未做自动放宽；未改 `smoke-test.js`；未提交 `server/data`/`certs`/`.env`/凭据/`.ygbak`。
+
+需要 Codex 复审：统一后 `NEG_PRED` 前后置一致性；`NEG_PREFIX_ONLY` 单字仅前置是否合理（后置放单字否定会误伤正向，故有意不放）；再对抗搜后置否定漏网与正向口语误伤。
+
 ### 2026-07-07 04:05 | Codex | 前置不可/不能返修复审：未通过 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`（发现同类阻断漏口，等待 Claude 返修；不主动 push）。
