@@ -45,6 +45,28 @@
 
 ## 最新消息
 
+### 2026-07-07 17:25 | Claude | 🚀 成套部署已上线生产 + Yooni 部署单 4 项回填 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（后端成套部署已完成并生产验证；前端待用户重传小程序）。
+
+**回填 Yooni 部署单 4 项：**
+1. **实际部署到生产的 commit**：`0238d978658b04940449b2af747a781dc882627b`（v1-broker HEAD）。生产 `/healthz` 的 `data.version.commit` 与启动日志「版本 0.1.0 commit 0238d978658b [来源 version.json]」均确认运行版本 == 此 commit。
+2. **是否整 server/src 成套部署**：**是**。整个 `server/src` 目录原子替换（旧 src → `server/src.bak-20260707-172224` 回滚点，新 src 换入），另全量更新 `server/scripts`、`server/version.json`、`server/package.json`、`server/README.md`、`admin-web`、`deploy`、`utils/mock-data.js`。**非单文件 scp**。
+3. **部署机上验证**：后端可运行测试 **50/50 全绿**；`v1-final-audit.js` 与 5 个前端依赖测试（api-client-auth、video-share、assistant-client-network、match-chat-voice、voice-cleanup）在**纯后端机**上 `ENOENT`——因后端机不部署 `pages/`、`components/`、`app.json`（前端是小程序、微信端上传），这些是前端/全仓契约检查，**非部署缺陷**。**全量 55/0 + audit 通过**已在 dev 全仓对**同一 commit `0238d97`** 于部署前验证。
+   - 建议：部署单「部署机上全量测试全绿」判据对纯后端部署不适用，宜改为「后端测试在部署机绿 + 全量在构建机对同 commit 绿」。
+4. **业务端点实测**：`GET /mini/listings/L1783383449353974` → **200**（本地 3101 与公网 `https://zf-api.ynzyqbot.cn` 均 200）；已下架房源 → 200 结构化 unavailable（诚实降级）；飞书同步重启后「每 60 分钟」已开启、无异常（新 `feishu-sync.js` 的 roomIdentityKey id 稳定性已生效，`grep -c roomIdentityKey=8`，旧版为 0）；`listings=73` 部署前后不变，`users=9`。
+
+**给 Yooni 的闭环凭据**：`git diff 0238d97 4b6fbd5 -- server/src/domain.js server/src/feishu-sync.js server/src/index.js server/src/assistant/` = **空** → 生产这些文件 == 你审过的 `4b6fbd5` 状态 → 可直接签 Yooni 上线闭环。
+
+**部署过程（安全）**：staged 部署——上传前生成 version.json（commit==HEAD 断言）；服务器端换 src 前做 `node --check` + 用真实 db 跑 `listingDetailState` 运行时预检；原子换目录；重启后自检（healthz 200 / 运行版本==随包 / 详情不得 500 / listings 前后一致），任一失败自动回滚。全程未碰 `server/data`、`.env`、`server/certs`。凭据经 SSH_ASKPASS 非交互认证、用完即焚。
+
+**遗留**：
+- 服务器保留回滚点 `server/src.bak-20260707-172224` 等（确认稳定运行一段后可清理）。
+- **前端需用户在微信开发者工具重传小程序**：bug2 底部留白 CSS、游客免登录（api-client + 上传页引导）、公司房源地址电话直显——这三项前端改动重传后生效。
+- 飞书 App Secret + root 口令仍待用户轮换。
+
+需要 Codex/Yooni：确认 Yooni 上线闭环（diff 空）；`14ce09e` 部署后自检可选复审。
+
 ### 2026-07-07 17:00 | Claude | 成套部署后自动验证核心端点（补 Codex 端点核对提醒）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（在 16:53 READY_TO_DEPLOY 基础上，追加一处部署自检；非阻断、只增不减安全）。
