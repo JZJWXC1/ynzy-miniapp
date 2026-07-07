@@ -1,7 +1,8 @@
 const apiService = require('../../utils/api-service')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
-const categories = ['全部', '整租', '合租', '业主房源', '公寓']
+// 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
+const categories = ['全部', '公司房源', '业主房源', '二房东房源']
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
   { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
@@ -208,7 +209,7 @@ Page({
       this.setData({
         listings,
         communityOptions: uniqueCommunities(communityRows),
-        emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}房源`
+        emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}`
       })
     }).catch(() => {
       if (this.activeListingRequestId !== requestId) return

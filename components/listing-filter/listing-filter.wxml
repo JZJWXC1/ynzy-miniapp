@@ -38,6 +38,17 @@
     </scroll-view>
   </view>
 
+  <view class="filter-section">
+    <view class="filter-label">租赁方式</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.rentMode ? 'active' : ''}}" data-rentmode="" bindtap="selectRentMode">不限</view>
+        <view class="filter-chip {{draftFilters.rentMode === '整租' ? 'active' : ''}}" data-rentmode="整租" bindtap="selectRentMode">整租</view>
+        <view class="filter-chip {{draftFilters.rentMode === '合租' ? 'active' : ''}}" data-rentmode="合租" bindtap="selectRentMode">合租</view>
+      </view>
+    </scroll-view>
+  </view>
+
   <view class="price-filter-row">
     <input class="filter-input price-input" value="{{draftFilters.rentMin}}" data-field="rentMin" bindinput="updateInput" type="number" placeholder="最低租金" />
     <view class="price-divider"></view>

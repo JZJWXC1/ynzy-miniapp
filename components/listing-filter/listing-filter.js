@@ -125,6 +125,13 @@ Component({
         layout: layout === '不限' ? '' : layout
       }, true)
     },
+    selectRentMode(event) {
+      const rentMode = event.currentTarget.dataset.rentmode || ''
+      this.updateDraft({
+        ...this.data.draftFilters,
+        rentMode
+      }, true)
+    },
     updateInput(event) {
       const field = event.currentTarget.dataset.field
       if (!field) return
