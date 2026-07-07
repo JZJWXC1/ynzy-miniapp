@@ -55,4 +55,46 @@ const hc = require('./health-check')
   assert.strictEqual(/secret|password|token|BACKUP_ENCRYPTION_KEY/i.test(JSON.stringify(r)), false, '巡检结果不得含凭据类字段')
 }
 
+// 5) buildAlertEnv：告警子进程环境走白名单——拿不到备份/飞书凭据，但拿得到系统变量与本次摘要。
+//    buildAlertEnv 是告警命令 env 的唯一来源（alertIfNeeded 只用它），所以锁住它即锁住子进程环境。
+{
+  const src = {
+    PATH: '/usr/bin:/bin',
+    HOME: '/root',
+    SystemRoot: 'C:\\Windows',
+    BACKUP_ENCRYPTION_KEY: 'LEAK_PROBE_BACKUP_KEY',
+    BACKUP_REMOTE_CMD: 'rsync ...',
+    FEISHU_BACKUP_APP_SECRET: 'LEAK_PROBE_FEISHU_SECRET',
+    FEISHU_BACKUP_APP_ID: 'cli_probe',
+    FEISHU_BACKUP_FOLDER_TOKEN: 'fldxxx',
+    SOME_API_TOKEN: 't',
+    DB_PASSWORD: 'p',
+    HEALTH_ALERT_WEBHOOK: 'https://example.invalid/hook'
+  }
+  const env = hc.buildAlertEnv(src, { HEALTH_FAILURES: 'disk', HEALTH_SUMMARY: '{"ok":false}' })
+
+  // 摘要与系统变量：保留。
+  assert.strictEqual(env.HEALTH_FAILURES, 'disk', '摘要 HEALTH_FAILURES 传入')
+  assert.strictEqual(env.HEALTH_SUMMARY, '{"ok":false}', '摘要 HEALTH_SUMMARY 传入')
+  assert.strictEqual(env.PATH, '/usr/bin:/bin', '系统 PATH 保留（命令得以运行）')
+  assert.strictEqual(env.HOME, '/root', '系统 HOME 保留')
+  assert.strictEqual(env.SystemRoot, 'C:\\Windows', 'Windows SystemRoot 保留')
+  assert.strictEqual(env.HEALTH_ALERT_WEBHOOK, 'https://example.invalid/hook', 'HEALTH_ALERT_* 专用变量保留')
+
+  // 敏感凭据：一律拿不到。
+  assert.strictEqual('BACKUP_ENCRYPTION_KEY' in env, false, '备份加密密钥不得透传')
+  assert.strictEqual('BACKUP_REMOTE_CMD' in env, false, '备份异地命令不得透传')
+  assert.strictEqual('FEISHU_BACKUP_APP_SECRET' in env, false, '飞书 secret 不得透传')
+  assert.strictEqual('FEISHU_BACKUP_APP_ID' in env, false, '飞书 app id 不得透传')
+  assert.strictEqual('FEISHU_BACKUP_FOLDER_TOKEN' in env, false, '飞书 folder token 不得透传')
+  assert.strictEqual('SOME_API_TOKEN' in env, false, 'TOKEN 类不得透传')
+  assert.strictEqual('DB_PASSWORD' in env, false, 'PASSWORD 类不得透传')
+
+  // 整体断言：环境值里不出现任何泄漏探针值。
+  assert.strictEqual(/LEAK_PROBE/.test(JSON.stringify(env)), false, '告警环境里不得含任何泄漏探针值')
+
+  // 空/非法入参不崩。
+  assert.deepStrictEqual(hc.buildAlertEnv(null, null), {}, 'null 入参返回空对象')
+}
+
 console.log('health-check-v1-test passed')

@@ -2,7 +2,8 @@
 
 // 独立健康巡检：检查「会拖垮生产但 /healthz 未必发现」的信号——db 可解析、磁盘余量、备份新鲜度、
 // 服务端点可达。失败打结构化 [health] 日志并**非零退出**（供 systemd/journald 告警）；配了
-// HEALTH_ALERT_CMD 时经环境变量把摘要传给外部通知命令（仓库不写凭据/webhook）。不改 index.js/readyz。
+// HEALTH_ALERT_CMD 时经**白名单环境**把摘要传给外部通知命令——告警子进程拿不到备份加密密钥/飞书
+// secret 等敏感凭据（见 buildAlertEnv）。仓库不写凭据/webhook。不改 index.js/readyz。
 //
 // 用法：node server/scripts/health-check.js
 // 环境：PORT(默认3101)、DATA_FILE(db 路径，同服务)、BACKUP_STAGE_DIR/BACKUP_DIR(备份目录)、
@@ -55,6 +56,33 @@ function resolveDbPath() {
   return path.join(SERVER_DIR, env || 'data/db.json')
 }
 
+// 告警子进程只允许拿到「运行命令必需的系统变量」，绝不透传备份/飞书等敏感凭据。
+// systemd service 会 EnvironmentFile 加载 /etc/default/ynzy-backup（含 BACKUP_ENCRYPTION_KEY、
+// FEISHU_BACKUP_APP_SECRET 等），若把整个 process.env 交给 HEALTH_ALERT_CMD，任意告警命令都能读到
+// 这些凭据——白名单式（默认拒绝）从根上堵死这条泄漏路径。
+const ALERT_ENV_SYSTEM_KEYS = [
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME',
+  // Windows 上命令解释器所需（cmd/powershell）
+  'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR', 'TEMP', 'TMP'
+]
+
+// 构造告警命令的环境：系统必需变量 + 运维显式命名的 HEALTH_ALERT_* 专用配置（如 webhook）+ 本次摘要。
+// 任何 BACKUP_*/FEISHU_*/TOKEN/SECRET/PASSWORD/.env 变量都不进白名单，因此拿不到。extras 覆盖同名键。
+function buildAlertEnv(sourceEnv, extras) {
+  const src = sourceEnv && typeof sourceEnv === 'object' ? sourceEnv : {}
+  const out = {}
+  for (const key of ALERT_ENV_SYSTEM_KEYS) {
+    if (src[key] != null) out[key] = src[key]
+  }
+  // 专用告警配置：webhook URL 等由运维显式命名为 HEALTH_ALERT_*，与备份凭据物理隔离。
+  for (const key of Object.keys(src)) {
+    if (key.startsWith('HEALTH_ALERT_')) out[key] = src[key]
+  }
+  const add = extras && typeof extras === 'object' ? extras : {}
+  for (const key of Object.keys(add)) out[key] = add[key]
+  return out
+}
+
 // ---------- CLI 各项检查（含 IO 副作用，不进单测） ----------
 
 function checkDb() {
@@ -75,15 +103,18 @@ function checkDisk() {
 }
 
 function checkBackup() {
+  const dir = process.env.BACKUP_STAGE_DIR || process.env.BACKUP_DIR
+  if (!dir) return { name: 'backup', ok: true, skipped: '未配置备份目录' } // 未配置才跳过、不误报
+  // 一旦配置了备份目录，任何 require/检查异常都 fail-loud——备份坏了却报健康是最危险的假阳性。
   try {
     const backup = require('../src/backup')
-    if (typeof backup.checkFreshness !== 'function') return { name: 'backup', ok: true, skipped: '无 checkFreshness' }
-    const dir = process.env.BACKUP_STAGE_DIR || process.env.BACKUP_DIR
-    if (!dir) return { name: 'backup', ok: true, skipped: '未配置备份目录' } // 未配置则跳过、不误报
+    if (typeof backup.checkFreshness !== 'function') {
+      return { name: 'backup', ok: false, detail: 'backup.checkFreshness 不可用（已配置备份目录，按失败处理）' }
+    }
     const fresh = backup.checkFreshness({ dir, maxAgeHours: Number(process.env.BACKUP_MAX_AGE_HOURS || 24) })
     return { name: 'backup', ok: fresh.ok !== false, latest: fresh.latest, ageHours: fresh.ageMs != null ? Math.round(fresh.ageMs / 3600000) : null, reason: fresh.reason }
   } catch (error) {
-    return { name: 'backup', ok: true, skipped: 'backup 检查异常：' + (error && error.message) }
+    return { name: 'backup', ok: false, detail: 'backup 检查异常（已配置备份目录）：' + (error && error.message) }
   }
 }
 
@@ -103,9 +134,12 @@ function alertIfNeeded(result) {
   const cmd = process.env.HEALTH_ALERT_CMD
   if (!cmd || !cmd.trim()) return
   try {
-    // 摘要经环境变量传入，避免拼接注入；不含任何凭据。
+    // 摘要经环境变量传入，避免拼接注入。env 走白名单：告警命令拿不到备份/飞书等凭据。
     execSync(cmd, {
-      env: { ...process.env, HEALTH_FAILURES: result.failures.join(','), HEALTH_SUMMARY: JSON.stringify(result) },
+      env: buildAlertEnv(process.env, {
+        HEALTH_FAILURES: result.failures.join(','),
+        HEALTH_SUMMARY: JSON.stringify(result)
+      }),
       stdio: 'ignore',
       timeout: 15000
     })
@@ -121,4 +155,4 @@ if (require.main === module) {
   process.exit(result.ok ? 0 : 1)
 }
 
-module.exports = { evaluateDb, parseDfFreePct, aggregate, resolveDbPath }
+module.exports = { evaluateDb, parseDfFreePct, aggregate, resolveDbPath, buildAlertEnv }
