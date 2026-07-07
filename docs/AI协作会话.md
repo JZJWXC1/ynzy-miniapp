@@ -45,6 +45,61 @@
 
 ## 最新消息
 
+### 2026-07-07 14:25 | Claude | 稳定层#3 版本追溯 实现完成 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（请 Codex 第二裁判审计）。
+
+关联 commit：`fc7daeb feat(obs): 版本追溯（/healthz+/readyz+启动日志透出运行版本）`（6 文件，未 push）。
+
+实际改动：
+- 新增 `server/src/version.js`：纯函数 `computeVersion({env,versionJson,pkg})` 按优先级 env > version.json > package.json 合成 `{version, commit, shortCommit, branch, builtAt, committedAt, source}`；`getVersion()` 读真实来源并缓存；`readJsonSafe` 缺文件/空/坏 JSON/非对象一律返回 null 不抛；`shortOf` 取前 12 位、空/unknown 归一。
+- 新增 `server/scripts/gen-version.js`：部署/构建期本地用 git（`rev-parse HEAD`/`--abbrev-ref HEAD`/`log -1 --format=%cI`）生成 `server/version.json`；git 不可用写 `commit=unknown` 不报错。
+- 改 `server/src/index.js`：require `./version`；`/healthz` 增 `version`；`buildHealth` 增 `version`（惠及 `/readyz`）；启动日志加一行 `版本 x commit y (branch) built z [来源 source]`。
+- 新增 `server/scripts/version-v1-test.js`：优先级三来源、缺文件/坏 JSON/非对象兜底、shortCommit 边界、getVersion 不抛+缓存。
+- 改 `.gitignore`：忽略生成物 `server/version.json`（不入库，避免脏 diff/陈旧）。
+- 改 `server/README.md`：记版本追溯来源优先级、gen-version、部署步骤、`data.version` 字段。
+
+关键设计：生产目录非 git 仓库、部署是 scp 单文件，故运行时不做 `git rev-parse`，改由部署期生成 `version.json` 随包带上；三来源任一缺失/损坏都优雅降级，不阻断启动。
+
+验证（本地）：
+- `version-v1-test` 通过；`node --check` 三文件 OK。
+- `gen-version.js` 生成 version.json：`{version:0.1.0, commit:d9aa02239596, branch:v1-broker, source:version.json}`。
+- 启动服务器：启动日志打印 `版本 0.1.0 commit d9aa02239596 (v1-broker) built … [来源 version.json]`；`GET /healthz` 原始体 `data.version` 为完整版本对象；`/readyz` 的 `buildHealth` 同带 `version`。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`：**54/0，audit 通过**（较上轮 +1，即 version-v1-test）。
+- `git diff --check` 仅行尾提示、无空白错误；改动未触碰 `domain.js`（Yooni 线）、`smoke-test.js`、`server/data`、`.env`、凭据；`server/version.json` 已确认被 gitignore（`git check-ignore` 命中）。
+
+复验命令：
+```powershell
+Push-Location server
+node scripts/version-v1-test.js
+node scripts/gen-version.js; Get-Content version.json
+node scripts/v1-final-audit.js
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+Pop-Location
+```
+
+需要 Codex 做什么：审计 `fc7daeb`；重点看 ① 版本来源优先级与降级是否稳妥、② `/healthz`/`/readyz` 字段位置（在 `data.version`）与启动日志、③ 生成物 gitignore 边界、④ 部署时如何保证 version.json 随包上线。通过则转 `READY_TO_DEPLOY`。
+
+### 2026-07-07 14:20 | Claude | 稳定层#3 版本追溯 开工 | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（用户确认「下一项，你建议的来」，我选版本追溯）。
+
+为什么选它：链路日志已能定位「哪条请求」，但线上无法得知「当时跑的是哪版代码」。且部署是 scp 单文件、`/opt/ynzy-miniapp` 非 git 仓库，运行时 `git rev-parse` 不可用。trace + version 才是完整定位上下文，也是「发布记录」的基础。零依赖、范围可控、与刚上线的日志互补。
+
+目标：把运行中的版本/commit 透出到 `/healthz`、`/readyz`、启动日志，供 `curl`/journald 直接看到「现网是哪版」。
+
+拟修改文件清单：
+- 新增 `server/src/version.js`：`getVersion()` 按优先级解析 `{version, commit, shortCommit, builtAt, branch, source}`——① 环境变量 `APP_VERSION/APP_COMMIT/APP_BUILT_AT/APP_BRANCH`；② `server/version.json`（部署期生成）；③ 兜底 `package.json` version + commit=`unknown`。缺文件/坏 JSON 均不抛、优雅降级；结果缓存。
+- 新增 `server/scripts/gen-version.js`：部署/构建期本地用 git（`rev-parse HEAD`、`--abbrev-ref HEAD`、commit 时间）生成 `server/version.json`；非 git 环境写 `commit=unknown` 不报错。
+- 改 `server/src/index.js`：require version；`/healthz` 增 `version` 字段；`buildHealth` 增 `version`（惠及 `/readyz`）；启动日志追加 `版本 x commit y built z`。
+- 新增 `server/scripts/version-v1-test.js`：环境变量优先级、version.json 解析、缺文件兜底、坏 JSON 兜底、shortCommit 格式、不抛。
+- 改 `.gitignore`：忽略生成的 `server/version.json`（每次 commit 变、不入库，避免脏 diff / 陈旧）。
+- 改 `server/README.md`：记 `/healthz` version 字段、`gen-version.js`、部署写 version.json 步骤。
+
+独占声明：本轮继续独占 `server/src/index.js`（Yooni 线在 `domain.js`，请勿动 index.js）。不碰 `domain.js`、`smoke-test.js`、`server/data`、`.env`、凭据。
+
+完成后：跑全量测试 + `v1-final-audit.js`，提交后转 `CODEX_REVIEW`。
+
 ### 2026-07-07 14:12 | Claude | 稳定层#2 请求链路日志 已部署生产并验证 | DONE
 
 状态：`DONE`（用户已确认 push + 部署；生产验证通过，含 Codex 返修的 OPTIONS 覆盖点）。
