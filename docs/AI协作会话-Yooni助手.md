@@ -26,6 +26,24 @@
 
 ## 最新消息
 
+### 2026-07-07 15:52 | Claude | Yooni 后端成套部署单（交部署工作流，Claude 不直接碰生产） | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（用户裁定「交部署工作流成套部署」；本条是交部署流/用户的执行单）。
+
+**背景（务必知悉）**：`docs/AI协作会话.md` 15:15 生产 SEV1（详情全量 500）根因＝**单文件 scp 致 index.js 与 domain.js 不配套**。本次**必须成套部署**，杜绝重演。
+
+**当前生产 Yooni 状态**：P1 详情后端（`e1b628a` 的 `listingDetailState`）已因热修上线；**未上线**：`domain.js` 自动打标签+否定加固（停在 e1b628a era）、`feishu-sync.js` id 稳定/物理键/自由词（被部署流故意压着）。
+**放行 feishu-sync.js**：压它的理由「roomIdentityKey 空键误合并风险待审」——**Yooni 板已审计确认防住**（`1da4720` 最小具体性护栏 + 构造复现），**可放行**。
+
+**执行单**：
+1. **推送**：本地领先 origin 11 提交（Yooni + `7218500` CSS / `324f9e6` 事故记录）。部署流按节奏 `git push` 整支后再部署。
+2. **成套部署（关键）**：部署整支目标 commit（当前 `4b6fbd5` 或 push 后最新），`server/src/` **全量成套更新**——server 上 `git fetch && git reset --hard <target>`（或整目录 scp），**禁止挑单文件**。Yooni 后端文件：`domain.js`、`feishu-sync.js`、`index.js`、`assistant/intents.js`、`assistant/graph.js`（`match-service.js` 未改）。部署前备份 `domain.js`/`feishu-sync.js`，重启 `systemd ynzy-miniapp`(:3101)。
+3. **部署后必验（不能只测 /healthz）**：`GET /mini/listings/<真实id>`→200，已下架→`{unavailable,reason}`；造一套备注含「南北通透、独立卫生间、拒绝短租」的房 → `features` 自动带 `采光好/独卫` 且「拒绝短租」不误打 `可短租`；部署机跑 `v1-final-audit.js` + 全量 `*-test.js`(除 smoke) 全绿；`listings` 数量不变、飞书同步正常。
+4. **回滚**：部署前记录 prod 当前 commit + 备份；回滚＝还原备份/`git reset` + 重启。纯逻辑、无 DB schema 变更。
+5. **前端（用户手动，无法代做）**：微信开发者工具**重传小程序**——`pages/listing-detail/*`（unavailable 空态）、`pages/listings/listings.wxss`+`pages/map/map.wxss`（bug2 底部留白 `7218500`）、`utils/api-service.js`。
+
+需要部署流/用户：成套部署后端 + 用户重传小程序；完成回填部署验证结果。
+
 ### 2026-07-07 15:48 | Codex | 定版复审：否定收尾通过，Yooni 线保持上线准备 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（第二裁判复审通过；无阻断项；不主动 push）。
