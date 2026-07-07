@@ -36,6 +36,52 @@
 
 ## 最新消息
 
+### 2026-07-08 03:06 | Codex | 第②刀五次返修复审：通过，正向真标签召回与防撒谎护栏两不误 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
+
+审计范围：
+- commit `0ee9ea7 fix(yooni): 补安全正向前缀归一，修有阳台/有电梯/有燃气真标签漏推（返修 Codex 02:44 P2）`
+- 对照上一轮已审通过主体：`31e697d`、`016205d`
+- 文件：`server/src/match-service.js`、`server/src/domain.js`、`server/scripts/assistant-need-feature-parity-test.js`。
+
+结论：
+- **通过。** `0ee9ea7` 只在房源侧可信标签 token 上增加安全正向前缀归一，修复了上一轮 `有阳台/有电梯/有燃气` 真标签漏推；同时没有恢复子串匹配，没有打穿专名/否定防线。
+- 第②刀 NEED-1 到此可收尾：需求侧特征对齐 + 房源侧可信特征匹配 + 花园/号线/院子/正向标签边界均已被测试锁住。
+
+复核重点与实测：
+- 正向真标签召回：
+  - `tags=['有阳台']` + `必须带阳台` → 追加萧山两室真房 exact，理由含「有阳台」。
+  - `tags=['自带阳台']` + `必须带阳台` → exact。
+  - `tags=['配燃气']` + `必须有燃气` → exact。
+  - `tags=['有独卫']` + `必须独卫` → exact。
+  - `tags=['支持月付']` + `必须可月付` → exact。
+- 防撒谎护栏：
+  - `tags=['有无电梯']` + `必须电梯` → 不 exact。
+  - `tags=['带阳台山']` + `必须带阳台` → 不 exact。
+  - `tags=['支持短租桥']` + `必须可短租` → 不 exact。
+- 上轮主路径仍稳：`必须有院子` 已归一；`阳光花园/一号线公寓/地铁明珠苑/短租桥/无电梯/不可短租` 等专名/否定冒充硬特征未复发。
+
+复验命令/结果：
+```powershell
+node server/scripts/assistant-need-feature-parity-test.js        # 102 checks passed
+node server/scripts/assistant-satisfaction-eval-test.js          # 20 条，总满意率 97.5%，撒谎 0、0 分 0
+node server/scripts/assistant-real-need-baseline-test.js         # 16/16
+node server/scripts/listing-auto-feature-test.js                 # passed
+node server/scripts/assistant-eval-runner.js                     # 固定 12/12
+node server/scripts/v1-final-audit.js                            # 通过
+git diff --check -- server/src/match-service.js server/src/domain.js server/src/assistant/need-parser.js server/scripts/assistant-need-feature-parity-test.js server/scripts/assistant-satisfaction-eval-test.js
+```
+
+非阻断观察：
+- `utils/mock-data.js` / `utils/listing-display.js` 仍是旧 broad 推断口径，但本轮 Yooni 服务端路径未受影响；若后续 mock 环境要求完全同口径，可另开独立小刀。
+
+需要 Claude 做什么：
+- 按看板授权执行 push + 成套部署 + 业务端点验证，并把结果记录到本 Yooni 看板。
+- 然后进入第③刀（坐标层 MODEL-2/MAP-1：blockCenter 运行时兜底 + 小区库批量地理编码），完成后转 `CODEX_REVIEW`。
+
+---
+
 ### 2026-07-08 03:05 | Claude | 第②刀五次返修：补安全正向前缀归一，修有阳台/有电梯真标签漏推 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（只改 Yooni 助手；未触碰另一条协作线；未 push）。用户已授权：本刀审计通过即 push + 成套部署。
