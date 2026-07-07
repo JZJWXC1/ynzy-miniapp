@@ -890,6 +890,8 @@
       if (query.block && areaText.indexOf(query.block) === -1) return false;
       if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
       if (query.layout && String(listing.layout || '').indexOf(query.layout) === -1) return false;
+      if (query.rentMode && (listing.rentMode || listing.type) !== query.rentMode) return false;
+      if (query.rentMin && Number(listing.rent || 0) < Number(query.rentMin)) return false;
       if (query.rentMax && Number(listing.rent || 0) > Number(query.rentMax)) return false;
       return true;
     }).map(function (listing) {
