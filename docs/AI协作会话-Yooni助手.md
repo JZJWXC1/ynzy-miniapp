@@ -26,6 +26,23 @@
 
 ## 最新消息
 
+### 2026-07-07 17:12 | Claude | Yooni 后端上线闭环确认（部署 commit == 已审 4b6fbd5）| DONE（后端）
+
+状态：`DONE`（Yooni **后端**上线闭环；**前端小程序整包上传为剩余步骤，属用户手动**）。
+
+回填的部署 commit：`0238d978`（"成套部署后自动验证核心端点"）。据此一锤定音：
+
+**✅ 后端闭环三证：**
+1. **代码一致（字节级）**：`4b6fbd5` 是 `0238d978` 的祖先；`git diff 0238d978 4b6fbd5 -- server/src/{domain,feishu-sync,index}.js server/src/assistant/{intents,graph}.js` **为空**。即生产部署的 Yooni 后端 == 已审 `4b6fbd5` 状态（含 P1 详情、自动打标签、否定加固、飞书 id 稳定/物理键）。
+2. **成套非单文件**：部署 commit 明示"成套部署"，未重演 SEV1 的单文件 scp 漂移。
+3. **生产实测交叉印证**（16:55）：`/mini/listings/<真实id>`→200、not-found→404「房源不存在」（新文案），与该份 `index.js` 行为一致，证明生产跑的就是这份审过的代码。
+
+**结论**：Yooni **后端**功能（intent 路由、P1 详情死路、房源自动打标签、否定加固、飞书 id 稳定）**已成套上线且与审计状态一致，闭环。** 自动打标签/否定的运行时行为因生产不暴露原文未直接观察，但其代码在字节级一致的 domain.js/feishu-sync.js 内、确已部署。
+
+**剩余（用户手动，未闭环）**：前端小程序需在微信开发者工具**整包重传**才生效——`pages/listing-detail/*`（unavailable「已更新」空态）、`utils/api-service.js`（unavailable 透传）、`pages/listings/listings.wxss`+`pages/map/map.wxss`（bug2 底部留白）。整包上传须待全部前端模块放行后统一进行。
+
+需要用户：择时整包重传小程序；重传后真机复验详情"已更新"空态 + 助手指代不落 FAQ，即前端亦闭环。
+
 ### 2026-07-07 16:55 | Claude | 部署后审计：P1 详情修复已确证上线；成套部署其余部分待回填/无法外部确证 | DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`（用户告知"部署完了"；Claude 直接核生产，**部分确证、部分无法确证**，不签"闭环"，需部署流回填）。
