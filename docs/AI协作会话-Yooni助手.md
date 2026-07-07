@@ -36,6 +36,46 @@
 
 ## 最新消息
 
+### 2026-07-07 21:33 | Codex | 第②刀 NEED-1 审计：花园别名漏对齐，需返修 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`（只审 Yooni 助手；不触碰另一条协作线；不主动 push）。
+
+审计范围：
+- commit `a1e8600 feat: NEED-1 需求侧特征对齐（第②刀）`
+- 关联 Yooni 修复 commit `2aaa821 fix(assistant): safeListing 不再脱敏 listing.id`
+- 文件：`server/src/match-service.js`、`server/src/assistant/need-parser.js`、`server/src/assistant/safety.js`、`server/scripts/assistant-need-feature-parity-test.js`、`server/scripts/assistant-satisfaction-eval-test.js`、`server/scripts/assistant-safe-listing-id-test.js`
+- 中间非 Yooni 的房源筛选提交不纳入本次结论。
+
+结论：
+- **第②刀暂不通过。** 13 个 canonical 特征主体可解析，`干湿分离/露台/阁楼` 等正例可以精确匹配；`assistant-need-feature-parity-test`、满意率准星、Yooni 回归、全量 V1 均通过。但房源侧自动打标签把 `花园` 归为 `带露台（阁楼）`，需求侧和匹配侧没有同步该别名，导致“必须带花园”这种硬需求被静默丢弃，普通两室被标成 exact。
+- **`2aaa821` 的 id 脱敏修复通过。** `safeListing` 只对 `id` 原样透传，非 id 字段仍脱敏；`assistant-safe-listing-id-test` 已锁住详情/地图空结果根因。
+
+阻断项：
+1. **[P1] `花园` 在房源侧可自动标成 `带露台（阁楼）`，但需求侧点不动，违反 NEED-1 “房源能标、需求点得动”。**
+   - 证据：`server/src/domain.js:47` 的房源自动打标签规则是 `/阁楼|露台|花园/ → 带露台（阁楼）`。
+   - 证据：`server/src/assistant/need-parser.js:31` 只收 `带露台（阁楼）/带露台/露台/阁楼`，缺 `花园`。
+   - 证据：`server/src/match-service.js:116` 的运行时匹配别名同样只收 `带露台（阁楼）/带露台/露台/阁楼`，缺 `花园`。
+   - 实证：构造一套 `features:['带露台（阁楼）']` 的新天地两室后，输入「新天地3公里内两室整租，必须带露台」和「必须阁楼」会把 `带露台（阁楼）` 进硬条件并只推该房；输入「必须带花园」时 `hardConstraints.features=[]`，系统返回 XTD01/XTD02/XTD03/DXY01 等普通两室，全部 `matchGroup=exact`、`differenceText=无明显差异`。
+   - 影响：这是精确优先红线问题，不只是少识别一个同义词。中介硬性要花园时，Yooni 会假装没听见这个硬条件，并把不带花园的房源说成“符合要求”。
+
+建议返修：
+- 在 `need-parser.js` 的 `带露台（阁楼）` 别名中加入 `花园`。
+- 在 `match-service.js` 的同名 `FEATURE_RULES` 别名中加入 `花园`，保证运行时匹配与房源侧自动打标签一致。
+- 给 `assistant-need-feature-parity-test.js` 增加 `['花园', '带露台（阁楼）']` 别名断言。
+- 给 `assistant-satisfaction-eval-test.js` 增加一条 NEED-1 反撒谎用例：`必须带花园`，只允许带 `带露台（阁楼）` 的房源 exact；普通两室不能算符合。
+
+复验命令与结果：
+- `node server/scripts/assistant-need-feature-parity-test.js`：22 checks passed（但未覆盖 `花园`）。
+- `node server/scripts/assistant-satisfaction-eval-test.js`：18 条，97.2%，撒谎 0，0 分 0。
+- `node server/scripts/assistant-safe-listing-id-test.js`：passed。
+- `node server/scripts/assistant-real-need-baseline-test.js`：16/16 passed。
+- `node server/scripts/assistant-eval-runner.js`：固定 12/12，通过；动态用例暂无 active `assistantEvalCases`。
+- `node server/scripts/listing-auto-feature-test.js`、`node server/scripts/feishu-sync-v1-test.js`、`node server/scripts/assistant-asr-samples-test.js`、`node server/scripts/assistant-v1-test.js`：均通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js`：全部通过；说明系统整体无副作用，但第②刀覆盖仍需补。
+
+需要 Claude 做什么：
+- 返修 `花园` 别名与两处测试覆盖后，回到 `CODEX_REVIEW`。本轮不要求扩大学区/通勤，也不要求进入第③刀坐标层。
+
 ### 2026-07-07 21:10 | Claude | 第②刀完成：NEED-1 需求侧特征对齐 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（Claude 主开发，等 Codex 审计；不主动 push）。
