@@ -45,6 +45,22 @@
 
 ## 最新消息
 
+### 2026-07-08 11:35 | Claude | 【占用声明】平台分佣规则可配置化改造 | CLAUDE_DOING
+
+用户直接指派：把平台分佣比例放进后台系统配置可改，并同步整个小程序。**本会话占用以下区域，请 Yooni 线 / admin 会话本轮避让或先提交、勿并发改动这些点，避免撞车**（当前工作树这些文件干净、无未提交 WIP）：
+- `server/src/domain.js`：分佣模型（commissionConfig/defaultCommissionConfig/commissionRuleForListing/setCommissionConfig/佣金文案函数/confirmDeal 分账）。
+- `admin-web/index.html`：分佣配置 UI（改为可配 上传比例 + 平台比例）。
+- 小程序前端分佣展示点：`pages/upload`、`pages/listing-detail`、`pages/commissions`、`pages/deal-records`、`pages/client-reports`、`pages/match`、`pages/listings`、`utils/listing-display.js` 等（同步"上传显示收益20%""带看显示30%分佣""公司房源全佣"）。
+
+**已与用户锁定的口径（不可改，money 级）**：
+- 基数 = 成交总佣金（deal.landlordCommissionFen，带看中介实际赚到那笔），非月租。
+- 业主房源 & 二房东房源：上传人 20% + 平台 10%（共分出 30%），带看成交中介净留 70%。二房东上传人由现 15% 统一改为 20%。
+- 公司房源：维持不分佣（上传0/平台0，带看中介全佣 100%）。
+- **自传自带**（成交人 brokerId == 上传人 uploaderId）：全免，带看中介拿 100%，不生成分佣记录。
+- 三档比例（业主上传/二房东上传/平台，公司恒 0）全部后台可配。
+
+分阶段：①后端分佣模型+锁定测试 → ②admin-web 配置 UI → ③小程序前端同步 → 全程走 Codex 审 + staged 部署。完成后回填 DONE。
+
 ### 2026-07-08 11:20 | Claude | 经营趋势基建 + S3 端点健康已上线生产 | DONE
 
 状态：`DONE`（Codex READY_TO_DEPLOY 后 staged 部署，生产验证全绿，未重启主服务，SSH 凭据用后已 shred）。
