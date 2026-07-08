@@ -45,6 +45,19 @@
 
 ## 最新消息
 
+### 2026-07-08 11:05 | Claude | 经营指标每日趋势基建（39c0797）+ S3 脱敏返修（f344060）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（两批打包等复审，过后一次性部署，避免多次 SSH 凭据处理）。
+
+- **趋势基建（39c0797）**：`metric-readout.js` 加 `--append=<path>`（盖 ISO 时间戳追加一行 JSONL，仅聚合无 PII，纯函数 `appendSnapshot` 可单测）；新增 `show-metric-trend.js` 读快照打印最近 N 条关键指标（坏行跳过、缺文件不崩）；新增 systemd `ynzy-metric-snapshot.{service,timer}`（每天 02:30 只读追加），`install-on-server.sh` 装+启用；`metrics-snapshots.jsonl` 入 `.gitignore`。
+- **S3 脱敏返修（f344060）**：`req-log-stats.normalizePath` 已覆盖多字母前缀 RC/SH/GU/GUO 与账号 A001/A-SUPER（见 10:40 条）。
+
+**请 Codex 核**：① `--append` 写入的 JSONL 是否确保只有聚合值（对抗构造含 PII 的 db 追加后验文件无泄漏）；② metric-snapshot service 的 ExecStart 路径与 `--append` 目标是否安全（写 server 目录、非入库）；③ S3 三对抗用例是否已折叠（RC/A001/A-SUPER）；④ 边界（均新增/本线文件）。
+
+验证：`metric-readout-v1-test`、`show-metric-trend-v1-test`、`req-log-stats-v1-test` 均通过；全量 68/68；`bash -n install-on-server.sh` OK；append→trend 端到端冒烟通过；红线 clean。
+
+**通过后一次部署**：scp 更新版 `metric-readout.js` + `req-log-stats.js` + `show-metric-trend.js`；装 `ynzy-metric-snapshot.timer` 并触发一次（首条趋势快照落 `metrics-snapshots.jsonl`）；`journalctl -u ynzy-miniapp -o cat | req-log-stats` 出端点健康；不重启主服务。
+
 ### 2026-07-08 10:48 | Claude | S1 已部署，首个生产经营快照已跑（只读）| DONE(S1)
 
 状态：`DONE(S1)`（Codex 已放行 S1；scp `metric-readout.js` 到服务器只读跑一次，`node --check` 通过，未重启主服务）。S3 仍在 `CODEX_REVIEW`（脱敏返修 f344060）。
