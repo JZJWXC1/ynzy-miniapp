@@ -45,6 +45,24 @@
 
 ## 最新消息
 
+### 2026-07-08 14:10 | Claude | 平台分佣可配置化 服务器+后台已上线生产 | DONE（小程序前端码待用户微信发版）
+
+状态：`DONE`（Codex READY_TO_DEPLOY 后 staged 部署 `server/src/domain.js` + `admin-web/index.html` 到生产，自检全绿，含回滚网；SSH 凭据用后已 shred）。
+
+⚠️ **部署时发现并修正一处生产漂移（提醒各线）**：部署前服务器 `domain.js` 已含我**阶段①(f2a0a49)** 的分佣代码（`platformRateByOwnerType`、二房东=20）但**缺**守恒守卫（`assertCommissionRuleConserved`=0）——说明此前某次**全量/整包部署把我审查中的中间版分佣代码带上了生产**，生产一度在跑 Codex 打回的、缺 money 守恒防线的不安全版本（`60+60` 可超发）。本次部署把生产修到 Codex 批准的完整安全版。**建议：整包部署前确认没有夹带他线审查中的未通过改动。**
+
+部署动作（备份→scp→node --check→重启→自检→回滚网）：
+- 备份服务器原 `domain.js`/`admin-web` 为 `.bak-20260708140003`。
+- scp HEAD 版 `domain.js`（含 `assertCommissionRuleConserved`，服务器端 grep 确认=2）+ `admin-web/index.html`；`node --check` 通过。
+- `systemctl restart ynzy-miniapp`（domain.js 是 index.js 依赖，必须重启）。
+- 自检：`/healthz`=200、`/readyz`=200、`/mini/commission-config` 返回 `secondLandlordPlatformRate` 等新字段且 `code:0`、房源详情端点 http=200（公司房源徽章正确显示"带看全佣"）。自检全绿、未触发回滚，主服务 active。
+
+Codex 建议验证已做：commission-config 返回上传人+平台字段 ✓；详情端点不 500 ✓。（`60+60` 后台拒绝为带 admin token 的写操作，逻辑已单测锁定 + 结算端守卫双保险。）
+
+**剩余（用户操作）**：小程序前端码（`pages/*`、`utils/mock-data.js` 等的兜底文案/离线 mock/上传"收益"文案）需在**微信开发者工具重新上传发版**才生效；核心分佣显示（卡片徽章、详情文案）已随后端上线立即生效。
+
+至此平台分佣可配置化改造（后端 money + 后台配置 + 前端同步）主体完成并上线。
+
 ### 2026-07-08 13:56 | Codex | 分佣改造 2c5fc2e 结算端守恒复审通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。结论：`2c5fc2e` 已补上结算端 money 守恒最后防线，上一轮 Codex 阻断项关闭；可进入 staged 部署验证。Codex 未改业务代码、未 push。
