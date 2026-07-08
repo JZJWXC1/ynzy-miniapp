@@ -138,6 +138,10 @@ async function backfill(db = {}, options = {}) {
   const dryRun = Boolean(options.dryRun)
   const refresh = Boolean(options.refresh)
   const blockCenterOnly = Boolean(options.blockCenterOnly)
+  // --geocode-only：只持久化『真地理编码(approximate)』结果，跳过 block-center 兜底写库。
+  // 因为持久化的 block-center 坐标会经 mapCoordinateFromListing 上地图，违反「地图页只展可靠坐标」的决定；
+  // 库外小区的 block-center 助手半径召回已由运行时 place-locator.listingCoordinate 兜底(无需写库)。
+  const geocodeOnly = Boolean(options.geocodeOnly)
   const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0 ? Number(options.limit) : Infinity
   const groups = groupActiveListingsByCommunity(db, { refresh })
   const rows = []
@@ -160,7 +164,7 @@ async function backfill(db = {}, options = {}) {
     if (!coordinate && !blockCenterOnly) {
       coordinate = await geocodeByTencent(addressForListing(sample), key)
     }
-    if (!coordinate) coordinate = blockCenterCoordinate(sample)
+    if (!coordinate && !geocodeOnly) coordinate = blockCenterCoordinate(sample)
     if (!coordinate) {
       rows.push({ community, count: listings.length, level: 'missing', source: '', changed: 0 })
       continue
@@ -192,10 +196,11 @@ async function main() {
   const dryRun = args.includes('--dry-run')
   const refresh = args.includes('--refresh')
   const blockCenterOnly = args.includes('--block-center-only')
+  const geocodeOnly = args.includes('--geocode-only')
   const limitArg = args.find((item) => item.startsWith('--limit='))
   const limit = limitArg ? Number(limitArg.slice('--limit='.length)) : Infinity
   const db = dbStore.readDb()
-  const result = await backfill(db, { dryRun, refresh, blockCenterOnly, limit })
+  const result = await backfill(db, { dryRun, refresh, blockCenterOnly, geocodeOnly, limit })
   if (!dryRun) dbStore.writeDb(db)
   console.log(JSON.stringify(result, null, 2))
 }
