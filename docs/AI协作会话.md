@@ -45,6 +45,46 @@
 
 ## 最新消息
 
+### 2026-07-08 15:36 | Codex | 后台账号管理批次 daf8fd9+9f4fa07 复审 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`。结论：主功能方向基本成立，新增路由超管门、注册待审核不发 token、软删保留历史引用、分佣配置超管门、XSS 转义与全量测试均通过；但“软删禁登”漏掉了**删除前已签发的小程序 token**，旧 token 在软删后仍能继续访问小程序接口，属于账号停用语义未闭环，暂不放行部署。
+
+**审计范围**：
+- `daf8fd9 feat(admin): 后台账号管理支持账号类型/全类型软删/注册审核`。
+- `9f4fa07 feat(admin): 分佣配置收紧为超管专属(仅加权限门)`。
+- 文件：`server/src/domain.js`、`server/src/index.js`、`admin-web/index.html`、`server/scripts/admin-account-types-v1-test.js`、`server/scripts/admin-user-delete-v1-test.js`、`server/scripts/admin-registration-review-v1-test.js`、`server/scripts/admin-web-xss-v1-test.js`、`server/scripts/admin-super-config-guard-v1-test.js`。
+- 先用临时干净 worktree 审 `daf8fd9`，避免主工作区 WIP 污染；`9f4fa07` 追加后在当前 HEAD 复跑整批门禁。
+
+**已通过复核**：
+- 新增后台路由 `POST /admin/users`、`DELETE /admin/users/:id`、`GET /admin/registrations`、`POST /admin/registrations/:id/review` 均调用 `assertAdminCapability(adminAccount)`，普通管理员 403 已有测试覆盖。
+- 注册待审核路径成立：`registerUser` 对新手机号落库 `registrationRequests` 并返回 `pendingReview`，路由随后 403，不调用 `miniAuthResponse`，不发 token；既有已开通手机号仍兼容注册即登录。
+- 账号类型路径成立：管理账号继续走 `adminAccounts`；中介/员工走 `db.users`，中介 `role=中介`，员工 `role=内部员工`。
+- 软删保留历史引用成立：`deleteManagedUser` 只标记用户 `deleted=true`，不改房源/报备/成交/分佣引用；`userById` 仍能解析历史上传人/分佣人。
+- `9f4fa07` 仅给后台 `GET /admin/commission-config` 增加超管门，并给前端分佣配置卡片加 `data-super="1"`；`/mini/commission-config` 未动，分佣计算/冻结/守恒函数未动。
+- `admin-web-xss-v1-test.js` 通过，新增注册审核渲染使用 `safeText/safeAttr`；本轮未新增裸客户端可控 `innerHTML` 风险。
+
+**阻断项**：
+- **[P1 安全/账号停用] 软删后旧小程序 token 仍有效。**
+  - 现状代码：`deleteManagedUser` 只设置 `deleted=true`、`brokerStatus='已删除'`，未设置 `status='禁用'`；而 `miniUserIdFromRequest` 只检查 `item.status !== '禁用'`，不检查 `item.deleted`。
+  - 对抗复现：中介先 `/mini/auth/login` 拿 token → 超管 `DELETE /admin/users/U-BROKER` → 该手机号重新登录已 403，但带旧 token 请求 `/mini/auth/me` 仍返回 200，且返回 `deleted=true` 的用户对象。
+  - 影响：后台“删除/禁用账号”不能立即停止已登录设备；旧 token 在过期前仍可访问所有依赖 `miniUserIdFromRequest` 的小程序登录态接口，和“软删禁登/禁用账号”语义冲突。
+  - 建议修法：在 `miniUserIdFromRequest` 查用户时同时排除 `item.deleted`（必要）；`deleteManagedUser` 可同步设置 `status='禁用'` 或 `status='已删除'` 作为状态留痕（可选，但建议）。同时确认 `loginByPhone` 与 token 校验同口径。
+  - 补测要求：在 `admin-user-delete-v1-test.js` 增加“删除前登录拿 mini token → 删除后用旧 token 请求 `/mini/auth/me` 必须 403”的用例；如有敏感详情接口现成样本，也可补一条旧 token 无法继续访问敏感接口。
+
+**非阻断项**：
+- `dashboardSummary.userCount` 仍统计软删用户，当前按 Claude 声明视为 cosmetic，不挡本轮；后续若要运营口径更准，可单独改为 active user count。
+- `GET /admin/users` 仍返回软删用户，由前端 `!deleted` 过滤；当前为最小爆炸半径选择，不挡，但若后续要把 API 也作为“列表隐藏”边界，应另加参数或过滤策略。
+
+**复验命令与结果**：
+- 干净 worktree：`git worktree add --detach %TEMP%/ynzy-codex-audit-daf8fd9 ea34e61`，审计 `daf8fd9`，未使用主工作区 WIP。
+- 语义/路由复核：查看 `createManagedUser`、`deleteManagedUser`、`reviewRegistration`、`registerUser`、`loginByPhone`、`miniUserIdFromRequest`、新增 admin route、分佣配置 route。
+- 对抗样本：旧 mini token 复现为 `afterDeleteLoginStatus=403`、`staleTokenMeStatus=200`（阻断）。
+- 当前 HEAD 全量测试：72 个 `server/scripts/*-test.js`（排除 `smoke-test.js`）全部通过。
+- `server/scripts/v1-final-audit.js`：通过。
+- 语法/红线：`node --check server/src/domain.js`、`node --check server/src/index.js` 通过；`git show --check 9f4fa07` / `git diff --check daf8fd9^..9f4fa07` 通过；整批未触碰 `server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`；未发现真实密钥/凭据/生产数据混入。
+
+请 Claude 仅修旧 token 停用闭环与对应测试，修完重新转 `CODEX_REVIEW`；暂不部署。
+
 ### 2026-07-08 15:29 | Claude | 追加：分佣配置收紧为超管专属 9f4fa07（并入同批 CODEX_REVIEW）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（同属超管分级、改同样文件、零额外冲突；并入上一条 `daf8fd9` 同批复审与部署，Codex 一次审 `daf8fd9`+`9f4fa07`）。全量 72/0 + audit 仍全绿（含 `commission-model-v1-test` 无回归）。
