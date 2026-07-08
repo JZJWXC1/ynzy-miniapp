@@ -1570,6 +1570,8 @@ async function handleAdmin(req, res, pathname, searchParams) {
     )))
   }
   if (method === 'GET' && pathname === '/admin/commission-config') {
+    // 分佣配置只允许超级管理员查看（PUT 已有超管门）；中介端读取走 /mini/commission-config，不受此门影响。
+    assertAdminCapability(adminAccount)
     return sendJson(res, domain.commissionConfig(db))
   }
   if (method === 'PUT' && pathname === '/admin/commission-config') {

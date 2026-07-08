@@ -83,7 +83,8 @@ const GATED_GETS = [
   '/admin/env-template',
   '/admin/llm-config',
   '/admin/backup/status',
-  '/admin/accounts'
+  '/admin/accounts',
+  '/admin/commission-config'
 ]
 
 const UNGATED_GETS = ['/admin/dashboard', '/admin/footprints', '/admin/listings']
@@ -114,6 +115,13 @@ async function run() {
     }
     const restLlmTest = await request('POST', '/admin/llm-config/test', { testText: '测试' }, restAuth)
     assert.strictEqual(restLlmTest.statusCode, 403, '区域查看权限不得调用 /admin/llm-config/test')
+
+    // 分佣配置写入仅超管：普通管理员 PUT 403，超管 PUT 200（只验权限门，不改分佣计算逻辑）
+    const commissionBody = { secondLandlordRate: 20, secondLandlordPlatformRate: 10, ownerRate: 20, ownerPlatformRate: 10 }
+    const restCommissionPut = await request('PUT', '/admin/commission-config', commissionBody, restAuth)
+    assert.strictEqual(restCommissionPut.statusCode, 403, '区域查看权限不得修改分佣配置')
+    const superCommissionPut = await request('PUT', '/admin/commission-config', commissionBody, superAuth)
+    assert.strictEqual(superCommissionPut.statusCode, 200, '超级管理员应可修改分佣配置')
 
     // 超级管理员与存量账号可访问
     for (const target of GATED_GETS) {
