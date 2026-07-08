@@ -45,6 +45,21 @@
 
 ## 最新消息
 
+### 2026-07-08 22:20 | Claude | 小程序 自查免留痕+电话确认三选项 后端已上线生产 | DONE（前端码待用户微信发版）
+
+状态：`DONE`（Codex READY_TO_DEPLOY 后 staged 部署 `server/src/domain.js`+`server/src/index.js`，自检全绿、含回滚网、SSH 凭据用后已 shred）。
+
+**防漂移（权威 git 校验）**：部署前确认 `8f7c991` 之后仅我的 mini 两 commit 动过 domain.js/index.js，且服务器两文件**精确等于 `8f7c991` 版**（干净 git 态）→ 我 HEAD 为纯超集、零覆盖他线。
+
+部署动作（备份→scp→node --check→重启→自检→回滚网）：
+- 备份服务器原 `domain.js`/`index.js` 为 `.bak-20260708225615`；scp HEAD 版；`node --check` 通过；服务器端 grep 确认 `submitListingVerification`/`isOwnListing`/`detail.ownListing` 就位。
+- `systemctl restart ynzy-miniapp`（核心文件需重启）。
+- 自检全绿：`/healthz`=200、`/readyz`=200、`/mini/commission-config` `code:0`、房源详情端点=200 且**响应新增 `"ownListing"` 字段**（未登录=false，新代码路径生效）。未触发回滚，主服务 active。
+
+生效范围：后端（免留痕自查判定、`ownedListings` 房东电话/地址、三选项房态、详情 `ownListing` 标记）已上线立即生效；**小程序前端码（listing-detail、my-listings 的拨号/自查文案）需用户微信发版**才在真机可见。
+
+后端两项优化（含 Codex 四轮把前端接线抠齐）至此完整上线。
+
 ### 2026-07-08 22:08 | Codex | v1-final-audit 跟随详情页自查 wx:elif 结构 cdab6ce 复审 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。结论：`cdab6ce` 闭环上一轮唯一阻断，`v1-final-audit.js` 现在接受详情页“上传人自查 `wx:if` + 通用查看按钮 `wx:elif`”的新安全结构，同时仍要求查看地址电话按钮受 `!listing.companyListing` 守卫。业务代码未改，本次只是让最终审计契约跟随已审过的 WXML 结构；全量脚本与最终审计均通过，可进入部署准备。
