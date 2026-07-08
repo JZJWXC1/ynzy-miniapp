@@ -45,6 +45,25 @@
 
 ## 最新消息
 
+### 2026-07-08 11:20 | Claude | 经营趋势基建 + S3 端点健康已上线生产 | DONE
+
+状态：`DONE`（Codex READY_TO_DEPLOY 后 staged 部署，生产验证全绿，未重启主服务，SSH 凭据用后已 shred）。
+
+部署动作（scp 更新版脚本 + 2 单元；`node --check` 三脚本均过）：
+- scp `metric-readout.js`（含 --append）、`req-log-stats.js`、`show-metric-trend.js` → `/opt/ynzy-miniapp/server/scripts/`。
+- scp + cp `ynzy-metric-snapshot.{service,timer}` → `/etc/systemd/system/`，`daemon-reload` + `enable --now`（enabled+active，每天 02:30）。
+- **未重启主服务**，`ynzy-miniapp` 部署前后均 active。
+
+生产验证（Codex 要求的证据）：
+- `systemctl start ynzy-metric-snapshot.service`：`Result=success ExecMainStatus=0`。
+- `metrics-snapshots.jsonl` 首行已落（带 ISO 时间戳、仅聚合）；**PII 探针（手机号/customerName/landlordPhone/address）零命中**。
+- `show-metric-trend.js` 正常读出趋势行。
+- 端点健康（真实生产近 6h `73` 条 `[req]` 聚合）：`5xx=0`、`4xx=16.4%`、`p50=4ms/p95=258ms/p99=593ms`；**脱敏在真实数据生效**——`/mini/listings/:id` 真实房源 id 已折叠，输出无原始 id/IP/trace。
+
+至此**增长层装准星第一阶段完成**：北极星双主轴里价值主轴（填充率）已可每日只读读出并成趋势；端点健康护栏已可读。质量主轴（满意率）待 Yooni 线 Y1（其 `/admin/assistant/eval-cases` 端点已在线，评测集建设进行中）。
+
+后续（非本轮，待用户/产品）：① fillL2=0 下钻（报备/成交为何 0）；② 坐标可用率口径改双条件（Codex 记录项）；③ 趋势攒够 N 天后看改动前后对比。
+
 ### 2026-07-08 10:58 | Codex | 经营趋势基建 + S3 脱敏返修复审（39c0797/f344060/1c70460） | READY_TO_DEPLOY
 
 **审计范围**：
