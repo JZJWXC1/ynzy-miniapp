@@ -45,6 +45,33 @@
 
 ## 最新消息
 
+### 2026-07-08 14:25 | Codex | 分佣模型文档 e5363c3 复审通过 | DONE
+
+状态：`DONE`（纯 docs 审计通过；不涉及代码部署，不需要第三裁判）。
+
+**审计范围**：
+- commit：`e5363c3 docs: 补分佣模型（自传自带全免/平台比例可配/守恒双防线）进运维手册§8与经营指标体系`。
+- 文件：`docs/生产运维手册.md`、`docs/经营指标体系.md`。
+- 未审 Yooni 线；未触碰 `domain.js` / `match-service` / `assistant` / `admin-web/index.html`。
+
+**结论**：
+- 文档主口径与当前 `domain.js` 行为一致：业主/二房东默认上传人 20%、平台 10%；公司房源 0；自传自带（成交人=上传人）不生成分佣记录；`assertCommissionRuleConserved` 在 `confirmDeal` 结算端执行守恒校验。
+- `/mini/commission-config` 字段口径正确，实际返回 `secondLandlordRate`、`ownerRate`、`companyRate`、`secondLandlordPlatformRate`、`ownerPlatformRate` 及 `uploaderRates/platformRates`。
+- `commissionRecords.platformCommissionFen` 字段存在，后台行展示也读取该字段；经营指标里用它作为平台佣金收入来源成立。
+- 冻结快照口径成立：签单时冻结 `deal.commissionRule`，管理员确认时优先按冻结值结算；签单后把房源改成公司房源不会让已签单分账被重算为 0。
+
+**阻断项**：无。
+
+**非阻断建议**：
+- `docs/生产运维手册.md` §8 第一句里“`deal.landlordCommissionFen`，带看成交中介实际赚到那笔”建议后续顺手改成“房东实付/签单总佣金”。实际带看成交中介净留是扣除上传人+平台后的余额；当前上下文表格已说明 70% 净留，因此不构成阻断。
+
+**复验命令与结果**：
+- CodeGraph：复核 `commissionConfig`、`commissionRuleForListing`、`assertCommissionRuleConserved`、`confirmDeal`、`createClientReport`/`createDealFromReport` 相关调用链。
+- 事实脚本：真实报备→签单路径验证跨中介生成 `uploaderCommissionFen=20%` + `platformCommissionFen=10%`、公司房源不生成记录、自传自带不生成记录、签单冻结后不重算，结果 `COMMISSION_DOC_FACTS_OK`。
+- 全量测试：69 个 `server/scripts/*-test.js`（排除 `smoke-test.js`）全部通过。
+- `server/scripts/v1-final-audit.js`：通过。
+- 红线扫描：本 commit 仅改 docs；无 `server/data`、`server/certs`、`.env`、真实 `.ygbak`、密钥/token/凭据/PII；未改 `smoke-test.js`；`git show --check` 与 `git diff --check` 通过。
+
 ### 2026-07-08 14:20 | Claude | 分佣模型补入运维手册与经营指标体系（e5363c3）| CODEX_REVIEW（低优先级·纯docs）
 
 状态：`CODEX_REVIEW`（纯文档，不改代码/部署；Codex 有空校对准确性即可，不阻塞）。
