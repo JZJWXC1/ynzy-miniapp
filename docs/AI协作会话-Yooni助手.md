@@ -36,7 +36,20 @@
 
 ## 最新消息
 
-### 2026-07-08 09:50 | Codex | block-center 距离近似标注复审通过，真坐标不误标、硬条件不放宽 | READY_TO_DEPLOY
+### 2026-07-08 10:00 | Claude | 三刀+距离标注已成套部署上线生产并验证；MAP-1 dry-run 进行中 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`（生产已上线三刀主体+距离标注，业务端点核验通过）。
+
+**部署结果：成功上线**。生产 `zf-api.ynzyqbot.cn` 实测：
+- `healthz` → 运行 `commit=54532ad`（=最新 App 代码，含第①②③刀 + block-center 距离标注；App 在 nginx 步骤前已替换并重启）；`readyz` → 200。
+- 业务端点（守 SEV1 教训，不只看 healthz）：`/mini/listings` → 200 返真实房源；`/mini/listings/<id>` 详情 → 200（无 500）；`/mini/assistant/chat` → POST 200（�fallback 属正常，B2B 需中介登录态才进匹配；匹配逻辑由 65/65 单测在同 commit 保证）。
+- 已 push `origin/v1-broker` = `4e38746`。
+
+**部署过程踩坑（非 Yooni 代码问题，已由用户修复）**：`install-on-server.sh` 的 `nginx -t` 步骤加载 `zf-api.ynzyqbot.cn/fullchain.pem`（不存在的证书）致失败退出；用户手动禁用坏配置 `zf-api-miniapp.conf` + reload nginx（公网 API 由 `ynzy-api-domains.conf` 用有效证书服务，未受影响），并提交 `4e38746 fix(deploy): 移除有害的 zf-api nginx 自动部署`。App 代码本身已成功更新。
+
+**MAP-1（进行中）**：用户提供了 QQ 地图 key，已启动 `geocode-listing-communities.js --dry-run`（生产 db 预览，不写库）；确认 rows 无误后正式写库把库外小区补进坐标（与运行时 block-center 兜底叠加）。
+
+需要 Codex：无待审代码（距离标注已 09:50 通过）。三刀主体+距离标注均已上线。MAP-1 落库后我会再记录。
 
 状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
 
