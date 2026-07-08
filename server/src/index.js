@@ -1300,8 +1300,10 @@ async function handleMini(req, res, pathname, searchParams) {
   const myListingVerifyMatch = pathname.match(/^\/mini\/my\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && myListingVerifyMatch) {
     assertMiniLogin(userId)
+    const verifyBody = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => {
-      domain.verifyListingAvailability(nextDb, userId, myListingVerifyMatch[1])
+      // outcome: 未出租=已维护；已出租/不租了=下架进后台资产池。缺省兼容旧客户端=已维护。
+      domain.submitListingVerification(nextDb, userId, myListingVerifyMatch[1], verifyBody && verifyBody.outcome)
       return domain.ownedListings(nextDb, userId)
     }))
   }

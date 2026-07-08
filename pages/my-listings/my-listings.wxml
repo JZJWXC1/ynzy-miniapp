@@ -67,6 +67,7 @@
           <view class="listing-title">{{item.title}}</view>
           <view wx:if="{{isCompanyMode}}" class="listing-location">{{item.displayLocationText}}</view>
           <view wx:else class="listing-location">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
+          <view wx:if="{{!isCompanyMode && item.landlordPhone}}" class="listing-landlord">房东电话：{{item.landlordPhone}}（自己上传，直接展示）</view>
           <view wx:if="{{isCompanyMode}}" class="listing-meta">{{item.displayRentText}} · {{item.sourceLabel || '公司房源'}}</view>
           <view wx:else class="listing-meta">¥{{item.rent}}/月 · {{item.commissionText || '成交总比例按成交总佣金的 30% 计算'}}</view>
           <view wx:if="{{item.features}}" class="listing-feature-row">
@@ -78,7 +79,7 @@
         </view>
         <view wx:if="{{!isCompanyMode}}" class="listing-actions">
           <button class="edit-button" catchtap="editListing" data-id="{{item.id}}">编辑</button>
-          <button class="verify-button" catchtap="verifyListing" data-id="{{item.id}}">电话确认</button>
+          <button class="verify-button" catchtap="verifyListing" data-id="{{item.id}}" data-phone="{{item.landlordPhone}}">电话确认</button>
           <view class="arrow">›</view>
         </view>
         <view wx:else class="listing-actions company-actions">

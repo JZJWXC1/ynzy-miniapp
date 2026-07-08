@@ -129,21 +129,13 @@ function run() {
     '非中介且未实名用户查看敏感信息必须先完成实名认证'
   )
 
-  assertRejects(
-    () => domain.addSensitiveFootprint(db, 'U1', listing.id, {}),
-    (error) => error.statusCode === 400 && /needId/.test(error.message),
-    '上传人从前台查看自己房源敏感信息也必须绑定 needId'
-  )
-  const uploaderNeedResult = domain.createRentalNeed(db, 'U1', {
-    rawText: '上传人自查房源，客户想约看',
-    confirmedNeed: { area: '滨江区', layout: '两室' },
-    source: 'listing-detail'
-  })
-  const uploaderNeed = db.rentalNeeds.find((item) => item.id === uploaderNeedResult.need.id)
-  domain.addSensitiveFootprint(db, 'U1', listing.id, {
-    needId: uploaderNeed.id,
-    purpose: '上传人服务客户查看'
-  })
+  // 【item1 新契约 2026-07-08】上传人查看自己上传的房源：直接展示地址/房东电话，不留痕、不耗额度、不需 needId。
+  const beforeOwnViewFootprints = (db.footprints || []).filter((item) => item.viewerId === 'U1' && item.listingId === listing.id).length
+  const ownView = domain.addSensitiveFootprint(db, 'U1', listing.id, {})
+  assert.ok(ownView && ownView.sensitive && ownView.sensitive.landlordPhone !== undefined, '上传人自查自己房源必须直接返回房东电话/地址')
+  assert.strictEqual(ownView.sensitive.ownListing, true, '自查返回带 ownListing 标记')
+  const afterOwnViewFootprints = (db.footprints || []).filter((item) => item.viewerId === 'U1' && item.listingId === listing.id).length
+  assert.strictEqual(afterOwnViewFootprints, beforeOwnViewFootprints, '上传人自查自己房源不得新增足迹（免留痕）')
   assertRejects(
     () => domain.addSensitiveFootprint(db, 'ADMIN', listing.id, {}),
     (error) => error.statusCode === 400 && /needId/.test(error.message),
@@ -159,7 +151,7 @@ function run() {
     needId: adminNeed.id,
     purpose: '管理员协助客户核验'
   })
-  assert.ok(db.footprints.some((item) => item.viewerId === 'U1' && item.listingId === listing.id && item.needId === uploaderNeed.id), '上传人前台查看自己房源也必须保存 needId/purpose')
+  assert.ok(!db.footprints.some((item) => item.viewerId === 'U1' && item.listingId === listing.id && item.action === '查看地址和电话'), '上传人自查自己房源不得留下敏感查看足迹（免留痕）')
   assert.ok(db.footprints.some((item) => item.viewerId === 'ADMIN' && item.listingId === listing.id && item.needId === adminNeed.id), '管理员前台查看也必须保存 needId/purpose')
 
   assertRejects(

@@ -1869,7 +1869,10 @@ function ownedListings(db, userId) {
         companyListing: display.companyListing,
         sourceLabel: display.sourceLabel,
         views: `${listing.sensitiveViews || 0} 次查看敏感信息`,
-        ...display
+        ...display,
+        // 上传人查看自己上传的房源直接展示地址/房东电话（不留痕、不耗额度）；电话确认房态时用来拨号。放 ...display 后确保不被脱敏值覆盖。
+        address: listing.address || '',
+        landlordPhone: listing.landlordPhone || ''
       }
     })
 }
@@ -2850,6 +2853,23 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
     throw error
   }
   assertFrontendListingAvailable(listing)
+
+  // 上传人查看自己上传的房源：直接展示地址/房东电话，不留痕、不耗每日额度、不计入敏感查看数。
+  if (listing.uploaderId && String(listing.uploaderId) === String(userId)) {
+    const ownLocation = listingLocationFields(listing)
+    return {
+      logs: listingLogs(db, listingId),
+      quota: brokerSensitiveUsage(db, userId),
+      sensitive: {
+        ...ownLocation,
+        areaText: `${ownLocation.city} · ${ownLocation.area}`,
+        address: listing.address,
+        landlordPhone: listing.landlordPhone,
+        sensitiveLocked: false,
+        ownListing: true
+      }
+    }
+  }
   const purposePayload = normalizePurposePayload(payload)
   const access = assertSensitiveViewAllowed(db, userId, listing, purposePayload)
 
@@ -4512,6 +4532,41 @@ function verifyListingAvailability(db, userId, listingId, options = {}) {
   return listingFreshness(listing)
 }
 
+// 电话确认房态三选项：未出租=已维护（verifyListingAvailability 重置核验周期）；
+// 已出租/不租了=自动下架进后台资产池（expireListing，下架原因分开记，管理员可恢复）。
+function submitListingVerification(db, userId, listingId, outcome, options = {}) {
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  const user = userById(db, userId) || {}
+  const isOwnerOrAdmin = options.admin || listing.uploaderId === userId || user.isAdmin
+  if (!isOwnerOrAdmin) {
+    const error = new Error('只能核验自己上传的房源')
+    error.statusCode = 403
+    throw error
+  }
+  const normalized = String(outcome == null ? '' : outcome).trim()
+  // 未出租 / available（含缺省，兼容旧客户端只点确认）→ 已维护，重置核验周期。
+  if (normalized === '' || normalized === '未出租' || normalized === 'available') {
+    return { outcome: 'available', freshness: verifyListingAvailability(db, userId, listingId, options) }
+  }
+  assertListingActive(listing)
+  if (normalized === '已出租' || normalized === 'rented') {
+    expireListing(db, listing, '房东反馈已出租', { by: userId, action: '上传人下架·已出租' })
+    return { outcome: 'rented', status: listing.status, expiredReason: listing.expiredReason }
+  }
+  if (normalized === '不租了' || normalized === '不租' || normalized === 'withdrawn') {
+    expireListing(db, listing, '房东反馈不租了', { by: userId, action: '上传人下架·不租了' })
+    return { outcome: 'withdrawn', status: listing.status, expiredReason: listing.expiredReason }
+  }
+  const error = new Error('无效的房态反馈')
+  error.statusCode = 400
+  throw error
+}
+
 module.exports = {
   currentUser,
   loginByPhone,
@@ -4585,5 +4640,6 @@ module.exports = {
   editableListingDetail,
   updateNormalListing,
   reviewOwnerListing,
-  verifyListingAvailability
+  verifyListingAvailability,
+  submitListingVerification
 }

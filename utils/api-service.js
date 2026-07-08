@@ -627,12 +627,12 @@ function getOwnedListings() {
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
-function verifyMyListing(id) {
+function verifyMyListing(id, outcome) {
   return apiClient.call({
     path: `/mini/my/listings/${id}/verify`,
     method: 'POST',
-    data: {},
-    mock: () => mockData.verifyMyListing(id)
+    data: outcome ? { outcome: outcome } : {},
+    mock: () => mockData.verifyMyListing(id, outcome)
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 

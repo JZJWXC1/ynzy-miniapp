@@ -1164,7 +1164,11 @@
         companyListing: listingDisplayFields(listing).companyListing,
         sourceLabel: listingDisplayFields(listing).sourceLabel,
         views: listing.sensitiveViews + ' 次查看敏感信息'
-      }, listingDisplayFields(listing));
+      }, listingDisplayFields(listing), {
+        // 上传人自查自己房源直接展示地址/房东电话（免留痕）+ 电话确认拨号用。放最后确保不被脱敏值覆盖。
+        address: listing.address || '',
+        landlordPhone: listing.landlordPhone || ''
+      });
     });
   }
 
@@ -2442,13 +2446,23 @@
     return getEditableListing(id);
   }
 
-  function verifyMyListing(id) {
+  function verifyMyListing(id, outcome) {
     var listing = getListing(id);
     if (listing && !isExpiredListing(listing)) {
-      listing.status = '在租';
-      listing.lifecycleStatus = 'active';
-      listing.lastVerifiedAt = '刚刚';
-      syncListingRecommendationProfile(listing);
+      var normalized = String(outcome == null ? '' : outcome).trim();
+      if (normalized === '已出租' || normalized === '不租了') {
+        // 已出租/不租了 → 自动下架进后台资产池，下架原因分开记。
+        listing.lifecycleStatus = 'expired';
+        listing.status = '已下架';
+        listing.expiredPool = '后台资产池';
+        listing.expiredReason = normalized === '已出租' ? '房东反馈已出租' : '房东反馈不租了';
+      } else {
+        // 未出租（含缺省）→ 已维护，重置核验周期。
+        listing.status = '在租';
+        listing.lifecycleStatus = 'active';
+        listing.lastVerifiedAt = '刚刚';
+        syncListingRecommendationProfile(listing);
+      }
     }
     return getOwnedListings();
   }
