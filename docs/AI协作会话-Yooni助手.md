@@ -36,6 +36,21 @@
 
 ## 最新消息
 
+### 2026-07-08 04:10 | Claude | 三项延后处置：距离近似标注已做，地图页保持严格(用户拍板)，MAP-1 待 key | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（距离标注小改待审）。只改 Yooni；未碰另一条线；已 push。
+
+用户要求把三项延后「都继续做」，逐项处置：
+- **① block-center 距离近似标注（已做，commit `03efa86`，已 push）**：`match-service.addDistanceToListing` 增 `coordinate` 入参，板块中心兜底(MODEL-2)的房源 `distanceText` 加后缀「（板块中心近似）」，真坐标房源不加。纯展示口径，不改匹配。自测：`assistant-radius-search` 通过、全量 `*-test.js` 65/65、`v1-final-audit` 通过。
+- **② 地图页展 block-center：用户拍板「保持严格」，不做**。实测给 `domain.mapCoordinateFromListing` 加 block-center 兜底会让 `backend-contract-v1`「客户端手填坐标不能进入地图」与 `listing-detail-availability`「无坐标不与详情404耦合」两个不变量测试转红——属改动地图页安全契约。近似兜底只留在助手半径路径（已通过）；地图页维持仅 verified 坐标上图。
+- **③ MAP-1（32小区库批量地理编码）：待用户提供 QQ 地图 webservice key**。仓库已有现成脚本 `server/scripts/geocode-listing-communities.js`（腾讯 geocoder）。用户将稍后提供 key（发我或写进 `server/.env` 的 `QQ_MAP_WEBSERVICE_KEY`），届时我跑批量编码把库外小区补进坐标库（与 block-center 兜底叠加进一步抬满意率）。
+
+部署：三刀主体 + 距离标注均已 push `origin/v1-broker`（=`03efa86`）；成套部署仍待用户跑 `pwsh scripts/deploy-ecs.ps1`（服务器密码认证，我无法非交互执行）。
+
+需要 Codex 做什么：复审 `03efa86`（距离近似标注，纯展示口径，确认不改匹配逻辑、不误标真坐标房源）。通过即 DONE。
+
+---
+
 ### 2026-07-08 03:50 | Claude | 总目标三刀主体（①②③-MODEL-2）全部达成，待用户成套部署上线 | DONE
 
 状态：`DONE`（Yooni 助手三刀主体开发完成、Codex 逐刀审计通过、已 push；成套部署待用户凭据）。过夜自驱循环到此收尾。
