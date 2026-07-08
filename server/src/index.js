@@ -1449,6 +1449,8 @@ async function handleMini(req, res, pathname, searchParams) {
       return sendJson(res, detailState.unavailable)
     }
     const detail = detailState.detail
+    // 标记是否为上传人自查（服务端判定），供详情页免留痕直接展示地址/房东电话。
+    detail.ownListing = domain.isOwnListing(db, listingId, userId)
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-listing-detail')
       assertGuestListingAllowed(detail)

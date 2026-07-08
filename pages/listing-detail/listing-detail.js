@@ -196,19 +196,25 @@ Page({
       )
       const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
       const companyListing = Boolean(listing && listing.companyListing)
+      const ownListing = Boolean(listing && listing.ownListing)
       this.setData({
         listing,
         unavailableListing: {},
         logs,
-        sensitiveVisible: companyListing,
+        isOwnListing: ownListing,
+        sensitiveVisible: companyListing || ownListing,
         isVerified: canTrySensitive,
-        sensitiveAuthLabel: companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名'),
+        sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
         shareBrokerName: user.name || '',
         shareStateText: canShareVideo
           ? '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
           : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
+      // 上传人自查自己上传的房源：直接拉取地址/房东电话填充（后端免留痕分支，不需 needId/用途弹窗）。
+      if (ownListing && !companyListing) {
+        this.loadOwnSensitive(listing.id)
+      }
     }).catch((error) => {
       if (isAuthError(error)) {
         this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
@@ -409,9 +415,21 @@ Page({
     }
   },
 
+  // 上传人自查：调后端免留痕分支（空 body）直接取地址/房东电话填充，不需 needId/用途、不留痕、不耗额度。
+  loadOwnSensitive(listingId) {
+    if (!listingId) return
+    apiService.addSensitiveFootprint(listingId, {}).then((result) => {
+      const sensitive = result && result.sensitive ? result.sensitive : {}
+      this.setData({
+        listing: Object.assign({}, this.data.listing, sensitive),
+        sensitiveVisible: true
+      })
+    }).catch(() => { /* 自查取数失败：静默降级，仍标记已直接展示 */ })
+  },
+
   revealSensitive() {
     if (this.data.sensitiveVisible) {
-      wx.showToast({ title: '已解锁地址和电话', icon: 'none' })
+      wx.showToast({ title: this.data.isOwnListing ? '自己上传，已直接展示（免留痕）' : '已解锁地址和电话', icon: 'none' })
       return;
     }
     if (!this.data.isVerified) {

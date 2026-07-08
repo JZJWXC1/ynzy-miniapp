@@ -1087,6 +1087,7 @@
       id: listing.id,
       title: listing.title,
       uploader: uploader.name,
+      ownListing: Boolean(listing.uploaderId && String(listing.uploaderId) === String(state.currentUserId)),
       rent: String(listing.rent),
       layout: listing.layout,
       city: location.city,
@@ -1992,6 +1993,30 @@
     }
     if (isPendingOwnerReview(listing)) {
       throw new Error('该房源正在等待管理员审核，审核通过后才会上架');
+    }
+    // 上传人自查自己上传的房源：直接返回地址/房东电话，不留痕、不耗额度（与生产后端一致，避免开发者工具预览分叉）。
+    if (listing && listing.uploaderId && String(listing.uploaderId) === String(state.currentUserId)) {
+      var ownLoc = listingLocationFields(listing);
+      return {
+        logs: getListingLogs(listingId),
+        sensitive: {
+          city: ownLoc.city,
+          district: ownLoc.district,
+          area: ownLoc.area,
+          areaText: ownLoc.city + ' · ' + ownLoc.area,
+          block: ownLoc.block,
+          community: ownLoc.community,
+          building: ownLoc.building,
+          unit: ownLoc.unit,
+          roomNumber: ownLoc.roomNumber,
+          locationSummary: ownLoc.locationSummary,
+          roomAddress: ownLoc.roomAddress,
+          address: listing.address,
+          landlordPhone: listing.landlordPhone,
+          sensitiveLocked: false,
+          ownListing: true
+        }
+      };
     }
     var access = assertSensitiveViewAllowed(listing, data);
     var id = 'F' + Date.now();

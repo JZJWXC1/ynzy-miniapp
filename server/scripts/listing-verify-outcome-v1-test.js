@@ -70,4 +70,13 @@ function makeDb() {
   assert.strictEqual(domain.submitListingVerification(db, 'U1', 'L1').outcome, 'available', '缺省=已维护')
 }
 
+// 7) isOwnListing（详情页自查免留痕判定）：本人 true；他人/游客空/不存在 false。
+{
+  const db = makeDb()
+  assert.strictEqual(domain.isOwnListing(db, 'L1', 'U1'), true, '上传人本人 = own')
+  assert.strictEqual(domain.isOwnListing(db, 'L1', 'U2'), false, '他人 ≠ own（仍须留痕绑 needId）')
+  assert.strictEqual(domain.isOwnListing(db, 'L1', ''), false, '空 userId = false（游客）')
+  assert.strictEqual(domain.isOwnListing(db, 'NOPE', 'U1'), false, '不存在房源 = false')
+}
+
 console.log('listing-verify-outcome-v1-test passed')

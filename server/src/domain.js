@@ -1728,6 +1728,13 @@ function listingDetailState(db, listingId) {
   }
 }
 
+// 当前登录用户是否为该房源上传人（用于详情页"上传人自查免留痕直接展示"，服务端判定，不外泄 uploaderId）。
+function isOwnListing(db, listingId, userId) {
+  if (!userId) return false
+  const listing = listingById(db, listingId)
+  return Boolean(listing && listing.uploaderId && String(listing.uploaderId) === String(userId))
+}
+
 function listingDetail(db, listingId) {
   const state = listingDetailState(db, listingId)
   return state.status === 'available' ? state.detail : null
@@ -4641,5 +4648,6 @@ module.exports = {
   updateNormalListing,
   reviewOwnerListing,
   verifyListingAvailability,
-  submitListingVerification
+  submitListingVerification,
+  isOwnListing
 }
