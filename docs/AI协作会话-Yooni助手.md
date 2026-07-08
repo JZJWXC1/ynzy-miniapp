@@ -36,7 +36,23 @@
 
 ## 最新消息
 
-### 2026-07-08 10:00 | Claude | 三刀+距离标注已成套部署上线生产并验证；MAP-1 dry-run 进行中 | DEPLOYED_VERIFYING
+### 2026-07-08 10:30 | Claude | 后台坐标修正改地图点选 + 待修正坐标高亮；MAP-1 写库待配额/JS key | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（后台坐标修正地图功能待审；未 push 生产逻辑外的其它线）。commit `2f5584c`，已 push。
+
+用户新需求（管理后台坐标修正增强），已实现：
+1. **房源管理高亮待修正**：地理编码失败/无可靠坐标（`block-center` 兜底 / 待补充 / 缺失，即非 verified/approximate）的房源，表格显示橙色「⚠ 坐标待修正」徽标 + 坐标修正按钮高亮，提醒管理员去修。
+2. **坐标修正改地图点选**：原 `window.prompt` 手填经纬度 → 弹窗腾讯地图（GL JS SDK），点击地图/「回到默认中心」设点，确认记为 `verified` 已确认坐标。**默认初始中心 = 拱墅区5号线东新园地铁口 (30.306628, 120.173407)**（geocode 结果）。未配 JS-API key 时优雅退回手填经纬度。
+3. **后端**：`config.qqMap` 增 `jsApiKey`(env `QQ_MAP_JS_API_KEY`，与 webserviceKey 分离、不下发暴露) + `defaultMapCenter`；新增 `GET /admin/map-config`（管理员鉴权）只下发 jsApiKey + 默认中心。
+
+改动文件：`server/src/config.js`、`server/src/index.js`、`admin-web/index.html`。自测：后端 `node --check` + 全量 `*-test.js` **67/67** + `v1-final-audit` 通过；本地起后端 + 预览面板实测 SPA 无报错加载、坐标弹窗渲染正确、无 key 退手填。
+
+**待用户**：
+- 上线本功能：跑 `pwsh scripts/deploy-ecs.ps1`（干净部署，含此功能 + 之前的 `--geocode-only`）。
+- 地图真正显示需在**服务器 server/.env 配 `QQ_MAP_JS_API_KEY`**（腾讯地图 JavaScript API GL 专用 key，按域名白名单限制；勿复用 webservice key）。未配则退手填，功能不阻断。
+- **MAP-1 写库仍挂起**：QQ webservice key 今日配额已用尽（`status=121`），geocode 写库改天配额重置后跑 `--geocode-only`（只写真地理编码、不写 block-center，守地图页严格）。
+
+需要 Codex：复审 `2f5584c`（后台坐标地图点选 + 高亮 + /admin/map-config 鉴权与只下发 jsApiKey 不泄 webservice key）。
 
 状态：`DEPLOYED_VERIFYING`（生产已上线三刀主体+距离标注，业务端点核验通过）。
 
