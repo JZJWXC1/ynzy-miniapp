@@ -381,6 +381,12 @@
       box-shadow: var(--shadow);
     }
 
+    /* 足迹筛选栏专属列宽：5 个筛选项定宽 + 两个按钮，避免结束日期落到共享 grid 的 1fr 列被拉宽。
+       同为单类选择器且置于基础 .filter-bar 之后、窄屏媒体查询之前，桌面走此列宽、窄屏仍被媒体查询 1fr 覆盖。 */
+    .footprint-filter-bar {
+      grid-template-columns: 160px 160px 150px 150px 150px auto auto;
+    }
+
     .filter-item span {
       display: block;
       margin-bottom: 8px;
@@ -1305,14 +1311,14 @@
 
       <section class="panel" id="logs">
         <div class="config-card">
-          <div class="filter-bar">
+          <div class="filter-bar footprint-filter-bar">
             <label class="filter-item">
               <span>查看人</span>
-              <input id="footprintViewer" placeholder="按查看人姓名">
+              <select id="footprintViewer"><option value="">全部</option></select>
             </label>
             <label class="filter-item">
               <span>房源/小区</span>
-              <input id="footprintKeyword" placeholder="房源/小区/上传人关键词">
+              <select id="footprintKeyword"><option value="">全部</option></select>
             </label>
             <label class="filter-item">
               <span>查看内容</span>
@@ -2637,6 +2643,8 @@
     }
 
 	    let footprintPage = 1;
+	    // 查看人/房源(小区) 下拉候选缓存：仅在无筛选(拿到全量数组)时重建，筛选后为分页数据不完整，沿用缓存。
+	    let footprintFilterOptions = { viewers: [], listings: [] };
 
 	    function readFootprintFilters() {
 	      const val = (id) => {
@@ -2684,6 +2692,20 @@
 	      if (empty) empty.hidden = (rows || []).length > 0;
 	    }
 
+	    function fillFootprintOptionSelect(id, values) {
+	      const select = document.getElementById(id);
+	      if (!select || !Array.isArray(values)) return;
+	      const current = select.value;
+	      while (select.options.length > 1) select.remove(1);
+	      values.forEach((value) => {
+	        const option = document.createElement('option');
+	        option.value = value;
+	        option.textContent = value;
+	        select.appendChild(option);
+	      });
+	      if (current && values.indexOf(current) !== -1) select.value = current;
+	    }
+
 	    async function renderAdminLogs() {
 	      const filters = readFootprintFilters();
 	      const query = buildQuery(Object.assign({ page: footprintPage, pageSize: 50 }, filters));
@@ -2694,6 +2716,14 @@
 	      fillFootprintActionOptions(isPaged
 	        ? payload.actions
 	        : Array.from(new Set(rows.map((r) => r.action).filter(Boolean))));
+	      // 查看人/房源(小区) 下拉：仅无筛选(全量数组)时重建缓存；筛选后为分页数据(不完整)沿用缓存。
+	      if (!isPaged) {
+	        const uniqSorted = (arr) => Array.from(new Set(arr.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'zh'));
+	        footprintFilterOptions.viewers = uniqSorted(rows.map((r) => r.viewer || r.user));
+	        footprintFilterOptions.listings = uniqSorted(rows.map((r) => r.listing || r.title));
+	      }
+	      fillFootprintOptionSelect('footprintViewer', footprintFilterOptions.viewers);
+	      fillFootprintOptionSelect('footprintKeyword', footprintFilterOptions.listings);
 	      renderFootprintRows(rows);
 	      const pager = document.getElementById('footprintPager');
 	      const info = document.getElementById('footprintPageInfo');
