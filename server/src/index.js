@@ -465,7 +465,9 @@ function miniUserIdFromRequest(req, db) {
   const token = bearerTokenFromRequest(req)
   if (!token) return ''
   const payload = verifyMiniAuthToken(token)
-  const user = (db.users || []).find((item) => item.id === payload.userId && item.status !== '禁用')
+  // 软删/停用账号的旧 token 立即失效：与后台账号鉴权（assertAdminRequest/登录）同口径排除 deleted，
+  // 否则删除/停用无法即时踢掉已登录设备（旧 token 在过期前仍可访问登录态接口）。
+  const user = (db.users || []).find((item) => item.id === payload.userId && item.status !== '禁用' && !item.deleted)
   if (!user) throw miniAuthError('登录用户不存在或已停用')
   return user.id
 }

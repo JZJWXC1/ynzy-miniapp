@@ -1236,6 +1236,7 @@ function deleteManagedUser(db, payload = {}) {
   }
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
   user.deleted = true
+  user.status = '已删除'
   user.brokerStatus = '已删除'
   user.deletedAt = nowText
   user.deletedBy = String(payload.operator || '') || 'admin'

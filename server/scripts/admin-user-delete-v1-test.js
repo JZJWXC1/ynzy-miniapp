@@ -97,9 +97,13 @@ async function run() {
     const superAuth = await login('super1', 'super1pass')
     const restAuth = await login('restadmin', 'restpass1')
 
-    // 删除前中介可登录
+    // 删除前中介可登录，并留存一枚已签发的 mini token 供“旧 token 失效”验证
     const preLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE })
     assert.strictEqual(preLogin.statusCode, 200, '删除前中介应能登录')
+    const staleToken = preLogin.body.data.token
+    assert.ok(staleToken, '登录应返回 mini token')
+    const preMe = await request('GET', '/mini/auth/me', null, { Authorization: `Bearer ${staleToken}` })
+    assert.strictEqual(preMe.statusCode, 200, '删除前 token 应能访问 /mini/auth/me')
 
     // 超管鉴权：普通管理员不得删除
     const restDelete = await request('DELETE', '/admin/users/U-BROKER', null, restAuth)
@@ -120,6 +124,10 @@ async function run() {
     // 软删后：禁止手机号登录
     const postLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE })
     assert.strictEqual(postLogin.statusCode, 403, '软删后中介不能再登录')
+
+    // Codex P1 阻断项闭环：软删后删除前已签发的旧 mini token 立即失效（不能再访问登录态接口）
+    const staleMe = await request('GET', '/mini/auth/me', null, { Authorization: `Bearer ${staleToken}` })
+    assert.strictEqual(staleMe.statusCode, 401, `软删后旧 mini token 应立即失效(401)，实为 ${staleMe.statusCode}`)
 
     // 引用完整性：db 里用户记录仍在（deleted=true 留痕），名下房源与分佣记录原样保留
     const db = readDb()
