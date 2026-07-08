@@ -1179,11 +1179,19 @@
           <div class="filter-bar">
             <label class="filter-item">
               <span>二房东上传人比例</span>
-              <input id="commissionSecondRate" type="number" min="0" max="20" step="0.5" placeholder="15">
+              <input id="commissionSecondRate" type="number" min="0" max="100" step="0.5" placeholder="20">
+            </label>
+            <label class="filter-item">
+              <span>二房东平台比例</span>
+              <input id="commissionSecondPlatformRate" type="number" min="0" max="100" step="0.5" placeholder="10">
             </label>
             <label class="filter-item">
               <span>业主上传人比例</span>
-              <input id="commissionOwnerRate" type="number" min="0" max="20" step="0.5" placeholder="20">
+              <input id="commissionOwnerRate" type="number" min="0" max="100" step="0.5" placeholder="20">
+            </label>
+            <label class="filter-item">
+              <span>业主平台比例</span>
+              <input id="commissionOwnerPlatformRate" type="number" min="0" max="100" step="0.5" placeholder="10">
             </label>
           </div>
           <div class="status-box" id="commissionConfigStatus">正在读取分佣配置...</div>
@@ -1349,7 +1357,7 @@
 
       <section class="panel" id="deals">
         <div class="deal-summary" id="dealSummary"></div>
-        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。成交总比例固定为 20%，上传人比例按签单时的分佣配置快照结算。</div>
+        <div class="status-box audit-note">管理员只确认签单；成交月租、成交总佣金由报备发起人提交。分佣按签单时冻结的配置快照结算：业主/二房东 上传人+平台分出后，带看成交中介净留其余；公司房源不抽佣、自传自带全免。</div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
@@ -1803,13 +1811,16 @@
     const maintenanceRuleEnabled = document.getElementById('maintenanceRuleEnabled');
     const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
     const commissionSecondRate = document.getElementById('commissionSecondRate');
+    const commissionSecondPlatformRate = document.getElementById('commissionSecondPlatformRate');
     const commissionOwnerRate = document.getElementById('commissionOwnerRate');
+    const commissionOwnerPlatformRate = document.getElementById('commissionOwnerPlatformRate');
     const commissionConfigStatus = document.getElementById('commissionConfigStatus');
     const defaultCommissionConfig = {
-      totalRate: 20,
-      secondLandlordRate: 15,
+      secondLandlordRate: 20,
       ownerRate: 20,
-      companyRate: 0
+      companyRate: 0,
+      secondLandlordPlatformRate: 10,
+      ownerPlatformRate: 10
     };
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
     let currentAdminId = '';
@@ -2514,12 +2525,13 @@
 
     function normalizeCommissionConfig(config) {
       const source = config || {};
-      const rates = source.uploaderRates || {};
-      const totalRate = numberValue(source.totalRate, defaultCommissionConfig.totalRate);
+      const upRates = source.uploaderRates || {};
+      const platRates = source.platformRates || {};
       return {
-        totalRate,
-        secondLandlordRate: numberValue(source.secondLandlordRate, rates['二房东房源'], defaultCommissionConfig.secondLandlordRate),
-        ownerRate: numberValue(source.ownerRate, rates['业主房源'], defaultCommissionConfig.ownerRate),
+        secondLandlordRate: numberValue(source.secondLandlordRate, upRates['二房东房源'], defaultCommissionConfig.secondLandlordRate),
+        ownerRate: numberValue(source.ownerRate, upRates['业主房源'], defaultCommissionConfig.ownerRate),
+        secondLandlordPlatformRate: numberValue(source.secondLandlordPlatformRate, platRates['二房东房源'], defaultCommissionConfig.secondLandlordPlatformRate),
+        ownerPlatformRate: numberValue(source.ownerPlatformRate, platRates['业主房源'], defaultCommissionConfig.ownerPlatformRate),
         companyRate: 0,
         updatedAt: source.updatedAt || '',
         updatedBy: source.updatedBy || ''
@@ -2528,7 +2540,9 @@
 
     function commissionConfigDisplayText(config) {
       const rule = normalizeCommissionConfig(config);
-      return `成交总比例 ${rule.totalRate}%；二房东上传人 ${rule.secondLandlordRate}%，平台 ${Math.max(0, rule.totalRate - rule.secondLandlordRate)}%；业主上传人 ${rule.ownerRate}%；公司房源不抽佣。`;
+      const subTotal = rule.secondLandlordRate + rule.secondLandlordPlatformRate;
+      const ownerTotal = rule.ownerRate + rule.ownerPlatformRate;
+      return `二房东：上传人 ${rule.secondLandlordRate}% + 平台 ${rule.secondLandlordPlatformRate}%（分出 ${subTotal}%，带看成交中介留 ${Math.max(0, 100 - subTotal)}%）；业主：上传人 ${rule.ownerRate}% + 平台 ${rule.ownerPlatformRate}%（分出 ${ownerTotal}%，带看留 ${Math.max(0, 100 - ownerTotal)}%）；公司房源不抽佣（带看全佣）；自传自带全免。`;
     }
 
     async function renderCommissionConfig() {
@@ -2536,14 +2550,18 @@
         dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig
       )));
       commissionSecondRate.value = config.secondLandlordRate;
+      commissionSecondPlatformRate.value = config.secondLandlordPlatformRate;
       commissionOwnerRate.value = config.ownerRate;
+      commissionOwnerPlatformRate.value = config.ownerPlatformRate;
       commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
     }
 
     async function saveCommissionConfig() {
       const payload = {
         secondLandlordRate: Number(commissionSecondRate.value),
-        ownerRate: Number(commissionOwnerRate.value)
+        ownerRate: Number(commissionOwnerRate.value),
+        secondLandlordPlatformRate: Number(commissionSecondPlatformRate.value),
+        ownerPlatformRate: Number(commissionOwnerPlatformRate.value)
       };
       commissionConfigStatus.textContent = '正在保存...';
       try {
@@ -2679,9 +2697,9 @@
           customerPhoneMasked: '',
           expectedUploaderCommissionFen: expectedFen,
           expectedUploaderCommission: (expectedFen / 100).toFixed(2),
-          uploaderCommissionRate: config.totalRate,
+          uploaderCommissionRate: config.secondLandlordRate + config.secondLandlordPlatformRate,
           uploaderRate: config.secondLandlordRate,
-          platformRate: Math.max(0, config.totalRate - config.secondLandlordRate)
+          platformRate: config.secondLandlordPlatformRate
         }, item, confirmed ? {
           status: '已确认',
           uploaderCommissionFen: expectedFen,
