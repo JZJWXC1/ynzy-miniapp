@@ -30,19 +30,33 @@ function parseReqLine(line) {
   }
 }
 
-// 归一化 pathname：把疑似 id 段（纯数字 / 长 hex / L\d+ 之类）折叠成 :id，便于聚合、也不回显具体 id。
+// 归一化 pathname：把疑似 id 段折叠成 :id，便于聚合、也不回显具体真实 id。
+// id 形态来源（据实核对，非虚构）：
+//   - domain.id(prefix) = 前缀 + Date.now() + 3 位随机 = 前缀 + 13~16 位数字；
+//     前缀实测枚举：C/D/F/L/N/P/R/GU/GUO/RC/SH（1~3 个字母）。
+//   - 后台账号路径 id：A001（A+数字）、A-SUPER（A-短横线+词）。
+//   - UUID / 长不透明 token（base64url 等）。
+// 任何新增 id 前缀都应在此补规则；规则均要求"够像 id"，避免误折 healthz/recharges/accounts 等真实路由词。
+const ID_SEGMENT_RES = [
+  /^\d+$/, // 纯数字
+  /^[A-Za-z]{1,5}\d{5,}$/, // 字母前缀(1~5)+长数字：覆盖全部 domain.id 输出（含 RC/SH/GU/GUO 多字母前缀）
+  /^A\d+$/, // 后台账号 A001
+  /^A-[A-Za-z0-9_-]+$/, // 后台账号 A-SUPER
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, // UUID
+  /^[0-9a-f]{8,}$/i, // 长 hex（trace 类）
+  /^(?=.*\d)[A-Za-z0-9_-]{20,}$/ // 长不透明 token（≥20 且含数字，保守不误折普通词）
+]
+
+function looksLikeId(seg) {
+  return ID_SEGMENT_RES.some((re) => re.test(seg))
+}
+
 function normalizePath(p) {
   const path = String(p || '')
   if (!path) return ''
   return path
     .split('/')
-    .map((seg) => {
-      if (!seg) return seg
-      if (/^\d+$/.test(seg)) return ':id'
-      if (/^[0-9a-f]{8,}$/i.test(seg)) return ':id'
-      if (/^[A-Za-z]\d{6,}$/.test(seg)) return ':id' // 如 L1783427664217530 / F123456
-      return seg
-    })
+    .map((seg) => (seg && looksLikeId(seg) ? ':id' : seg))
     .join('/')
 }
 

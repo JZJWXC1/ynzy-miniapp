@@ -19,13 +19,30 @@ const r = require('./req-log-stats')
   assert.strictEqual(r.parseReqLine('[req] {"path":"/a"}'), null, '缺 status → null')
 }
 
-// 2) normalizePath：折叠 id 段。
+// 2) normalizePath：折叠 id 段。含 Codex 对抗复现的真实 id 形态（多字母前缀 + 后台账号）。
 {
+  // 单字母前缀 + 长数字（原本就过）。
   assert.strictEqual(r.normalizePath('/listing/L1783427664217530/detail'), '/listing/:id/detail')
   assert.strictEqual(r.normalizePath('/users/123'), '/users/:id')
   assert.strictEqual(r.normalizePath('/f/deadbeefcafe1234'), '/f/:id')
+  // 多字母前缀 domain.id：RC/SH/GU/GUO（Codex 打回的核心遗漏）。
+  assert.strictEqual(r.normalizePath('/admin/recharges/RC1783427664217530/review'), '/admin/recharges/:id/review', 'RC 前缀必须折叠')
+  assert.strictEqual(r.normalizePath('/showings/SH1783427664217530'), '/showings/:id', 'SH 前缀')
+  assert.strictEqual(r.normalizePath('/groups/GU1783427664217530'), '/groups/:id', 'GU 前缀')
+  assert.strictEqual(r.normalizePath('/groups/GUO1783427664217530/unlock'), '/groups/:id/unlock', 'GUO 三字母前缀')
+  // 后台账号 id。
+  assert.strictEqual(r.normalizePath('/admin/accounts/A001/status'), '/admin/accounts/:id/status', 'A001 账号')
+  assert.strictEqual(r.normalizePath('/admin/accounts/A-SUPER/status'), '/admin/accounts/:id/status', 'A-SUPER 账号')
+  // UUID / 长 token。
+  assert.strictEqual(r.normalizePath('/x/550e8400-e29b-41d4-a716-446655440000'), '/x/:id', 'UUID')
+  assert.strictEqual(r.normalizePath('/t/aB3xY9zK2mN7qP4wL8vR1s'), '/t/:id', '长不透明 token')
+  // 真实路由词不得误折（防过度折叠）。
+  assert.strictEqual(r.normalizePath('/admin/recharges/review'), '/admin/recharges/review', 'recharges/review 不折')
+  assert.strictEqual(r.normalizePath('/admin/accounts/status'), '/admin/accounts/status')
   assert.strictEqual(r.normalizePath('/healthz'), '/healthz', '普通段不动')
   assert.strictEqual(r.normalizePath('/match/chat'), '/match/chat')
+  assert.strictEqual(r.normalizePath('/mini/asr/realtime'), '/mini/asr/realtime', 'asr/realtime 不折')
+  assert.strictEqual(r.normalizePath('/api/v1/listings'), '/api/v1/listings', 'v1 不折（数字位数不足）')
 }
 
 // 3) percentile：最近秩。
