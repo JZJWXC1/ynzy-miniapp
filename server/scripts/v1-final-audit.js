@@ -367,7 +367,13 @@ function checkAdminReportDealContract() {
   assertOk(domainSource.includes('companyContactPhones') && domainSource.includes('companyContactPhoneText'), '公司房源详情必须下发公司看房电话')
   assertOk(domainSource.includes('sensitiveLocked: !display.companyListing'), '公司房源详情必须直接公开地址电话')
   assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="need-bind-row'), '公司房源详情必须隐藏需求单提示')
-  assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="primary-button"'), '公司房源详情必须隐藏查看地址电话按钮')
+  // 查看地址电话按钮须由 !listing.companyListing 守卫（公司房源隐藏）。上传人自查分支加入后，
+  // reveal 按钮由 wx:if 变为 wx:elif（前置 isOwnListing 自查 wx:if），两种形式都满足"公司房源隐藏"。
+  assertOk(
+    detailWxml.includes('wx:elif="{{!listing.companyListing}}" class="primary-button"') ||
+    detailWxml.includes('wx:if="{{!listing.companyListing}}" class="primary-button"'),
+    '公司房源详情必须隐藏查看地址电话按钮（查看按钮须由 !companyListing 守卫，含自查 wx:if/wx:elif 分支）'
+  )
   assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="showing-action-card'), '公司房源详情必须隐藏水印拍照区块')
   return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在，公司房源不生成分佣记录'
 }
