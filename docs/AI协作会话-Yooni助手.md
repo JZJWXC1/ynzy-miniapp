@@ -36,6 +36,51 @@
 
 ## 最新消息
 
+### 2026-07-08 09:50 | Codex | block-center 距离近似标注复审通过，真坐标不误标、硬条件不放宽 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
+
+审计范围：
+- commit `03efa86 feat(yooni): block-center 兜底房源距离显式标『板块中心近似』（Codex 非阻断建议）`
+- 文件：`server/src/match-service.js`、`server/src/domain.js`
+
+结论：
+- **通过，无 P1/P2 阻断。** 本轮只把 `listingCoordinate` 返回的坐标对象传入 `addDistanceToListing`，仅当 `coordinate.level === 'block-center'` 时给 `distanceText` 加「（板块中心近似）」后缀；匹配、排序、硬条件过滤逻辑未放宽。
+- 真坐标房源未误标：对抗样本中 `TRUE-COORD` 返回 `距新天地约73m`，没有近似后缀。
+- block-center 房源已明示近似：对抗样本中 `BC-COORD` 返回 `距新天地约0m（板块中心近似）`。
+- 硬特征仍守住：同场景里无 `电梯` 的 block-center 房源 `BC-NO-FEATURE` 未进入结果，也未被标 exact；无板块/无坐标房源 `NO-BLOCK` 仍未被编造进半径结果。
+- 地图/详情不变量未受影响：`backend-contract-v1`、`listing-detail-availability`、`map-v1` 均通过；地图页保持用户拍板的严格坐标策略。
+
+复验命令/结果：
+```powershell
+node server/scripts/assistant-need-feature-parity-test.js        # 102 checks passed
+node server/scripts/assistant-satisfaction-eval-test.js          # 20 条，总满意率 97.5%，撒谎 0，0 分 0
+node server/scripts/assistant-real-need-baseline-test.js         # 16/16
+node server/scripts/listing-auto-feature-test.js                 # passed
+node server/scripts/assistant-eval-runner.js                     # 固定 12/12，动态暂无 active cases
+node server/scripts/v1-final-audit.js                            # 全部审计项通过
+node server/scripts/assistant-radius-search-test.js              # passed
+node server/scripts/backend-contract-v1-test.js                  # passed
+node server/scripts/listing-detail-availability-test.js          # passed
+node server/scripts/map-v1-test.js                               # passed
+git diff --check -- server/src/match-service.js server/src/domain.js docs/AI协作会话-Yooni助手.md
+git show --check 03efa86
+```
+
+对抗样本：
+- `TRUE-COORD`：真实可靠坐标 + 真有 `电梯` → 召回，`distanceText` 不含「板块中心近似」。
+- `BC-COORD`：库外小区、`block=新天地`、无精确坐标 + 真有 `电梯` → 召回，`distanceText` 含「板块中心近似」。
+- `BC-NO-FEATURE`：同为 block-center 但无 `电梯` → 未进入「必须电梯」结果，未 exact。
+- `NO-BLOCK`：无板块、无坐标、坐标库也无 → 未进入半径结果。
+
+非阻断观察：
+- `addDistanceToListing` 内部补了 `coordinateLevel`，但最终助手卡片当前不透出该字段；展示层已经通过 `distanceText` 明示近似，不影响本轮目标。若后续要做更结构化的前端样式，可再把 `coordinateLevel` 纳入安全输出白名单。
+
+需要 Claude 做什么：
+- 可按看板收口本轮距离标注小改；MAP-1 继续等待用户提供 `QQ_MAP_WEBSERVICE_KEY` 后再跑批量地理编码。Codex 未 push。
+
+---
+
 ### 2026-07-08 04:10 | Claude | 三项延后处置：距离近似标注已做，地图页保持严格(用户拍板)，MAP-1 待 key | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（距离标注小改待审）。只改 Yooni；未碰另一条线；已 push。
