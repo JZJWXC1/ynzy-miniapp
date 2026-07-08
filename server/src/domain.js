@@ -24,10 +24,15 @@ const VERIFY_STALE_DAYS = 7
 const V1_MAP_STALE_DAYS = VERIFY_STALE_DAYS
 // 足迹留痕保留上限：可用环境变量 FOOTPRINT_MAX_ROWS 按审计留存要求调整；生产长期运行建议迁移真实数据库
 const MAX_FOOTPRINT_ROWS = Math.max(1000, Number(process.env.FOOTPRINT_MAX_ROWS) || 5000)
-const SECOND_LANDLORD_COMMISSION_RATE = 15
-const OWNER_COMMISSION_RATE = 20
-const TOTAL_DEAL_COMMISSION_RATE = 20
-const UPLOADER_COMMISSION_RATE = OWNER_COMMISSION_RATE
+// 分佣默认比例（均可后台系统配置覆盖）。基数 = 成交总佣金 deal.landlordCommissionFen（带看中介实赚那笔）。
+// 业主/二房东：上传人分 uploaderRate% + 平台抽 platformRate%，带看成交中介净留其余（默认 70%）；
+// 公司房源恒 0（带看中介全佣）；自传自带（成交人 == 上传人）全免、带看中介 100%、不生成分佣记录。
+const SECOND_LANDLORD_COMMISSION_RATE = 20 // 二房东房源 上传人默认分佣（由 15 统一为 20）
+const OWNER_COMMISSION_RATE = 20 // 业主房源 上传人默认分佣
+const PLATFORM_COMMISSION_RATE = 10 // 平台默认分佣（业主/二房东；公司恒 0）
+const MAX_COMMISSION_RATE = 100 // 单档比例上限：任一比例不得超过 100%
+const TOTAL_DEAL_COMMISSION_RATE = OWNER_COMMISSION_RATE + PLATFORM_COMMISSION_RATE // 默认总分出比例(30)，仅作展示兜底
+const UPLOADER_COMMISSION_RATE = OWNER_COMMISSION_RATE // 兼容旧引用
 const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣'
 const COMPANY_SOURCE = '公司房源'
 const OWNER_SOURCE = '业主房源'
@@ -506,7 +511,7 @@ function isCompanyListing(listing = {}) {
   )
 }
 
-function boundedRate(value, fallback, max = TOTAL_DEAL_COMMISSION_RATE) {
+function boundedRate(value, fallback, max = MAX_COMMISSION_RATE) {
   const number = Number(value)
   if (!Number.isFinite(number)) return fallback
   return Math.min(max, Math.max(0, Math.round(number * 100) / 100))
@@ -514,15 +519,22 @@ function boundedRate(value, fallback, max = TOTAL_DEAL_COMMISSION_RATE) {
 
 function defaultCommissionConfig() {
   return {
-    totalRate: TOTAL_DEAL_COMMISSION_RATE,
     uploaderRates: {
       [SECOND_LANDLORD_SOURCE]: SECOND_LANDLORD_COMMISSION_RATE,
       [OWNER_SOURCE]: OWNER_COMMISSION_RATE,
       [COMPANY_SOURCE]: 0
     },
+    platformRates: {
+      [SECOND_LANDLORD_SOURCE]: PLATFORM_COMMISSION_RATE,
+      [OWNER_SOURCE]: PLATFORM_COMMISSION_RATE,
+      [COMPANY_SOURCE]: 0
+    },
     secondLandlordRate: SECOND_LANDLORD_COMMISSION_RATE,
     ownerRate: OWNER_COMMISSION_RATE,
     companyRate: 0,
+    secondLandlordPlatformRate: PLATFORM_COMMISSION_RATE,
+    ownerPlatformRate: PLATFORM_COMMISSION_RATE,
+    totalRate: TOTAL_DEAL_COMMISSION_RATE, // 展示兜底：默认总分出比例（业主/二房东 20+10=30）
     updatedAt: '',
     updatedBy: ''
   }
@@ -530,29 +542,30 @@ function defaultCommissionConfig() {
 
 function commissionConfig(db = {}) {
   const saved = db.commissionConfig || {}
-  const savedRates = saved.uploaderRates || {}
+  const savedUp = saved.uploaderRates || {}
+  const savedPlat = saved.platformRates || {}
   const base = defaultCommissionConfig()
-  const totalRate = TOTAL_DEAL_COMMISSION_RATE
-  const secondLandlordRate = boundedRate(
-    saved.secondLandlordRate ?? savedRates[SECOND_LANDLORD_SOURCE],
-    base.secondLandlordRate,
-    totalRate
-  )
-  const ownerRate = boundedRate(
-    saved.ownerRate ?? savedRates[OWNER_SOURCE],
-    base.ownerRate,
-    totalRate
-  )
+  const secondLandlordRate = boundedRate(saved.secondLandlordRate ?? savedUp[SECOND_LANDLORD_SOURCE], base.secondLandlordRate)
+  const ownerRate = boundedRate(saved.ownerRate ?? savedUp[OWNER_SOURCE], base.ownerRate)
+  const secondLandlordPlatformRate = boundedRate(saved.secondLandlordPlatformRate ?? savedPlat[SECOND_LANDLORD_SOURCE], base.secondLandlordPlatformRate)
+  const ownerPlatformRate = boundedRate(saved.ownerPlatformRate ?? savedPlat[OWNER_SOURCE], base.ownerPlatformRate)
   return {
-    totalRate,
     uploaderRates: {
       [SECOND_LANDLORD_SOURCE]: secondLandlordRate,
       [OWNER_SOURCE]: ownerRate,
       [COMPANY_SOURCE]: 0
     },
+    platformRates: {
+      [SECOND_LANDLORD_SOURCE]: secondLandlordPlatformRate,
+      [OWNER_SOURCE]: ownerPlatformRate,
+      [COMPANY_SOURCE]: 0
+    },
     secondLandlordRate,
     ownerRate,
     companyRate: 0,
+    secondLandlordPlatformRate,
+    ownerPlatformRate,
+    totalRate: TOTAL_DEAL_COMMISSION_RATE,
     updatedAt: saved.updatedAt || '',
     updatedBy: saved.updatedBy || ''
   }
@@ -566,22 +579,28 @@ function commissionRateByOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) 
     : config.secondLandlordRate
 }
 
+function platformRateByOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
+  const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
+  const config = commissionConfig(db)
+  return normalized === OWNER_SOURCE
+    ? config.ownerPlatformRate
+    : config.secondLandlordPlatformRate
+}
+
 function publicCommissionTextForOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
   const config = commissionConfig(db)
   const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
-  if (normalized === OWNER_SOURCE) {
-    return `管理员确认签单后，上传人按房东实付佣金的 ${config.ownerRate}% 结算`
-  }
-  return `成交总比例按房东实付佣金的 ${config.totalRate}% 计算`
+  const up = normalized === OWNER_SOURCE ? config.ownerRate : config.secondLandlordRate
+  const plat = normalized === OWNER_SOURCE ? config.ownerPlatformRate : config.secondLandlordPlatformRate
+  // 详情黄条只露"总分出比例"（上传+平台），不拆平台细项；带看成交中介净留其余。
+  return `成交总比例按成交总佣金的 ${up + plat}% 计算`
 }
 
 function uploadCommissionTextForOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
   const config = commissionConfig(db)
   const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
-  if (normalized === OWNER_SOURCE) {
-    return `上传人按房东实付佣金的 ${config.ownerRate}% 结算`
-  }
-  return `上传人最高 ${config.secondLandlordRate}%`
+  const up = normalized === OWNER_SOURCE ? config.ownerRate : config.secondLandlordRate
+  return `别人带看成交你上传的这条房源，你按成交总佣金拿 ${up}% 收益`
 }
 
 function commissionRateForListing(listing = {}, db = {}) {
@@ -593,24 +612,24 @@ function isAdminUser(user = {}) {
   return Boolean(user.isAdmin || /管理员/.test(String(user.role || '')))
 }
 
-function commissionRuleForListing(listing = {}, db = {}, uploaderId = '') {
+// 分佣规则（基数=成交总佣金）。closerId=带看成交人，用于识别"自传自带"。
+// rate = uploaderRate + platformRate = 分出去的总比例；rate<=0 表示不生成分佣记录（公司/自传自带）。
+function commissionRuleForListing(listing = {}, db = {}, uploaderId = '', closerId = '') {
+  // 公司房源：不分佣，带看中介全佣。（形状固定为 {rate,uploaderRate,platformRate}，rate<=0 即不生成分佣记录。）
   if (isCompanyListing(listing)) {
-    return {
-      rate: 0,
-      uploaderRate: 0,
-      platformRate: 0
-    }
+    return { rate: 0, uploaderRate: 0, platformRate: 0 }
   }
-  const uploader = userById(db, uploaderId || listing.uploaderId) || {}
-  const uploaderRate = isAdminUser(uploader)
-    ? 0
-    : commissionRateByOwnerType(listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE, db)
-  const platformRate = Math.max(0, TOTAL_DEAL_COMMISSION_RATE - uploaderRate)
-  return {
-    rate: TOTAL_DEAL_COMMISSION_RATE,
-    uploaderRate,
-    platformRate
+  const effectiveUploaderId = uploaderId || listing.uploaderId || ''
+  // 自传自带：上传人即带看成交人 → 全免，带看中介净留 100%，不生成分佣记录。
+  if (effectiveUploaderId && closerId && String(effectiveUploaderId) === String(closerId)) {
+    return { rate: 0, uploaderRate: 0, platformRate: 0 }
   }
+  const ownerType = listing.ownerType || listing.houseSourceType || listing.source || SECOND_LANDLORD_SOURCE
+  const uploader = userById(db, effectiveUploaderId) || {}
+  // 管理员上传（如公司代管的非公司房源）不给上传人分佣，但平台仍按配置抽成。
+  const uploaderRate = isAdminUser(uploader) ? 0 : commissionRateByOwnerType(ownerType, db)
+  const platformRate = platformRateByOwnerType(ownerType, db)
+  return { rate: uploaderRate + platformRate, uploaderRate, platformRate }
 }
 
 function isLegacyRentInventory(listing = {}) {
@@ -3068,7 +3087,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   const sourceFields = listingSourceFields(listing, db)
   const ownerType = sourceFields.ownerType
   const source = listing.source || sourceFields.sourceLabel || ''
-  const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId)
+  const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId, report.brokerId)
   const dealSnapshot = {
     needId: report.needId || '',
     listingId: report.listingId,
@@ -3144,7 +3163,7 @@ function confirmDeal(db, adminId, dealId) {
   // 清零上传人分佣。仅当历史签单缺少冻结值时才回退重算。
   const commissionRule = deal.commissionRule
     || (deal.dealSnapshot && deal.dealSnapshot.commissionRule)
-    || commissionRuleForListing(listing, db, deal.uploaderId)
+    || commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
   if (deal.status === '已确认') {
     return {
       message: '签单已确认',
@@ -3857,28 +3876,30 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
 
 function setCommissionConfig(db = {}, adminId = '', payload = {}) {
   const current = commissionConfig(db)
-  const rates = payload.uploaderRates || {}
-  const secondLandlordRate = boundedRate(
-    payload.secondLandlordRate ?? payload.secondLandlordUploaderRate ?? rates[SECOND_LANDLORD_SOURCE],
-    current.secondLandlordRate,
-    current.totalRate
-  )
-  const ownerRate = boundedRate(
-    payload.ownerRate ?? payload.ownerUploaderRate ?? rates[OWNER_SOURCE],
-    current.ownerRate,
-    current.totalRate
-  )
+  const upRates = payload.uploaderRates || {}
+  const platRates = payload.platformRates || {}
+  const secondLandlordRate = boundedRate(payload.secondLandlordRate ?? payload.secondLandlordUploaderRate ?? upRates[SECOND_LANDLORD_SOURCE], current.secondLandlordRate)
+  const ownerRate = boundedRate(payload.ownerRate ?? payload.ownerUploaderRate ?? upRates[OWNER_SOURCE], current.ownerRate)
+  const secondLandlordPlatformRate = boundedRate(payload.secondLandlordPlatformRate ?? platRates[SECOND_LANDLORD_SOURCE], current.secondLandlordPlatformRate)
+  const ownerPlatformRate = boundedRate(payload.ownerPlatformRate ?? platRates[OWNER_SOURCE], current.ownerPlatformRate)
   const now = nowText()
   db.commissionConfig = {
-    totalRate: TOTAL_DEAL_COMMISSION_RATE,
     uploaderRates: {
       [SECOND_LANDLORD_SOURCE]: secondLandlordRate,
       [OWNER_SOURCE]: ownerRate,
       [COMPANY_SOURCE]: 0
     },
+    platformRates: {
+      [SECOND_LANDLORD_SOURCE]: secondLandlordPlatformRate,
+      [OWNER_SOURCE]: ownerPlatformRate,
+      [COMPANY_SOURCE]: 0
+    },
     secondLandlordRate,
     ownerRate,
     companyRate: 0,
+    secondLandlordPlatformRate,
+    ownerPlatformRate,
+    totalRate: TOTAL_DEAL_COMMISSION_RATE,
     updatedAt: now,
     updatedBy: adminId || 'admin'
   }
@@ -3887,7 +3908,7 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
     viewerId: adminId || 'admin',
     action: '调整分佣配置',
     time: now,
-    sync: `二房东上传人 ${secondLandlordRate}%，业主上传人 ${ownerRate}%，公司房源不抽佣`
+    sync: `业主上传人 ${ownerRate}%+平台 ${ownerPlatformRate}%，二房东上传人 ${secondLandlordRate}%+平台 ${secondLandlordPlatformRate}%，公司房源不抽佣`
   })
   return commissionConfig(db)
 }
@@ -4295,6 +4316,9 @@ module.exports = {
   enforceListingMaintenanceRule,
   commissionConfig,
   setCommissionConfig,
+  commissionRuleForListing,
+  commissionRateByOwnerType,
+  platformRateByOwnerType,
   dashboardSummary,
   formatHomeListing,
   homeListings,
