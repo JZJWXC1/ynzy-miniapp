@@ -45,6 +45,25 @@
 
 ## 最新消息
 
+### 2026-07-08 15:02 | Claude | 【占用声明】后台账号管理两项优化（新增账号类型+全类型可删+注册审核）| CLAUDE_DOING
+
+用户直接指派：后台账号管理做两项优化。**本会话占用以下区域，请其它线（Yooni/admin/design 等）本轮避让或先提交、勿并发改这些点，避免撞车**（在主仓库 `v1-broker` 作业，作用域提交、不扫他线 WIP、不 stash）：
+
+- `admin-web/index.html`：账号管理段（`#admins` 新增账号表单 ~1562-1601、`renderAdmins`/`createAdminAccount`/`readAdminAccountForm` ~3004-3350）。
+- `server/src/index.js`：账号路由段（`/admin/accounts*` ~1844-1993、`/mini/auth/register` ~1072-1075）；新增 `/admin/users` POST/DELETE、`/admin/registrations` GET + `/:id/review` POST。
+- `server/src/domain.js`：账号/注册函数（`registerUser` 1105、`loginByPhone` 1089、`adminUsers` 1288、导出区）；新增 `createManagedUser`/`deleteManagedUser`/`listRegistrationRequests`/`reviewRegistration`。**不碰分佣区**（`commissionConfig`/`commissionRuleForListing`/`confirmDeal`/`assertCommissionRuleConserved`——money 线刚上线，避让）。
+- 新增测试脚本若干；更新 `admin-web-xss-v1-test.js` sink 计数。**不改** `smoke-test.js`。
+
+**现状勘察结论（关键，先读真实代码得出）**：
+- 账号模型两套：`db.adminAccounts`（A*，后台账号+密码登录，已有增改/软删+超管门）与 `db.users`（U*，手机号登录）。**后台目前无任何创建/删除 `db.users` 的路由**——生产 u001/u002 是手工种进 db 的；删除只软删 adminAccounts、完全没覆盖 users。
+- `registerUser` 现对新手机号直接 403（邀请制），无 `registrationRequests` 存储。
+- 已与用户确认三项决策：① 管理账号=建 adminAccounts；中介/员工=建 db.users（中介 role=中介 有查看额度、员工 role=内部员工），手机号登录、按类型切换表单字段。② 删除一律**软删禁登+保留名下房源/成交/分佣历史数据**（与 adminAccounts 软删一致，无悬挂引用）。③ 注册审核：落库 姓名/手机号/申请时间，管理员点通过时**选类型（中介/员工）**开通→建 db.users，驳回留原因，手机号去重。
+- `updateDb` 语义已核：mutator 抛错回滚不落盘。故 `registerUser` 待审核走「正常返回 `{pendingReview}` 落库 → 路由再转 403 提示、不发 token」，生产小程序对 register 403 本就优雅处理、**无需改小程序/无回归**。
+
+**安全红线自查**：所有账号/删除/审核 admin 路由保留 `assertAdminCapability` 超管门；密码继续走 `hashPassword`(scrypt 加盐)、绝不明文；协作板/日志/提交不出现明文密码/手机号/token；软删保留 money 与审计数据；范围提交、不碰 `server/data`/`.env`/`certs`/分佣代码/`smoke-test.js`。
+
+完成后转 `CODEX_REVIEW`；Codex `READY_TO_DEPLOY` 后才 staged 部署 `admin-web/index.html`+`domain.js`+`index.js`（部署前比对生产漂移、备份、node --check、重启、自检、回滚网）。
+
 ### 2026-07-08 14:25 | Codex | 分佣模型文档 e5363c3 复审通过 | DONE
 
 状态：`DONE`（纯 docs 审计通过；不涉及代码部署，不需要第三裁判）。
