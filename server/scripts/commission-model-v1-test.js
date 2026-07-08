@@ -115,4 +115,43 @@ function makeDb() {
   assert.strictEqual(rule.rate, 50)
 }
 
+// 9) 结算端最后防线：异常冻结快照/脏配置绕过入口，confirmDeal 也拒绝、不生成分佣记录；正常100仍可确认。
+{
+  // (a) 异常冻结快照 120%（模拟历史脏数据/人工编辑）。
+  const d = makeDb()
+  d.listings = [{ id: 'L1', ownerType: SUBLEASE, uploaderId: 'U1', status: '待确认' }]
+  d.dealRecords = [{
+    id: 'D1', listingId: 'L1', uploaderId: 'U1', brokerId: 'U2', reportId: 'R1',
+    landlordCommissionFen: 1000000, status: '待管理员确认',
+    commissionRule: { rate: 120, uploaderRate: 60, platformRate: 60 }
+  }]
+  d.commissionRecords = []
+  assert.throws(
+    () => domain.confirmDeal(d, 'ADM', 'D1'),
+    (e) => e && (e.statusCode === 500 || e.statusCode === 400),
+    '异常冻结快照(120%) confirmDeal 必须 fail-loud'
+  )
+  assert.strictEqual(d.commissionRecords.length, 0, '拒绝后不得生成分佣记录')
+
+  // (b) 异常持久化配置(60+60)派生的坏快照也被拦住。
+  const d2 = makeDb()
+  d2.commissionConfig = { secondLandlordRate: 60, secondLandlordPlatformRate: 60, ownerRate: 20, ownerPlatformRate: 10 }
+  const badRule = domain.commissionRuleForListing({ ownerType: SUBLEASE, uploaderId: 'U1' }, d2, 'U1', 'U2')
+  assert.strictEqual(badRule.rate, 120, '脏配置确实派生出 120% 坏快照')
+  d2.listings = [{ id: 'L2', ownerType: SUBLEASE, uploaderId: 'U1', status: '待确认' }]
+  d2.dealRecords = [{ id: 'D2', listingId: 'L2', uploaderId: 'U1', brokerId: 'U2', reportId: 'R2', landlordCommissionFen: 1000000, status: '待管理员确认', commissionRule: badRule }]
+  d2.commissionRecords = []
+  assert.throws(() => domain.confirmDeal(d2, 'ADM', 'D2'), (e) => e && e.statusCode >= 400, '脏配置派生的坏快照也拒绝')
+  assert.strictEqual(d2.commissionRecords.length, 0)
+
+  // (c) 正常 60+40=100（守恒边界）仍可确认且不超发。
+  const d3 = makeDb()
+  d3.listings = [{ id: 'L3', ownerType: SUBLEASE, uploaderId: 'U1', status: '待确认' }]
+  d3.dealRecords = [{ id: 'D3', listingId: 'L3', uploaderId: 'U1', brokerId: 'U2', reportId: 'R3', landlordCommissionFen: 1000000, status: '待管理员确认', commissionRule: { rate: 100, uploaderRate: 60, platformRate: 40 } }]
+  d3.commissionRecords = []
+  const ok = domain.confirmDeal(d3, 'ADM', 'D3')
+  assert.strictEqual(d3.commissionRecords.length, 1, '60+40=100 正常确认生成记录')
+  assert.ok(ok.commissionRecord.uploaderCommissionFen + ok.commissionRecord.platformCommissionFen <= 1000000, '合计不超过成交总佣金')
+}
+
 console.log('commission-model-v1-test passed')

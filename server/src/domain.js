@@ -632,6 +632,32 @@ function commissionRuleForListing(listing = {}, db = {}, uploaderId = '', closer
   return { rate: uploaderRate + platformRate, uploaderRate, platformRate }
 }
 
+// 结算端最后防线（money 守恒）：即使配置入口被绕过、db 里已有异常持久化配置、或 deal.commissionRule
+// 冻结快照异常（历史脏数据/人工编辑/未审代码写入），确认签单也绝不生成超过成交总佣金的分佣记录。
+// 校验：三项比例均为有限非负数；上传+平台 <= 100%；rate 与拆分一致。不符则 fail-loud（500，数据异常）。
+function assertCommissionRuleConserved(rule) {
+  const r = rule || {}
+  const uploaderRate = Number(r.uploaderRate)
+  const platformRate = Number(r.platformRate)
+  const rate = Number(r.rate)
+  const finiteNonNeg = (n) => Number.isFinite(n) && n >= 0
+  if (!finiteNonNeg(uploaderRate) || !finiteNonNeg(platformRate) || !finiteNonNeg(rate)) {
+    const error = new Error('分佣规则异常：比例必须为有限非负数，拒绝结算以防超发')
+    error.statusCode = 500
+    throw error
+  }
+  if (uploaderRate + platformRate > MAX_COMMISSION_RATE) {
+    const error = new Error('分佣规则异常：上传人比例 + 平台比例超过 100%，拒绝结算以防超发')
+    error.statusCode = 500
+    throw error
+  }
+  if (Math.abs(rate - (uploaderRate + platformRate)) > 0.001) {
+    const error = new Error('分佣规则异常：总比例与上传/平台拆分不一致，拒绝结算')
+    error.statusCode = 500
+    throw error
+  }
+}
+
 function isLegacyRentInventory(listing = {}) {
   const sourceText = [
     listing.status,
@@ -3173,6 +3199,9 @@ function confirmDeal(db, adminId, dealId) {
     }
   }
 
+  // 结算端最后防线：确认前校验冻结分佣规则守恒，异常（sum>100/不一致/非数）直接 fail-loud、不生成分佣记录，
+  // 防止历史脏配置或异常冻结快照绕过 setCommissionConfig 入口后真实超发。
+  assertCommissionRuleConserved(commissionRule)
   const now = nowText()
   const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.uploaderRate / 100)
   const platformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.platformRate / 100)
