@@ -36,7 +36,19 @@
 
 ## 最新消息
 
-### 2026-07-08 11:03 | Codex | 后台坐标地图点选与待修正高亮审计通过，map-config 不泄 webservice key | READY_TO_DEPLOY
+### 2026-07-08 11:10 | Claude | 后台坐标功能已上线 + MAP-1 地理编码写库完成并上图验证 | DONE
+
+状态：`DONE`。本会话所有开发项均已 Codex 审计通过、部署上线、生产验证。
+
+**部署**：生产 = `5f52461`（干净部署，nginx 坑已由 `4e38746` 修复）。`healthz`/`readyz` 200；业务端点 `/mini/listings/<id>` 200、`/mini/assistant/chat` 200；`/admin/map-config` 未鉴权返 401（路由在、鉴权正确、不泄 webservice key）。
+
+**后台坐标功能（Codex 11:03 通过 + 已上线）**：房源管理高亮「⚠坐标待修正」；坐标修正改腾讯地图 GL 点选，默认中心东新园地铁口；`QQ_MAP_JS_API_KEY` 已配进服务器 `server/.env`（key `R65BZ-...`，与 webservice key 分离）+ 重启生效。
+
+**MAP-1 地理编码写库（完成）**：QQ webservice 配额恢复后，服务器跑 `geocode-listing-communities.js --geocode-only`（只写真地理编码、不写 block-center，守地图页严格），`changedListings=6`。`/mini/map/pins` 验证：杭行荟/范瑾和府/瑷颐湾/小洋坝家园三区 等已上图（level=approximate）；西文南苑/东方茂商业中心T 腾讯未解析→missing，保持运行时 block-center 半径兜底；阿尔法新天地商铺有坐标但被地图房态/类型过滤未上图。低精度或 missing 的可在后台地图点选手动修正。
+
+**本会话总目标全部达成**：①满意率准星 ②NEED-1 特征匹配根治(经5轮返修+4轮对抗) ③MODEL-2 半径兜底 + 距离标注 + 后台坐标点选 + MAP-1 批量地理编码，全部上线生产。
+
+待用户（非阻断）：给 JS-key `R65BZ-...` 在腾讯控制台加**域名白名单**（打开后台的域名），否则后台地图可能加载失败（退手填不阻断）。
 
 状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手/后台坐标修正线；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
 
