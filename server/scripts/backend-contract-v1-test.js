@@ -735,6 +735,28 @@ function run() {
   assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderRate, 18, '配置改为 18 后新业主成交按 18% 结算')
   assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderCommissionFen, 90000, '房东实付佣金 5000 元时 18% 为 900 元')
 
+  // 阻断1 回归（Codex 13:05）：上传人比例配到 40%（>默认总分出30）后，非公司房源新增/编辑
+  // 不得被 validateListingFields 的旧 30% 上限 400 卡死；应按单档上限（100）放行并记录 40%。
+  domain.setCommissionConfig(db, 'ADMIN', { secondLandlordRate: 40, secondLandlordPlatformRate: 10 })
+  const highRateListing = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNumber: '781',
+    address: '杭州滨江区半山家苑1幢1单元781室',
+    videoKey: 'house-videos/backend-contract/high-rate.mp4'
+  }))
+  const highRateRaw = db.listings.find((item) => item.id === highRateListing.id)
+  assert.strictEqual(highRateRaw.commissionRate, 40, '上传人比例配 40 后新增二房东房源必须通过且记录 40%（不被默认总分出30卡死）')
+  const highRateEdited = domain.updateNormalListing(db, 'U1', highRateListing.id, listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNumber: '781',
+    address: '杭州滨江区半山家苑1幢1单元781室',
+    rent: 3600,
+    videoKey: 'house-videos/backend-contract/high-rate.mp4'
+  }))
+  assert.strictEqual(highRateEdited.commissionRate, 40, '编辑同房源也不得被默认总分出30卡死')
+
   // 回归用例（2026-07-02 P1 修复）：库外小区裸提交（不带任何匹配/审核字段）
   // 必须由服务端小区库判定为 未匹配 + 待审核，且不得进入首页/前台列表/地图
   const outsidePayload = listingPayload({

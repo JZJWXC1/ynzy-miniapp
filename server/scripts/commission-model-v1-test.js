@@ -79,9 +79,40 @@ function makeDb() {
   assert.strictEqual(owner.uploaderRate, 25, '配置生效到规则')
   assert.strictEqual(owner.platformRate, 15)
   assert.strictEqual(owner.rate, 40)
-  domain.setCommissionConfig(d, 'ADM', { ownerRate: 200 })
-  assert.ok(domain.commissionConfig(d).ownerRate <= 100, '超100被夹到<=100（防客户端配非法比例）')
+  domain.setCommissionConfig(d, 'ADM', { ownerRate: 200, ownerPlatformRate: 0 })
+  assert.ok(domain.commissionConfig(d).ownerRate <= 100, '单档超100被夹到<=100（防客户端配非法比例）')
   assert.strictEqual(domain.commissionConfig(d).companyRate, 0, '公司房源恒0')
+}
+
+// 7) 合计上限（money 守恒）：上传+平台>100 拒绝；=100 允许且确认签单不超发。
+{
+  const d = makeDb()
+  assert.throws(
+    () => domain.setCommissionConfig(d, 'ADM', { secondLandlordRate: 60, secondLandlordPlatformRate: 60 }),
+    (e) => e && e.statusCode === 400,
+    '二房东 上传60+平台60 应被拒绝（合计120会超发）'
+  )
+  assert.throws(
+    () => domain.setCommissionConfig(d, 'ADM', { ownerRate: 70, ownerPlatformRate: 40 }),
+    (e) => e && e.statusCode === 400,
+    '业主 上传70+平台40 应被拒绝'
+  )
+  // =100 允许（带看净留 0，账仍守恒）
+  domain.setCommissionConfig(d, 'ADM', { secondLandlordRate: 60, secondLandlordPlatformRate: 40 })
+  const rule = domain.commissionRuleForListing({ ownerType: SUBLEASE, uploaderId: 'U1' }, d, 'U1', 'U2')
+  const landlordFen = 1000000
+  const upFen = Math.round(landlordFen * rule.uploaderRate / 100)
+  const platFen = Math.round(landlordFen * rule.platformRate / 100)
+  assert.ok(upFen + platFen <= landlordFen, '分佣合计不得超过成交总佣金（money 守恒）')
+}
+
+// 8) 上传人比例可配到 >30%（不再被默认总分出卡死）——阻断1 规则层。
+{
+  const d = makeDb()
+  domain.setCommissionConfig(d, 'ADM', { secondLandlordRate: 40, secondLandlordPlatformRate: 10 })
+  const rule = domain.commissionRuleForListing({ ownerType: SUBLEASE, uploaderId: 'U1' }, d, 'U1', 'U2')
+  assert.strictEqual(rule.uploaderRate, 40, '上传人比例可配 40（>30 不被卡死）')
+  assert.strictEqual(rule.rate, 50)
 }
 
 console.log('commission-model-v1-test passed')

@@ -2563,6 +2563,15 @@
         secondLandlordPlatformRate: Number(commissionSecondPlatformRate.value),
         ownerPlatformRate: Number(commissionOwnerPlatformRate.value)
       };
+      // money 守恒前置校验（后端也强制）：同一房源类型 上传人比例 + 平台比例 不得超过 100%。
+      if (payload.secondLandlordRate + payload.secondLandlordPlatformRate > 100) {
+        commissionConfigStatus.textContent = '保存失败：二房东 上传人比例 + 平台比例不得超过 100%';
+        return;
+      }
+      if (payload.ownerRate + payload.ownerPlatformRate > 100) {
+        commissionConfigStatus.textContent = '保存失败：业主 上传人比例 + 平台比例不得超过 100%';
+        return;
+      }
       commissionConfigStatus.textContent = '正在保存...';
       try {
         const saved = canUseAdminApi()
@@ -2573,7 +2582,9 @@
           : (dataCenter.updateCommissionConfig ? dataCenter.updateCommissionConfig(payload) : Object.assign({}, defaultCommissionConfig, payload));
         const config = normalizeCommissionConfig(saved);
         commissionSecondRate.value = config.secondLandlordRate;
+        commissionSecondPlatformRate.value = config.secondLandlordPlatformRate;
         commissionOwnerRate.value = config.ownerRate;
+        commissionOwnerPlatformRate.value = config.ownerPlatformRate;
         commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
         showAdminToast('分佣配置已保存');
         await renderListings();

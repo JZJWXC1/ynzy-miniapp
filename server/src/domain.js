@@ -3882,6 +3882,19 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
   const ownerRate = boundedRate(payload.ownerRate ?? payload.ownerUploaderRate ?? upRates[OWNER_SOURCE], current.ownerRate)
   const secondLandlordPlatformRate = boundedRate(payload.secondLandlordPlatformRate ?? platRates[SECOND_LANDLORD_SOURCE], current.secondLandlordPlatformRate)
   const ownerPlatformRate = boundedRate(payload.ownerPlatformRate ?? platRates[OWNER_SOURCE], current.ownerPlatformRate)
+  // money 守恒：同一房源类型 上传人比例 + 平台比例 不得超过 100%，否则带看成交中介净留为负、
+  // confirmDeal 会超发（uploaderCommissionFen + platformCommissionFen > landlordCommissionFen）。
+  // 直接 400 拒绝，不静默改用户配置（若产品要自动压缩，需第三裁判/用户确认）。
+  if (secondLandlordRate + secondLandlordPlatformRate > MAX_COMMISSION_RATE) {
+    const error = new Error('二房东房源：上传人比例 + 平台比例不得超过 100%')
+    error.statusCode = 400
+    throw error
+  }
+  if (ownerRate + ownerPlatformRate > MAX_COMMISSION_RATE) {
+    const error = new Error('业主房源：上传人比例 + 平台比例不得超过 100%')
+    error.statusCode = 400
+    throw error
+  }
   const now = nowText()
   db.commissionConfig = {
     uploaderRates: {
@@ -3937,7 +3950,9 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  if (!Number.isFinite(fields.commissionRate) || fields.commissionRate < 0 || fields.commissionRate > TOTAL_DEAL_COMMISSION_RATE) {
+  // fields.commissionRate 现在代表"上传人比例"（后端按配置+房源类型派生），按单档上限 0..100 校验，
+  // 不再拿默认总分出比例（30）卡死——否则后台把上传人比例配到 30% 以上就无法上传/编辑房源。
+  if (!Number.isFinite(fields.commissionRate) || fields.commissionRate < 0 || fields.commissionRate > MAX_COMMISSION_RATE) {
     const error = new Error('分佣规则由后端按当前配置和房源类型派生，公司房源不分佣')
     error.statusCode = 400
     throw error
