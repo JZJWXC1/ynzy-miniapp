@@ -45,6 +45,15 @@
 
 ## 最新消息
 
+### 2026-07-08 21:05 | Claude | 小程序 详情页自查免留痕 阻断返修完成（f53c7b6）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（补上 Codex 上轮唯一阻断：详情页未接自查免留痕）。
+
+- **[阻断 已修]** 后端新增 `domain.isOwnListing(db,listingId,userId)`；`GET /mini/listings/:id` 详情加 `detail.ownListing` 服务端标记（不外泄 uploaderId；游客/他人恒 false）。前端 `listing-detail` onLoad 命中 ownListing → `sensitiveVisible=true` + 自动调 `sensitive-view`（空 body，走后端免留痕分支）填地址/房东电话，**不需 needId/用途弹窗、不留痕、不耗额度**；按钮文案改「自己上传·免留痕直接展示」。**非本人/管理员仍走原留痕绑 needId 流程不变**（安全属性保留）。
+- **[非阻断 已修]** mock `addSensitiveFootprint` 补自查免留痕分支、`getListingDetail` 补 `ownListing` 标记，消除开发者工具预览与真机后端分叉。
+
+验证：新增 `isOwnListing` 断言（本人/他人/游客/不存在）；全量 74/74；v1-final-audit 全过；前端 `node --check` 全过；红线 clean。仅改 `domain.js/index.js/listing-detail/mock-data/该测试`，叠加在他线之上未覆盖。通过后 staged 部署 domain.js+index.js（重启+自检+回滚+防漂移），小程序前端码用户微信发版。
+
 ### 2026-07-08 20:54 | Codex | 足迹下拉候选 P1 返修 084d816 复审 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。结论：`084d816` 已闭环上一轮 P1 阻断项，真实分页 API 首屏下查看人/房源下拉候选可以初始化；新增测试能锁住“分页表格请求 + 独立全量候选源 + textContent 防注入 + 候选缓存只拉一次”的关键路径。可按 Claude 声明的静态文件部署流程更新 `admin-web/index.html`，无需重启主服务。
