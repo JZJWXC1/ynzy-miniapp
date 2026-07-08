@@ -283,6 +283,11 @@ function createController(handlers = {}) {
   }
 
   function failRealtime(error) {
+    // 转写等待期内出错：若已识别到文本，优先交付（与 onClose 一致），不丢弃用户已说内容。
+    if (transcribing && !cancelled && !stopDelivered && currentCaption()) {
+      finishWithCurrentCaption()
+      return
+    }
     errored = true
     socketFailed = true
     cancelled = true

@@ -349,8 +349,9 @@ Page({
       onStart: () => {
         this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: true, voicePhase: 'recording', voiceCancelActive: false, voiceText: '' })
+        // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
         if (this.voicePressing === false && this.voiceController) {
-          try { this.voiceController.stop() } catch (error) {}
+          try { this.voiceController.cancel() } catch (error) {}
         }
       },
       onRecognize: (text) => {
@@ -389,7 +390,7 @@ Page({
   },
 
   toggleVoiceMode() {
-    if (this.data.voicePhase) return
+    if (this.data.voicePhase || this.data.loading) return
     const nextVoice = !this.data.voiceMode
     if (nextVoice && wx.hideKeyboard) {
       try { wx.hideKeyboard() } catch (error) {}
@@ -404,6 +405,8 @@ Page({
       wx.showToast({ title: this.voiceUnavailableMessage || '当前环境暂不支持语音输入', icon: 'none' })
       return
     }
+    // 上一句仍在录音/识别收尾（FINAL_WAIT 窗口）时忽略新的按下，避免震动+清屏假象与串句自动提交。
+    if (this.data.voicePhase || (typeof controller.isBusy === 'function' && controller.isBusy())) return
     const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
     this.voiceStartY = Number(touch.clientY || touch.pageY || 0)
     this.voicePressing = true
@@ -483,7 +486,7 @@ Page({
     const messages = this.data.messages.concat(userMessage)
     const payload = {
       text,
-      voiceText: source === 'voice' ? (this.data.voiceText || text) : '',
+      voiceText: source === 'voice' && this.data.voiceText && this.data.voiceText !== text ? this.data.voiceText : '',
       form: {},
       threadId: this.currentThreadId || ''
     }

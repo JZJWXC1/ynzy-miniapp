@@ -697,9 +697,9 @@ Page({
           voiceText: '',
           voiceTip: '正在听，请说出租客需求'
         });
-        // 极快点按：start 回调晚于 touchend，用户已松手 → 立即停止收尾（否则会一直录到时长上限）。
+        // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
         if (this.voicePressing === false && this.voiceController) {
-          try { this.voiceController.stop(); } catch (error) {}
+          try { this.voiceController.cancel(); } catch (error) {}
         }
       },
       onRecognize: (text) => {
@@ -731,14 +731,15 @@ Page({
           voiceTip: '说出预算、区域、户型和特点'
         });
       },
-      onError: () => {
+      onError: (error) => {
         this.setData({
           isVoiceListening: false,
           voicePhase: '',
           voiceCancelActive: false,
+          voiceText: '',
           voiceTip: '语音识别失败，请重试或手动输入'
         });
-        wx.showToast({ title: '语音识别失败', icon: 'none' });
+        wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' });
       }
     });
   },
@@ -915,9 +916,12 @@ Page({
   onVoiceTouchStart(event) {
     const controller = this.ensureVoiceInput();
     if (!controller) {
-      wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' });
+      const message = (voiceInput.getSupportStatus && voiceInput.getSupportStatus().message) || '当前环境暂不支持语音输入';
+      wx.showToast({ title: message, icon: 'none' });
       return;
     }
+    // 上一句仍在录音/识别收尾（FINAL_WAIT 窗口）时忽略新的按下，避免震动+清屏假象与串句自动提交。
+    if (this.data.voicePhase || (typeof controller.isBusy === 'function' && controller.isBusy())) return;
     const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
     this.voiceStartY = Number(touch.clientY || touch.pageY || 0);
     this.voicePressing = true;
@@ -930,7 +934,7 @@ Page({
       controller.start();
     } catch (error) {
       this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
-      wx.showToast({ title: '语音输入启动失败', icon: 'none' });
+      wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' });
     }
   },
 
