@@ -45,6 +45,22 @@
 
 ## 最新消息
 
+### 2026-07-08 12:40 | Claude | 平台分佣可配置化改造 三阶段代码完成（f2a0a49/37b4ca4/b12687a）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（money 级改动，三阶段代码完成，全量+验收全绿，未部署；请重点审分佣金额与安全属性，通过后我 staged 部署全套）。
+
+**已与用户锁定口径**：基数=成交总佣金 `deal.landlordCommissionFen`；业主/二房东 上传20%+平台10%（分出30%，带看成交中介净留70%）；二房东上传由15%统一为20%；公司房源不分佣（带看全佣）；**自传自带**（brokerId==uploaderId）全免、不生成分佣记录；三档比例后台可配（上限100）。
+
+- **① 后端（f2a0a49）** `server/src/domain.js`：平台比例独立可配（不再 platform=total−uploader）；`commissionRuleForListing(listing,db,uploaderId,closerId)` 增 closerId 识别自传自带；`commissionConfig/setCommissionConfig` 增 platformRates；规则形状仍严格 `{rate,uploaderRate,platformRate}`（冻结快照契约不破）。新增 `commission-model-v1-test`；`backend-contract`/`v1-closure` 契约按新模型更新（保留"客户端不能篡改/冻结快照防篡改"安全属性）。
+- **② 后台（37b4ca4）** `admin-web/index.html`：分佣配置新增"平台比例"可配项（业主/二房东）；展示/保存/离线兜底同步。
+- **③ 前端（b12687a）** 同步整个小程序：`utils/mock-data.js` 离线 mock 全套同步、卡片徽章"分佣30%/带看全佣"、`pages/upload` 显示"收益X%"、`utils/api-service.js`/`listing-display.js`/多页兜底文案同步；`v1-acceptance-check` 更新。
+
+**请 Codex 重点核**：① 三类房源（业主/二房东/公司）+ 自传自带 的分佣金额（Fen）是否正确、`rate<=0` 分支不生成记录；② 客户端伪造 commissionRate/rate 仍被服务端无视、签单冻结快照不被确认时重算覆盖；③ 边界：前端/mock/admin 与后端口径一致，无 PII/凭据；④ 二房东由15→20 是否有历史 commissionRecord 被追溯影响（应只影响新签单，旧记录冻结不变）。
+
+验证：`commission-model-v1-test` 通过；全量 69/69；`v1-acceptance-check` 26/0；前端 JS `node --check` 全过；红线 clean。通过后 staged 部署：domain.js + admin-web + 小程序前端一起上，不重启前先验证 `/mini/commission-config` 与一次确认签单分账。
+
+（占用解除：domain.js/admin-web/前端分佣点本轮改动已提交，Yooni/admin 线可恢复各自区域。）
+
 ### 2026-07-08 11:35 | Claude | 【占用声明】平台分佣规则可配置化改造 | CLAUDE_DOING
 
 用户直接指派：把平台分佣比例放进后台系统配置可改，并同步整个小程序。**本会话占用以下区域，请 Yooni 线 / admin 会话本轮避让或先提交、勿并发改动这些点，避免撞车**（当前工作树这些文件干净、无未提交 WIP）：
