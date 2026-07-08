@@ -1123,12 +1123,17 @@ function radiusEvaluationNeed(need = {}) {
   }
 }
 
-function addDistanceToListing(listing, place, distanceValue) {
+function addDistanceToListing(listing, place, distanceValue, coordinate = {}) {
   const distanceText = formatDistance(distanceValue)
+  // 板块中心兜底的房源（MODEL-2）用的是板块中心近似坐标，距离据此算得；显式标「板块中心近似」，
+  // 避免中介把它误读成精确点位到锚点的精确距离（守精确优先·诚实告知近似）。
+  const approximate = coordinate && coordinate.level === 'block-center'
+  const suffix = approximate ? '（板块中心近似）' : ''
   return {
     ...listing,
     distanceKm: Number(distanceValue.toFixed(3)),
-    distanceText: distanceText ? `距${place.name}约${distanceText}` : '',
+    distanceText: distanceText ? `距${place.name}约${distanceText}${suffix}` : '',
+    coordinateLevel: (coordinate && coordinate.level) || listing.coordinateLevel || '',
     anchorName: place.name
   }
 }
@@ -1238,7 +1243,7 @@ function groupCommunityAdjacentListings(candidates, need, options = {}) {
     if (!coordinate) return null
     const value = distanceKm(resolution, coordinate)
     if (!Number.isFinite(value) || value > COMMUNITY_NEARBY_RADIUS_KM) return null
-    return addDistanceToListing(listing, resolution, value)
+    return addDistanceToListing(listing, resolution, value, coordinate)
   }).filter(Boolean)
 
   const needForEvaluation = communityAdjacentEvaluationNeed(need)
@@ -1293,7 +1298,7 @@ function groupRadiusListings(candidates, need, options = {}) {
     if (!coordinate) return null
     const value = distanceKm(resolution, coordinate)
     if (!Number.isFinite(value) || value > radiusKm) return null
-    return addDistanceToListing(listing, resolution, value)
+    return addDistanceToListing(listing, resolution, value, coordinate)
   }).filter(Boolean)
 
   const needForEvaluation = radiusEvaluationNeed(need)
