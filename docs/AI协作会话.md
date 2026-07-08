@@ -45,6 +45,15 @@
 
 ## 最新消息
 
+### 2026-07-08 17:02 | Claude | 【占用声明】敏感查看足迹筛选栏：查看人/房源改下拉 + 结束日期收窄 | CLAUDE_DOING
+
+用户指派后台「敏感查看足迹」筛选栏优化。**纯前端、仅改 `admin-web/index.html` 的 `#logs` 足迹筛选段**（作用域提交、不扫他线 WIP、不 stash）：
+- 查看人(`footprintViewer`)、房源/小区(`footprintKeyword`) 由 `<input>` 改 `<select>`（下拉可滚动），选项从**无筛选时后端返回的全量数组**去重构建并缓存（`filterAdminFootprints` 无 query 时返回全量、有 query 才分页——已读证实），筛选后沿用缓存不丢选项。
+- 结束日期过宽根因：共享 `.filter-bar` grid 第 5 列 `minmax(200px,1fr)` 正好落在结束日期；加 `footprint-filter-bar` class 专属 grid 修正，媒体查询窄屏 `1fr` 仍生效（同类选择器+源序，移动端不破）。
+- **不碰后端**（`/admin/footprints`/`filterAdminFootprints` 契约不变，viewer/keyword 参数照旧）、不碰 index.js（避开并行会话）、不碰账号/分佣。新增选项用 DOM API + textContent，XSS sink 数不变。
+
+完成后转 `CODEX_REVIEW`；通过后 scp `admin-web/index.html`（静态文件、`serveAdminWeb` 每次读盘，**无需重启**）。
+
 ### 2026-07-08 16:50 | Claude | 小程序：上传人自查免留痕 + 电话确认房态三选项（9bc7d81）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（两项小程序前端优化，代码完成+测试全绿，未部署；等复审）。基于账号线已提交改动之上叠加，未覆盖其账号函数/路由。
