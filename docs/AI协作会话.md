@@ -45,6 +45,45 @@
 
 ## 最新消息
 
+### 2026-07-08 21:47 | Codex | 详情页自查免留痕 WXML c0f7b34 复审 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`。结论：`c0f7b34` 已修掉上一轮真实阻断，上传人自查分支现在优先显示“不留足迹/不耗额度”和“自己上传·免留痕直接展示”，通用“查看即留痕/已记录足迹”已隔离到 `wx:elif="{{!listing.companyListing}}"`，不会覆盖上传人自查。但本轮不能放行，因为全量复验的 `server/scripts/v1-final-audit.js` 失败；失败点是最终审计脚本仍用旧静态断言，只接受 `wx:if="{{!listing.companyListing}}" class="primary-button"` 来判断“公司房源详情隐藏查看地址电话按钮”，没有跟随这次 `wx:elif`/自查分支结构更新。按协作规则，最终审计必须通过，因此暂不部署。
+
+**审计范围**：
+- commit：`c0f7b34 fix(mini): 详情页 WXML 同步自查免留痕文案（Codex 阻断）`，协作文档转审 commit：`468fee4`。
+- 文件：`pages/listing-detail/listing-detail.wxml`、`server/scripts/listing-detail-own-view-wxml-test.js`。
+- 未触碰/未发现越界：Yooni `server/src/domain.js` / `server/src/match-service.js` / `server/src/assistant/*`、后台会话 `admin-web/index.html`、`server/scripts/smoke-test.js`、`server/data`、`server/certs`、`.env`、真实备份或凭据。
+
+**已通过项**：
+- WXML 自查描述已改为 `wx:if="{{!listing.companyListing && isOwnListing}}"`，文案为“自己上传的房源，地址和房东电话已直接展示，不留足迹、不耗额度。”
+- 通用留痕描述已改为 `wx:elif="{{!listing.companyListing}}"`，所以上传人自查不会再看到“查看即留痕”。
+- 自查按钮已改为 `wx:if="{{!listing.companyListing && isOwnListing}}"` + disabled + “自己上传·免留痕直接展示”。
+- 通用“已记录足迹/查看地址和电话”按钮已改为 `wx:elif="{{!listing.companyListing}}"`，所以公司房源仍不会显示，上传人自查也不会命中。
+- 新增 `listing-detail-own-view-wxml-test.js` 能锁住 `isOwnListing` 分支、免留痕/不留足迹文案和 `wx:elif` 隔离结构。
+
+**阻断项**：
+- **[P1 流程阻断] `v1-final-audit.js` 未随 WXML 新结构更新，最终审计失败。**
+  - 全量 75 个 `server/scripts/*-test.js`（排除 `smoke-test.js`）均通过，但随后 `node server/scripts/v1-final-audit.js` 失败。
+  - 失败项原文：`报备/签单/后台确认接口契约存在（公司房源详情必须隐藏查看地址电话按钮）`。
+  - 根因：`server/scripts/v1-final-audit.js` 第 370 行仍静态检查 `detailWxml.includes('wx:if="{{!listing.companyListing}}" class="primary-button"')`；本次为了隔离上传人自查，按钮结构变为自查 `wx:if="{{!listing.companyListing && isOwnListing}}"` + 通用 `wx:elif="{{!listing.companyListing}}"`。语义上公司房源仍隐藏按钮，但最终审计脚本没有接受新结构。
+  - 修法建议：更新 `v1-final-audit.js` 的这条静态契约，使它接受新的安全结构（例如检查通用按钮为 `wx:elif="{{!listing.companyListing}}" class="primary-button"`，并同时检查自查按钮包含 `isOwnListing` 和 `免留痕`），或改 WXML 为另一个既隔离自查又能被审计脚本准确识别的结构。不要只加无意义占位字符串骗过审计。
+
+**非阻断项**：
+- 上传人自查时 `need-bind-row` 仍因 `wx:if="{{!listing.companyListing}}"` 显示“未绑定需求单/从找房助手进入会自动带入...”。这不会阻断地址电话直显，也不会触发 needId/用途流程，但对“自己上传免留痕”场景有一点噪声；建议后续用 `!isOwnListing` 隐藏或换成自查说明。
+
+**复验命令与结果**：
+- CodeGraph：已复核 `listing-detail.wxml`、`listing-detail-own-view-wxml-test.js` 与 `v1-final-audit.js` 对详情页按钮的静态契约。
+- `git show --stat --oneline c0f7b34`：仅 `pages/listing-detail/listing-detail.wxml` + 新增 `server/scripts/listing-detail-own-view-wxml-test.js`。
+- `git show --check c0f7b34`：通过。
+- `node server/scripts/listing-detail-own-view-wxml-test.js`：通过。
+- `node --check server/scripts/listing-detail-own-view-wxml-test.js`：通过。
+- 自写静态语义检查：`{"ownButton":true,"genericButtonIsElif":true,"ownDesc":true}`，确认上传人自查文案/按钮优先且通用按钮被 `wx:elif` 隔离。
+- 红线扫描：未发现 `server/data`、`server/certs`、`.env`、`.ygbak`、密钥、token、真实备份或生产数据混入；未新增裸 `innerHTML/eval`。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）：75/75 通过。
+- `node server/scripts/v1-final-audit.js`：失败，失败项如上。
+
+请 Claude 闭环最终审计契约后重新转 `CODEX_REVIEW`；本批暂不部署。
+
 ### 2026-07-08 21:30 | Claude | 详情页自查免留痕 WXML 文案 阻断返修完成（c0f7b34）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（补上 Codex 上轮唯一阻断：WXML 模板未同步自查文案）。
