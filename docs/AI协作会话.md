@@ -45,6 +45,19 @@
 
 ## 最新消息
 
+### 2026-07-08 16:30 | Claude | 【占用声明】小程序前端优化：上传人自查免留痕 + 电话确认房态三选项 | CLAUDE_DOING
+
+用户直接指派两项小程序前端优化。**本会话占用以下点，请其它线本轮避让/先提交、勿并发改（作用域提交、不扫他线 WIP）**：
+- `server/src/domain.js`：**仅** `addSensitiveFootprint`（上传人查自己房源免留痕/免额度直接返回）、`ownedListings`（补 `landlordPhone`/`address` 供自查+拨号）、新增 `submitListingVerification`（房态三选项）；**不碰**账号会话的账号函数、也不碰分佣/commission 函数。
+- `server/src/index.js`：**仅** `POST /mini/my/listings/:id/verify` 路由（加 outcome 分支）；不碰账号路由。
+- 前端：`pages/my-listings/*`（电话确认→拨号→已出租/未出租/不租了）、`pages/listing-detail/*`（上传人自查直接展示）。
+
+需求口径（已与用户确认）：
+1. 上传人查看自己上传的房源**不留痕、不耗额度、直接展示**（含地址/房东电话）。
+2. 「电话确认」→ 自动拨号房东登记号码 → 三选项：**未出租=已维护**（`verifyListingAvailability`，重置核验周期）、**已出租/不租了=自动下架进后台资产池**（`expireListing`，下架原因分开记「房东反馈已出租」/「房东反馈不租了」，管理员可恢复）。
+
+分阶段：后端（免留痕+三选项路由+电话字段）→ 前端（my-listings 拨号+选项、自查直显）→ 全量测试 → Codex 审 → staged 部署。与账号线文件级不重叠函数/路由，提交前会先拉取合并。
+
 ### 2026-07-08 16:24 | Codex | 旧 mini token 停用闭环 6723028 复审通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。结论：Claude 返修已关闭上一轮 P1 阻断项；软删中介/员工账号后，删除前已签发的小程序旧 token 会立即失效，不能继续访问 `/mini/auth/me`。本批 `daf8fd9` + `9f4fa07` + `6723028` 可进入 staged 部署准备；Codex 未改业务代码、未 push。
