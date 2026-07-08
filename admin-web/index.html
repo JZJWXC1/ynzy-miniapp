@@ -723,6 +723,71 @@
       background: #fff0ec;
     }
 
+    /* 地理编码失败/无可靠坐标：高亮提醒管理员去坐标修正 */
+    .table-action.coord-warn {
+      color: #b45309;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      font-weight: 600;
+    }
+    .coord-warn-pill {
+      display: inline-block;
+      margin: 2px 0;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 18px;
+      color: #b45309;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      white-space: nowrap;
+    }
+
+    .coordinate-card { max-width: 720px; width: min(720px, 94vw); }
+    .coordinate-map {
+      width: 100%;
+      height: 360px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #eef1f5;
+      border: 1px solid #e2e8f0;
+      position: relative;
+      margin: 6px 0 10px;
+    }
+    .coordinate-map-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-size: 13px;
+      text-align: center;
+      padding: 16px;
+    }
+    .coordinate-picker-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .coordinate-readout {
+      font-size: 13px;
+      color: #0f172a;
+      font-weight: 600;
+      background: #f1f5f9;
+      border-radius: 8px;
+      padding: 4px 10px;
+    }
+    .coordinate-manual {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    .coordinate-manual .form-item { flex: 1; }
+
     .empty {
       padding: 26px;
       color: var(--muted);
@@ -1643,6 +1708,27 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="coordinateOverlay">
+    <div class="modal-card coordinate-card">
+      <h3 id="coordinateTitle">坐标修正</h3>
+      <p class="modal-sub" id="coordinateSub">在地图上点击或拖动标记，定位到房源真实位置；确认后记为「已确认坐标(verified)」并上图。地图默认中心为拱墅区5号线东新园地铁口。</p>
+      <div id="coordinateMap" class="coordinate-map"><div class="coordinate-map-hint" id="coordinateMapHint">地图加载中…</div></div>
+      <div class="coordinate-picker-row">
+        <span class="coordinate-readout" id="coordinateReadout">未选择坐标</span>
+        <button type="button" class="ghost-button" id="coordinateRecenter">回到默认中心（东新园地铁口）</button>
+      </div>
+      <div class="coordinate-manual" id="coordinateManual">
+        <label class="form-item"><span>纬度 latitude</span><input id="coordinateLat" inputmode="decimal" placeholder="如 30.3066"></label>
+        <label class="form-item"><span>经度 longitude</span><input id="coordinateLng" inputmode="decimal" placeholder="如 120.1734"></label>
+      </div>
+      <div class="modal-error" id="coordinateError"></div>
+      <div class="inline-actions">
+        <button id="saveCoordinate">确认坐标</button>
+        <button class="ghost-button" id="cancelCoordinate">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div class="admin-toast" id="adminToast" role="status" aria-live="polite"></div>
 
   <script src="../utils/mock-data.js"></script>
@@ -2033,6 +2119,11 @@
         const manualReviewText = item.manualReviewReason ? ` · ${item.manualReviewReason}` : '';
         const statusReviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? item.reviewStatus : '';
         const coordinateText = item.coordinateStatus || item.coordinateLevel || item.coordinateSource || '坐标待补充';
+        // 地理编码失败/无可靠坐标：verified(已确认)、approximate(地理编码成功) 之外(block-center 兜底/待补充/缺失)高亮待修正。
+        const coordLevelText = String(item.coordinateLevel || item.coordinateAccuracy || '').toLowerCase();
+        const coordSrcText = String(item.coordinateSource || '').toLowerCase();
+        const coordinateReliable = item.coordinateVerified === true || coordLevelText === 'verified' || coordLevelText === 'approximate' || /tencent-geocode|qq-map-geocode|geocoder/.test(coordSrcText);
+        const needsCoordinateFix = !coordinateReliable;
         const videoSubText = item.videoMaterialFailureReason || item.sourceMaterialName || item.videoMaterialStatus || '';
         const canReview = item.reviewStatus === '待审核' || item.status === '待审核';
         return `
@@ -2047,12 +2138,12 @@
           <td>${safeText(item.commission)}</td>
           <td><span class="pill">${safeText(item.video)}</span><span class="sub-cell">${safeText(videoSubText, '')}</span></td>
           <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(statusReviewText, '')}</span></td>
-          <td><span class="${pillClass(item.verifyStatus)}">${safeText(item.verifyStatus || '正常')}</span><span class="sub-cell">${safeText(item.verifyTip || item.lastVerifiedAt || '', '')}</span><span class="sub-cell">${safeText(coordinateText)}</span></td>
+          <td><span class="${pillClass(item.verifyStatus)}">${safeText(item.verifyStatus || '正常')}</span><span class="sub-cell">${safeText(item.verifyTip || item.lastVerifiedAt || '', '')}</span>${needsCoordinateFix ? `<span class="coord-warn-pill">⚠ 坐标待修正</span>` : ''}<span class="sub-cell">${safeText(coordinateText)}</span></td>
           <td>
             <div class="row-actions">
               <button class="table-action edit-listing-button" data-id="${safeAttr(item.id)}">编辑</button>
               <button class="table-action verify-listing-button" data-id="${safeAttr(item.id)}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
-              <button class="table-action coordinate-listing-button" data-id="${safeAttr(item.id)}" data-title="${safeAttr(item.title || item.community || item.id)}" data-latitude="${safeAttr(item.mapLatitude || '')}" data-longitude="${safeAttr(item.mapLongitude || '')}">坐标修正</button>
+              <button class="table-action coordinate-listing-button${needsCoordinateFix ? ' coord-warn' : ''}" data-id="${safeAttr(item.id)}" data-title="${safeAttr(item.title || item.community || item.id)}" data-latitude="${safeAttr(item.mapLatitude || '')}" data-longitude="${safeAttr(item.mapLongitude || '')}">${needsCoordinateFix ? '坐标修正 ⚠' : '坐标修正'}</button>
               <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
               <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
             </div>
@@ -3362,33 +3453,160 @@
       await renderAdminLogs();
     }
 
-    async function updateListingCoordinate(id, title, currentLatitude, currentLongitude) {
-      if (!id) return;
-      const latitude = window.prompt(`请输入 ${title || id} 的纬度`, currentLatitude || '');
-      if (latitude === null) return;
-      const longitude = window.prompt(`请输入 ${title || id} 的经度`, currentLongitude || '');
-      if (longitude === null) return;
-      const lat = Number(latitude);
-      const lng = Number(longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        alert('请填写有效经纬度');
+    // ==== 管理后台坐标点选地图 ====
+    const coordinatePicker = {
+      map: null, marker: null, listingId: null, lat: null, lng: null, wired: false,
+      defaultCenter: { latitude: 30.306628, longitude: 120.173407, label: '拱墅区5号线东新园地铁口' }
+    };
+    let mapConfigCache = null;
+    let qqMapSdkPromise = null;
+
+    async function getAdminMapConfig() {
+      if (mapConfigCache) return mapConfigCache;
+      try { mapConfigCache = await adminRequest('/admin/map-config'); }
+      catch (e) { mapConfigCache = { jsApiKey: '', defaultCenter: coordinatePicker.defaultCenter }; }
+      if (mapConfigCache && mapConfigCache.defaultCenter) coordinatePicker.defaultCenter = mapConfigCache.defaultCenter;
+      return mapConfigCache;
+    }
+
+    function loadQQMapSdk(key) {
+      if (window.TMap) return Promise.resolve();
+      if (qqMapSdkPromise) return qqMapSdkPromise;
+      qqMapSdkPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://map.qq.com/api/gljs?v=1.exp&key=' + encodeURIComponent(key);
+        s.onload = () => (window.TMap ? resolve() : reject(new Error('地图 SDK 未就绪')));
+        s.onerror = () => reject(new Error('地图 SDK 加载失败（检查 key 是否开通 JS API 及域名白名单）'));
+        document.head.appendChild(s);
+        setTimeout(() => { if (!window.TMap) reject(new Error('地图 SDK 加载超时')); }, 12000);
+      });
+      return qqMapSdkPromise;
+    }
+
+    function setCoordinateReadout(lat, lng, syncInputs) {
+      const has = Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+      coordinatePicker.lat = has ? Number(lat) : null;
+      coordinatePicker.lng = has ? Number(lng) : null;
+      const readout = document.getElementById('coordinateReadout');
+      if (readout) readout.textContent = has ? ('已选：' + Number(lat).toFixed(6) + ', ' + Number(lng).toFixed(6)) : '未选择坐标';
+      if (syncInputs) {
+        const latEl = document.getElementById('coordinateLat');
+        const lngEl = document.getElementById('coordinateLng');
+        if (latEl && has) latEl.value = Number(lat).toFixed(6);
+        if (lngEl && has) lngEl.value = Number(lng).toFixed(6);
+      }
+    }
+
+    function placeCoordinateMarker(lat, lng, panTo) {
+      if (coordinatePicker.map && coordinatePicker.marker && window.TMap) {
+        const pos = new TMap.LatLng(Number(lat), Number(lng));
+        coordinatePicker.marker.updateGeometries([{ id: 'pick', styleId: 'pick', position: pos }]);
+        if (panTo) coordinatePicker.map.setCenter(pos);
+      }
+      setCoordinateReadout(lat, lng, true);
+    }
+
+    function destroyCoordinateMap() {
+      try { if (coordinatePicker.map && coordinatePicker.map.destroy) coordinatePicker.map.destroy(); } catch (e) {}
+      coordinatePicker.map = null;
+      coordinatePicker.marker = null;
+    }
+
+    function closeCoordinateModal() {
+      document.getElementById('coordinateOverlay').classList.remove('active');
+      destroyCoordinateMap();
+    }
+
+    function wireCoordinatePicker() {
+      if (coordinatePicker.wired) return;
+      coordinatePicker.wired = true;
+      document.getElementById('cancelCoordinate').addEventListener('click', closeCoordinateModal);
+      document.getElementById('coordinateOverlay').addEventListener('click', (e) => {
+        if (e.target === document.getElementById('coordinateOverlay')) closeCoordinateModal();
+      });
+      document.getElementById('coordinateRecenter').addEventListener('click', () => {
+        const c = coordinatePicker.defaultCenter;
+        placeCoordinateMarker(c.latitude, c.longitude, true);
+      });
+      ['coordinateLat', 'coordinateLng'].forEach((fid) => {
+        document.getElementById(fid).addEventListener('change', () => {
+          const lat = Number(document.getElementById('coordinateLat').value);
+          const lng = Number(document.getElementById('coordinateLng').value);
+          if (Number.isFinite(lat) && Number.isFinite(lng)) placeCoordinateMarker(lat, lng, true);
+        });
+      });
+      document.getElementById('saveCoordinate').addEventListener('click', async () => {
+        const errEl = document.getElementById('coordinateError');
+        const lat = coordinatePicker.lat != null ? coordinatePicker.lat : Number(document.getElementById('coordinateLat').value);
+        const lng = coordinatePicker.lng != null ? coordinatePicker.lng : Number(document.getElementById('coordinateLng').value);
+        if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+          errEl.textContent = '请在地图上点选，或手动输入有效经纬度';
+          return;
+        }
+        try {
+          await adminRequest('/admin/listings/' + coordinatePicker.listingId + '/coordinate', {
+            method: 'POST',
+            body: JSON.stringify({ latitude: Number(lat), longitude: Number(lng) })
+          });
+          closeCoordinateModal();
+          await renderListings();
+          await renderAdminLogs();
+          await renderDashboardStats();
+          showAdminToast('坐标已修正为已确认坐标');
+        } catch (error) {
+          errEl.textContent = (error && error.message) || '坐标修正失败';
+        }
+      });
+    }
+
+    async function initCoordinateMap() {
+      destroyCoordinateMap();
+      const hint = document.getElementById('coordinateMapHint');
+      const container = document.getElementById('coordinateMap');
+      const cfg = await getAdminMapConfig();
+      const startLat = coordinatePicker.lat != null ? coordinatePicker.lat : coordinatePicker.defaultCenter.latitude;
+      const startLng = coordinatePicker.lng != null ? coordinatePicker.lng : coordinatePicker.defaultCenter.longitude;
+      if (!cfg.jsApiKey) {
+        if (hint) { hint.style.display = 'flex'; hint.textContent = '未配置地图 JS-API key（后端 QQ_MAP_JS_API_KEY），可在下方手动输入经纬度后确认。'; }
         return;
       }
+      try {
+        await loadQQMapSdk(cfg.jsApiKey);
+        if (hint) hint.style.display = 'none';
+        coordinatePicker.map = new TMap.Map(container, { center: new TMap.LatLng(startLat, startLng), zoom: 16 });
+        coordinatePicker.marker = new TMap.MultiMarker({
+          map: coordinatePicker.map,
+          styles: { pick: new TMap.MarkerStyle({ width: 24, height: 34, anchor: { x: 12, y: 34 } }) },
+          geometries: [{ id: 'pick', styleId: 'pick', position: new TMap.LatLng(startLat, startLng) }]
+        });
+        coordinatePicker.map.on('click', (e) => { if (e && e.latLng) placeCoordinateMarker(e.latLng.lat, e.latLng.lng, false); });
+      } catch (err) {
+        if (hint) { hint.style.display = 'flex'; hint.textContent = ((err && err.message) || '地图加载失败') + '，可在下方手动输入经纬度。'; }
+      }
+    }
+
+    async function updateListingCoordinate(id, title, currentLatitude, currentLongitude) {
+      if (!id) return;
       if (!canUseAdminApi()) {
         alert('请通过后端地址打开后台后再修正坐标：admin-web/');
         return;
       }
-      await adminRequest(`/admin/listings/${id}/coordinate`, {
-        method: 'POST',
-        body: JSON.stringify({
-          latitude: lat,
-          longitude: lng
-        })
-      });
-      await renderListings();
-      await renderAdminLogs();
-      await renderDashboardStats();
-      alert('坐标已修正为已确认坐标');
+      wireCoordinatePicker();
+      coordinatePicker.listingId = id;
+      const curLat = Number(currentLatitude);
+      const curLng = Number(currentLongitude);
+      const hasCur = Number.isFinite(curLat) && Number.isFinite(curLng);
+      coordinatePicker.lat = hasCur ? curLat : null;
+      coordinatePicker.lng = hasCur ? curLng : null;
+      document.getElementById('coordinateTitle').textContent = '坐标修正 · ' + (title || id);
+      document.getElementById('coordinateError').textContent = '';
+      const latEl = document.getElementById('coordinateLat');
+      const lngEl = document.getElementById('coordinateLng');
+      if (latEl) latEl.value = hasCur ? curLat : '';
+      if (lngEl) lngEl.value = hasCur ? curLng : '';
+      setCoordinateReadout(coordinatePicker.lat, coordinatePicker.lng, false);
+      document.getElementById('coordinateOverlay').classList.add('active');
+      await initCoordinateMap();
     }
 
     async function restoreExpiredListing(id) {

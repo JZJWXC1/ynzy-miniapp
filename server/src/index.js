@@ -1717,6 +1717,15 @@ async function handleAdmin(req, res, pathname, searchParams) {
       }))
     }))
   }
+  if (method === 'GET' && pathname === '/admin/map-config') {
+    assertAdminCapability(adminAccount)
+    // 坐标点选地图配置：JS-API key（前端加载地图 SDK 用）+ 默认初始中心（东新园地铁口）。
+    // 只暴露 jsApiKey（域名白名单限制的公开 key），绝不下发 webserviceKey。
+    return sendJson(res, {
+      jsApiKey: (config.qqMap && config.qqMap.jsApiKey) || '',
+      defaultCenter: (config.qqMap && config.qqMap.defaultMapCenter) || { latitude: 30.306628, longitude: 120.173407, label: '拱墅区5号线东新园地铁口' }
+    })
+  }
   const adminListingVerifyMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && adminListingVerifyMatch) {
     assertAdminCapability(adminAccount)

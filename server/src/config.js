@@ -159,7 +159,16 @@ module.exports = {
     contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', [])
   },
   qqMap: {
-    webserviceKey: process.env.QQ_MAP_WEBSERVICE_KEY || process.env.QQ_MAP_KEY || ''
+    webserviceKey: process.env.QQ_MAP_WEBSERVICE_KEY || process.env.QQ_MAP_KEY || '',
+    // 地图 JS API(GL) 专用 key，供管理后台坐标点选地图加载。建议与 webserviceKey 分开、按域名白名单限制，
+    // 不要复用 webservice key（前端暴露会被抓地理编码配额）。未配置时后台坐标修正退回手填经纬度。
+    jsApiKey: process.env.QQ_MAP_JS_API_KEY || process.env.QQ_MAP_JS_KEY || '',
+    // 后台坐标点选地图默认初始中心：拱墅区 5号线东新园地铁口（geocode 结果）。
+    defaultMapCenter: {
+      latitude: Number(process.env.ADMIN_MAP_DEFAULT_LAT || 30.306628),
+      longitude: Number(process.env.ADMIN_MAP_DEFAULT_LNG || 120.173407),
+      label: process.env.ADMIN_MAP_DEFAULT_LABEL || '拱墅区5号线东新园地铁口'
+    }
   },
   location: {
     districtBlocks,
