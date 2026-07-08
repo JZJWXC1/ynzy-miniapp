@@ -2706,6 +2706,25 @@
 	      if (current && values.indexOf(current) !== -1) select.value = current;
 	    }
 
+	    // 构建查看人/房源(小区) 下拉候选并填充。fullRows 有值(本地/无分页返回的全量数组)则直接用；
+	    // 否则(真实分页 API)在缓存为空时额外请求一次不带 page/pageSize 的 /admin/footprints
+	    // (无 query → 后端返回全量数组)作为候选源，构建后沿用缓存，避免下拉只剩当前页/为空。
+	    async function ensureFootprintFilterOptions(fullRows) {
+	      const uniqSorted = (arr) => Array.from(new Set(arr.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'zh'));
+	      const buildFrom = (list) => {
+	        footprintFilterOptions.viewers = uniqSorted((list || []).map((r) => r.viewer || r.user));
+	        footprintFilterOptions.listings = uniqSorted((list || []).map((r) => r.listing || r.title));
+	      };
+	      if (Array.isArray(fullRows)) {
+	        buildFrom(fullRows);
+	      } else if (!footprintFilterOptions.viewers.length && !footprintFilterOptions.listings.length) {
+	        const all = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
+	        buildFrom(Array.isArray(all) ? all : (all && Array.isArray(all.rows) ? all.rows : []));
+	      }
+	      fillFootprintOptionSelect('footprintViewer', footprintFilterOptions.viewers);
+	      fillFootprintOptionSelect('footprintKeyword', footprintFilterOptions.listings);
+	    }
+
 	    async function renderAdminLogs() {
 	      const filters = readFootprintFilters();
 	      const query = buildQuery(Object.assign({ page: footprintPage, pageSize: 50 }, filters));
@@ -2716,14 +2735,10 @@
 	      fillFootprintActionOptions(isPaged
 	        ? payload.actions
 	        : Array.from(new Set(rows.map((r) => r.action).filter(Boolean))));
-	      // 查看人/房源(小区) 下拉：仅无筛选(全量数组)时重建缓存；筛选后为分页数据(不完整)沿用缓存。
-	      if (!isPaged) {
-	        const uniqSorted = (arr) => Array.from(new Set(arr.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'zh'));
-	        footprintFilterOptions.viewers = uniqSorted(rows.map((r) => r.viewer || r.user));
-	        footprintFilterOptions.listings = uniqSorted(rows.map((r) => r.listing || r.title));
-	      }
-	      fillFootprintOptionSelect('footprintViewer', footprintFilterOptions.viewers);
-	      fillFootprintOptionSelect('footprintKeyword', footprintFilterOptions.listings);
+	      // 查看人/房源(小区) 下拉候选：真实 API 首屏也带 page/pageSize→后端 FOOTPRINT_QUERY_KEYS 含
+	      // page/pageSize，会按 query 分页返回，拿不到全量。故用一次不带分页参数的请求取全量作候选源
+	      // （仅用于下拉、不替代表格分页），空缓存时才拉、随后沿用；本地/无分页 fallback 直接用其数组。
+	      await ensureFootprintFilterOptions(isPaged ? null : rows);
 	      renderFootprintRows(rows);
 	      const pager = document.getElementById('footprintPager');
 	      const info = document.getElementById('footprintPageInfo');
