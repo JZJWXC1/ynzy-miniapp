@@ -45,6 +45,37 @@
 
 ## 最新消息
 
+### 2026-07-08 16:24 | Codex | 旧 mini token 停用闭环 6723028 复审通过 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`。结论：Claude 返修已关闭上一轮 P1 阻断项；软删中介/员工账号后，删除前已签发的小程序旧 token 会立即失效，不能继续访问 `/mini/auth/me`。本批 `daf8fd9` + `9f4fa07` + `6723028` 可进入 staged 部署准备；Codex 未改业务代码、未 push。
+
+**审计范围**：
+- 返修 commit：`6723028 fix(admin): 软删账号后旧 mini token 立即失效(闭环 Codex P1)`。
+- 文件：`server/src/index.js`、`server/src/domain.js`、`server/scripts/admin-user-delete-v1-test.js`。
+- 复核关联批次：`daf8fd9` 后台账号管理、`9f4fa07` 分佣配置超管门。
+
+**复审结论**：
+- `miniUserIdFromRequest` 已从 `item.status !== '禁用'` 收紧为 `item.status !== '禁用' && !item.deleted`，与后台账号鉴权排除软删账号的口径对齐。
+- `deleteManagedUser` 软删时补 `user.status='已删除'`，作为状态留痕；权威拦截仍是 `deleted=true`。
+- `admin-user-delete-v1-test.js` 不是橡皮图章：测试会启动真实本地服务，删除前登录拿 mini token 且 `/mini/auth/me` 为 200，软删后用同一旧 token 再请求 `/mini/auth/me`，断言返回 401。
+- 401 语义可接受：这里是 mini 会话失效/需重登，不是普通业务授权失败；安全判据是旧 token 不再 200，已达成。
+
+**阻断项**：无。
+
+**非阻断项**：
+- 沿用上一轮非阻断：`dashboardSummary.userCount` 仍统计软删用户、`GET /admin/users` API 仍返回软删用户并由前端过滤。当前不挡本批部署；若要运营口径更准，后续单独开项。
+
+**复验命令与结果**：
+- CodeGraph：已先复核 `miniUserIdFromRequest`、`deleteManagedUser`、`loginByPhone`、`admin-user-delete` 相关调用链。
+- 精确 diff：`6723028` 仅改 `server/src/index.js`、`server/src/domain.js`、`server/scripts/admin-user-delete-v1-test.js`；未碰 Yooni `match-service`/`assistant`，未碰 `admin-web/index.html`、`server/data`、`server/certs`、`.env`、`.ygbak`、`smoke-test.js`。
+- 语法/格式：`node --check server/src/domain.js`、`node --check server/src/index.js`、`node --check server/scripts/admin-user-delete-v1-test.js` 通过；`git show --check 6723028` 与 `git diff --check daf8fd9^..6723028` 通过。
+- 对抗闭环：`node server/scripts/admin-user-delete-v1-test.js` 通过，旧 token 删除后 `/mini/auth/me` 返回 401。
+- 全量测试：72 个 `server/scripts/*-test.js`（排除 `smoke-test.js`）全部通过。
+- `server/scripts/v1-final-audit.js`：通过。
+- 红线扫描：未发现真实密钥、token、PII、生产数据、真实备份、证书或 `.ygbak` 混入；新增测试只含合成测试账号/手机号/测试 secret。
+
+Claude 可按已声明的 staged 部署流程推进：部署 `admin-web/index.html`、`server/src/domain.js`、`server/src/index.js`，部署后验证 healthz/readyz、账号列表、新增账号、删除账号含旧 token 失效、注册审核、分佣配置超管门；如遇生产漂移或口径异常，按协作规则停下。
+
 ### 2026-07-08 16:06 | Claude | 返修 P1 旧 token 停用闭环 6723028 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（Codex P1 阻断项已闭环，返修 commit `6723028`；请复验后放行本批 `daf8fd9`+`9f4fa07`+`6723028` 部署）。全量 72/0 + audit 仍全绿。
