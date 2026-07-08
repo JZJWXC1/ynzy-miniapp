@@ -242,6 +242,170 @@ page {
   }
 }
 
+/* ==== 微信式语音输入：语音/键盘切换 + 按住说话 + 录音浮层 ==== */
+.voice-switch {
+  position: relative;
+  flex: 0 0 78rpx;
+  width: 78rpx;
+  height: 78rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 253, 248, 0.76);
+  border: 1rpx solid rgba(184, 148, 85, 0.24);
+  border-radius: 18rpx;
+  flex-shrink: 0;
+}
+.voice-switch.busy {
+  opacity: 0.5;
+}
+
+/* 键盘图标（语音模式下显示，点回文字） */
+.kbd-icon {
+  display: flex;
+  flex-direction: column;
+  gap: 5rpx;
+  align-items: center;
+}
+.kbd-row {
+  display: flex;
+  gap: 5rpx;
+}
+.kbd-key {
+  width: 9rpx;
+  height: 9rpx;
+  border-radius: 2rpx;
+  background: var(--brand-green-dark);
+  opacity: 0.82;
+}
+.kbd-key.kbd-space {
+  width: 33rpx;
+}
+
+/* 按住说话按钮 */
+.hold-to-talk {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 78rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1rpx solid rgba(24, 46, 42, 0.14);
+  border-radius: 18rpx;
+  color: var(--brand-green-dark);
+  font-size: 26rpx;
+  font-weight: 800;
+  letter-spacing: 1rpx;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.hold-to-talk.talking {
+  background: linear-gradient(135deg, #315B51 0%, var(--brand-green-dark) 100%);
+  color: #ffffff;
+  border-color: transparent;
+}
+.hold-to-talk.cancel {
+  background: linear-gradient(135deg, #d9584a 0%, #b33f33 100%);
+  color: #ffffff;
+  border-color: transparent;
+}
+.hold-text {
+  pointer-events: none;
+}
+
+/* 录音浮层 */
+.voice-rec-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 18, 16, 0.28);
+}
+.voice-rec-panel {
+  width: 78vw;
+  max-width: 560rpx;
+  padding: 40rpx 36rpx 30rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26rpx;
+}
+.voice-rec-caption {
+  min-height: 40rpx;
+  max-height: 168rpx;
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 28rpx;
+  font-weight: 700;
+  line-height: 42rpx;
+  text-align: center;
+  padding: 14rpx 22rpx;
+  background: rgba(20, 34, 30, 0.9);
+  border-radius: 18rpx;
+}
+.voice-rec-bubble {
+  width: 220rpx;
+  height: 150rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 28rpx;
+  background: linear-gradient(135deg, #315B51 0%, #223f38 100%);
+  box-shadow: 0 14rpx 32rpx rgba(10, 24, 20, 0.3);
+}
+.voice-rec-bubble.cancel {
+  background: linear-gradient(135deg, #d9584a 0%, #b33f33 100%);
+}
+.rec-wave {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  height: 70rpx;
+}
+.rec-wave .rw {
+  width: 8rpx;
+  height: 22rpx;
+  border-radius: 999rpx;
+  background: #ffffff;
+  animation: voiceWave 0.82s ease-in-out infinite;
+}
+.rec-wave .b1 { animation-delay: 0s; }
+.rec-wave .b2 { animation-delay: 0.12s; }
+.rec-wave .b3 { animation-delay: 0.24s; }
+.rec-wave .b4 { animation-delay: 0.36s; }
+.rec-wave .b5 { animation-delay: 0.48s; }
+.rec-cancel-x {
+  position: relative;
+  width: 56rpx;
+  height: 56rpx;
+}
+.rec-cancel-x .x1,
+.rec-cancel-x .x2 {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56rpx;
+  height: 6rpx;
+  border-radius: 999rpx;
+  background: #ffffff;
+}
+.rec-cancel-x .x1 { transform: translate(-50%, -50%) rotate(45deg); }
+.rec-cancel-x .x2 { transform: translate(-50%, -50%) rotate(-45deg); }
+.voice-rec-hint {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 24rpx;
+  font-weight: 600;
+  text-align: center;
+}
+.voice-rec-hint.cancel {
+  color: #ffd9d2;
+}
+
 .find-button {
   flex: 0 0 104rpx;
   height: 78rpx;

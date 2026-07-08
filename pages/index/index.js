@@ -573,7 +573,10 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
 Page({
   data: {
     assistantText: '',
+    voiceMode: false,
     isVoiceListening: false,
+    voiceCancelActive: false,
+    voicePhase: '',
     voiceText: '',
     voiceTip: '说出预算、区域、户型和特点',
     categories: [
@@ -689,17 +692,28 @@ Page({
         this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: true,
+          voicePhase: 'recording',
+          voiceCancelActive: false,
+          voiceText: '',
           voiceTip: '正在听，请说出租客需求'
         });
+        // 极快点按：start 回调晚于 touchend，用户已松手 → 立即停止收尾（否则会一直录到时长上限）。
+        if (this.voicePressing === false && this.voiceController) {
+          try { this.voiceController.stop(); } catch (error) {}
+        }
       },
       onRecognize: (text) => {
         const recognizedText = String(text || '').trim();
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText;
-        this.applyVoiceText(text, false);
+        // 录音中实时字幕只更新浮层，松开确认后再填入框并搜索（仿微信按住说话）。
+        this.setData({ voiceText: text });
+      },
+      onTranscribing: () => {
+        if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' });
       },
       onStop: (text) => {
-        this.setData({ isVoiceListening: false });
         const content = String(text || this.lastVoiceRecognizedText || '').trim();
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' });
           return;
@@ -707,9 +721,21 @@ Page({
         this.lastVoiceRecognizedText = '';
         this.applyVoiceText(content, true);
       },
+      onCancel: () => {
+        this.lastVoiceRecognizedText = '';
+        this.setData({
+          isVoiceListening: false,
+          voicePhase: '',
+          voiceCancelActive: false,
+          voiceText: '',
+          voiceTip: '说出预算、区域、户型和特点'
+        });
+      },
       onError: () => {
         this.setData({
           isVoiceListening: false,
+          voicePhase: '',
+          voiceCancelActive: false,
           voiceTip: '语音识别失败，请重试或手动输入'
         });
         wx.showToast({ title: '语音识别失败', icon: 'none' });
@@ -875,23 +901,77 @@ Page({
     });
   },
 
-  toggleVoiceInput() {
+  // 语音/键盘切换（仿微信）：录音/识别中不切换。
+  toggleVoiceMode() {
+    if (this.data.voicePhase) return;
+    const nextVoice = !this.data.voiceMode;
+    if (nextVoice && wx.hideKeyboard) {
+      try { wx.hideKeyboard(); } catch (error) {}
+    }
+    this.setData({ voiceMode: nextVoice });
+  },
+
+  // 按住说话：按下开始录音
+  onVoiceTouchStart(event) {
     const controller = this.ensureVoiceInput();
     if (!controller) {
       wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' });
       return;
     }
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
+    this.voiceStartY = Number(touch.clientY || touch.pageY || 0);
+    this.voicePressing = true;
+    this.lastVoiceRecognizedText = '';
+    this.setData({ voiceCancelActive: false, voiceText: '' });
+    if (wx.vibrateShort) {
+      try { wx.vibrateShort({ type: 'light' }); } catch (error) {}
+    }
     try {
-      if (this.data.isVoiceListening) {
-        controller.stop();
-        return;
-      }
       controller.start();
     } catch (error) {
-      this.setData({ isVoiceListening: false });
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
       wx.showToast({ title: '语音输入启动失败', icon: 'none' });
     }
   },
+
+  // 按住说话：上滑超过阈值进入「取消发送」态
+  onVoiceTouchMove(event) {
+    if (this.data.voicePhase !== 'recording') return;
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
+    const y = Number(touch.clientY || touch.pageY || 0);
+    const slideUp = (this.voiceStartY - y) > 80;
+    if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp });
+  },
+
+  // 按住说话：松开——取消态则丢弃，否则停止录音并发送识别结果
+  onVoiceTouchEnd() {
+    this.voicePressing = false;
+    const controller = this.voiceController;
+    if (!controller) {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+      return;
+    }
+    if (this.data.voiceCancelActive) {
+      controller.cancel();
+      return;
+    }
+    // 已在录音则停止发送；若极快点按（start 回调还没来）由 onStart 里的 voicePressing 守卫收尾。
+    if (this.data.voicePhase === 'recording') {
+      try { controller.stop(); } catch (error) { controller.cancel(); }
+    }
+  },
+
+  onVoiceTouchCancel() {
+    this.voicePressing = false;
+    const controller = this.voiceController;
+    if (controller) {
+      controller.cancel();
+    } else {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+    }
+  },
+
+  noop() {},
 
   applyVoiceText(text, shouldMatch) {
     const nextData = {
