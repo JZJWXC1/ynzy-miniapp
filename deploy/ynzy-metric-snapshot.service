@@ -1,0 +1,11 @@
+[Unit]
+Description=Ynzy Miniapp 经营指标每日快照 (增长层装准星)
+After=network.target ynzy-miniapp.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ynzy-miniapp/server
+# 复用备份环境文件里的 DATA_FILE 等（不存在则忽略）；快照仅聚合、无 PII。
+EnvironmentFile=-/etc/default/ynzy-backup
+Environment=PORT=3101
+ExecStart=/usr/bin/env node scripts/metric-readout.js --append=/opt/ynzy-miniapp/server/metrics-snapshots.jsonl

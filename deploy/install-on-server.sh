@@ -162,6 +162,9 @@ cp "$APP_DIR/deploy/ynzy-feishu-drill.service" /etc/systemd/system/ynzy-feishu-d
 cp "$APP_DIR/deploy/ynzy-feishu-drill.timer" /etc/systemd/system/ynzy-feishu-drill.timer
 cp "$APP_DIR/deploy/ynzy-health-check.service" /etc/systemd/system/ynzy-health-check.service
 cp "$APP_DIR/deploy/ynzy-health-check.timer" /etc/systemd/system/ynzy-health-check.timer
+# 经营指标每日快照（增长层装准星，只读 db 出聚合快照追加 JSONL，无 PII）
+cp "$APP_DIR/deploy/ynzy-metric-snapshot.service" /etc/systemd/system/ynzy-metric-snapshot.service
+cp "$APP_DIR/deploy/ynzy-metric-snapshot.timer" /etc/systemd/system/ynzy-metric-snapshot.timer
 ensure_backup_env
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
@@ -172,6 +175,8 @@ systemctl enable --now ynzy-restore-drill.timer
 systemctl enable --now ynzy-feishu-drill.timer
 # 健康巡检定时器（每 15 分钟：db 可解析/磁盘/备份新鲜度/服务，失败非零退出经 journald 告警）
 systemctl enable --now ynzy-health-check.timer
+# 经营指标每日快照定时器（每天 02:30：只读 db 追加聚合快照到 metrics-snapshots.jsonl）
+systemctl enable --now ynzy-metric-snapshot.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config

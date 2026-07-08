@@ -155,7 +155,26 @@ function loadSummary(db) {
   return {}
 }
 
+// 追加一条带时间戳的快照到 JSONL（每日趋势）。record 应为 buildSnapshot 结果（仅聚合、无 PII）。
+// 幂等追加：一行一条 JSON，坏行不影响后续读取。nowIso 显式传入以便单测确定性。
+function appendSnapshot(filePath, snapshot, nowIso) {
+  const record = Object.assign({ t: nowIso }, snapshot)
+  fs.appendFileSync(filePath, JSON.stringify(record) + '\n')
+  return record
+}
+
+function parseCliArgs(argv) {
+  const out = { pretty: false, append: '' }
+  for (const a of Array.isArray(argv) ? argv : []) {
+    if (a === '--pretty') out.pretty = true
+    const m = /^--append=(.+)$/.exec(a)
+    if (m) out.append = m[1]
+  }
+  return out
+}
+
 if (require.main === module) {
+  const args = parseCliArgs(process.argv.slice(2))
   let db
   try {
     db = loadDb(fs.readFileSync(resolveDbPath(), 'utf8'))
@@ -164,8 +183,16 @@ if (require.main === module) {
     process.exit(1)
   }
   const snapshot = buildSnapshot(db, loadSummary(db))
-  const pretty = process.argv.includes('--pretty')
-  process.stdout.write('[metric] ' + JSON.stringify(snapshot, null, pretty ? 2 : 0) + '\n')
+  process.stdout.write('[metric] ' + JSON.stringify(snapshot, null, args.pretty ? 2 : 0) + '\n')
+  if (args.append) {
+    try {
+      appendSnapshot(args.append, snapshot, new Date().toISOString())
+      process.stderr.write('[metric] 已追加快照到 ' + args.append + '\n')
+    } catch (error) {
+      process.stderr.write('[metric] 追加失败：' + (error && error.message) + '\n')
+      process.exit(1)
+    }
+  }
 }
 
-module.exports = { pct, coveredNeedIds, computeFillRate, computeSupply, computeDeals, computeMonetization, computeGuardrails, buildSnapshot, resolveDbPath, loadDb }
+module.exports = { pct, coveredNeedIds, computeFillRate, computeSupply, computeDeals, computeMonetization, computeGuardrails, buildSnapshot, resolveDbPath, loadDb, appendSnapshot, parseCliArgs }

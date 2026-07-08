@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ynzy Miniapp 经营指标快照 daily
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=ynzy-metric-snapshot.service
+
+[Install]
+WantedBy=timers.target

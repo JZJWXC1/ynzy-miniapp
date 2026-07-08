@@ -99,4 +99,35 @@ assert.strictEqual(m.pct(1, 3), 33.3, '一位小数')
   assert.strictEqual(snap.fillRate.fillL2_reportPct, 25, '填充率不依赖 summary 仍可算')
 }
 
+// 9) appendSnapshot：追加带时间戳的 JSONL 行；可解析、含 t、仍零 PII；多次追加累积。
+{
+  const os = require('os')
+  const fs = require('fs')
+  const path = require('path')
+  const tmp = path.join(os.tmpdir(), 'metric-readout-append-test-' + process.pid + '.jsonl')
+  try {
+    fs.existsSync(tmp) && fs.unlinkSync(tmp)
+    const snap = m.buildSnapshot(db, { listingCount: 3 })
+    m.appendSnapshot(tmp, snap, '2026-07-08T02:30:00.000Z')
+    m.appendSnapshot(tmp, snap, '2026-07-09T02:30:00.000Z')
+    const lines = fs.readFileSync(tmp, 'utf8').trim().split('\n')
+    assert.strictEqual(lines.length, 2, '两次追加两行')
+    const rec = JSON.parse(lines[0])
+    assert.strictEqual(rec.t, '2026-07-08T02:30:00.000Z', '带时间戳 t')
+    assert.strictEqual(rec.schema, 'metric-readout/v1', '含快照体')
+    assert.strictEqual(rec.fillRate.fillL2_reportPct, 25, '追加体保真')
+    assert.strictEqual(/张三丰|李四|N1|N2/.test(fs.readFileSync(tmp, 'utf8')), false, '追加文件仍零 PII')
+  } finally {
+    try { fs.unlinkSync(tmp) } catch (e) { /* 忽略 */ }
+  }
+}
+
+// 10) parseCliArgs：--append=/path 与 --pretty 解析。
+{
+  const a = m.parseCliArgs(['--pretty', '--append=/opt/x/metrics-snapshots.jsonl'])
+  assert.strictEqual(a.pretty, true)
+  assert.strictEqual(a.append, '/opt/x/metrics-snapshots.jsonl')
+  assert.strictEqual(m.parseCliArgs([]).append, '', '默认不追加')
+}
+
 console.log('metric-readout-v1-test passed')
