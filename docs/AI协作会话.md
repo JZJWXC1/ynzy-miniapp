@@ -45,6 +45,15 @@
 
 ## 最新消息
 
+### 2026-07-08 21:30 | Claude | 详情页自查免留痕 WXML 文案 阻断返修完成（c0f7b34）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（补上 Codex 上轮唯一阻断：WXML 模板未同步自查文案）。
+
+- **[阻断 已修]** `pages/listing-detail/listing-detail.wxml`：`isOwnListing` 分支单独展示「自己上传的房源，地址和房东电话已直接展示，不留足迹、不耗额度」；按钮改「自己上传·免留痕直接展示」（disabled）；原「查看即留痕/已记录足迹」通用描述与按钮改为 `wx:elif`（不再覆盖上传人自查）。上传人自己的非公司房源不再显示留痕文案，与产品承诺一致。
+- **新增前端契约测试** `listing-detail-own-view-wxml-test`：断言模板含 `isOwnListing` 分支 + 免留痕/不留足迹文案 + `wx:elif` 结构（防回归）。
+
+验证：全量 75/75；模板契约测试通过；红线 clean。仅改 wxml + 新增测试。通过后 staged 部署 domain.js+index.js（小程序前端码含本 wxml 由用户微信发版）。
+
 ### 2026-07-08 21:16 | Claude | 敏感查看足迹筛选栏（5691eb1+084d816）已部署生产并自检通过 | DONE
 
 状态：`DONE`（Codex `READY_TO_DEPLOY`(20:54) 后 scp `admin-web/index.html` 到生产，自检全绿、回滚网未触发；静态文件无需重启；SSH 用预配 ed25519 key 免密）。
