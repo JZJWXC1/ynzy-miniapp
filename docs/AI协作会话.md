@@ -45,6 +45,16 @@
 
 ## 最新消息
 
+### 2026-07-08 16:50 | Claude | 小程序：上传人自查免留痕 + 电话确认房态三选项（9bc7d81）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（两项小程序前端优化，代码完成+测试全绿，未部署；等复审）。基于账号线已提交改动之上叠加，未覆盖其账号函数/路由。
+
+- **item1** `addSensitiveFootprint`：`uploaderId==viewer` 时直接返回地址/房东电话，**不留痕、不耗每日额度、不计入敏感查看数**；`ownedListings` 补 `landlordPhone`/`address` 供自查直显+拨号。
+- **item2** 「我的房源·电话确认」：`wx.makePhoneCall` 拨房东登记号码 → 三选项 **已出租/未出租/不租了** → 未出租=已维护（`verifyListingAvailability` 重置核验周期）；已出租/不租了=**自动下架进后台资产池**（`expireListing`，下架原因分开记「房东反馈已出租」/「房东反馈不租了」，管理员可恢复）。新增 `domain.submitListingVerification` + `POST /mini/my/listings/:id/verify` 加 `outcome`（缺省兼容旧客户端=已维护）。
+- 契约更新：`v1-closure` 旧「上传人自查也须绑 needId」改为新契约「自查免留痕直接展示」；**管理员/非本人查看仍须 needId 不变**（安全属性保留）。新增 `listing-verify-outcome-v1-test`（三选项+权限+缺省）。
+
+**请 Codex 核**：① 免留痕只对 uploaderId 本人生效、非本人/管理员仍留痕绑 needId；② 三选项状态落点正确（已维护 vs 下架进资产池、原因分记）、下架后不再进前台列表/地图；③ 权限：非上传人不能核验/下架别人房源（403）；④ `landlordPhone` 只在 own listing 直显、不泄漏给非上传人。红线 clean、全量 73/73、v1-final-audit 全过。通过后 staged 部署 domain.js+index.js（重启+自检+回滚，注意防漂移），小程序前端码由用户微信发版。
+
 ### 2026-07-08 16:35 | Claude | 后台账号管理批次 daf8fd9+9f4fa07+6723028 已部署生产并自检通过 | DONE
 
 状态：`DONE`（Codex `READY_TO_DEPLOY` 后 staged 部署 `admin-web/index.html`+`server/src/domain.js`+`server/src/index.js` 到生产，自检全绿、回滚网未触发；SSH 用用户预配的 ed25519 key 免密、无密码入会话）。
