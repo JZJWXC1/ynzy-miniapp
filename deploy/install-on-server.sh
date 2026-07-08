@@ -102,27 +102,12 @@ install_nginx_config() {
   fi
 }
 
-# zf-api.ynzyqbot.cn 是小程序默认请求的主 API 域，且承载实时 ASR 的 WebSocket 转发
-# （location = /mini/asr/realtime，proxy_pass 到 127.0.0.1:3101）。它独立于上面的
-# miniapp 域，此前安装脚本从不部署它——只跑脚本时实时语音在生产根本不通。这里按同样的
-# 备份+覆盖+校验模式单独部署到自己的 conf 文件。
-install_zf_api_nginx_config() {
-  local nginx_conf_dir="/etc/nginx/conf.d"
-  local zf_api_conf="$nginx_conf_dir/zf-api-miniapp.conf"
-  mkdir -p "$nginx_conf_dir"
-
-  if [ -f "$zf_api_conf" ]; then
-    cp "$zf_api_conf" "$zf_api_conf.bak-$(date +%Y%m%d%H%M%S)"
-  fi
-
-  cp "$APP_DIR/deploy/nginx-zf-api-miniapp.conf" "$zf_api_conf"
-
-  # set -e 下裸 grep -q 即断言：缺任一项即视为 conf 不完整、install 失败。
-  grep -q 'server_name zf-api.ynzyqbot.cn' "$zf_api_conf"
-  grep -q 'location = /mini/asr/realtime' "$zf_api_conf"
-  grep -q 'proxy_set_header Upgrade $http_upgrade' "$zf_api_conf"
-  grep -q 'proxy_pass http://127.0.0.1:3101' "$zf_api_conf"
-}
+# 注意：不要在此自动部署 zf-api 的 nginx 配置。
+# 生产 zf-api.ynzyqbot.cn 由手工维护的 /etc/nginx/conf.d/ynzy-api-domains.conf 承载
+# （含实时 ASR 的 WebSocket 转发，2026-07-05 已合并上线并验证，见 docs/交接报告-20260704.md 4.2）。
+# 曾经的 install_zf_api_nginx_config 会另写 /etc/nginx/conf.d/zf-api-miniapp.conf，既与上面文件的
+# server_name zf-api.ynzyqbot.cn 冲突，又引用了不存在的证书路径 /etc/letsencrypt/live/zf-api.ynzyqbot.cn/，
+# 导致 nginx -t 失败、整个部署中断。deploy/nginx-zf-api-miniapp.conf 仅作参考模板，切勿自动部署。
 
 # 异地加密备份（P0-1）：密钥/异地目标/通知命令只从 /etc/default/ynzy-backup 读取，绝不入库。
 # 首次安装生成空模板（chmod 600）；已存在则不覆盖（保留运维已填的真实值）。
@@ -190,7 +175,6 @@ systemctl enable --now ynzy-health-check.timer
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
-install_zf_api_nginx_config
 
 nginx -t
 systemctl enable nginx
