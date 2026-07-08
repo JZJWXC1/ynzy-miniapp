@@ -36,6 +36,48 @@
 
 ## 最新消息
 
+### 2026-07-08 16:00 | Claude | 首页+找房聊天页语音输入改微信式「按住说话」+ 多智能体自审已修 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（等待 Codex 第二裁判审计）。本条属**小程序前端交互**改动（非后端匹配链），但语音最终文本仍走与文字输入完全相同的 need-parser 精确链，故一并按精确优先口径审。
+
+**背景**：用户要求「首页 Yooni 小助手语音输入按微信聊天输入方式优化，不加表情」+「进入首页默认按住说话，聊天页也改」。
+
+**关联 commit（分支 v1-broker，未 push 前请以本地为准；小程序不走服务器部署脚本，另经微信开发者工具上传）**：
+- `b61dcc0 feat(mini): 找房聊天页语音输入改为微信式「按住说话」+ 首页默认语音态`
+- `d5f1432 fix(mini): 语音输入自审修复·按住说话边缘态与错误恢复`
+
+**实修改文件清单**：
+- `pages/index/index.js` / `index.wxml` / `index.wxss`
+- `pages/match-chat/match-chat.js` / `match-chat.wxml` / `match-chat.wxss`
+- `utils/voice-input.js`（共享 ASR 控制器，仅 `failRealtime` 一处，见开放项①）
+
+**交互契约（应实现的目标行为，两页一致）**：
+1. 进入默认「按住说话」态（`data.voiceMode=true`）；点键盘图标切文字输入，再点麦克风切回语音。
+2. 按住 `hold-to-talk`（`onVoiceTouchStart`）开始录音；手指上滑 >80px 进入取消态（`voiceCancelActive=true`，变红）；松手（`onVoiceTouchEnd`）：取消态→`cancel` 丢弃，否则→`stop` 结束并转写。
+3. 转写完成 `onStop(content)`：首页 `applyVoiceText(content,true)` 后跳转匹配；找房聊天页 `submitNeed(content,'voice')` 触发匹配。**录音中实时字幕(`voiceText`)即用户核对窗口，误听可上滑取消**（见开放项②）。
+4. 全屏录音浮层(`voice-rec-mask`，`voicePhase` 控制显示)：实时字幕 + 绿波形/红叉取消态 + 提示语。无表情面板。
+5. 找房聊天页匹配中(`loading`)：禁用手势与切换。
+
+**自审方式**：Claude 用多智能体工作流（5 维审查 → 每条发现独立对抗验证，倾向反驳、不确定即驳回，20 agents）。确认 10 条、存疑 2 条；标称的 P1 经验证多降为 P2/nit（无崩溃/数据丢失）。**已在 `d5f1432` 修掉全部确认为真的清晰缺陷**：
+- **[根因，串 3 条] `onStart` 守卫 `stop()`→`cancel()`**（两页）：快速点按/慢启动/首次麦克风授权时 start 回调晚于 touchend，旧守卫走 `stop()`→2.2s 空转→「没有识别到内容」→吞录音；`cancel()` 静默丢弃、立即撤浮层。**顺带堵住**「误触凭一两个杂音帧走 onStop 自动发起匹配」（原判 PLAUSIBLE 违背精确优先，已消除）与「异步启动窗口内上滑取消被忽略」。
+- **`onVoiceTouchStart` 增 `voicePhase`/`isBusy` 守卫**（两页）：转写收尾(FINAL_WAIT 2.2s)窗口内再次按住，旧逻辑会震动+清字幕假装新录音但 `start()` 实为 no-op，2.2s 后带**上一句**自动跳转/提交（串句）。守卫后该窗口内的按下被忽略。
+- **`match-chat.toggleVoiceMode` 增 `loading` 守卫**：wxml 给切换图标加了 `disabled` 视觉但 `<view>` 无原生 disabled，点击仍生效，与契约#5/视觉矛盾。已对齐。
+- **`match-chat` 语音载荷 `voiceText` 去重**：语音场景 `voiceText===text`，旧代码两字段都传导致服务端 `[sanitizedText, sanitizedVoiceText].join('，')` 把中介原话拼两遍；改成「与 text 不同才传」。已核实 `graph.js:188-189` `normalizeAsrText` 对 `text`/`voiceText` 同等处理，故 `voiceText` 置空**不损失 ASR 归一、不影响精确匹配**。
+- **`index` 错误文案对齐**：`onError`/启动失败/不支持改用 `voiceInput.errorMessage`/`getSupportStatus().message`（原写死通用文案，授权被拒时不给指引；match-chat 已具体）。
+- **`voice-input.failRealtime` 转写期出错保住已识别文本**：转写等待期若 ASR socket 报 error，旧逻辑整段丢弃并报「识别失败」；改为「若已有字幕则 `finishWithCurrentCaption()` 交付」（与同函数 `onClose` 分支一致），直接服务满意率。
+
+**红线自查（精确优先）**：
+- 语音只是输入通道，最终文本 = `onStop` 的 content，仍走 `submitNeed`/`applyVoiceText`→与文字输入同一 `chatAssistant`/need-parser 精确链；**未因走语音放宽硬条件、未编造小区/坐标/特征、未绕过任何精确性环节**。
+- 未改后端匹配/打分/`FEATURE_RULES`；未动 `smoke-test.js`；未提交 `server/data`/`server/certs`/`.env`/凭据；本次提交只含上列 7 文件（未混入同工作区在改的分佣/mock-data/docs）。
+- 已跑：`node --check` 三 JS 文件通过；`server/scripts/match-chat-request-voice-decoupling-test.js` 通过（断言「文字请求 voiceText 必须为 ''」不依赖语音结果——去重改动兼容）；`server/scripts/voice-client-cleanup-test.js` 通过（离页释放/不误 stop）。
+
+**开放项 / 请 Codex 重点复核**：
+1. **`utils/voice-input.js:failRealtime` 是共享控制器改动**：改动虽与 `onClose` 分支同构、严格更优（有字幕则交付而非丢弃），但请确认对其它调用点（`socketTask.onError`、`handleSocketMessage` error 事件、`onClose` 中 `listening&&!socketFailed` 的断开分支——后者 `transcribing=false` 不触发新分支）无回归，`errored/isErrored` 语义不被误置。
+2. **【产品判断，非 bug】找房聊天页语音转写后 `submitNeed` 自动提交**：仿微信「松手即发」，与文字输入一样直连 `chatAssistant`（文字也不经可编辑确认卡片，故语音并未跳过文字享有的复核）；误听的缓解 = 录音中实时字幕可见 + 上滑取消 + 结果里 `needTags`/房源回显 + 事后「不准」反馈。对抗验证判 PLAUSIBLE（危害需 ASR 恰好误听成另一真实小区，且有多重缓解）。**Claude 判定：保留松手即发（符合用户所提微信交互 + 与文字一致）**；若 Codex 从精确优先认为应改「转写文本回填输入框、中介核对后再点找房」，标 `THIRD_JUDGE_REQUIRED` 交用户拍板，勿自行改。
+3. **nit（未改，留观）**：录音浮层字幕 `.voice-rec-caption` `max-height:168rpx + overflow:hidden`，超 ~4 行的长语音底部（最新识别）被裁且浮层不可滚（两页一致）。租房语音多为短句，暂不改；若判需改可改 `scroll-view`/自动滚底。
+
+**需要 Codex 做什么**：按精确优先口径审「语音是否绕过精确链/是否放宽/是否编造」+ 复核开放项①的共享控制器改动无回归 + 就开放项②给精确优先视角结论（保留 or 转第三裁判）。审完把状态改 `READY_TO_DEPLOY` 或 `CLAUDE_FIX_REQUIRED`（附阻断项/复验命令）。
+
 ### 2026-07-08 11:10 | Claude | 后台坐标功能已上线 + MAP-1 地理编码写库完成并上图验证 | DONE
 
 状态：`DONE`。本会话所有开发项均已 Codex 审计通过、部署上线、生产验证。
