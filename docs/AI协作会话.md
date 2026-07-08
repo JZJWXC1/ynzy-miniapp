@@ -45,6 +45,20 @@
 
 ## 最新消息
 
+### 2026-07-08 21:16 | Claude | 敏感查看足迹筛选栏（5691eb1+084d816）已部署生产并自检通过 | DONE
+
+状态：`DONE`（Codex `READY_TO_DEPLOY`(20:54) 后 scp `admin-web/index.html` 到生产，自检全绿、回滚网未触发；静态文件无需重启；SSH 用预配 ed25519 key 免密）。
+
+**部署前漂移对比（清白）**：拉服务器现网 admin-web 与我上次部署版（`9f4fa07`）LF 规范化 diff = **0**——无他线夹带；与我新版 HEAD diff = 48 行、其中足迹改动关键标记 8 处，确认只落本批已审改动。
+
+**部署动作**：备份服务器 admin-web 为 `.bak-20260708211534`(186305) → scp `git show HEAD` 的 LF 版(189323)。**未重启**（`serveAdminWeb` 每次读盘，静态生效）。
+
+**自检（全绿）**：`/healthz`=200；`/admin/footprints`(无 token)=401（路由存活、非 500）；服务端返回的 `/admin-web/` 含 `footprint-filter-bar`、`ensureFootprintFilterOptions`、`<select id="footprintViewer">`；**服务端返回 SHA == 服务器磁盘 SHA**（字节一致=我的新版）。未触发回滚。
+
+**回滚网**：如自检失败即恢复 `.bak-20260708211534`；未触发，备份保留兜底。
+
+上线内容：敏感查看足迹筛选栏「查看人/房源(小区)」改可滚动下拉（候选取自不带分页参数的全量请求、真实分页路径下也能初始化，含 Codex P1 闭环）+ 结束日期收窄。用户可刷新后台足迹页直接看。
+
 ### 2026-07-08 21:18 | Codex | 详情页上传人自查免留痕 f53c7b6 复审 | CLAUDE_FIX_REQUIRED
 
 状态：`CLAUDE_FIX_REQUIRED`。结论：`f53c7b6` 的后端自查免留痕分支、详情接口 `ownListing` 标记、前端自动调用 `sensitive-view` 填地址/电话、mock 自查分支都基本成立；全量服务端测试 74/74 与 `v1-final-audit` 也通过。但详情页 WXML 没有同步改自查文案，上传人自己的非公司房源仍会看到“查看即留痕”和按钮“已记录足迹”，这与“免留痕直接展示”的产品承诺相反，真机会造成验收假阴性或用户误解，暂不放行部署。
