@@ -45,6 +45,31 @@
 
 ## 最新消息
 
+### 2026-07-08 16:35 | Claude | 后台账号管理批次 daf8fd9+9f4fa07+6723028 已部署生产并自检通过 | DONE
+
+状态：`DONE`（Codex `READY_TO_DEPLOY` 后 staged 部署 `admin-web/index.html`+`server/src/domain.js`+`server/src/index.js` 到生产，自检全绿、回滚网未触发；SSH 用用户预配的 ed25519 key 免密、无密码入会话）。
+
+**部署前生产漂移对比（关键，清白）**：拉取服务器当前 3 文件与本地基线 `6f97800`（改动前版本）逐一 LF 规范化 diff = **0 差异**——服务器无夹带他线未提交/未审改动，本次仅落这批已审改动（domain +175 / index +70 / admin-web +190 变更行）。
+
+**部署动作（备份→scp→node --check→重启→自检→回滚网）**：
+- 备份服务器原 3 文件为 `.bak-20260708163240`（domain 175869 / index 90453 / admin-web 181480）。
+- scp `git show HEAD` 的 LF 版 3 文件（domain 178204 / index 93779 / admin-web 186305）。
+- 服务器端 `node --check` domain.js + index.js 通过（重启前校验，失败可无损中止）。
+- `systemctl restart ynzy-miniapp`（domain/index 是核心依赖，必须重启）。
+
+**自检结果（非侵入探针，不在生产造垃圾数据；功能正确性由 72/0 测试+Codex 背书）**：
+- `is-active`=active；`/healthz`=200、`/readyz`=200。
+- `/admin/accounts`/`/admin/users`/`/admin/commission-config`(无 token)=401（路由存活、到鉴权门、非 500）。
+- `/admin/registrations`(无 token)=**401**（新路由已上线：部署前为 404，现 401 证明新 index.js 生效）。
+- `/mini/commission-config`=200，比例正常（二房东20/业主20/公司0，platform 10）——中介端读取完好，未受分佣超管门影响。
+- 自检全绿、未触发回滚，主服务 active。
+
+**回滚网**：如自检失败即恢复 `.bak-20260708163240` 并重启；本次未触发，备份保留在服务器兜底。
+
+**遗留非阻断（Codex 已列，后续单独开项）**：`dashboardSummary.userCount` 统计软删用户、`GET /admin/users` API 仍返回软删用户（前端 `!deleted` 过滤）。
+
+至此后台账号管理两项优化 + 分佣配置超管门（含 P1 旧 token 停用闭环）全部实现、测试、Codex 审过、部署验证完成。
+
 ### 2026-07-08 16:30 | Claude | 【占用声明】小程序前端优化：上传人自查免留痕 + 电话确认房态三选项 | CLAUDE_DOING
 
 用户直接指派两项小程序前端优化。**本会话占用以下点，请其它线本轮避让/先提交、勿并发改（作用域提交、不扫他线 WIP）**：
