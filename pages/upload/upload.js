@@ -17,10 +17,11 @@ function isAuthError(error) {
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
 const FALLBACK_MAX_VIDEO_MB = 300 // 与服务端 OSS 策略默认上限对齐的前端预检兜底值
 const DEFAULT_COMMISSION_CONFIG = {
-  totalRate: 20,
-  secondLandlordRate: 15,
+  secondLandlordRate: 20,
   ownerRate: 20,
-  companyRate: 0
+  companyRate: 0,
+  secondLandlordPlatformRate: 10,
+  ownerPlatformRate: 10
 }
 
 const defaultForm = {
@@ -78,21 +79,23 @@ function requiresUploadVideo(form = {}) {
 
 function normalizeCommissionConfig(config) {
   const source = config || {}
-  const rates = source.uploaderRates || {}
+  const upRates = source.uploaderRates || {}
+  const platRates = source.platformRates || {}
   const pickRate = (value, fallback) => (value === undefined || value === null || value === '' ? fallback : Number(value))
   return {
-    totalRate: pickRate(source.totalRate, DEFAULT_COMMISSION_CONFIG.totalRate),
-    secondLandlordRate: pickRate(source.secondLandlordRate, rates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordRate : rates['二房东房源']),
-    ownerRate: pickRate(source.ownerRate, rates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerRate : rates['业主房源']),
+    secondLandlordRate: pickRate(source.secondLandlordRate, upRates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordRate : upRates['二房东房源']),
+    ownerRate: pickRate(source.ownerRate, upRates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerRate : upRates['业主房源']),
+    secondLandlordPlatformRate: pickRate(source.secondLandlordPlatformRate, platRates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordPlatformRate : platRates['二房东房源']),
+    ownerPlatformRate: pickRate(source.ownerPlatformRate, platRates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerPlatformRate : platRates['业主房源']),
     companyRate: 0
   }
 }
 
 function commissionRuleText(form = {}, config = DEFAULT_COMMISSION_CONFIG) {
   const rule = normalizeCommissionConfig(config)
-  if (form.companyListing) return '公司房源成交不抽佣'
-  if (form.ownerType === '业主房源') return `上传人按房东实付佣金的 ${rule.ownerRate}% 结算`
-  return `上传人最高${rule.secondLandlordRate}%`
+  if (form.companyListing) return '公司房源成交不抽佣，带看中介全佣'
+  const rate = form.ownerType === '业主房源' ? rule.ownerRate : rule.secondLandlordRate
+  return `别人带看成交你上传的这条房源，你按成交总佣金拿 ${rate}% 收益`
 }
 
 function normalizeUploadFeatures(features) {

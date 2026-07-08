@@ -67,12 +67,12 @@ function run() {
   assert.strictEqual(convertedSecondLandlord.companyListing, false, 'mock listing should clear company flag')
   assert.strictEqual(convertedSecondLandlord.isCompanyListing, false, 'mock listing should clear legacy company flag')
   assert.strictEqual(convertedSecondLandlord.noCommission, false, 'mock listing should clear noCommission after leaving company source')
-  assert.strictEqual(convertedSecondLandlord.commissionRate, 15, 'mock second-landlord listing should recompute uploader rate to 15')
+  assert.strictEqual(convertedSecondLandlord.commissionRate, 20, 'mock second-landlord listing should recompute uploader rate to 20')
   assert.strictEqual(convertedSecondLandlord.features.indexOf(TEXT.noCommission), -1, 'mock listing should remove no-commission feature')
 
   const detail = mockData.getListingDetail(company.id)
   assert.strictEqual(detail.noCommission, false, 'mock detail should expose commission-enabled state')
-  assert.strictEqual(detail.commissionRate, 15, 'mock detail should expose recomputed second-landlord rate')
+  assert.strictEqual(detail.commissionRate, 20, 'mock detail should expose recomputed second-landlord rate')
   assert.strictEqual(detail.features.indexOf(TEXT.noCommission), -1, 'mock detail should not expose no-commission feature')
 
   const owner = mockData.updateNormalListing(company.id, listingPayload({

@@ -6,7 +6,7 @@ const {
 } = require('./listing-features')
 
 const COMPANY_SOURCE = '公司房源'
-const V1_COMMISSION_TEXT = '成交总比例按房东实付佣金的 20% 计算'
+const V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算'
 const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣'
 const VERIFY_STALE_DAYS = 7
 

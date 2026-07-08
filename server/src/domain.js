@@ -836,7 +836,7 @@ function listingSourceFields(listing = {}, db = {}) {
     noCommission,
     sourceLabel,
     commissionText: noCommission ? COMPANY_COMMISSION_TEXT : publicCommissionTextForOwnerType(ownerType, db),
-    commissionBadge: noCommission ? '公司房源' : `${commissionRate}%`
+    commissionBadge: noCommission ? '带看全佣' : `分佣 ${commissionRate + platformRateByOwnerType(ownerType, db)}%`
   }
 }
 

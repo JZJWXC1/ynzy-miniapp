@@ -314,7 +314,7 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const rawListing = db.listings.find((item) => item.id === created.id)
   assert.strictEqual(rawListing.uploaderId, 'U1', '上传人必须来自服务端当前用户')
-  assert.strictEqual(rawListing.commissionRate, 15, '二房东房源分佣比例必须由后端固定为 15%')
+  assert.strictEqual(rawListing.commissionRate, 20, '二房东房源分佣比例必须由后端固定为 20%')
 
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
@@ -363,11 +363,11 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
 
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(db.commissionRecords.length, 1, '管理员确认后必须生成正式分佣记录')
-  assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东房源成交总比例必须固定 20%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 15, '二房东房源上传人到手比例必须固定 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformRate, 5, '二房东房源平台留存比例必须固定 5%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 75000, '二房东房源上传人分佣必须等于房东实付佣金的 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 25000, '二房东房源平台留存必须等于房东实付佣金的 5%')
+  assert.strictEqual(confirmResult.commissionRecord.rate, 30, '二房东房源成交总分出必须固定 30%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 20, '二房东房源上传人到手比例必须固定 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformRate, 10, '二房东房源平台留存比例必须固定 10%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 100000, '二房东房源上传人分佣必须等于成交总佣金的 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 50000, '二房东房源平台留存必须等于成交总佣金的 10%')
 
   const ownerListing = domain.addNormalListing(db, 'U1', listingPayload({
     communityName: '京漾东韵府',
@@ -397,11 +397,11 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   const ownerDeal = db.dealRecords.find((item) => item.id === ownerDealResult.deal.id)
   assert.ok(!Object.prototype.hasOwnProperty.call(ownerDeal, 'commissionRate'), '业主签单不能保存客户端 commissionRate')
   const ownerConfirm = domain.confirmDeal(db, 'ADMIN', ownerDeal.id)
-  assert.strictEqual(ownerConfirm.commissionRecord.rate, 20, '业主房源成交总比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.rate, 30, '业主房源成交总分出必须固定 30%')
   assert.strictEqual(ownerConfirm.commissionRecord.uploaderRate, 20, '业主房源上传人到手比例必须固定 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 0, '业主房源平台留存比例必须固定 0%')
-  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于房东实付佣金的 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 0, '业主房源平台留存必须为 0')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 10, '业主房源平台留存比例必须固定 10%')
+  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于成交总佣金的 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 50000, '业主房源平台留存必须等于成交总佣金的 10%')
 
   const beforeCompanyCommissionCount = db.commissionRecords.length
   const companyReportResult = domain.createClientReport(db, 'U2', companyNoVideo.id, {

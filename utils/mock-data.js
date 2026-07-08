@@ -11,7 +11,7 @@
   var NO_COMMISSION_FEATURE = '不分佣';
   var DEPOSIT_FREE_FEATURE = '免押金';
   var COMPANY_SOURCE = '公司房源';
-  var V1_COMMISSION_TEXT = '成交总比例按房东实付佣金的 20% 计算';
+  var V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
   var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
   var OWNER_SOURCE = '业主房源';
@@ -19,7 +19,8 @@
   var OWNER_SOURCE_ALIASES = [OWNER_SOURCE, '业主'];
   var SECOND_LANDLORD_SOURCE_ALIASES = [SECOND_LANDLORD_SOURCE, '二房东', '二房東', '普通上传', '合作房源'];
   var OWNER_COMMISSION_RATE = 20;
-  var SECOND_LANDLORD_COMMISSION_RATE = 15;
+  var SECOND_LANDLORD_COMMISSION_RATE = 20;
+  var PLATFORM_COMMISSION_RATE = 10;
   var BROKER_ROLE = '中介';
   var BROKER_AUTHED = '手机号登录';
   var VERIFY_STALE_DAYS = 7;
@@ -189,15 +190,21 @@
       updatedBy: ''
     },
     commissionConfig: {
-      totalRate: 20,
       uploaderRates: {
-        '二房东房源': 15,
+        '二房东房源': 20,
         '业主房源': 20,
         '公司房源': 0
       },
-      secondLandlordRate: 15,
+      platformRates: {
+        '二房东房源': 10,
+        '业主房源': 10,
+        '公司房源': 0
+      },
+      secondLandlordRate: 20,
       ownerRate: 20,
       companyRate: 0,
+      secondLandlordPlatformRate: 10,
+      ownerPlatformRate: 10,
       updatedAt: '',
       updatedBy: ''
     },
@@ -455,7 +462,7 @@
   function boundedRate(value, fallback) {
     var number = Number(value);
     if (!Number.isFinite(number)) return fallback;
-    return Math.min(20, Math.max(0, Math.round(number * 100) / 100));
+    return Math.min(100, Math.max(0, Math.round(number * 100) / 100));
   }
 
   function firstDefinedValue(primary, fallback) {
@@ -464,19 +471,28 @@
 
   function getCommissionConfig() {
     var saved = state.commissionConfig || {};
-    var rates = saved.uploaderRates || {};
-    var secondLandlordRate = boundedRate(firstDefinedValue(saved.secondLandlordRate, rates[SECOND_LANDLORD_SOURCE]), SECOND_LANDLORD_COMMISSION_RATE);
-    var ownerRate = boundedRate(firstDefinedValue(saved.ownerRate, rates[OWNER_SOURCE]), OWNER_COMMISSION_RATE);
+    var upRates = saved.uploaderRates || {};
+    var platRates = saved.platformRates || {};
+    var secondLandlordRate = boundedRate(firstDefinedValue(saved.secondLandlordRate, upRates[SECOND_LANDLORD_SOURCE]), SECOND_LANDLORD_COMMISSION_RATE);
+    var ownerRate = boundedRate(firstDefinedValue(saved.ownerRate, upRates[OWNER_SOURCE]), OWNER_COMMISSION_RATE);
+    var secondLandlordPlatformRate = boundedRate(firstDefinedValue(saved.secondLandlordPlatformRate, platRates[SECOND_LANDLORD_SOURCE]), PLATFORM_COMMISSION_RATE);
+    var ownerPlatformRate = boundedRate(firstDefinedValue(saved.ownerPlatformRate, platRates[OWNER_SOURCE]), PLATFORM_COMMISSION_RATE);
     var uploaderRates = {};
     uploaderRates[SECOND_LANDLORD_SOURCE] = secondLandlordRate;
     uploaderRates[OWNER_SOURCE] = ownerRate;
     uploaderRates[COMPANY_SOURCE] = 0;
+    var platformRates = {};
+    platformRates[SECOND_LANDLORD_SOURCE] = secondLandlordPlatformRate;
+    platformRates[OWNER_SOURCE] = ownerPlatformRate;
+    platformRates[COMPANY_SOURCE] = 0;
     return {
-      totalRate: 20,
       uploaderRates: uploaderRates,
+      platformRates: platformRates,
       secondLandlordRate: secondLandlordRate,
       ownerRate: ownerRate,
       companyRate: 0,
+      secondLandlordPlatformRate: secondLandlordPlatformRate,
+      ownerPlatformRate: ownerPlatformRate,
       updatedAt: saved.updatedAt || '',
       updatedBy: saved.updatedBy || ''
     };
@@ -484,21 +500,28 @@
 
   function updateCommissionConfig(payload) {
     var data = payload || {};
-    var rates = data.uploaderRates || {};
+    var upRates = data.uploaderRates || {};
+    var platRates = data.platformRates || {};
     var current = getCommissionConfig();
     var uploaderRates = {};
-    uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordRate, rates[SECOND_LANDLORD_SOURCE]), current.secondLandlordRate);
-    uploaderRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerRate, rates[OWNER_SOURCE]), current.ownerRate);
+    uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordRate, upRates[SECOND_LANDLORD_SOURCE]), current.secondLandlordRate);
+    uploaderRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerRate, upRates[OWNER_SOURCE]), current.ownerRate);
     uploaderRates[COMPANY_SOURCE] = 0;
+    var platformRates = {};
+    platformRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordPlatformRate, platRates[SECOND_LANDLORD_SOURCE]), current.secondLandlordPlatformRate);
+    platformRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerPlatformRate, platRates[OWNER_SOURCE]), current.ownerPlatformRate);
+    platformRates[COMPANY_SOURCE] = 0;
     state.commissionConfig = {
-      totalRate: 20,
       uploaderRates: uploaderRates,
+      platformRates: platformRates,
       companyRate: 0,
       updatedAt: '刚刚',
       updatedBy: 'preview-admin'
     };
-    state.commissionConfig.secondLandlordRate = state.commissionConfig.uploaderRates[SECOND_LANDLORD_SOURCE];
-    state.commissionConfig.ownerRate = state.commissionConfig.uploaderRates[OWNER_SOURCE];
+    state.commissionConfig.secondLandlordRate = uploaderRates[SECOND_LANDLORD_SOURCE];
+    state.commissionConfig.ownerRate = uploaderRates[OWNER_SOURCE];
+    state.commissionConfig.secondLandlordPlatformRate = platformRates[SECOND_LANDLORD_SOURCE];
+    state.commissionConfig.ownerPlatformRate = platformRates[OWNER_SOURCE];
     state.footprints.unshift({
       id: 'F' + Date.now(),
       viewerId: 'preview-admin',
@@ -510,10 +533,8 @@
   }
 
   function publicCommissionTextForOwnerType(ownerType) {
-    var config = getCommissionConfig();
-    return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
-      ? '管理员确认签单后，上传人按房东实付佣金的 ' + config.ownerRate + '% 结算'
-      : '成交总比例按房东实付佣金的 ' + config.totalRate + '% 计算';
+    var normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE);
+    return '成交总比例按成交总佣金的 ' + totalCommissionRateByOwnerType(normalized) + '% 计算';
   }
 
   function commissionRateByOwnerType(ownerType) {
@@ -521,6 +542,17 @@
     return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
       ? config.ownerRate
       : config.secondLandlordRate;
+  }
+
+  function platformRateByOwnerType(ownerType) {
+    var config = getCommissionConfig();
+    return normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE) === OWNER_SOURCE
+      ? config.ownerPlatformRate
+      : config.secondLandlordPlatformRate;
+  }
+
+  function totalCommissionRateByOwnerType(ownerType) {
+    return commissionRateByOwnerType(ownerType) + platformRateByOwnerType(ownerType);
   }
 
   function isOwnerListing(listing) {
@@ -716,7 +748,7 @@
       communityMatchStatus: data.communityMatchStatus || (data.communityMatched === false ? '未匹配' : '已匹配'),
       sourceLabel: sourceLabel,
       commissionText: companyListing ? COMPANY_COMMISSION_TEXT : publicCommissionTextForOwnerType(ownerType),
-      commissionBadge: companyListing ? COMPANY_COMMISSION_TEXT : String(commissionRateByOwnerType(ownerType)) + '%'
+      commissionBadge: companyListing ? '带看全佣' : ('分佣 ' + totalCommissionRateByOwnerType(ownerType) + '%')
     };
   }
 
@@ -2212,7 +2244,7 @@
     if (!address || !form.contact || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
       throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
     }
-    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
+    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 100) {
       throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {
@@ -2344,7 +2376,7 @@
     var sourceState = prepareSourceFields(form, listing, featureState);
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
-    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 20) {
+    if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 100) {
       throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
     if (sourceState.companyListing && !(getUser() || {}).isAdmin) {

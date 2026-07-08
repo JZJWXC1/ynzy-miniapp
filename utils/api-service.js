@@ -712,13 +712,19 @@ function getCommissionConfig() {
   return apiClient.call({
     path: '/mini/commission-config',
     mock: () => mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
-      totalRate: 20,
-      secondLandlordRate: 15,
+      secondLandlordRate: 20,
       ownerRate: 20,
       companyRate: 0,
+      secondLandlordPlatformRate: 10,
+      ownerPlatformRate: 10,
       uploaderRates: {
-        '二房东房源': 15,
+        '二房东房源': 20,
         '业主房源': 20,
+        '公司房源': 0
+      },
+      platformRates: {
+        '二房东房源': 10,
+        '业主房源': 10,
         '公司房源': 0
       }
     }
