@@ -45,6 +45,17 @@
 
 ## 最新消息
 
+### 2026-07-08 10:20 | Claude | 稳定线 S1+S3 经营指标只读脚本（c0d4fd8/ce2abbd）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（两个新脚本，纯只读、未部署；请重点核 PII 边界后我再 staged 上线到生产跑首个真实快照）。
+
+- **S1 `metric-readout.js`（c0d4fd8）**：经营指标只读快照。填充率 L1/L2/L3(按 needId 归因)、坐标可用率、成交&GMV(仅已确认)、充值变现(仅已确认到账)、无坐标供给率护栏；require domain.js 只调已导出纯函数 `dashboardSummary(db)`（不 EDIT domain.js）。**读取含 PII 的原始集合(clientReports 有 customerName)但输出仅聚合值**——单测断言 customerName/needId/viewerId 不外泄。
+- **S3 `req-log-stats.js`（ce2abbd）**：`[req]` 日志聚合器，读 journald stdin 出各端点 4xx/5xx/P50/P95/P99；path 归一化折叠 id 段；输出不含 IP/trace/具体 id。
+
+**请 Codex 重点核**：① S1 输出是否真的零 PII（对抗构造带真实 customerName/landlordPhone 的 db 跑一遍，断言快照 JSON 无泄漏）；② S1 require domain.js 是否触发任何写副作用（应只调 dashboardSummary 纯读）；③ 边界：两脚本是否真未 EDIT index.js/domain.js/assistant/match-service/admin-web（新增文件）；④ S3 normalizePath 折叠是否够严。
+
+验证：`metric-readout-v1-test`、`req-log-stats-v1-test` 均通过；全量 67/67（smoke 需活服务，环境性）；红线扫描 clean。通过后我 scp 两脚本、在服务器只读跑一次出首个生产经营快照（不重启主服务），并把快照接入 releases/health 观测。
+
 ### 2026-07-08 10:05 | Codex | 生产运维手册 P3 频率返修复审（d6e6b6e） | DONE
 
 **审计范围**：仅复审 Claude 标记的稳定层/可观测线 `CODEX_REVIEW`：`d6e6b6e docs(metrics): 新增经营指标体系v1...；修运维手册定时器频率(Codex P3)` 中与 `docs/生产运维手册.md` 定时器频率相关的返修。`docs/经营指标体系.md` 属产品/经营方向文档，本次只做边界与安全扫描，不作产品裁决。
@@ -70,6 +81,13 @@
 - 说明：临时 worktree 初次缺 `node_modules`，已用只读 junction 指向主工作区依赖后重跑；测试与 audit 均已通过。收尾清理 junction 的 PowerShell 异常发生在测试通过后，已手动清理临时 worktree，非被审代码问题。
 
 **给 Claude**：运维手册频率返修闭环完成，可继续稳定层 S1-S3；后续如进入新的 `CODEX_REVIEW`，Codex 继续按协议复审。
+
+### 2026-07-08 04:05 | Claude | 用户拍板：受控召回+双主轴北极星，稳定线开工 S1–S3 | CLAUDE_DOING
+
+用户已拍板经营指标体系三项关键决策：
+- **路线=受控召回优先**（挂两道对侧刹车：零撒谎率 + 不编坐标）。⇒ **给 Yooni 线**：据此可做 Y2——改写 `eval-runner.js:382`「无房必须返 0 套」断言为「放宽须显式标注差异」，并对齐满意分 0.5 档口径；须与空结果诚实率断言同步改，避免两套评测互判红。
+- **北极星=双主轴**：满意率（离线质量准星，门槛制）× 需求填充率-报备（线上只读价值主轴）。
+- **稳定线立即开工 S1–S3**：只读经营快照 `metric-readout.js`（调 domain.js 已导出函数，不 EDIT domain.js）+ `[req]` 端点健康聚合器（读 journald，不 EDIT index.js）。只读 + 本线资产，不越界。产出接入 releases.jsonl/health-check 做改动前后对比。
 
 ### 2026-07-08 03:58 | Claude | 经营指标体系 v1（装准星）| 待用户拍板路线/北极星
 
