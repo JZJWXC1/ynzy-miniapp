@@ -280,8 +280,11 @@ Page({
     ],
     inputText: '',
     needHistory: [],
+    voiceMode: true,
     voiceText: '',
     isVoiceListening: false,
+    voiceCancelActive: false,
+    voicePhase: '',
     loading: false,
     scrollTarget: 'bottom-anchor'
   },
@@ -345,19 +348,23 @@ Page({
     this.voiceController = voiceInput.createController({
       onStart: () => {
         this.lastVoiceRecognizedText = ''
-        this.setData({ isVoiceListening: true })
+        this.setData({ isVoiceListening: true, voicePhase: 'recording', voiceCancelActive: false, voiceText: '' })
+        if (this.voicePressing === false && this.voiceController) {
+          try { this.voiceController.stop() } catch (error) {}
+        }
       },
       onRecognize: (text) => {
         const recognizedText = String(text || '').trim()
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText
-        if (text && !this.data.loading) this.setData({ inputText: text })
+        // 录音中实时字幕只进浮层，松开确认后再发送（仿微信按住说话）。
+        this.setData({ voiceText: text })
       },
       onTranscribing: () => {
-        this.setData({ isVoiceListening: false })
+        if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' })
       },
       onStop: (text) => {
-        this.setData({ isVoiceListening: false })
         const content = String(text || this.lastVoiceRecognizedText || '').trim()
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
@@ -367,8 +374,12 @@ Page({
           this.submitNeed(content, 'voice')
         })
       },
+      onCancel: () => {
+        this.lastVoiceRecognizedText = ''
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false, voiceText: '' })
+      },
       onError: (error) => {
-        this.setData({ isVoiceListening: false })
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
         wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
     })
@@ -377,24 +388,73 @@ Page({
     }
   },
 
-  toggleVoiceInput() {
+  toggleVoiceMode() {
+    if (this.data.voicePhase) return
+    const nextVoice = !this.data.voiceMode
+    if (nextVoice && wx.hideKeyboard) {
+      try { wx.hideKeyboard() } catch (error) {}
+    }
+    this.setData({ voiceMode: nextVoice })
+  },
+
+  onVoiceTouchStart(event) {
     if (this.data.loading) return
     const controller = this.ensureVoiceInput()
     if (!controller) {
       wx.showToast({ title: this.voiceUnavailableMessage || '当前环境暂不支持语音输入', icon: 'none' })
       return
     }
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
+    this.voiceStartY = Number(touch.clientY || touch.pageY || 0)
+    this.voicePressing = true
+    this.lastVoiceRecognizedText = ''
+    this.setData({ voiceCancelActive: false, voiceText: '' })
+    if (wx.vibrateShort) {
+      try { wx.vibrateShort({ type: 'light' }) } catch (error) {}
+    }
     try {
-      if (this.data.isVoiceListening) {
-        controller.stop()
-        return
-      }
       controller.start()
     } catch (error) {
-      this.setData({ isVoiceListening: false })
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
       wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' })
     }
   },
+
+  onVoiceTouchMove(event) {
+    if (this.data.voicePhase !== 'recording') return
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
+    const y = Number(touch.clientY || touch.pageY || 0)
+    const slideUp = (this.voiceStartY - y) > 80
+    if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp })
+  },
+
+  onVoiceTouchEnd() {
+    this.voicePressing = false
+    const controller = this.voiceController
+    if (!controller) {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+      return
+    }
+    if (this.data.voiceCancelActive) {
+      controller.cancel()
+      return
+    }
+    if (this.data.voicePhase === 'recording') {
+      try { controller.stop() } catch (error) { controller.cancel() }
+    }
+  },
+
+  onVoiceTouchCancel() {
+    this.voicePressing = false
+    const controller = this.voiceController
+    if (controller) {
+      controller.cancel()
+    } else {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+    }
+  },
+
+  noop() {},
 
   handleInput(event) {
     this.setData({ inputText: event.detail.value })

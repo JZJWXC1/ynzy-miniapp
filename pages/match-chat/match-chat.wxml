@@ -197,7 +197,22 @@
 
   <view class="composer">
     <view class="composer-panel">
+      <!-- 语音/键盘切换（仿微信）：键盘态显麦克风(点→语音)、语音态显键盘(点→文字) -->
+      <view class="voice-switch {{voicePhase ? 'busy' : ''}} {{loading ? 'disabled' : ''}}" bindtap="toggleVoiceMode" aria-role="button" aria-label="{{voiceMode ? '切换到键盘输入' : '切换到语音输入'}}">
+        <view wx:if="{{!voiceMode}}" class="mic-icon">
+          <view class="mic-head"></view>
+          <view class="mic-neck"></view>
+          <view class="mic-base"></view>
+        </view>
+        <view wx:else class="kbd-icon">
+          <view class="kbd-row"><view class="kbd-key"></view><view class="kbd-key"></view><view class="kbd-key"></view></view>
+          <view class="kbd-row"><view class="kbd-key"></view><view class="kbd-key"></view><view class="kbd-key"></view></view>
+          <view class="kbd-row"><view class="kbd-key kbd-space"></view></view>
+        </view>
+      </view>
+      <!-- 键盘模式：文本输入 -->
       <input
+        wx:if="{{!voiceMode}}"
         class="chat-input"
         value="{{inputText}}"
         bindinput="handleInput"
@@ -206,19 +221,39 @@
         disabled="{{loading}}"
         placeholder="说一句客户预算、区域和户型"
       />
-      <view class="chat-mic-button {{isVoiceListening ? 'active' : ''}} {{loading ? 'disabled' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
-        <view class="mic-icon">
-          <view class="mic-head"></view>
-          <view class="mic-neck"></view>
-          <view class="mic-base"></view>
-        </view>
-        <view wx:if="{{isVoiceListening}}" class="voice-wave">
-          <view class="wave-bar bar-1"></view>
-          <view class="wave-bar bar-2"></view>
-          <view class="wave-bar bar-3"></view>
-        </view>
+      <!-- 语音模式：按住说话 -->
+      <view
+        wx:else
+        class="hold-to-talk {{voicePhase === 'recording' ? (voiceCancelActive ? 'cancel' : 'talking') : ''}} {{loading ? 'disabled' : ''}}"
+        bindtouchstart="onVoiceTouchStart"
+        catchtouchmove="onVoiceTouchMove"
+        bindtouchend="onVoiceTouchEnd"
+        bindtouchcancel="onVoiceTouchCancel"
+        aria-role="button"
+      >
+        <text class="hold-text">{{loading ? '匹配中…' : (voicePhase === 'recording' ? '松开 结束' : '按住 说话')}}</text>
       </view>
       <view class="send-button {{loading ? 'disabled' : ''}}" bindtap="sendMessage" aria-role="button">{{loading ? '匹配中' : '找房'}}</view>
+    </view>
+  </view>
+
+  <!-- 语音录音浮层（仿微信：按住说话时全屏，上滑进入取消态） -->
+  <view wx:if="{{voicePhase}}" class="voice-rec-mask" catchtouchmove="noop">
+    <view class="voice-rec-panel {{voiceCancelActive ? 'cancel' : ''}}">
+      <view class="voice-rec-caption">{{voiceText ? voiceText : (voicePhase === 'transcribing' ? '识别中…' : '正在听，请说…')}}</view>
+      <view class="voice-rec-bubble {{voiceCancelActive ? 'cancel' : ''}}">
+        <block wx:if="{{!voiceCancelActive}}">
+          <view class="rec-wave">
+            <view class="rw b1"></view>
+            <view class="rw b2"></view>
+            <view class="rw b3"></view>
+            <view class="rw b4"></view>
+            <view class="rw b5"></view>
+          </view>
+        </block>
+        <view wx:else class="rec-cancel-x"><view class="x1"></view><view class="x2"></view></view>
+      </view>
+      <view class="voice-rec-hint {{voiceCancelActive ? 'cancel' : ''}}">{{voiceCancelActive ? '松开手指，取消发送' : '手指上滑，取消发送'}}</view>
     </view>
   </view>
 </view>

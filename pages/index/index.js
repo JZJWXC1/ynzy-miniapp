@@ -573,7 +573,7 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
 Page({
   data: {
     assistantText: '',
-    voiceMode: false,
+    voiceMode: true,
     isVoiceListening: false,
     voiceCancelActive: false,
     voicePhase: '',
