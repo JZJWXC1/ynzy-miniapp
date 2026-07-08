@@ -107,11 +107,6 @@ function userById(db, userId) {
   return (db.users || []).find((user) => user.id === userId)
 }
 
-function userByPhone(db, phone) {
-  const target = String(phone || '').trim()
-  return (db.users || []).find((user) => String(user.phone || '') === target)
-}
-
 function listingById(db, listingId) {
   return (db.listings || []).find((listing) => listing.id === listingId)
 }
@@ -1093,7 +1088,8 @@ function loginByPhone(db, phone) {
     error.statusCode = 400
     throw error
   }
-  const user = userByPhone(db, target)
+  // 软删账号（deleted=true）禁止登录：只匹配未删除用户；同号历史软删记录保留但不放行。
+  const user = (db.users || []).find((item) => String(item.phone || '') === target && !item.deleted)
   if (!user) {
     const error = new Error('该手机号未开通内部中介账号，请联系管理员开通')
     error.statusCode = 403
@@ -1121,13 +1117,178 @@ function registerUser(db, payload = {}) {
     throw error
   }
 
-  const existed = userByPhone(db, phone)
+  // 已开通且未删除的账号：直接按登录返回（向后兼容既有已审核账号“注册即登录”）。
+  const existed = (db.users || []).find((item) => String(item.phone || '') === phone && !item.deleted)
   if (existed) {
     return clone(existed)
   }
 
-  const error = new Error('第一版仅支持内部邀请开通账号，请联系管理员添加中介账号')
-  error.statusCode = 403
+  // 未开通：落库为“待审核”注册申请，等管理员在后台审核开通（此处不发 token，路由层据 pendingReview
+  // 返回待审核提示）。手机号去重：同号已有待审核申请→刷新姓名/时间不重复建；已驳回/已通过(账号被删)
+  // →重置为待审核允许重新申请。
+  db.registrationRequests = db.registrationRequests || []
+  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  const pendingExisted = db.registrationRequests.find((item) => String(item.phone || '') === phone)
+  if (pendingExisted) {
+    pendingExisted.name = name || pendingExisted.name
+    if (pendingExisted.status !== '待审核') {
+      pendingExisted.status = '待审核'
+      pendingExisted.reAppliedAt = nowText
+      delete pendingExisted.rejectReason
+    }
+    pendingExisted.updatedAt = nowText
+  } else {
+    db.registrationRequests.unshift({
+      id: id('R'),
+      name,
+      phone,
+      status: '待审核',
+      source: 'mini-register',
+      createdAt: nowText,
+      updatedAt: nowText
+    })
+  }
+  return {
+    pendingReview: true,
+    status: '待审核',
+    message: '注册申请已提交，请等待管理员审核开通账号（无需重复提交）'
+  }
+}
+
+// ---------- 账号类型与创建/删除（需求1：中介/员工账号 + 全类型软删） ----------
+// 语义（与用户确认）：管理账号=后台账号(adminAccounts，走 /admin/accounts)；中介/员工=小程序用户
+// (db.users，手机号登录)。中介 role=中介(有敏感查看额度)、员工 role=内部员工(内部上传/带看)。
+const MANAGED_USER_TYPES = {
+  broker: { role: BROKER_ROLE, authed: BROKER_AUTHED, label: '中介账号' },
+  staff: { role: '内部员工', authed: BROKER_AUTHED, label: '员工账号' }
+}
+
+function normalizeManagedType(type) {
+  const raw = String(type || '').trim()
+  if (raw === 'broker' || raw === '中介' || raw === '中介账号') return 'broker'
+  if (raw === 'staff' || raw === '员工' || raw === '内部员工' || raw === '员工账号') return 'staff'
+  return ''
+}
+
+// 创建中介/员工账号（db.users）。后台“新增账号”与“注册审核开通”共用同一条创建路径，口径一致。
+function createManagedUser(db, payload = {}) {
+  const kind = normalizeManagedType(payload.type)
+  if (!kind) {
+    const error = new Error('账号类型只能是中介或员工')
+    error.statusCode = 400
+    throw error
+  }
+  const name = String(payload.name || '').trim()
+  const phone = String(payload.phone || '').trim()
+  if (!name) {
+    const error = new Error('姓名必填')
+    error.statusCode = 400
+    throw error
+  }
+  if (!/^1\d{10}$/.test(phone)) {
+    const error = new Error('请输入 11 位手机号')
+    error.statusCode = 400
+    throw error
+  }
+  db.users = db.users || []
+  // 去重：同手机号已有未删除账号则拒绝（软删账号不占号，可重新开通）。
+  const active = db.users.find((item) => String(item.phone || '') === phone && !item.deleted)
+  if (active) {
+    const error = new Error('该手机号已开通账号')
+    error.statusCode = 400
+    throw error
+  }
+  const preset = MANAGED_USER_TYPES[kind]
+  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  const user = {
+    id: id('U'),
+    name,
+    phone,
+    role: preset.role,
+    accountType: kind,
+    isAdmin: false,
+    authed: preset.authed,
+    brokerStatus: '启用',
+    points: 0,
+    createdAt: nowText,
+    createdBy: String(payload.operator || '') || 'admin',
+    source: payload.source || 'admin-created'
+  }
+  db.users.push(user)
+  return user
+}
+
+// 软删中介/员工账号：禁止登录 + 从账号列表隐藏，但名下房源/报备/成交/分佣等历史数据原样保留，
+// 避免悬挂引用（与 adminAccounts 软删一致）。管理员用户不在此删除（其后台账号走 /admin/accounts）。
+function deleteManagedUser(db, payload = {}) {
+  const targetId = String(payload.id || '').trim()
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === targetId && !item.deleted)
+  if (!user) {
+    const error = new Error('未找到该账号')
+    error.statusCode = 404
+    throw error
+  }
+  if (user.isAdmin || /管理员/.test(String(user.role || ''))) {
+    const error = new Error('管理员账号请在后台账号列表删除')
+    error.statusCode = 400
+    throw error
+  }
+  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  user.deleted = true
+  user.brokerStatus = '已删除'
+  user.deletedAt = nowText
+  user.deletedBy = String(payload.operator || '') || 'admin'
+  return clone(user)
+}
+
+// ---------- 注册审核（需求2） ----------
+function listRegistrationRequests(db) {
+  return (db.registrationRequests || []).map((item) => clone(item))
+}
+
+// 审核注册申请：通过→按管理员选定类型(中介/员工)开通 db.users；驳回→标记拒绝 + 可留原因。
+function reviewRegistration(db, payload = {}) {
+  const targetId = String(payload.id || '').trim()
+  const action = String(payload.action || '').trim()
+  db.registrationRequests = db.registrationRequests || []
+  const request = db.registrationRequests.find((item) => item.id === targetId)
+  if (!request) {
+    const error = new Error('未找到注册申请')
+    error.statusCode = 404
+    throw error
+  }
+  if (request.status !== '待审核') {
+    const error = new Error('该申请已处理')
+    error.statusCode = 400
+    throw error
+  }
+  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  if (action === 'approve') {
+    // createManagedUser 内部会做手机号去重（若审核期间该号已被开通则拒绝，防重复建号）。
+    const user = createManagedUser(db, {
+      type: payload.type || 'broker',
+      name: request.name,
+      phone: request.phone,
+      operator: payload.operator,
+      source: 'registration'
+    })
+    request.status = '已通过'
+    request.reviewedAt = nowText
+    request.reviewedBy = String(payload.operator || '') || 'admin'
+    request.approvedType = normalizeManagedType(payload.type) || 'broker'
+    request.userId = user.id
+    return { request: clone(request), user: clone(user) }
+  }
+  if (action === 'reject') {
+    request.status = '已驳回'
+    request.reviewedAt = nowText
+    request.reviewedBy = String(payload.operator || '') || 'admin'
+    request.rejectReason = String(payload.reason || '').trim()
+    return { request: clone(request) }
+  }
+  const error = new Error('审核操作只能是通过或驳回')
+  error.statusCode = 400
   throw error
 }
 
@@ -4354,6 +4515,10 @@ module.exports = {
   currentUser,
   loginByPhone,
   registerUser,
+  createManagedUser,
+  deleteManagedUser,
+  listRegistrationRequests,
+  reviewRegistration,
   migrateCompanyListings,
   listingMaintenanceRule,
   setListingMaintenanceRule,

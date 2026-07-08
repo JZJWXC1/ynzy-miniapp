@@ -1564,10 +1564,18 @@
           <h3>新增后台账号</h3>
           <div class="form-grid">
             <label class="form-item">
+              <span>类型</span>
+              <select id="adminTypeInput">
+                <option value="admin">管理账号</option>
+                <option value="broker">中介账号</option>
+                <option value="staff">员工账号</option>
+              </select>
+            </label>
+            <label class="form-item" id="adminUserField">
               <span>员工</span>
               <select id="adminUserId"></select>
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminAccountField">
               <span>账号</span>
               <input id="adminAccountInput" placeholder="3-24 位字母数字">
             </label>
@@ -1575,11 +1583,15 @@
               <span>姓名</span>
               <input id="adminNameInput" placeholder="默认取员工姓名">
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminPhoneField" style="display:none">
+              <span>手机号</span>
+              <input id="adminPhoneInput" placeholder="11 位手机号，中介/员工手机号登录">
+            </label>
+            <label class="form-item" id="adminPasswordField">
               <span>初始密码</span>
               <input id="adminPasswordInput" type="password" placeholder="至少 8 位">
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminPermissionField">
               <span>权限</span>
               <select id="adminPermissionInput">
                 <option value="全部后台权限">全部后台权限</option>
@@ -1597,6 +1609,20 @@
             <thead><tr><th>账号</th><th>姓名</th><th>权限</th><th>今日查看</th><th>状态</th><th>操作</th></tr></thead>
             <tbody id="adminRows"></tbody>
           </table>
+        </div>
+        <div class="config-card">
+          <h3>注册审核</h3>
+          <div class="status-box">小程序注册申请先进入待审核列表，管理员审核通过后才开通账号；通过时选择开通为中介或员工，驳回可留原因。</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>姓名</th><th>手机号</th><th>申请时间</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="registrationRows"></tbody>
+            </table>
+            <div id="registrationEmpty" class="sub-cell" hidden>暂无注册申请。</div>
+          </div>
+          <div class="inline-actions">
+            <button class="ghost-button" id="refreshRegistrations">刷新申请</button>
+          </div>
         </div>
       </section>
 
@@ -3013,7 +3039,8 @@
 
     async function renderAdmins() {
       const payload = await getAdminData('/admin/accounts', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
-      const users = Array.isArray(payload) ? payload : payload.users || [];
+      // 软删账号（deleted=true）从列表与员工下拉隐藏；名下数据仍在后端保留。
+      const users = (Array.isArray(payload) ? payload : payload.users || []).filter((item) => !item.deleted);
       const admins = Array.isArray(payload) ? adminAccounts : payload.admins || adminAccounts;
       fillAdminUserSelect(users);
       const staffRows = users.filter((item) => !item.isAdmin).map((item) => ({
@@ -3023,7 +3050,8 @@
         permission: item.role || '无后台权限',
         todayViews: `业主 ${item.todayOwnerViews || 0}/${item.ownerViewLimit || 3} · 普通 ${item.todayNormalViews || 0}/${item.normalViewLimit || 15}`,
         status: item.brokerStatus || item.authed || '禁止登录',
-        canEdit: false
+        canEdit: false,
+        canDelete: true
       }));
       const rows = admins.map((item) => ({
         id: item.id || item.account,
@@ -3049,7 +3077,11 @@
                 <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
                 ${item.id === currentAdminId ? '' : `<button class="table-action reject delete-admin-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">删除</button>`}
               </div>
-            ` : '-'}</td>
+            ` : (item.canDelete ? `
+              <div class="row-actions">
+                <button class="table-action reject delete-user-button" data-id="${safeAttr(item.id)}" data-name="${safeAttr(item.name)}">删除</button>
+              </div>
+            ` : '-')}</td>
           </tr>
         `;
       }).join('');
@@ -3268,9 +3300,11 @@
 
     function readAdminAccountForm() {
       return {
+        type: document.getElementById('adminTypeInput').value,
         userId: document.getElementById('adminUserId').value,
         account: document.getElementById('adminAccountInput').value.trim(),
         name: document.getElementById('adminNameInput').value.trim(),
+        phone: document.getElementById('adminPhoneInput').value.trim(),
         password: document.getElementById('adminPasswordInput').value.trim(),
         permission: document.getElementById('adminPermissionInput').value
       };
@@ -3279,11 +3313,50 @@
     function resetAdminAccountForm() {
       document.getElementById('adminAccountInput').value = '';
       document.getElementById('adminNameInput').value = '';
+      document.getElementById('adminPhoneInput').value = '';
       document.getElementById('adminPasswordInput').value = '';
+    }
+
+    // 按类型切换新增表单可见字段：管理账号=账号/密码/权限/员工绑定；中介/员工=手机号（手机号登录）。
+    function applyAdminTypeVisibility() {
+      const type = document.getElementById('adminTypeInput').value;
+      const isAdmin = type === 'admin';
+      document.getElementById('adminUserField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminAccountField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPasswordField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPermissionField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPhoneField').style.display = isAdmin ? 'none' : '';
+      const btn = document.getElementById('createAdminAccount');
+      if (btn) btn.textContent = isAdmin ? '创建管理员账号' : (type === 'broker' ? '创建中介账号' : '创建员工账号');
     }
 
     async function createAdminAccount() {
       const form = readAdminAccountForm();
+      // 中介/员工账号：建 db.users（手机号登录），只需姓名+手机号，走 /admin/users。
+      if (form.type === 'broker' || form.type === 'staff') {
+        if (!form.name) {
+          alert('请填写姓名。');
+          return;
+        }
+        if (!/^1\d{10}$/.test(form.phone)) {
+          alert('请填写 11 位手机号。');
+          return;
+        }
+        if (!canUseAdminApi()) {
+          alert('请通过后端地址打开后台后再创建中介/员工账号：/admin-web/');
+          return;
+        }
+        await adminRequest('/admin/users', {
+          method: 'POST',
+          body: JSON.stringify({ type: form.type, name: form.name, phone: form.phone })
+        });
+        resetAdminAccountForm();
+        await renderAdmins();
+        alert(form.type === 'broker' ? '中介账号已创建。' : '员工账号已创建。');
+        return;
+      }
+
+      // 管理账号：建 adminAccounts（后台登录），保持原有校验与流程。
       if (!form.account || form.password.length < 8) {
         alert('请填写账号，并设置至少 8 位密码。');
         return;
@@ -3347,6 +3420,84 @@
       await renderAdmins();
       await renderLaunchCheck();
       alert('账号已删除。');
+    }
+
+    // 删除中介/员工账号（db.users）：软删，禁止登录 + 列表隐藏，名下房源/成交/分佣历史数据保留。
+    async function deleteManagedUserAccount(id, name) {
+      if (!id) return;
+      if (!window.confirm(`确认删除账号 ${name || id}？删除后该账号将无法登录（软删归档，其名下房源/成交/分佣历史数据保留）。`)) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再删除账号：/admin-web/');
+        return;
+      }
+      await adminRequest(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await renderAdmins();
+      alert('账号已删除。');
+    }
+
+    async function renderRegistrations() {
+      const body = document.getElementById('registrationRows');
+      const empty = document.getElementById('registrationEmpty');
+      if (!body) return;
+      if (!canUseAdminApi()) {
+        body.innerHTML = '';
+        if (empty) { empty.hidden = false; empty.textContent = '请通过后端地址打开后台后查看注册申请：/admin-web/'; }
+        return;
+      }
+      let requests = [];
+      try {
+        const data = await adminRequest('/admin/registrations');
+        requests = (data && data.requests) || [];
+      } catch (error) {
+        body.innerHTML = `<tr><td colspan="5" class="sub-cell">${safeText(error.message || '注册申请获取失败')}</td></tr>`;
+        if (empty) empty.hidden = true;
+        return;
+      }
+      body.innerHTML = requests.map((item) => {
+        const pending = item.status === '待审核';
+        return `
+          <tr>
+            <td>${safeText(item.name || '-')}</td>
+            <td>${safeText(item.phone || '-')}</td>
+            <td>${safeText(item.createdAt || '', '')}</td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '待审核')}</span>${item.rejectReason ? `<span class="sub-cell">${safeText(item.rejectReason)}</span>` : ''}</td>
+            <td>${pending ? `
+              <div class="row-actions">
+                <button class="table-action registration-approve-button" data-id="${safeAttr(item.id)}" data-type="broker">通过为中介</button>
+                <button class="table-action registration-approve-button" data-id="${safeAttr(item.id)}" data-type="staff">通过为员工</button>
+                <button class="table-action reject registration-reject-button" data-id="${safeAttr(item.id)}">驳回</button>
+              </div>
+            ` : '-'}</td>
+          </tr>
+        `;
+      }).join('');
+      if (empty) {
+        empty.hidden = Boolean(requests.length);
+        empty.textContent = '暂无注册申请。';
+      }
+    }
+
+    async function reviewRegistrationRequest(id, action, type) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再审核注册申请：/admin-web/');
+        return;
+      }
+      let reason = '';
+      if (action === 'approve') {
+        if (!window.confirm(`确认通过该注册申请，开通为${type === 'broker' ? '中介' : '员工'}账号？`)) return;
+      } else {
+        const input = window.prompt('请输入驳回原因（可留空）：', '');
+        if (input === null) return;
+        reason = input;
+      }
+      await adminRequest(`/admin/registrations/${encodeURIComponent(id)}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ action, type, reason })
+      });
+      await renderRegistrations();
+      await renderAdmins();
+      alert(action === 'approve' ? '已通过并开通账号。' : '已驳回。');
     }
 
     // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
@@ -3959,6 +4110,7 @@
       renderAssistantFeedbacks();
       renderAssistantTraces();
       renderAdmins();
+      renderRegistrations();
       renderFeishuSync();
       renderLaunchCheck();
       renderBackupStatus();
@@ -4054,6 +4206,30 @@
       if (deleteAdminButton && !deleteAdminButton.disabled) {
         deleteAdminAccount(deleteAdminButton.dataset.id, deleteAdminButton.dataset.account).catch((error) => {
           alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
+      const deleteUserButton = event.target.closest('.delete-user-button');
+      if (deleteUserButton && !deleteUserButton.disabled) {
+        deleteManagedUserAccount(deleteUserButton.dataset.id, deleteUserButton.dataset.name).catch((error) => {
+          alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
+      const registrationApproveButton = event.target.closest('.registration-approve-button');
+      if (registrationApproveButton && !registrationApproveButton.disabled) {
+        reviewRegistrationRequest(registrationApproveButton.dataset.id, 'approve', registrationApproveButton.dataset.type).catch((error) => {
+          alert(error.message || '审核通过失败');
+        });
+        return;
+      }
+
+      const registrationRejectButton = event.target.closest('.registration-reject-button');
+      if (registrationRejectButton && !registrationRejectButton.disabled) {
+        reviewRegistrationRequest(registrationRejectButton.dataset.id, 'reject').catch((error) => {
+          alert(error.message || '审核驳回失败');
         });
         return;
       }
@@ -4238,6 +4414,13 @@
     document.getElementById('createAdminAccount').addEventListener('click', () => {
       createAdminAccount().catch((error) => {
         alert(error.message || '创建管理员账号失败');
+      });
+    });
+    document.getElementById('adminTypeInput').addEventListener('change', applyAdminTypeVisibility);
+    applyAdminTypeVisibility();
+    document.getElementById('refreshRegistrations').addEventListener('click', () => {
+      renderRegistrations().catch((error) => {
+        alert(error.message || '注册申请刷新失败');
       });
     });
     document.getElementById('dryRunFeishuSync').addEventListener('click', () => {

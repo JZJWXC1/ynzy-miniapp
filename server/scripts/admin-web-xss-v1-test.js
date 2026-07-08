@@ -12,7 +12,7 @@ const innerHtmlAssignments = lines
 
 assert.strictEqual(
   innerHtmlAssignments.length,
-  29,
+  32,
   `admin-web/index.html innerHTML sink count changed; review every new sink and update this test.\n${innerHtmlAssignments.map(({ lineNo, line }) => `${lineNo}: ${line.trim()}`).join('\n')}`
 )
 
@@ -40,7 +40,10 @@ const requiredEscapes = [
   ['footprint action', /\$\{safeText\(item\.action\s*\|\|\s*item\.status\)\}/],
   ['conversation user input', /\$\{safeText\(turn\.userInput\)\}/],
   ['conversation assistant reply', /\$\{safeText\(turn\.assistantReply\)\}/],
-  ['backup latest file', /\$\{safeText\(offsite\.latestFile[^)]*\)\}/]
+  ['backup latest file', /\$\{safeText\(offsite\.latestFile[^)]*\)\}/],
+  ['registration name', /\$\{safeText\(item\.name\s*\|\|\s*'-'\)\}/],
+  ['registration phone', /\$\{safeText\(item\.phone\s*\|\|\s*'-'\)\}/],
+  ['registration reject reason', /\$\{safeText\(item\.rejectReason\)\}/]
 ]
 
 requiredEscapes.forEach(([label, pattern]) => assertPattern(label, pattern))

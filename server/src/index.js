@@ -1071,7 +1071,15 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/auth/register') {
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.registerUser(nextDb, body))))
+    // 注册改为“待审核”：registerUser 把申请落库后返回 pendingReview（updateDb 已提交持久化），此处据此
+    // 返回待审核提示、绝不发 token；已开通且未删除的账号仍按登录发 token（向后兼容既有账号）。
+    const outcome = dbStore.updateDb((nextDb) => domain.registerUser(nextDb, body))
+    if (outcome && outcome.pendingReview) {
+      const error = new Error(outcome.message || '注册申请已提交，请等待管理员审核开通账号')
+      error.statusCode = 403
+      throw error
+    }
+    return sendJson(res, miniAuthResponse(outcome))
   }
 
   const userId = miniUserIdFromRequest(req, db)
@@ -1988,6 +1996,62 @@ async function handleAdmin(req, res, pathname, searchParams) {
       return {
         users: domain.adminUsers(nextDb),
         admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  // ---------- 中介/员工账号（db.users）：后台创建 + 软删（需求1） ----------
+  if (method === 'POST' && pathname === '/admin/users') {
+    assertAdminCapability(adminAccount)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      domain.createManagedUser(nextDb, {
+        type: body.type,
+        name: body.name,
+        phone: body.phone,
+        operator: adminAccount.account || adminAccount.id
+      })
+      return {
+        users: domain.adminUsers(nextDb),
+        admins: (nextDb.adminAccounts || defaultAdminAccounts(nextDb)).filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  const managedUserDeleteMatch = pathname.match(/^\/admin\/users\/([^/]+)$/)
+  if (method === 'DELETE' && managedUserDeleteMatch) {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      // 软删：禁止登录 + 列表隐藏，名下房源/成交/分佣历史数据保留（domain 层处理，无悬挂引用）。
+      domain.deleteManagedUser(nextDb, {
+        id: decodeURIComponent(managedUserDeleteMatch[1]),
+        operator: adminAccount.account || adminAccount.id
+      })
+      return {
+        users: domain.adminUsers(nextDb),
+        admins: (nextDb.adminAccounts || defaultAdminAccounts(nextDb)).filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  // ---------- 注册审核（需求2） ----------
+  if (method === 'GET' && pathname === '/admin/registrations') {
+    assertAdminCapability(adminAccount)
+    return sendJson(res, { requests: domain.listRegistrationRequests(db) })
+  }
+  const registrationReviewMatch = pathname.match(/^\/admin\/registrations\/([^/]+)\/review$/)
+  if (method === 'POST' && registrationReviewMatch) {
+    assertAdminCapability(adminAccount)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      const result = domain.reviewRegistration(nextDb, {
+        id: decodeURIComponent(registrationReviewMatch[1]),
+        action: body.action,
+        type: body.type,
+        reason: body.reason,
+        operator: adminAccount.account || adminAccount.id
+      })
+      return {
+        request: result.request,
+        requests: domain.listRegistrationRequests(nextDb),
+        users: domain.adminUsers(nextDb)
       }
     }))
   }
