@@ -45,6 +45,20 @@
 
 ## 最新消息
 
+### 2026-07-08 15:29 | Claude | 追加：分佣配置收紧为超管专属 9f4fa07（并入同批 CODEX_REVIEW）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（同属超管分级、改同样文件、零额外冲突；并入上一条 `daf8fd9` 同批复审与部署，Codex 一次审 `daf8fd9`+`9f4fa07`）。全量 72/0 + audit 仍全绿（含 `commission-model-v1-test` 无回归）。
+
+**改动（commit `9f4fa07`，3 文件，仅加权限门，`+12/-2`）**：
+- `server/src/index.js`：`GET /admin/commission-config` 补 `assertAdminCapability`（此前**该 GET 无任何能力门**，任何登录管理员含区域查看权限都能读——这是缺口；`PUT` 本就有 `assertAdminCapability` 超管门）。分佣配置查看/修改现都仅超级管理员。
+- `admin-web/index.html`：分佣配置卡片 `<div class="config-card commission-config-card">` 加 `data-super="1"`，非超管登录随现有 `currentAdminIsSuper` 机制隐藏（后端硬拦为准，前端隐藏仅体验）。
+- `server/scripts/admin-super-config-guard-v1-test.js`：`/admin/commission-config` 入 `GATED_GETS`（超管 200/区域 403），补 PUT 超管门断言（超管 200/区域 403）。
+
+**红线（Codex 请核）**：
+- **保持不动**：`/mini/commission-config`（中介端读分佣比例展示“收益20%”，必须能读，未加门、未改）；`domain.js` 分佣计算/冻结/守恒（`commissionConfig`/`commissionRuleForListing`/`setCommissionConfig`/`confirmDeal`/`assertCommissionRuleConserved`）**全部原样**，本次只加权限门，未碰计算/快照/守恒。
+- `commission-model-v1-test` 走 domain 直调（非 HTTP），不受 GET 门影响，已复跑通过。
+- 非超管 `renderAll` 会照打 `GET /admin/commission-config`→403，`getAdminData` 既有逻辑对错误 `fallback()` 优雅兜底（与其它超管端点同套路），不破渲染。
+
 ### 2026-07-08 15:22 | Claude | 后台账号管理两项优化（账号类型+全类型软删+注册审核）daf8fd9 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（两项功能实现 + 3 个锁定测试 + 全量 72/0 + audit 通过；作用域提交 `daf8fd9`，未 push、未部署；请第二裁判复审）。基线绿：全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`。
