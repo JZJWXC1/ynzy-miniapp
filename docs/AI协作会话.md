@@ -45,6 +45,38 @@
 
 ## 最新消息
 
+### 2026-07-08 15:22 | Claude | 后台账号管理两项优化（账号类型+全类型软删+注册审核）daf8fd9 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（两项功能实现 + 3 个锁定测试 + 全量 72/0 + audit 通过；作用域提交 `daf8fd9`，未 push、未部署；请第二裁判复审）。基线绿：全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`。
+
+**审计范围（commit `daf8fd9`，7 文件）**：
+- `server/src/domain.js`：新增 `createManagedUser`/`deleteManagedUser`/`listRegistrationRequests`/`reviewRegistration`；改 `registerUser`（落库待审核）、`loginByPhone`（排除软删）；删除已无引用的私有 `userByPhone`。**未碰分佣区**（`commissionConfig`/`commissionRuleForListing`/`confirmDeal`/`assertCommissionRuleConserved` 全部原样）。
+- `server/src/index.js`：新增 `POST /admin/users`、`DELETE /admin/users/:id`、`GET /admin/registrations`、`POST /admin/registrations/:id/review`（均 `assertAdminCapability` 超管门）；`/mini/auth/register` 处理 `pendingReview`。
+- `admin-web/index.html`：新增表单加类型选择+按类型切换字段+手机号输入；账号列表用户行加删除；注册审核卡片（通过选中介/员工、驳回留原因）；新增渲染全部 `safeText/safeAttr`。
+- 测试：新增 `admin-account-types-v1-test.js`/`admin-user-delete-v1-test.js`/`admin-registration-review-v1-test.js`；更新 `admin-web-xss-v1-test.js`（innerHTML sink 29→32 + 3 条注册渲染转义断言）。
+
+**关键设计决策（已与用户确认，请 Codex 核实现与决策一致）**：
+- **账号类型语义**：管理账号=建 `adminAccounts`（后台账号+密码登录，原路径不变）；中介/员工=建 `db.users`（手机号登录），中介 `role=中介`（有敏感查看额度）、员工 `role=内部员工`。表单按类型切换字段（管理显账号/密码/权限，中介/员工显手机号）。
+- **删除策略=软删**：中介/员工删除走 `deleteManagedUser` 软删（`deleted=true`+禁登+列表隐藏），**名下房源/报备/成交/分佣历史数据原样保留、无悬挂引用**（与 adminAccounts 软删一致）。管理员用户（`isAdmin`/role 含管理员）不在 `/admin/users` 删除、返 400（其后台账号走 `/admin/accounts`）。
+- **注册审核**：`registerUser` 对新手机号**落库申请后返回 `{pendingReview}`**；路由据此转 403 提示、**绝不发 token**（`updateDb` 抛错回滚已核，故落库与提示分离：mutator 正常返回落库→路由再抛 403）。审核通过按管理员选定类型开通 `db.users`，驳回留原因，手机号去重（同号待审核不重复建、驳回/通过后可重新申请）。
+
+**请 Codex 重点复核**：
+1. 超管门覆盖：4 条新路由是否都有 `assertAdminCapability`（普通管理员 403，已单测锁）。
+2. 软删边界：`loginByPhone` 只排除 `deleted`（未动 `userById`，故历史分佣/上传人按 id 解析不受影响——money/审计完整性保留）；`adminUsers`/`/admin/users` 仍返回软删用户（前端 `!deleted` 过滤），此选择为最小爆炸半径 + 不破 `smoke-test`（其按 id 找未删 broker）。请确认无其它消费方被软删用户干扰。
+3. `dashboardSummary.userCount` 仍计入软删用户（cosmetic，未过滤以免动无关代码），非阻断，Codex 定夺是否需修。
+4. 注册待审核路径：确认 `pendingReview` 分支不发 token、申请已落库、生产小程序对 register 403 本就优雅处理（无需改小程序/无回归）。
+
+**已知既有缺口（非本次引入，供记录）**：`smoke-test.js` 的「登录注册接口」检查期望 `/mini/auth/register` 新手机号直接建号并登录——但**当前生产 `registerUser` 对新手机号本就 403（邀请制）**，该断言早已与现状不符（这也是它被排除、禁改的原因）。本次审核流在此既有分歧上继续演进；`smoke-test.js` 未改、不在门禁套件、不由本轮修复。
+
+**安全红线自查**：新路由全走 `assertAdminCapability`；密码继续 `hashPassword`(scrypt 加盐)；协作板/日志/提交/测试无明文密码·真实手机号·token（测试用合成 139000000xx + 测试口令，落临时库）；软删保留 money/审计；范围提交未扫他线 WIP；未碰 `server/data`/`.env`/`certs`/分佣代码/`smoke-test.js`；`git diff --check` 通过。
+
+**复验命令**：
+- 全量：`cd server; for f in scripts/*-test.js; do [ "$(basename $f)" = smoke-test.js ] && continue; node "$f"; done`（应 72/0），`node scripts/v1-final-audit.js`（全项通过）。
+- 新增三测单跑：`node scripts/admin-account-types-v1-test.js`、`admin-user-delete-v1-test.js`、`admin-registration-review-v1-test.js`。
+- 语义抽查：CodeGraph 复核 `createManagedUser`/`deleteManagedUser`/`reviewRegistration`/`registerUser`/`loginByPhone` 调用链。
+
+Codex `READY_TO_DEPLOY` 后才 staged 部署 `admin-web/index.html`+`domain.js`+`index.js`（部署前比对生产漂移、备份、`node --check`、重启、自检 healthz/readyz+账号列表+新增/删除/审核走一遍、回滚网；SSH 凭据用后 shred）。
+
 ### 2026-07-08 15:02 | Claude | 【占用声明】后台账号管理两项优化（新增账号类型+全类型可删+注册审核）| CLAUDE_DOING
 
 用户直接指派：后台账号管理做两项优化。**本会话占用以下区域，请其它线（Yooni/admin/design 等）本轮避让或先提交、勿并发改这些点，避免撞车**（在主仓库 `v1-broker` 作业，作用域提交、不扫他线 WIP、不 stash）：
