@@ -43,6 +43,48 @@ function uniqueCommunities(listings) {
     })
 }
 
+// 我的房源（owner）筛选默认全空——不像公司模式预设拱墅区，避免默认过滤掉自己名下其它区房源。
+const defaultOwnerFilters = {
+  district: '',
+  block: '',
+  community: '',
+  layout: '',
+  rentMode: '',
+  rentMin: '',
+  rentMax: ''
+}
+
+function ownerRentText(item) {
+  if (item.price) return item.price
+  if (item.rent) return `¥${item.rent}/月`
+  return '租金待补充'
+}
+
+function formatOwnerListings(listings) {
+  return (listings || []).map((item) => Object.assign({}, item, {
+    displayRentText: ownerRentText(item)
+  }))
+}
+
+function includesText(hay, needle) {
+  const key = String(needle || '').trim()
+  return !key || String(hay || '').indexOf(key) !== -1
+}
+
+// 本地过滤我的房源：复用公司房源那套筛选维度（整租合租/小区/租金为用户明确要求，另兼容区域/板块/户型）。
+function matchOwnerFilter(item, filters) {
+  const f = filters || {}
+  if (f.district && !includesText(`${item.district || ''}${item.area || ''}`, f.district)) return false
+  if (f.block && !includesText(item.block, f.block)) return false
+  if (f.community && !includesText(`${item.community || ''}${item.locationSummary || ''}${item.title || ''}`, f.community)) return false
+  if (f.layout && f.layout !== '不限' && !includesText(item.layout, f.layout.replace('以上', ''))) return false
+  if (f.rentMode && f.rentMode !== '不限' && String(item.rentMode || item.type || '') !== f.rentMode) return false
+  const rent = Number(String(item.rent == null ? '' : item.rent).replace(/[^0-9.]/g, ''))
+  if (f.rentMin && rent && rent < Number(f.rentMin)) return false
+  if (f.rentMax && rent && rent > Number(f.rentMax)) return false
+  return true
+}
+
 Page({
   data: {
     stats: [],
@@ -53,6 +95,9 @@ Page({
     companyFilters: Object.assign({}, defaultCompanyFilters),
     companyLoading: false,
     companyCommunityOptions: [],
+    ownerFilters: Object.assign({}, defaultOwnerFilters),
+    ownerLoading: false,
+    ownerCommunityOptions: [],
     pageTitle: '我的房源',
     ownerTitle: '我的上传房源',
     ownerDesc: '上传真实可租房源，视频必填；第 3/5/7 天按规则核验房态。',
@@ -81,6 +126,7 @@ Page({
 
   onUnload() {
     if (this.companyFilterTimer) clearTimeout(this.companyFilterTimer)
+    if (this.ownerFilterTimer) clearTimeout(this.ownerFilterTimer)
   },
 
   refresh() {
@@ -92,19 +138,61 @@ Page({
       apiService.getProfileState(),
       apiService.getOwnedListings()
     ]).then(([profile, listings]) => {
+      // 统计基于我的全部房源（不随筛选变化）；筛选只改变下方展示的列表。
+      const all = formatOwnerListings(listings)
+      this.allOwnerListings = all
       this.setData({
         stats: [
-          { label: '在租', value: profile.sourceStats[0].value },
-          { label: '被查看', value: String(listings.reduce((total, item) => {
-            return total + Number(item.views.replace(/[^0-9]/g, '') || 0);
+          { label: '在租', value: (profile.sourceStats[0] || {}).value || String(all.length) },
+          { label: '被查看', value: String(all.reduce((total, item) => {
+            return total + Number(String(item.views || '').replace(/[^0-9]/g, '') || 0);
           }, 0)) },
-          { label: '待电话确认', value: String(listings.filter((item) => item.needsVerify || (item.verifyStatus && item.verifyStatus !== '正常')).length) }
+          { label: '待电话确认', value: String(all.filter((item) => item.needsVerify || (item.verifyStatus && item.verifyStatus !== '正常')).length) }
         ],
-        listings
+        ownerCommunityOptions: uniqueCommunities(all)
       });
+      this.applyOwnerFilters();
     }).catch(() => {
       wx.showToast({ title: '我的房源加载失败', icon: 'none' })
     });
+  },
+
+  // 按当前 ownerFilters 本地过滤我的全部房源，更新展示列表。
+  applyOwnerFilters() {
+    const all = this.allOwnerListings || [];
+    const filters = this.data.ownerFilters || {};
+    this.setData({ listings: all.filter((item) => matchOwnerFilter(item, filters)) });
+  },
+
+  handleOwnerFilterChange(event) {
+    const ownerFilters = Object.assign({}, this.data.ownerFilters, event.detail.filters || {})
+    this.setData({ ownerFilters }, () => {
+      if (event.detail.immediate) {
+        this.applyOwnerFilters()
+        return
+      }
+      if (this.ownerFilterTimer) clearTimeout(this.ownerFilterTimer)
+      this.ownerFilterTimer = setTimeout(() => {
+        this.ownerFilterTimer = null
+        this.applyOwnerFilters()
+      }, 320)
+    })
+  },
+
+  handleOwnerFilterApply(event) {
+    const ownerFilters = Object.assign({}, this.data.ownerFilters, event.detail.filters || {})
+    this.setData({ ownerFilters }, () => this.applyOwnerFilters())
+  },
+
+  resetOwnerFilters() {
+    this.setData({ ownerFilters: Object.assign({}, defaultOwnerFilters) }, () => this.applyOwnerFilters())
+  },
+
+  // 视频首帧封面加载失败时清掉该项 coverUrl，退回占位图。
+  onCoverError(event) {
+    const index = event.currentTarget.dataset.index
+    if (index === undefined || index === null) return
+    this.setData({ [`listings[${index}].coverUrl`]: '' })
   },
 
   refreshCompanyListings() {
@@ -200,12 +288,12 @@ Page({
     const phone = dataset.phone || item.landlordPhone || '';
 
     const submitOutcome = (outcome) => {
-      apiService.verifyMyListing(id, outcome).then((listings) => {
-        this.setData({ listings });
+      apiService.verifyMyListing(id, outcome).then(() => {
         wx.showToast({
           title: outcome === '未出租' ? '已更新·房态已维护' : '已下架该房源',
           icon: 'success'
         });
+        // 重新拉取并按当前筛选重算，避免直接展示未过滤的全量列表。
         this.refresh();
       }).catch(() => {
         wx.showToast({ title: '房态更新失败', icon: 'none' });

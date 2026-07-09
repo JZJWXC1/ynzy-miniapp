@@ -2002,7 +2002,12 @@ function ownedListings(db, userId) {
         ...display,
         // 上传人查看自己上传的房源直接展示地址/房东电话（不留痕、不耗额度）；电话确认房态时用来拨号。放 ...display 后确保不被脱敏值覆盖。
         address: listing.address || '',
-        landlordPhone: listing.landlordPhone || ''
+        landlordPhone: listing.landlordPhone || '',
+        // 我的房源新卡片样式与「整租/合租·租金·户型」筛选所需字段（放 ...display 后确保取房源真值）。
+        rentMode: listing.rentMode || listing.type || '',
+        type: listing.type || listing.rentMode || '',
+        layout: listing.layout || '',
+        status: listing.status || ''
       }
     })
 }

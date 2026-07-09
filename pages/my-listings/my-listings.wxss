@@ -378,6 +378,27 @@ page {
   color: #7A572D;
 }
 
+.listing-landlord {
+  margin-top: 8rpx;
+  color: #7A572D;
+  font-size: 22rpx;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+/* 我的房源新卡片底部的动作区：编辑 / 电话确认 两个按钮并排（catchtap 已阻止冒泡到卡片跳转）。 */
+.owner-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex: 0 0 auto;
+}
+
+.owner-card-actions .edit-button,
+.owner-card-actions .verify-button {
+  margin: 0;
+}
+
 .listing-actions {
   width: 100%;
   display: flex;
