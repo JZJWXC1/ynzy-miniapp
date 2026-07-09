@@ -2,6 +2,7 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
+const { spawn } = require('child_process')
 const { URL } = require('url')
 const config = require('./config')
 const dbStore = require('./db')
@@ -417,6 +418,63 @@ function miniAuthError(message = '登录已过期，请重新登录') {
   const error = new Error(message)
   error.statusCode = 401
   return error
+}
+
+// ---------- 注册申请飞书提醒 ----------
+// 新注册申请落库后异步推飞书群提醒管理员审核（复用 send-feishu-alert.js 通道）。
+// 三条纪律：①绝不阻塞/影响注册响应（detached spawn + unref + 同步 try/catch + 异步 child.on('error')
+//   双兜——spawn 运行期失败经异步 error 事件上报，缺监听会变 uncaughtException 打崩进程，必须挂）；②子进程 env 走白名单，
+// 只给系统必需变量 + HEALTH_ALERT_*，应用持有的 OSS/飞书/token 密钥一概不透传（与 health-check 同哲学）；
+// ③通知内容手机号打码，不带完整 PII。未配 HEALTH_ALERT_WEBHOOK 时静默跳过（不 spawn、不报错）。
+const NOTIFY_ENV_SYSTEM_KEYS = [
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME',
+  'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR', 'TEMP', 'TMP'
+]
+
+function buildNotifyEnv(sourceEnv) {
+  const src = sourceEnv && typeof sourceEnv === 'object' ? sourceEnv : {}
+  const out = {}
+  for (const key of NOTIFY_ENV_SYSTEM_KEYS) {
+    if (src[key] != null) out[key] = src[key]
+  }
+  for (const key of Object.keys(src)) {
+    if (key.startsWith('HEALTH_ALERT_')) out[key] = src[key]
+  }
+  return out
+}
+
+// 手机号打码：保留前3后4、中间一律星号（星号数量=被挡位数，绝不因位数变化漏出中间位）。
+// 早期「前3+****+后4」写法对 7 位输入会把全部位数原样拼出（等于不打码）；这里改为按实际中间长度打星，
+// 短号（<7 位）整串打星，杜绝任何位数下的中间位泄露。到达通知路径的号恒为 11 位，此为防御性硬化。
+function maskPhoneForNotify(phone) {
+  const value = String(phone || '')
+  if (value.length < 7) return value ? '*'.repeat(value.length) : '***'
+  return `${value.slice(0, 3)}${'*'.repeat(value.length - 7)}${value.slice(-4)}`
+}
+
+function notifyRegistrationApplication(outcome) {
+  try {
+    if (!outcome || !outcome.notifyAdmin) return
+    if (!String(process.env.HEALTH_ALERT_WEBHOOK || '').trim()) return
+    // 姓名再兜一层长度截断（domain 已限 ≤50，这里防御性再切），避免任何情况下 argv 过长触发 execve E2BIG。
+    const safeName = String(outcome.applicantName || '').trim().slice(0, 50) || '(未填姓名)'
+    const message = `新的注册申请：${safeName} ${maskPhoneForNotify(outcome.applicantPhone)}，请到管理后台「注册审核」处理，通过后请通知本人可登录`
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'scripts', 'send-feishu-alert.js'), message], {
+      env: buildNotifyEnv(process.env),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    // 关键：spawn 的运行期失败（E2BIG/EMFILE/ENOMEM 等）经异步 'error' 事件上报；不挂监听会变成
+    // uncaughtException → 全局 process.exit(1)，被未认证的注册请求打成崩溃循环。挂上后降级为日志。
+    child.on('error', (error) => {
+      process.stderr.write(`[register-notify] 通知子进程启动失败：${(error && error.message) || error}\n`)
+    })
+    child.unref()
+  } catch (error) {
+    // 通知失败只记日志，绝不影响注册主流程。
+    process.stderr.write(`[register-notify] 通知触发失败：${(error && error.message) || error}\n`)
+  }
 }
 
 function bearerTokenFromRequest(req) {
@@ -1074,6 +1132,8 @@ async function handleMini(req, res, pathname, searchParams) {
     // 注册一律不发 token：registerUser 把申请落库（含用户自设密码哈希）后返回 pendingReview，此处据此
     // 返回提示。新号→待审核；已开通号→引导直接登录；已开通未设密码号→引导联系管理员重置。
     const outcome = dbStore.updateDb((nextDb) => domain.registerUser(nextDb, body))
+    // 新申请/重新申请已落库：异步推飞书提醒管理员审核（fire-and-forget，绝不影响注册响应）。
+    notifyRegistrationApplication(outcome)
     const error = new Error((outcome && outcome.message) || '注册申请已提交，请等待管理员审核开通账号')
     error.statusCode = (outcome && outcome.statusCode) || 403
     throw error

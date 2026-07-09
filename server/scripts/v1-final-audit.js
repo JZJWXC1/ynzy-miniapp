@@ -25,6 +25,9 @@ const criticalScripts = [
   // 告警到人：飞书 webhook 通知脚本的两条契约（HEALTH_ALERT_CMD 白名单 env / BACKUP_ALERT_CMD ALERT_*）、
   // 签名、截断、失败退出码。告警链坏了没人收到通知，必须门禁锁住。
   'server/scripts/send-feishu-alert-v1-test.js',
+  // 注册申请飞书提醒：新申请/驳回后重申请→通知、待审核重复提交不轰炸、409 不通知、手机号打码零 PII、
+  // 无 webhook 注册不受影响。
+  'server/scripts/registration-notify-v1-test.js',
   // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',

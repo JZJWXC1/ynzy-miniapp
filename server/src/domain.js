@@ -1153,6 +1153,12 @@ function registerUser(db, payload = {}) {
     error.statusCode = 400
     throw error
   }
+  // 姓名长度上限：既防超大 DB 行，也堵住「超长 name 经通知 argv 触发 execve E2BIG 打崩服务」的路径。
+  if (name.length > 50) {
+    const error = new Error('姓名过长')
+    error.statusCode = 400
+    throw error
+  }
   if (!/^1\d{10}$/.test(phone)) {
     const error = new Error('请输入 11 位手机号')
     error.statusCode = 400
@@ -1185,6 +1191,9 @@ function registerUser(db, payload = {}) {
   db.registrationRequests = db.registrationRequests || []
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
   const passwordHash = hashPassword(password)
+  // notifyAdmin：只在「真正产生一条需要管理员处理的新申请」时为 true——新申请或驳回/开通后的重新申请；
+  // 同号在待审核期反复提交只是刷新资料，不重复通知（防轰炸）。路由层据此异步推飞书提醒。
+  let notifyAdmin = false
   const pendingExisted = db.registrationRequests.find((item) => String(item.phone || '') === phone)
   if (pendingExisted) {
     pendingExisted.name = name || pendingExisted.name
@@ -1193,6 +1202,7 @@ function registerUser(db, payload = {}) {
       pendingExisted.status = '待审核'
       pendingExisted.reAppliedAt = nowText
       delete pendingExisted.rejectReason
+      notifyAdmin = true
     }
     pendingExisted.updatedAt = nowText
   } else {
@@ -1206,11 +1216,16 @@ function registerUser(db, payload = {}) {
       createdAt: nowText,
       updatedAt: nowText
     })
+    notifyAdmin = true
   }
+  // applicantName/Phone 仅供路由层组装通知（会打码），随 throw 丢弃、不进客户端响应。
   return {
     pendingReview: true,
     statusCode: 403,
     status: '待审核',
+    notifyAdmin,
+    applicantName: name,
+    applicantPhone: phone,
     message: '已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限'
   }
 }

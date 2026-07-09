@@ -224,6 +224,7 @@ POST /mini/auth/register   body: { name, phone, password }
 
 - **登录 = 手机号 + 密码**。服务端只匹配未软删用户，并用 `verifyPassword`（scrypt）校验密码。以下一律 403、不发 token：手机号未开通（引导联系管理员开通）、账号未设密码（fail-closed，引导联系管理员重置）、密码错误（统一提示「手机号或密码不正确」，不暴露命中与否）。缺密码返回 400。登录入口按客户端 IP 限流（20/min）防暴力破解。
 - **注册 = 申请-审核-开通**。任何人可提交注册申请（含自设密码，服务端立即 scrypt 哈希存进申请记录），但**注册一律不发 token**：新手机号落 `registrationRequests` 待审核并提示「已收到您的注册信息…请联系寓你住一起管理员开通账号权限」（403）；已开通手机号返回 409 引导直接登录（不再免密发 token）。管理员在后台 `/admin/registrations` 审核通过后，注册时自设的密码即写入新账号，用户可直接用该密码登录。
+- **注册申请飞书提醒**：新申请或驳回/开通后的重新申请落库时，服务端异步推飞书群提醒管理员审核（复用 `scripts/send-feishu-alert.js`；待审核期重复提交不重复通知；通知内容手机号打码不带完整 PII；detached spawn + 白名单 env——子进程只拿系统变量与 `HEALTH_ALERT_*`，拿不到 OSS/飞书/token 密钥；通知失败绝不影响注册响应）。启用条件：应用进程能读到 `HEALTH_ALERT_WEBHOOK`——需把该变量**同步写进 `server/.env`**（应用不加载 `/etc/default/ynzy-backup`，是有意隔离：避免备份加密密钥进入应用进程环境），改后 `systemctl restart ynzy-miniapp` 生效；未配置则静默跳过。
 - **密码存储**：`scrypt$<salt>$<hash>`（随机 salt + `timingSafeEqual` 恒定时间比对，实现见 `src/auth-util.js`，与后台管理员账号共用）。DB 不存明文；`passwordHash` 绝不随 `/mini/auth/me`、`/mini/profile`、`/mini/auth/login`、`/admin/users`、`/admin/registrations` 等任何响应外泄。
 - **存量/后台建号设密**：管理员在后台「账号管理」对中介/员工点「设置/重置密码」，或调 `POST /admin/users/:id/password`（仅超级管理员）为无密码账号发初始密码；后台建号 `POST /admin/users` 也可带可选初始密码。未设密码的账号一律 fail-closed 禁登。
 
