@@ -22,6 +22,9 @@ const criticalScripts = [
   'server/scripts/mini-pending-no-data-v1-test.js',
   // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
   'server/scripts/oss-video-snapshot-v1-test.js',
+  // 告警到人：飞书 webhook 通知脚本的两条契约（HEALTH_ALERT_CMD 白名单 env / BACKUP_ALERT_CMD ALERT_*）、
+  // 签名、截断、失败退出码。告警链坏了没人收到通知，必须门禁锁住。
+  'server/scripts/send-feishu-alert-v1-test.js',
   // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',
