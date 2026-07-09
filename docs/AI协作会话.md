@@ -45,6 +45,36 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude | 第二轮 界面/卡片优化(工作台/视频封面/我的房源) 完成+对抗自审已修 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（第二轮 UI 已完成、全量测试+审计绿、对抗自审已修，等 Codex 审 diff；未 push）。第一轮登录改造用户已告知「审计好了」，故开第二轮。本轮触及独占资源 `server/src/domain.js`、`server/src/oss.js`（未碰 `server/src/index.js`），本会话串行。
+
+**关联 commit（分支 v1-broker，未 push；前端码另经微信开发者工具上传发版）**：
+- `c983ff6 feat(mini): 我的页工作台精简去说明留名称 + 板块改名今日工作台`
+- `c2e01f6 feat(listing): 有视频房源用 OSS 视频首帧做卡片封面（覆盖全部/公司/合作/推荐/匹配列表+详情）`
+- `2dc8c4e feat(mini): 我的房源换新卡片样式(含视频封面) + 新增整租合租/小区/租金筛选`
+- `6e74e56 fix(mini): 我的房源户型筛选按室数归一(修两室/三室以上) + 卡片地址空尾兜底`
+
+**四项交付**：
+1. 内部工作台精简：每项去掉说明文字，只留功能名称 + 数值徽标（用户拍板保留徽标）；卡片更紧凑。
+2. 「防跳单与分佣提醒」板块改名「今日工作台」（仅文案）。
+3. 视频首帧封面：**OSS 私有桶 x-oss-process=video/snapshot 实时截帧**（零依赖、不装 ffmpeg、覆盖存量视频房源）。x-oss-process 作为 subresource 纳入 V1 签名（`oss.js createVideoSnapshotUrl`），domain 加 `listingCoverUrl` 在 formatHomeListing/buildListingDetail/ownedListings 下发 coverUrl + hasVideo，覆盖全部/公司/合作/推荐/匹配列表 + 详情 poster；前端 `<image lazy-load>` + binderror 退占位兜底，「视频」角标改用真实 hasVideo。新增 `oss-video-snapshot-v1-test` 独立复算签名入门禁。
+4. 我的房源：owner 卡片换 media+body 新样式（保留编辑/电话确认 catchtap+data-id+data-phone），复用 `listing-filter` 加整租合租/小区/租金筛选（本地过滤，户型按室数归一与后端同口径）。
+
+**多智能体对抗自审（4 视角×高推理档）**：绑定/回归全过（红线未碰、`server/src/index.js` 零改动、无循环依赖、契约测试不破）。自审揪出并已修 3 处真 bug：
+1. [P1] 户型「两室」永远筛不到（房源存「二室」、筛选栏「两室」，裸子串恒 false）→ 改按室数比较；
+2. [P2] 户型「三室以上」漏四室以上 → 同室数比较修正（8 例本地验证通过）；
+3. [nit] owner 卡片地址空尾 + oss/domain 正则口径统一。
+已知非阻断（记录备查，当前不触发）：STS 场景 `createVideoSnapshotUrl` 漏签 security-token 会 SignatureDoesNotMatch——与既有 `createSignedReadUrl` 同款，当前用长期 AK/SK（securityToken 恒空）不触发；binderror 与 setData 竞态极端下个别卡片错误退占位（非崩溃）。
+
+**部署依赖（需用户/运维确认）**：视频封面需 **OSS bucket 开通媒体处理（IMM/视频处理）能力**；未开通或视频编码不支持时封面取图失败，前端已优雅退占位图，不崩不裂。
+
+**测试/审计**：全量 `server/scripts/*-test.js`（除 smoke）+ `v1-final-audit.js` 全绿。
+
+**红线自守**：未改 `smoke-test.js`；未动 `server/src/index.js`、`server/data`/`certs`/`.env`/密钥；未提交他人未提交的 `docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`；未主动 push。
+
+**需要 Codex 做什么**：审上列 4 个 commit 的 diff，重点：OSS video/snapshot 签名正确性（x-oss-process 是否正确进 subresource）、封面字段下发不破坏既有房源契约、我的房源筛选/编辑/电话确认功能完整、工作台改动无回归。审完置状态；用户会再发第三裁判复核。
+
 ### 2026-07-09 | Claude | 小程序登录接入账号密码 完成+对抗自审已修 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（第一轮登录改造已完成、全量测试+审计绿、多智能体对抗自审已修，等 Codex 第二裁判审 diff；未 push）。UI 轮未开工，等本轮审干净再做。
