@@ -3095,6 +3095,7 @@
         permission: item.role || '无后台权限',
         todayViews: `业主 ${item.todayOwnerViews || 0}/${item.ownerViewLimit || 3} · 普通 ${item.todayNormalViews || 0}/${item.normalViewLimit || 15}`,
         status: item.brokerStatus || item.authed || '禁止登录',
+        hasPassword: Boolean(item.hasPassword),
         canEdit: false,
         canDelete: true
       }));
@@ -3124,6 +3125,7 @@
               </div>
             ` : (item.canDelete ? `
               <div class="row-actions">
+                <button class="table-action set-user-password-button" data-id="${safeAttr(item.id)}" data-name="${safeAttr(item.name)}">${item.hasPassword ? '重置密码' : '设置密码'}</button>
                 <button class="table-action reject delete-user-button" data-id="${safeAttr(item.id)}" data-name="${safeAttr(item.name)}">删除</button>
               </div>
             ` : '-')}</td>
@@ -3465,6 +3467,31 @@
       await renderAdmins();
       await renderLaunchCheck();
       alert('账号已删除。');
+    }
+
+    // 设置/重置中介/员工（db.users）登录密码：存量或新建但未设密码的账号由管理员在此发初始密码。
+    async function changeManagedUserPassword(id, name) {
+      if (!id) return;
+      const nextPassword = window.prompt(`请输入 ${name || id} 的登录密码，至少 8 位（设置后请转告本人，本人登录后可自行修改）`);
+      if (!nextPassword) return;
+      if (nextPassword.trim().length < 8) {
+        alert('登录密码至少 8 位');
+        return;
+      }
+      if (/\s/.test(nextPassword)) {
+        alert('登录密码不能包含空格');
+        return;
+      }
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再设置密码：/admin-web/');
+        return;
+      }
+      await adminRequest(`/admin/users/${encodeURIComponent(id)}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password: nextPassword })
+      });
+      await renderAdmins();
+      alert('登录密码已设置，请妥善转告本人。');
     }
 
     // 删除中介/员工账号（db.users）：软删，禁止登录 + 列表隐藏，名下房源/成交/分佣历史数据保留。
@@ -4251,6 +4278,14 @@
       if (deleteAdminButton && !deleteAdminButton.disabled) {
         deleteAdminAccount(deleteAdminButton.dataset.id, deleteAdminButton.dataset.account).catch((error) => {
           alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
+      const setUserPasswordButton = event.target.closest('.set-user-password-button');
+      if (setUserPasswordButton && !setUserPasswordButton.disabled) {
+        changeManagedUserPassword(setUserPasswordButton.dataset.id, setUserPasswordButton.dataset.name).catch((error) => {
+          alert(error.message || '设置登录密码失败');
         });
         return;
       }
