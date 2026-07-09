@@ -89,7 +89,8 @@ function createSignedReadUrl(objectKey, expiresInSeconds) {
 // 视频首帧封面：阿里云 OSS 私有桶对视频对象用 x-oss-process=video/snapshot 实时截帧成 JPG。
 // 私有桶必须把 x-oss-process 作为 subresource 一并纳入 V1 签名的 CanonicalizedResource，否则
 // 返回 SignatureDoesNotMatch。t_0=首帧、m_fast=取最近关键帧（更快、更省）、w_640 控制列表缩略图大小。
-// 需要 bucket 开通媒体处理（IMM/视频处理）能力；未开通/编码不支持时该 URL 会取图失败，前端退占位图兜底。
+// 固定时间点截帧是 OSS 原生能力，无需开通 IMM（智能选封面等高级能力才要）——2026-07-10 生产实测：
+// 真实 videoKey 经本签名 URL 返回 200 + image/jpeg 真图。个别编码不支持时取图失败，前端退占位图兜底。
 const VIDEO_SNAPSHOT_PROCESS = 'video/snapshot,t_0,f_jpg,w_640,h_0,m_fast'
 
 function createVideoSnapshotUrl(objectKey, expiresInSeconds) {

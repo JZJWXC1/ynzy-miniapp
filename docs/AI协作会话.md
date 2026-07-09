@@ -62,6 +62,10 @@
 
 **需要 Codex**：抽查两本手册与代码口径（尤其分佣表、注册审核 SOP、设/重置密码步骤）+ 审 `send-feishu-alert.js`（凭据白名单契约是否守住：脚本只读 HEALTH_ALERT_*，不碰 BACKUP_ENCRYPTION_KEY/FEISHU_*）。
 
+**补充实测（2026-07-10 晚，用户配好 webhook 后）**：
+- 告警全链路生产验证通过：手动发送 `[feishu-alert] 已发送` + 故意触发巡检失败自动推群成功；env 文件 CMD 带空格已引号化（否则 `source` 误执行，systemd 语义不变）。
+- **视频首帧封面无需 IMM，生产已生效**（纠正此前「需开通媒体处理」的保守说法）：真实 videoKey 经线上签名 URL 实测 200 + image/jpeg 真图（JPEG 魔数校验过）——固定时间点截帧是 OSS 原生能力；`/mini/home/listings` 已对有视频房源下发签名 coverUrl、无视频房源留空退占位。V1 签名实现（x-oss-process 进 subresource）在真 OSS 上验证正确。79 个有视频房源封面即刻可用（前端发版后可见）。
+
 ### 2026-07-10 | Claude | 开工：①告警到人(飞书群机器人) ②中介入驻材料包 | CLAUDE_DOING（记录保留，见上条收口）
 
 状态：`CLAUDE_DOING`。用户拍板的两项（按总目标勘查提案选定）。**Timer 核验已完成**：生产 6 个 timer 全部 enabled、最近一次全部 exit=0、产物新鲜（metrics-snapshots/releases/本地+异地备份/health-check 全部当日更新），生存+稳定层「真在跑」已背书。
