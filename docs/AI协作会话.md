@@ -45,6 +45,37 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude | ①告警到人 ②入驻材料包 完成（告警差用户配 webhook 一步）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（两项完成、全量测试+审计绿 ALERT_GREEN；未 push，等确认）。
+
+**① 告警到人（commit `021af2b`，脚本已部署生产并在生产 node 跑通测试）**：
+- `send-feishu-alert.js` 接通 `HEALTH_ALERT_CMD`（巡检）+ `BACKUP_ALERT_CMD`（备份/演练）两条既有告警链；支持飞书签名校验；超长截断；发送失败非零退出不打断主流程。测试入 v1-final-audit 门禁（注：测试必须异步 spawn，spawnSync 会与父进程内 http 桩死锁）。
+- 服务器接线完成：两个 CMD 已配进 `/etc/default/ynzy-backup`（原 BACKUP_ALERT_CMD 为空已填、env 已备份、webhook 值全程未读未写）。**待用户**：飞书群建自定义机器人 → 把 `HEALTH_ALERT_WEBHOOK`（可选 `HEALTH_ALERT_SECRET`）追加进该 env 文件 → 跑手册 3.1 节验证命令。配完后备份失败/异地上传失败/备份过期/演练不过/巡检失败全部推飞书群。
+- Timer 核验：生产 6 个 timer 全部 enabled、最近运行全部 exit=0、产物新鲜。
+- `docs/生产运维手册.md` 新增 3.1 告警配置节。
+
+**② 中介入驻材料包（commit `d485836`）**：
+- `docs/中介使用手册.md`（327 行）+ `docs/管理员使用手册.md`（313 行）从废弃 worktree 迁回并按登录密码改造后重写（agent 起草+人工核对，改掉旧手册 17 条过时说法）。
+- **人工复核抓到并修正 agent 稿的分佣旧口径**（钱相关）：正确口径=上传人默认 20%（二房东已由 15 统一为 20）+ 平台 10%（共分出 30%，带看中介净留 70%）；公司恒 0；管理员上传=上传人 0%+平台按配置；自传自带全免。已按 `domain.js` 常量与 `commissionRuleForListing` 修正两本手册三处。
+- 其余数字型声称抽查全过：视频 60s/300MB、额度 3 业主+15 普通、密码≥8 位、登录态 7 天/后台 8 小时、注册提示语与 `domain.js:1214` 逐字一致。
+
+**需要 Codex**：抽查两本手册与代码口径（尤其分佣表、注册审核 SOP、设/重置密码步骤）+ 审 `send-feishu-alert.js`（凭据白名单契约是否守住：脚本只读 HEALTH_ALERT_*，不碰 BACKUP_ENCRYPTION_KEY/FEISHU_*）。
+
+### 2026-07-10 | Claude | 开工：①告警到人(飞书群机器人) ②中介入驻材料包 | CLAUDE_DOING（记录保留，见上条收口）
+
+状态：`CLAUDE_DOING`。用户拍板的两项（按总目标勘查提案选定）。**Timer 核验已完成**：生产 6 个 timer 全部 enabled、最近一次全部 exit=0、产物新鲜（metrics-snapshots/releases/本地+异地备份/health-check 全部当日更新），生存+稳定层「真在跑」已背书。
+
+**① 告警到人（拟修改文件清单）**：
+- `server/scripts/send-feishu-alert.js`（新增）：零依赖飞书群机器人 webhook 通知脚本，同时服务两条既有告警链——`HEALTH_ALERT_CMD`（巡检失败，白名单 env，webhook 用 `HEALTH_ALERT_WEBHOOK` 命名穿过 `HEALTH_ALERT_*` 白名单）与 `BACKUP_ALERT_CMD`（备份失败/自检失败/异地上传失败/备份过期/恢复演练失败，`ALERT_KIND/MESSAGE/DETAIL`）；支持飞书签名校验（可选 `HEALTH_ALERT_SECRET`）；消息截断防超长；网络超时<15s（调用方限时）。
+- `server/scripts/send-feishu-alert-v1-test.js`（新增）：本地起 http 服务当假 webhook，断言两种契约的消息组装/签名/超时/失败退出码，不打真网。
+- 服务器配置（不进仓库）：`/etc/default/ynzy-backup` 追加 `HEALTH_ALERT_WEBHOOK`（用户提供，不进聊天/仓库）+ `HEALTH_ALERT_CMD`/`BACKUP_ALERT_CMD` 指向脚本。已确认 env 文件里 `BACKUP_ALERT_CMD` 键已存在，配置前会先查非空性（不读值），非空则先汇报不覆盖。
+- 文档：`docs/生产运维手册.md` 补告警配置节。
+**红线**：webhook/密钥不进仓库不进聊天；不动 smoke-test。
+
+**② 中介入驻材料包（拟修改文件清单）**：
+- `docs/中介使用手册.md`、`docs/管理员使用手册.md`（从废弃 worktree `.claude/worktrees/trusting-einstein-6666c4/docs/` 迁回主仓库，并按 7-10 上线的新流程重写：登录=手机号+密码、注册申请-审核-开通、自助改密、后台设/重置密码、今日工作台、我的房源筛选、视频封面），内容以当前 `pages/`/`server/src` 实际行为为准核对，不照抄旧文。
+
 ### 2026-07-10 | Claude | 两轮改造已部署生产并验证通过（commit 1271c23）| DONE（前端码待用户微信发版）
 
 状态：`DONE`。用户确认两裁判审计通过 → push（`origin/v1-broker` = `1271c23`）→ 部署生产 → 校验全绿。
