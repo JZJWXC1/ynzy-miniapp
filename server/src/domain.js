@@ -1,4 +1,5 @@
 const { clone } = require('./db')
+const { hashPassword, verifyPassword, passwordIssue } = require('./auth-util')
 const config = require('./config')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
@@ -105,6 +106,15 @@ function id(prefix) {
 
 function userById(db, userId) {
   return (db.users || []).find((user) => user.id === userId)
+}
+
+// 剥离密码哈希/明文密码：任何返回给客户端的 user 对象都必须先过这里，防止 passwordHash 顺对象外泄。
+function withoutSecret(user) {
+  if (!user) return user
+  const copy = clone(user)
+  delete copy.passwordHash
+  delete copy.password
+  return copy
 }
 
 function listingById(db, listingId) {
@@ -1070,7 +1080,8 @@ function setListingMaintenanceRule(db, adminId, payload = {}) {
 }
 
 function currentUser(db, userId) {
-  return userById(db, userId) || {}
+  const user = userById(db, userId)
+  return user ? withoutSecret(user) : {}
 }
 
 function assertKnownUser(db, userId) {
@@ -1081,17 +1092,38 @@ function assertKnownUser(db, userId) {
   throw error
 }
 
-function loginByPhone(db, phone) {
+function loginByPhone(db, phone, password) {
   const target = String(phone || '').trim()
   if (!/^1\d{10}$/.test(target)) {
     const error = new Error('请输入 11 位手机号')
     error.statusCode = 400
     throw error
   }
-  // 软删账号（deleted=true）禁止登录：只匹配未删除用户；同号历史软删记录保留但不放行。
-  const user = (db.users || []).find((item) => String(item.phone || '') === target && !item.deleted)
+  const pass = String(password == null ? '' : password)
+  if (!pass) {
+    const error = new Error('请输入登录密码')
+    error.statusCode = 400
+    throw error
+  }
+  // 软删/停用账号禁止登录：与鉴权中间件 miniUserIdFromRequest 同口径排除 deleted 与 status==='禁用'，
+  // 避免给停用账号发一个随即在鉴权处失效的无用 token。同号历史软删记录保留但不放行。
+  const user = (db.users || []).find((item) => String(item.phone || '') === target && !item.deleted && item.status !== '禁用')
   if (!user) {
     const error = new Error('该手机号未开通内部中介账号，请联系管理员开通')
+    error.statusCode = 403
+    throw error
+  }
+  // 存量/后台新建但未设密码的账号：fail-closed 一律禁登，等管理员在后台设初始密码，绝不免密放行
+  // （否则任何人凭手机号即可绕过密码登录）。
+  if (!user.passwordHash) {
+    const error = new Error('账号尚未设置登录密码，请联系管理员开通或重置密码')
+    error.statusCode = 403
+    throw error
+  }
+  // 密码错误与账号不存在返回不同提示，是内部 B2B 工具的取舍：账号不存在需引导「联系管理员开通」，
+  // 密码错则统一「手机号或密码不正确」不暴露命中与否。爆破由 index.js 登录路由 IP 限流兜。
+  if (!verifyPassword(pass, user.passwordHash)) {
+    const error = new Error('手机号或密码不正确')
     error.statusCode = 403
     throw error
   }
@@ -1101,6 +1133,7 @@ function loginByPhone(db, phone) {
 function registerUser(db, payload = {}) {
   const name = String(payload.name || '').trim()
   const phone = String(payload.phone || '').trim()
+  const password = String(payload.password == null ? '' : payload.password)
   if (!phone) {
     const error = new Error('手机号必填')
     error.statusCode = 400
@@ -1116,21 +1149,37 @@ function registerUser(db, payload = {}) {
     error.statusCode = 400
     throw error
   }
-
-  // 已开通且未删除的账号：直接按登录返回（向后兼容既有已审核账号“注册即登录”）。
-  const existed = (db.users || []).find((item) => String(item.phone || '') === phone && !item.deleted)
-  if (existed) {
-    return clone(existed)
+  const pwIssue = passwordIssue(password)
+  if (pwIssue) {
+    const error = new Error(pwIssue)
+    error.statusCode = 400
+    throw error
   }
 
-  // 未开通：落库为“待审核”注册申请，等管理员在后台审核开通（此处不发 token，路由层据 pendingReview
-  // 返回待审核提示）。手机号去重：同号已有待审核申请→刷新姓名/时间不重复建；已驳回/已通过(账号被删)
-  // →重置为待审核允许重新申请。
+  // 已开通且未删除的账号：不再免密发 token（堵后门——否则任意人凭已开通手机号 + 随便一个密码走注册
+  // 就能拿到登录态）。改为引导：已设密码→直接登录；未设密码→联系管理员重置。一律 pendingReview 不发 token。
+  const existed = (db.users || []).find((item) => String(item.phone || '') === phone && !item.deleted)
+  if (existed) {
+    return {
+      pendingReview: true,
+      statusCode: 409,
+      status: '已开通',
+      message: existed.passwordHash
+        ? '该手机号已开通账号，请直接用手机号和密码登录'
+        : '该手机号已开通但尚未设置登录密码，请联系管理员重置密码后登录'
+    }
+  }
+
+  // 未开通：落库为“待审核”注册申请（含用户自设密码的哈希，审核通过时写入新账号）；此处不发 token，
+  // 路由层据 pendingReview 返回待审核提示。手机号去重：同号已有申请→刷新姓名/密码/时间不重复建；
+  // 已驳回/已通过(账号被删)→重置为待审核允许重新申请。
   db.registrationRequests = db.registrationRequests || []
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  const passwordHash = hashPassword(password)
   const pendingExisted = db.registrationRequests.find((item) => String(item.phone || '') === phone)
   if (pendingExisted) {
     pendingExisted.name = name || pendingExisted.name
+    pendingExisted.passwordHash = passwordHash
     if (pendingExisted.status !== '待审核') {
       pendingExisted.status = '待审核'
       pendingExisted.reAppliedAt = nowText
@@ -1142,6 +1191,7 @@ function registerUser(db, payload = {}) {
       id: id('R'),
       name,
       phone,
+      passwordHash,
       status: '待审核',
       source: 'mini-register',
       createdAt: nowText,
@@ -1150,8 +1200,9 @@ function registerUser(db, payload = {}) {
   }
   return {
     pendingReview: true,
+    statusCode: 403,
     status: '待审核',
-    message: '注册申请已提交，请等待管理员审核开通账号（无需重复提交）'
+    message: '已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限'
   }
 }
 
@@ -1198,6 +1249,20 @@ function createManagedUser(db, payload = {}) {
     error.statusCode = 400
     throw error
   }
+  // 密码：审核开通透传注册时已哈希的 passwordHash；后台直接建号可给明文 password（此处校验强度后哈希）。
+  // 两者都没有时账号无 passwordHash，登录 fail-closed 禁登，需管理员事后在后台设初始密码。
+  let passwordHash = ''
+  if (payload.passwordHash) {
+    passwordHash = String(payload.passwordHash)
+  } else if (payload.password) {
+    const pwIssue = passwordIssue(payload.password)
+    if (pwIssue) {
+      const error = new Error(pwIssue)
+      error.statusCode = 400
+      throw error
+    }
+    passwordHash = hashPassword(payload.password)
+  }
   const preset = MANAGED_USER_TYPES[kind]
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
   const user = {
@@ -1214,7 +1279,10 @@ function createManagedUser(db, payload = {}) {
     createdBy: String(payload.operator || '') || 'admin',
     source: payload.source || 'admin-created'
   }
+  if (passwordHash) user.passwordHash = passwordHash
   db.users.push(user)
+  // 注意：返回的是含 passwordHash 的活对象，仅供内部调用者使用（reviewRegistration 会经 withoutSecret
+  // 脱敏后才进响应；/admin/users 路由忽略此返回值改用 adminUsers）。禁止把此返回值直接 sendJson 下发。
   return user
 }
 
@@ -1243,9 +1311,46 @@ function deleteManagedUser(db, payload = {}) {
   return clone(user)
 }
 
+// 注册申请里存了用户自设密码的哈希（审核通过时写入新账号），列表返回给后台前必须剥离，勿外泄。
+function sanitizeRegistrationRequest(item) {
+  const copy = clone(item)
+  delete copy.passwordHash
+  return copy
+}
+
 // ---------- 注册审核（需求2） ----------
 function listRegistrationRequests(db) {
-  return (db.registrationRequests || []).map((item) => clone(item))
+  return (db.registrationRequests || []).map((item) => sanitizeRegistrationRequest(item))
+}
+
+// 后台设置/重置小程序用户（中介/员工）登录密码：存量或后台新建但未设密码的账号由管理员在此发初始密码。
+function setManagedUserPassword(db, payload = {}) {
+  const targetId = String(payload.id || '').trim()
+  const password = String(payload.password == null ? '' : payload.password)
+  const pwIssue = passwordIssue(password)
+  if (pwIssue) {
+    const error = new Error(pwIssue)
+    error.statusCode = 400
+    throw error
+  }
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === targetId && !item.deleted)
+  if (!user) {
+    const error = new Error('未找到该账号')
+    error.statusCode = 404
+    throw error
+  }
+  if (user.isAdmin || /管理员/.test(String(user.role || ''))) {
+    const error = new Error('管理员账号请在后台账号列表重置密码')
+    error.statusCode = 400
+    throw error
+  }
+  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  user.passwordHash = hashPassword(password)
+  delete user.password
+  user.passwordUpdatedAt = nowText
+  user.passwordUpdatedBy = String(payload.operator || '') || 'admin'
+  return withoutSecret(user)
 }
 
 // 审核注册申请：通过→按管理员选定类型(中介/员工)开通 db.users；驳回→标记拒绝 + 可留原因。
@@ -1267,10 +1372,12 @@ function reviewRegistration(db, payload = {}) {
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
   if (action === 'approve') {
     // createManagedUser 内部会做手机号去重（若审核期间该号已被开通则拒绝，防重复建号）。
+    // 透传注册时用户自设的密码哈希，开通后用户即可用注册密码登录，无需管理员再设初始密码。
     const user = createManagedUser(db, {
       type: payload.type || 'broker',
       name: request.name,
       phone: request.phone,
+      passwordHash: request.passwordHash,
       operator: payload.operator,
       source: 'registration'
     })
@@ -1279,14 +1386,14 @@ function reviewRegistration(db, payload = {}) {
     request.reviewedBy = String(payload.operator || '') || 'admin'
     request.approvedType = normalizeManagedType(payload.type) || 'broker'
     request.userId = user.id
-    return { request: clone(request), user: clone(user) }
+    return { request: sanitizeRegistrationRequest(request), user: withoutSecret(user) }
   }
   if (action === 'reject') {
     request.status = '已驳回'
     request.reviewedAt = nowText
     request.reviewedBy = String(payload.operator || '') || 'admin'
     request.rejectReason = String(payload.reason || '').trim()
-    return { request: clone(request) }
+    return { request: sanitizeRegistrationRequest(request) }
   }
   const error = new Error('审核操作只能是通过或驳回')
   error.statusCode = 400
@@ -1451,7 +1558,8 @@ function adminUsers(db) {
   return (db.users || []).map((user) => {
     const quota = brokerSensitiveUsage(db, user.id)
     return {
-      ...clone(user),
+      ...withoutSecret(user),
+      hasPassword: Boolean(user.passwordHash),
       todayOwnerViews: quota.ownerUsed,
       todayNormalViews: quota.normalUsed,
       ownerViewLimit: quota.ownerLimit,
@@ -4580,6 +4688,7 @@ module.exports = {
   registerUser,
   createManagedUser,
   deleteManagedUser,
+  setManagedUserPassword,
   listRegistrationRequests,
   reviewRegistration,
   migrateCompanyListings,

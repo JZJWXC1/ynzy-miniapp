@@ -16,6 +16,10 @@ const criticalScripts = [
   'server/scripts/backend-contract-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',
   'server/scripts/auth-token-v1-test.js',
+  // 小程序登录接入账号密码：正确/错误/缺密/存量无密码/待审核/软删登录口径 + passwordHash 不外泄 +
+  // DB 只存 scrypt 哈希；以及「待审核/无密码账号拿不到任何 token、无 token 拿不到 /mini 数据」正面固化。
+  'server/scripts/mini-login-password-v1-test.js',
+  'server/scripts/mini-pending-no-data-v1-test.js',
   // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',
@@ -407,6 +411,18 @@ function checkProfileLogout() {
   return '我的页面退出登录会清除本地 token 并回到找房首页'
 }
 
+function checkMiniLoginPassword() {
+  const indexJs = readText('server/src/index.js')
+  const domainJs = readText('server/src/domain.js')
+  assertOk(/loginByPhone\(nextDb, body\.phone, body\.password\)/.test(indexJs), '/mini/auth/login 必须把密码传入 loginByPhone')
+  assertOk(indexJs.includes("require('./auth-util')") && domainJs.includes("require('./auth-util')"), 'index.js 与 domain.js 必须共用 auth-util 的密码哈希实现')
+  assertOk(/verifyPassword\(/.test(domainJs), 'loginByPhone 必须用 verifyPassword 校验密码')
+  assertOk(/if \(!user\.passwordHash\)/.test(domainJs), '无 passwordHash 账号必须 fail-closed 禁登')
+  assertOk(/delete safe\.passwordHash/.test(indexJs), '登录响应必须剥离 passwordHash')
+  assertOk(domainJs.includes('function withoutSecret'), 'user 序列化必须过 withoutSecret 剥离密码哈希')
+  return '小程序登录已接密码校验（scrypt）、无密码账号 fail-closed、passwordHash 不外泄'
+}
+
 function checkRunnableV1Scripts() {
   return criticalScripts.map((script) => `${script} => ${runNodeScript(script)}`).join('；')
 }
@@ -426,6 +442,7 @@ const checks = [
   ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
   ['地图坐标分级链路存在', checkMapCoordinateGrading],
   ['我的页面退出登录存在', checkProfileLogout],
+  ['小程序登录已接账号密码校验', checkMiniLoginPassword],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
 

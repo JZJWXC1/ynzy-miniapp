@@ -4,6 +4,8 @@ const http = require('http')
 const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
+const { hashPassword } = require('../src/auth-util')
+const BROKER_PASSWORD = 'broker-pass-123'
 
 const serverDir = path.resolve(__dirname, '..')
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-assistant-route-timeout-'))
@@ -21,7 +23,7 @@ function seedDb() {
   fs.writeFileSync(dataFile, JSON.stringify({
     currentUserId: 'U1',
     users: [
-      { id: 'U1', name: '测试中介', phone: '13900000001', role: '中介', authed: '手机号登录' }
+      { id: 'U1', name: '测试中介', phone: '13900000001', role: '中介', authed: '手机号登录', passwordHash: hashPassword(BROKER_PASSWORD) }
     ],
     listings: [
       {
@@ -135,7 +137,7 @@ async function main() {
 
   try {
     assert.ok(await waitForServer(), `assistant chat route timeout test server 未启动：${output}`)
-    const login = await request('POST', '/mini/auth/login', { phone: '13900000001' })
+    const login = await request('POST', '/mini/auth/login', { phone: '13900000001', password: BROKER_PASSWORD })
     assert.strictEqual(login.statusCode, 200, '登录应返回 200')
     const token = dataOf(login).token
     assert.ok(token, '登录应返回 token')

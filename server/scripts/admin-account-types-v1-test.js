@@ -90,20 +90,37 @@ async function run() {
     const restCreate = await request('POST', '/admin/users', { type: 'broker', name: '甲', phone: '13900000010' }, restAuth)
     assert.strictEqual(restCreate.statusCode, 403, '区域查看权限不得创建中介/员工账号')
 
-    // 创建中介账号 → 200，db.users 出现 role=中介、isAdmin=false
+    // 创建中介账号（带初始密码）→ 200，db.users 出现 role=中介、isAdmin=false
     const brokerPhone = '13900000010'
-    const createBroker = await request('POST', '/admin/users', { type: 'broker', name: '中介甲', phone: brokerPhone }, superAuth)
+    const brokerPassword = 'broker-pass-123'
+    const createBroker = await request('POST', '/admin/users', { type: 'broker', name: '中介甲', phone: brokerPhone, password: brokerPassword }, superAuth)
     assert.strictEqual(createBroker.statusCode, 200, `创建中介账号应 200：${JSON.stringify(createBroker.body)}`)
     const usersAfterBroker = (createBroker.body.data.users || [])
     const brokerRow = usersAfterBroker.find((item) => item.phone === brokerPhone)
     assert.ok(brokerRow, '创建后中介应出现在用户列表')
     assert.strictEqual(brokerRow.role, '中介', '中介账号 role 应为中介')
     assert.strictEqual(brokerRow.isAdmin, false, '中介账号 isAdmin 应为 false')
+    assert.strictEqual(brokerRow.passwordHash, undefined, '用户列表不得带出 passwordHash')
+    assert.strictEqual(brokerRow.hasPassword, true, '带初始密码建号后 hasPassword 应为 true')
 
-    // 新中介可手机号登录
-    const brokerLogin = await request('POST', '/mini/auth/login', { phone: brokerPhone })
-    assert.strictEqual(brokerLogin.statusCode, 200, `新中介应能手机号登录：${JSON.stringify(brokerLogin.body)}`)
+    // 新中介可用初始密码手机号登录
+    const brokerLogin = await request('POST', '/mini/auth/login', { phone: brokerPhone, password: brokerPassword })
+    assert.strictEqual(brokerLogin.statusCode, 200, `新中介应能用初始密码登录：${JSON.stringify(brokerLogin.body)}`)
     assert.strictEqual(brokerLogin.body.data.role, '中介', '登录返回 role 应为中介')
+
+    // 后台设/重置密码：给员工（无初始密码）发密码后可登录
+    const staffPhoneEarly = '13900000015'
+    const createStaffEarly = await request('POST', '/admin/users', { type: 'staff', name: '员工乙', phone: staffPhoneEarly }, superAuth)
+    assert.strictEqual(createStaffEarly.statusCode, 200, '创建员工账号应 200')
+    const staffId = (createStaffEarly.body.data.users || []).find((item) => item.phone === staffPhoneEarly).id
+    const staffNoPwLogin = await request('POST', '/mini/auth/login', { phone: staffPhoneEarly, password: 'staff-pass-123' })
+    assert.strictEqual(staffNoPwLogin.statusCode, 403, '无初始密码的员工账号应 fail-closed 禁登')
+    const restSetPw = await request('POST', `/admin/users/${staffId}/password`, { password: 'staff-pass-123' }, restAuth)
+    assert.strictEqual(restSetPw.statusCode, 403, '区域查看权限不得设置小程序用户密码')
+    const setPw = await request('POST', `/admin/users/${staffId}/password`, { password: 'staff-pass-123' }, superAuth)
+    assert.strictEqual(setPw.statusCode, 200, '超管为员工设初始密码应 200')
+    const staffPwLogin = await request('POST', '/mini/auth/login', { phone: staffPhoneEarly, password: 'staff-pass-123' })
+    assert.strictEqual(staffPwLogin.statusCode, 200, '设初始密码后员工应能登录')
 
     // 创建员工账号 → role=内部员工
     const staffPhone = '13900000011'

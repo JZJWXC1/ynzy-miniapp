@@ -5,6 +5,7 @@ const http = require('http')
 const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
+const { hashPassword } = require('../src/auth-util')
 
 const serverDir = path.resolve(__dirname, '..')
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-auth-token-'))
@@ -12,6 +13,7 @@ const dataFile = path.join(tempDir, 'db.json')
 const port = 40000 + Math.floor(Math.random() * 1000)
 const baseUrl = `http://127.0.0.1:${port}`
 const authSecret = 'auth-token-v1-test-secret'
+const brokerPassword = 'broker-pass-123'
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -70,8 +72,8 @@ function seedDb() {
   const db = {
     currentUserId: 'U2',
     users: [
-      { id: 'U1', name: '真实登录中介', phone: '13900000001', role: '中介', authed: '手机号登录' },
-      { id: 'U2', name: '伪造请求头中介', phone: '13900000002', role: '中介', authed: '手机号登录' }
+      { id: 'U1', name: '真实登录中介', phone: '13900000001', role: '中介', authed: '手机号登录', passwordHash: hashPassword(brokerPassword) },
+      { id: 'U2', name: '伪造请求头中介', phone: '13900000002', role: '中介', authed: '手机号登录', passwordHash: hashPassword(brokerPassword) }
     ],
     listings: [
       listing({
@@ -212,10 +214,11 @@ async function run() {
     const anonymousPartner = await request('GET', '/mini/listings/AUTH_PARTNER')
     assert.strictEqual(anonymousPartner.statusCode, 401, '无 token 请求合作房源详情必须返回 401')
 
-    const login = await request('POST', '/mini/auth/login', { phone: '13900000001' })
-    assert.strictEqual(login.statusCode, 200, '手机号登录应返回 200')
+    const login = await request('POST', '/mini/auth/login', { phone: '13900000001', password: brokerPassword })
+    assert.strictEqual(login.statusCode, 200, '手机号+密码登录应返回 200')
     assert.ok(dataOf(login).token, '手机号登录必须签发 token')
     assert.ok(dataOf(login).tokenExpiresAt > Date.now(), 'token 必须带未来过期时间')
+    assert.strictEqual(dataOf(login).passwordHash, undefined, '登录响应绝不能带出 passwordHash')
     const authHeader = { Authorization: `Bearer ${dataOf(login).token}` }
 
     const validProfile = await request('GET', '/mini/profile', null, authHeader)
@@ -235,6 +238,19 @@ async function run() {
     const expiredToken = signMiniToken({ userId: 'U1', exp: Date.now() - 1000 })
     const expiredProfile = await request('GET', '/mini/profile', null, { Authorization: `Bearer ${expiredToken}` })
     assert.strictEqual(expiredProfile.statusCode, 401, '过期 token 必须返回 401')
+
+    // token 篡改①：改 payload（延长有效期）但沿用旧签名 → 401（HMAC 覆盖 payload，签名必对不上）
+    const validParts = dataOf(login).token.split('.')
+    const forgedPayload = base64url(JSON.stringify({ userId: 'U1', exp: Date.now() + 60000 }))
+    const tamperedToken = `${forgedPayload}.${validParts[1]}`
+    const tamperedProfile = await request('GET', '/mini/profile', null, { Authorization: `Bearer ${tamperedToken}` })
+    assert.strictEqual(tamperedProfile.statusCode, 401, '篡改 payload 沿用旧签名的 token 必须返回 401')
+
+    // token 篡改②：用错误密钥重签一个「未过期」payload → 401（攻击者无 AUTH_TOKEN_SECRET 无法伪造合法签名）
+    const wrongSecretPayload = base64url(JSON.stringify({ userId: 'U1', exp: Date.now() + 60000 }))
+    const wrongSecretSig = crypto.createHmac('sha256', 'not-the-real-secret').update(wrongSecretPayload).digest('base64url')
+    const wrongSecretProfile = await request('GET', '/mini/profile', null, { Authorization: `Bearer ${wrongSecretPayload}.${wrongSecretSig}` })
+    assert.strictEqual(wrongSecretProfile.statusCode, 401, '用错误密钥重签的 token 必须返回 401')
 
     // 管理后台鉴权：/admin/* 必须校验管理员 token，不接受无 token、小程序 token 或伪造 token
     const adminNoToken = await request('GET', '/admin/dashboard')

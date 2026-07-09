@@ -4,6 +4,8 @@ const http = require('http')
 const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
+const { hashPassword } = require('../src/auth-util')
+const BROKER_PASSWORD = 'broker-pass-123'
 
 const serverDir = path.resolve(__dirname, '..')
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-guest-mode-'))
@@ -58,7 +60,7 @@ function seedDb() {
   const db = {
     currentUserId: 'U1',
     users: [
-      { id: 'U1', name: '测试中介', phone: '13900000001', role: '中介', authed: '手机号登录' }
+      { id: 'U1', name: '测试中介', phone: '13900000001', role: '中介', authed: '手机号登录', passwordHash: hashPassword(BROKER_PASSWORD) }
     ],
     listings: [
       listing({
@@ -257,7 +259,7 @@ async function run() {
     const profile = await request('GET', '/mini/profile')
     assert.strictEqual(profile.statusCode, 401, '匿名访问我的必须返回 401')
 
-    const login = await request('POST', '/mini/auth/login', { phone: '13900000001' })
+    const login = await request('POST', '/mini/auth/login', { phone: '13900000001', password: BROKER_PASSWORD })
     assert.strictEqual(login.statusCode, 200, '登录应返回 200')
     assert.ok(dataOf(login).token, '登录必须返回小程序 token')
     const loggedSheetSnapshot = await request('GET', '/mini/company-sheet-snapshot', null, {

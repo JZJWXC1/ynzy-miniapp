@@ -4,6 +4,7 @@ const os = require('os')
 const path = require('path')
 const http = require('http')
 const { spawn } = require('child_process')
+const { hashPassword } = require('../src/auth-util')
 
 // 需求1：中介/员工账号（db.users）支持删除。策略：软删禁登 + 列表隐藏，名下房源/成交/分佣历史数据保留（无悬挂引用）。
 // 锁定：软删后禁止手机号登录、deleted 标记、名下房源数据仍在、管理员用户不在此删、超管鉴权、软删后同号可重新开通。
@@ -15,12 +16,13 @@ const port = 42900 + Math.floor(Math.random() * 800)
 const baseUrl = `http://127.0.0.1:${port}`
 
 const BROKER_PHONE = '13900000021'
+const BROKER_PASSWORD = 'broker-pass-123'
 
 function seedDb() {
   const db = {
     users: [
       { id: 'U1', name: '超管员工', phone: '13900000001', isAdmin: true },
-      { id: 'U-BROKER', name: '待删中介', phone: BROKER_PHONE, role: '中介', isAdmin: false, authed: '手机号登录' }
+      { id: 'U-BROKER', name: '待删中介', phone: BROKER_PHONE, role: '中介', isAdmin: false, authed: '手机号登录', passwordHash: hashPassword(BROKER_PASSWORD) }
     ],
     // U-BROKER 名下的房源与分佣记录：软删后必须原样保留（不悬挂）。
     listings: [{ id: 'L-KEEP', title: '待保留房源', uploaderId: 'U-BROKER', rent: 2000, status: '在租', source: '二房东房源', ownerType: '二房东房源' }],
@@ -98,7 +100,7 @@ async function run() {
     const restAuth = await login('restadmin', 'restpass1')
 
     // 删除前中介可登录，并留存一枚已签发的 mini token 供“旧 token 失效”验证
-    const preLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE })
+    const preLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE, password: BROKER_PASSWORD })
     assert.strictEqual(preLogin.statusCode, 200, '删除前中介应能登录')
     const staleToken = preLogin.body.data.token
     assert.ok(staleToken, '登录应返回 mini token')
@@ -121,8 +123,8 @@ async function run() {
     const okDelete = await request('DELETE', '/admin/users/U-BROKER', null, superAuth)
     assert.strictEqual(okDelete.statusCode, 200, `超管删除中介应 200：${JSON.stringify(okDelete.body)}`)
 
-    // 软删后：禁止手机号登录
-    const postLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE })
+    // 软删后：禁止手机号登录（即便密码正确）
+    const postLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE, password: BROKER_PASSWORD })
     assert.strictEqual(postLogin.statusCode, 403, '软删后中介不能再登录')
 
     // Codex P1 阻断项闭环：软删后删除前已签发的旧 mini token 立即失效（不能再访问登录态接口）
@@ -139,9 +141,9 @@ async function run() {
     assert.ok((db.commissionRecords || []).some((item) => item.id === 'C-KEEP' && item.uploaderId === 'U-BROKER'), '名下分佣记录应原样保留')
 
     // 软删后同号可重新开通（软删账号不占号）
-    const reCreate = await request('POST', '/admin/users', { type: 'broker', name: '重新开通', phone: BROKER_PHONE }, superAuth)
+    const reCreate = await request('POST', '/admin/users', { type: 'broker', name: '重新开通', phone: BROKER_PHONE, password: BROKER_PASSWORD }, superAuth)
     assert.strictEqual(reCreate.statusCode, 200, `软删后同号应可重新开通：${JSON.stringify(reCreate.body)}`)
-    const reLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE })
+    const reLogin = await request('POST', '/mini/auth/login', { phone: BROKER_PHONE, password: BROKER_PASSWORD })
     assert.strictEqual(reLogin.statusCode, 200, '重新开通后应能登录')
     assert.strictEqual(reLogin.body.data.name, '重新开通', '登录应返回新开通账号')
   } finally {

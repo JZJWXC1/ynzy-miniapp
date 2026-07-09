@@ -14,6 +14,7 @@ const assistantService = require('./assistant-service')
 const backup = require('./backup')
 const oss = require('./oss')
 const wxpay = require('./wxpay')
+const { hashPassword, verifyPassword } = require('./auth-util')
 const { parseMultipartForm } = require('./multipart')
 const requestLog = require('./request-log')
 const appVersion = require('./version')
@@ -363,20 +364,7 @@ function adminTokenSecret() {
   return 'ynzy-admin-local-dev-secret'
 }
 
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('base64url')
-  const hash = crypto.scryptSync(String(password), salt, 64).toString('base64url')
-  return `scrypt$${salt}$${hash}`
-}
-
-function verifyPassword(password, storedHash) {
-  const parts = String(storedHash || '').split('$')
-  if (parts.length !== 3 || parts[0] !== 'scrypt') return false
-  const expected = Buffer.from(parts[2], 'base64url')
-  const actual = crypto.scryptSync(String(password), parts[1], expected.length)
-  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual)
-}
-
+// hashPassword / verifyPassword 已抽到 ./auth-util，与 domain.js（小程序用户密码）共用单一实现。
 function adminPasswordMatches(account, password) {
   if (account.passwordHash && verifyPassword(password, account.passwordHash)) return true
   return !account.passwordHash && account.password === password
@@ -474,8 +462,12 @@ function miniUserIdFromRequest(req, db) {
 
 function miniAuthResponse(user) {
   const auth = issueMiniAuthToken(user.id)
+  // 剥离密码哈希/明文：登录响应平铺整个 user，绝不能把 passwordHash 顺出去。
+  const safe = { ...user }
+  delete safe.passwordHash
+  delete safe.password
   return {
-    ...user,
+    ...safe,
     token: auth.token,
     tokenExpiresAt: auth.tokenExpiresAt
   }
@@ -1067,21 +1059,24 @@ async function handleMini(req, res, pathname, searchParams) {
   const db = readDbForRequest()
 
   if (method === 'POST' && pathname === '/mini/auth/login') {
+    // 登录是免鉴权入口：按客户端 IP 限流防暴力破解。20/min 兼顾防爆破（scrypt 本就让在线爆破不可行）
+    // 与中介共享办公室 IP 的场景；登录后 token 缓存 7 天，正常登录频次很低。值可按需调整。
+    assertGuestRateLimit(req, 'mini-login', 20)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.loginByPhone(nextDb, body.phone))))
+    return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.loginByPhone(nextDb, body.phone, body.password))))
   }
 
   if (method === 'POST' && pathname === '/mini/auth/register') {
+    // 注册是免鉴权入口且每次都会跑一次 scrypt 哈希（较贵）：按 IP 限流，既防被拿来放大 CPU/内存做 DoS，
+    // 也压制「按 409/403 差异批量枚举哪些手机号已是内部中介账号」。
+    assertGuestRateLimit(req, 'mini-register', 10)
     const body = await parseBody(req)
-    // 注册改为“待审核”：registerUser 把申请落库后返回 pendingReview（updateDb 已提交持久化），此处据此
-    // 返回待审核提示、绝不发 token；已开通且未删除的账号仍按登录发 token（向后兼容既有账号）。
+    // 注册一律不发 token：registerUser 把申请落库（含用户自设密码哈希）后返回 pendingReview，此处据此
+    // 返回提示。新号→待审核；已开通号→引导直接登录；已开通未设密码号→引导联系管理员重置。
     const outcome = dbStore.updateDb((nextDb) => domain.registerUser(nextDb, body))
-    if (outcome && outcome.pendingReview) {
-      const error = new Error(outcome.message || '注册申请已提交，请等待管理员审核开通账号')
-      error.statusCode = 403
-      throw error
-    }
-    return sendJson(res, miniAuthResponse(outcome))
+    const error = new Error((outcome && outcome.message) || '注册申请已提交，请等待管理员审核开通账号')
+    error.statusCode = (outcome && outcome.statusCode) || 403
+    throw error
   }
 
   const userId = miniUserIdFromRequest(req, db)
@@ -2016,6 +2011,26 @@ async function handleAdmin(req, res, pathname, searchParams) {
         type: body.type,
         name: body.name,
         phone: body.phone,
+        // 后台建号可给可选初始密码（domain 内校验强度并哈希）；不给则账号无密码、fail-closed 禁登，
+        // 需管理员事后走 /admin/users/:id/password 设初始密码。
+        password: body.password,
+        operator: adminAccount.account || adminAccount.id
+      })
+      return {
+        users: domain.adminUsers(nextDb),
+        admins: (nextDb.adminAccounts || defaultAdminAccounts(nextDb)).filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  // 后台设置/重置小程序用户（中介/员工）登录密码：仅超管（assertAdminCapability），存量/新建账号发初始密码。
+  const managedUserPasswordMatch = pathname.match(/^\/admin\/users\/([^/]+)\/password$/)
+  if (method === 'POST' && managedUserPasswordMatch) {
+    assertAdminCapability(adminAccount)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      domain.setManagedUserPassword(nextDb, {
+        id: decodeURIComponent(managedUserPasswordMatch[1]),
+        password: body.password,
         operator: adminAccount.account || adminAccount.id
       })
       return {

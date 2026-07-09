@@ -4,6 +4,7 @@ const os = require('os')
 const path = require('path')
 const http = require('http')
 const { spawn } = require('child_process')
+const { hashPassword } = require('../src/auth-util')
 
 // 需求2：注册审核。小程序注册先落库待审核，管理员审核通过（选类型）后才开通账号，驳回留原因。
 // 锁定：注册不再直接开通(403待审核+不发token+落库)、去重、审核列表、通过开通(中介/员工)、驳回、重新申请、鉴权、已开通账号向后兼容。
@@ -18,13 +19,15 @@ const EXISTING_PHONE = '13900000001'
 const APPLY_PHONE = '13900000031'
 const REJECT_PHONE = '13900000032'
 const STAFF_PHONE = '13900000033'
+const EXISTING_PASSWORD = 'exist-pass-123'
+const APPLICANT_PASSWORD = 'apply-pass-123'
 
 function seedDb() {
   const db = {
-    // 既有已开通中介：向后兼容——注册其手机号仍按登录发 token。
+    // 既有已开通中介（有密码）：再注册其手机号不再免密发 token，改为引导直接登录。
     users: [
       { id: 'U-ADMIN', name: '超管员工', phone: '13900000009', isAdmin: true },
-      { id: 'U-EXIST', name: '既有中介', phone: EXISTING_PHONE, role: '中介', isAdmin: false, authed: '手机号登录' }
+      { id: 'U-EXIST', name: '既有中介', phone: EXISTING_PHONE, role: '中介', isAdmin: false, authed: '手机号登录', passwordHash: hashPassword(EXISTING_PASSWORD) }
     ],
     listings: [],
     footprints: [],
@@ -101,23 +104,25 @@ async function run() {
     const superAuth = await login('super1', 'super1pass')
     const restAuth = await login('restadmin', 'restpass1')
 
-    // 向后兼容：注册既有已开通账号的手机号 → 200 + 发 token（按登录处理）
-    const existRegister = await request('POST', '/mini/auth/register', { name: '既有中介', phone: EXISTING_PHONE })
-    assert.strictEqual(existRegister.statusCode, 200, '既有账号注册应按登录返回 200')
-    assert.ok(existRegister.body.data && existRegister.body.data.token, '既有账号注册应发 token')
+    // 堵后门：注册既有已开通账号的手机号不再免密发 token，改为 409 引导直接登录（绝不发 token）
+    const existRegister = await request('POST', '/mini/auth/register', { name: '既有中介', phone: EXISTING_PHONE, password: 'whatever-pass-1' })
+    assert.strictEqual(existRegister.statusCode, 409, '既有账号再注册应 409 引导登录，不按登录处理')
+    assert.ok(!(existRegister.body.data && existRegister.body.data.token), '既有账号再注册绝不能发 token（堵免密后门）')
+    assert.ok(/登录/.test(JSON.stringify(existRegister.body)), '既有账号再注册应提示直接登录')
 
-    // 新手机号注册 → 403 待审核、不发 token、落库
-    const apply = await request('POST', '/mini/auth/register', { name: '申请人甲', phone: APPLY_PHONE })
+    // 新手机号注册 → 403 待审核、不发 token、落库（带用户自设密码）
+    const apply = await request('POST', '/mini/auth/register', { name: '申请人甲', phone: APPLY_PHONE, password: APPLICANT_PASSWORD })
     assert.strictEqual(apply.statusCode, 403, '新手机号注册应待审核（403）')
-    assert.ok(/审核/.test(JSON.stringify(apply.body)), '待审核提示应含“审核”')
+    assert.ok(!(apply.body.data && apply.body.data.token), '待审核注册绝不能发 token')
+    assert.ok(/收到您的注册信息|开通账号/.test(JSON.stringify(apply.body)), '待审核提示应为已收到注册信息')
     assert.ok(!(apply.body.data && apply.body.data.token), '待审核不应发 token')
 
-    // 待审核期间不能登录
-    const preLogin = await request('POST', '/mini/auth/login', { phone: APPLY_PHONE })
+    // 待审核期间不能登录（即便带正确密码，账号未进 db.users 仍拒登）
+    const preLogin = await request('POST', '/mini/auth/login', { phone: APPLY_PHONE, password: APPLICANT_PASSWORD })
     assert.strictEqual(preLogin.statusCode, 403, '未开通账号不能登录')
 
     // 重复注册同号 → 去重，仍只有 1 条待审核
-    await request('POST', '/mini/auth/register', { name: '申请人甲', phone: APPLY_PHONE })
+    await request('POST', '/mini/auth/register', { name: '申请人甲', phone: APPLY_PHONE, password: APPLICANT_PASSWORD })
     let requests = await listRequests(superAuth)
     const applyPending = requests.filter((item) => item.phone === APPLY_PHONE && item.status === '待审核')
     assert.strictEqual(applyPending.length, 1, '同号重复注册应去重为 1 条待审核')
@@ -132,9 +137,12 @@ async function run() {
     assert.strictEqual(restApprove.statusCode, 403, '区域查看权限不得审核')
     const approve = await request('POST', `/admin/registrations/${applyId}/review`, { action: 'approve', type: 'broker' }, superAuth)
     assert.strictEqual(approve.statusCode, 200, `审核通过应 200：${JSON.stringify(approve.body)}`)
-    const brokerLogin = await request('POST', '/mini/auth/login', { phone: APPLY_PHONE })
-    assert.strictEqual(brokerLogin.statusCode, 200, '通过后应能登录')
+    const brokerLogin = await request('POST', '/mini/auth/login', { phone: APPLY_PHONE, password: APPLICANT_PASSWORD })
+    assert.strictEqual(brokerLogin.statusCode, 200, '通过后应能用注册时自设密码登录')
     assert.strictEqual(brokerLogin.body.data.role, '中介', '通过为中介应 role=中介')
+    assert.strictEqual(brokerLogin.body.data.passwordHash, undefined, '登录响应不得带出 passwordHash')
+    const brokerWrongPw = await request('POST', '/mini/auth/login', { phone: APPLY_PHONE, password: 'wrong-pass-999' })
+    assert.strictEqual(brokerWrongPw.statusCode, 403, '通过后用错误密码登录应 403')
 
     // 已处理的申请不能再审核 → 400
     const reReview = await request('POST', `/admin/registrations/${applyId}/review`, { action: 'approve', type: 'broker' }, superAuth)
@@ -145,29 +153,29 @@ async function run() {
     assert.strictEqual(missing.statusCode, 404, '审核不存在申请应 404')
 
     // 驳回 + 留原因 → 状态已驳回、不能登录
-    await request('POST', '/mini/auth/register', { name: '申请人乙', phone: REJECT_PHONE })
+    await request('POST', '/mini/auth/register', { name: '申请人乙', phone: REJECT_PHONE, password: APPLICANT_PASSWORD })
     requests = await listRequests(superAuth)
     const rejectId = requests.find((item) => item.phone === REJECT_PHONE && item.status === '待审核').id
     const reject = await request('POST', `/admin/registrations/${rejectId}/review`, { action: 'reject', reason: '资料不全' }, superAuth)
     assert.strictEqual(reject.statusCode, 200, `驳回应 200：${JSON.stringify(reject.body)}`)
     assert.strictEqual(reject.body.data.request.status, '已驳回', '驳回后状态应为已驳回')
     assert.strictEqual(reject.body.data.request.rejectReason, '资料不全', '驳回原因应保留')
-    const rejectLogin = await request('POST', '/mini/auth/login', { phone: REJECT_PHONE })
+    const rejectLogin = await request('POST', '/mini/auth/login', { phone: REJECT_PHONE, password: APPLICANT_PASSWORD })
     assert.strictEqual(rejectLogin.statusCode, 403, '被驳回账号不能登录')
 
     // 被驳回后可重新申请 → 回到待审核
-    const reApply = await request('POST', '/mini/auth/register', { name: '申请人乙', phone: REJECT_PHONE })
+    const reApply = await request('POST', '/mini/auth/register', { name: '申请人乙', phone: REJECT_PHONE, password: APPLICANT_PASSWORD })
     assert.strictEqual(reApply.statusCode, 403, '重新申请应回到待审核（403）')
     requests = await listRequests(superAuth)
     assert.ok(requests.some((item) => item.phone === REJECT_PHONE && item.status === '待审核'), '重新申请后应回到待审核')
 
     // 通过为员工 → role=内部员工
-    await request('POST', '/mini/auth/register', { name: '员工丙', phone: STAFF_PHONE })
+    await request('POST', '/mini/auth/register', { name: '员工丙', phone: STAFF_PHONE, password: APPLICANT_PASSWORD })
     requests = await listRequests(superAuth)
     const staffId = requests.find((item) => item.phone === STAFF_PHONE && item.status === '待审核').id
     const approveStaff = await request('POST', `/admin/registrations/${staffId}/review`, { action: 'approve', type: 'staff' }, superAuth)
     assert.strictEqual(approveStaff.statusCode, 200, '通过为员工应 200')
-    const staffLogin = await request('POST', '/mini/auth/login', { phone: STAFF_PHONE })
+    const staffLogin = await request('POST', '/mini/auth/login', { phone: STAFF_PHONE, password: APPLICANT_PASSWORD })
     assert.strictEqual(staffLogin.statusCode, 200, '员工通过后应能登录')
     assert.strictEqual(staffLogin.body.data.role, '内部员工', '通过为员工应 role=内部员工')
   } finally {
