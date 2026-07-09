@@ -45,6 +45,49 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude | ▶ 审计移交总清单：登录改造+自助改密+界面/卡片优化（11 commit）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（本批全部完成、全量测试+审计绿、多智能体对抗自审已修，**未 push**，等 Codex 第二裁判审 diff → 用户第三裁判复核 → 两裁判过再 push）。下方三条详细记录（改密补齐 / 第二轮 / 第一轮）是分批说明，本条是给 Codex 的**总入口 + 复验清单**。
+
+**待审 commit（基线 `1dc429c`，分支 `v1-broker`，均未 push；小程序前端码另经微信开发者工具上传发版）**：
+
+第一轮·登录接入账号密码（改鉴权，最高优先审）：
+- `0e1e53c` feat(auth): 账号密码登录(scrypt)+堵免密后门+全链路脱敏
+- `996920c` feat(mini): 登录注册页加密码框+注册「申请已提交」
+- `82c9562` feat(admin): 后台为中介/员工设/重置登录密码
+- `b90e8a3` docs(collab): README 鉴权章节
+- `0b7afc0` feat(auth): 中介登录后自助修改密码（补齐项）
+
+第二轮·界面/卡片优化：
+- `c983ff6` feat(mini): 工作台精简去说明留名称 + 板块改名今日工作台
+- `c2e01f6` feat(listing): 视频首帧封面 OSS 实时截帧（覆盖全部列表+详情）
+- `2dc8c4e` feat(mini): 我的房源换新卡片+整租合租/小区/租金筛选
+- `6e74e56` fix(mini): 户型筛选按室数归一(修两室/三室以上)+地址空尾
+- `d10cb3e`/`94a6a37` docs(collab): 两轮完成记录
+
+**请 Codex 重点审（跨批）**：
+1. 鉴权/密码：scrypt 非弱哈希；`passwordHash` 是否可能顺任一响应外泄（登录/`/mini/auth/me`/`/mini/profile`/`/admin/users`/`/admin/registrations`/房源序列化里的 uploader）；免密后门（已开通号注册免密发 token）是否堵死；待审核/无密码/软删账号能否拿 token 或 /mini 数据。
+2. 自助改密 `/mini/auth/password`：userId 是否只来自已验签 token、不采信 body 身份；原密码校验、限流、脱敏。
+3. 视频封面：OSS video/snapshot 的 `x-oss-process` 是否正确纳入 V1 签名 subresource；封面字段下发是否破坏既有房源契约。
+4. 我的房源：筛选/编辑/电话确认功能完整、户型室数归一正确。
+
+**复验命令（PowerShell，仓库根执行）**：
+```powershell
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+本地结果：全量 `*-test.js`（除 smoke）+ `v1-final-audit` 全绿。新增门禁脚本：`mini-login-password-v1-test`、`mini-pending-no-data-v1-test`、`oss-video-snapshot-v1-test`。
+
+**已知非阻断（记录备查）**：STS 场景 `createVideoSnapshotUrl`/既有 `createSignedReadUrl` 同款漏签 security-token（当前长期 AK/SK 不触发）；改密不失效旧 token（无状态，最长 7 天）；登录文案有限枚举面（已注释的 B2B 取舍 + 限流）。
+
+**部署前置（非本次代码问题，供上线协调）**：① 登录改造上线前须先由管理员给存量中介发初始密码，否则他们登不进；② 视频封面真正出图需 OSS 开通媒体处理(IMM)，未开也不崩（退占位图）。
+
+**红线自守**：未改 `smoke-test.js`；未动 `server/data`/`certs`/`.env`/密钥；未提交他人未提交的 `docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`；未主动 push。
+
+**需要 Codex**：审上列 diff，逐批置 `READY_TO_DEPLOY` 或 `CLAUDE_FIX_REQUIRED`（附阻断项+复验命令）；有阻断我返修。
+
 ### 2026-07-10 | Claude | 补齐：中介登录后自助修改密码（第一轮登录遗漏项）| CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（第一轮登录审计后用户指出漏做「登录后自助改密」——我在后台改密提示里写了「本人登录后可自行修改」却没建入口，现补齐；未 push）。触及 `server/src/domain.js`、`server/src/index.js`（auth 独占资源，本会话串行）。
