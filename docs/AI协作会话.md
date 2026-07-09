@@ -45,6 +45,21 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude | 补齐：中介登录后自助修改密码（第一轮登录遗漏项）| CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（第一轮登录审计后用户指出漏做「登录后自助改密」——我在后台改密提示里写了「本人登录后可自行修改」却没建入口，现补齐；未 push）。触及 `server/src/domain.js`、`server/src/index.js`（auth 独占资源，本会话串行）。
+
+**关联 commit**：`0b7afc0 feat(auth): 中介登录后自助修改密码（补齐第一轮登录功能）`
+
+**实现**：
+- 后端 `domain.changeOwnPassword` + `POST /mini/auth/password`：userId 由已验签 token 解析（**不信任客户端身份**），校验原密码(scrypt 恒定时间)→新密码过 `passwordIssue`(≥8/禁空格)+拒新旧相同→写新哈希；软删/停用/无密码账号 fail-closed；响应经 `withoutSecret` 脱敏；端点 IP 限流 10/min 防原密码在线爆破+scrypt DoS。
+- 前端新增 `pages/change-password` 页（原/新/确认三段）+ `api-service.changePassword`；「我的」页登录态加「修改密码」入口；`app.json` 注册。
+- 测试：`mini-login-password` 补改密全流程（无token→401/错原密码→403/弱新密码→400/新旧相同→400/改成功后旧密码失效新密码可登/响应不带 passwordHash）；`v1-final-audit` 加改密入口静态断言。全量测试+审计通过。
+
+**对抗自审（安全 agent）**：判可上线，无 P1/P2 阻断（身份严格来自 token、绝不采信 body 身份、原密码 scrypt 校验、脱敏、后端兜底强度）。已按建议补端点限流。**已知非阻断**：改密不失效旧会话（token 无状态、最长 7 天过期），如需即时踢除他端可后续加 tokenVersion——属可接受权衡。
+
+**需要 Codex**：连同第一轮一并审此改密入口（身份可信、原密码校验、无泄露、限流）。
+
 ### 2026-07-10 | Claude | 第二轮 界面/卡片优化(工作台/视频封面/我的房源) 完成+对抗自审已修 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（第二轮 UI 已完成、全量测试+审计绿、对抗自审已修，等 Codex 审 diff；未 push）。第一轮登录改造用户已告知「审计好了」，故开第二轮。本轮触及独占资源 `server/src/domain.js`、`server/src/oss.js`（未碰 `server/src/index.js`），本会话串行。
