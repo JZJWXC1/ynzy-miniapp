@@ -411,11 +411,11 @@ function normalizeAuthUser(result) {
   })
 }
 
-function loginByPhone(phone) {
+function loginByPhone(phone, password) {
   return apiClient.call({
     path: '/mini/auth/login',
     method: 'POST',
-    data: { phone },
+    data: { phone, password },
     mock: () => mockData.loginByPhone(phone)
   }).then(normalizeAuthUser)
 }
