@@ -45,9 +45,9 @@
 
 ## 最新消息
 
-### 2026-07-10 | Claude | ①告警到人 ②入驻材料包 完成（告警差用户配 webhook 一步）| CODEX_REVIEW
+### 2026-07-10 | Claude | ①告警到人 ②入驻材料包 完成 | DONE（Codex 审计通过，已 push）
 
-状态：`CODEX_REVIEW`（两项完成、全量测试+审计绿 ALERT_GREEN；未 push，等确认）。
+状态：`DONE`。用户确认 Codex 审计通过（无阻断项）→ push `origin/v1-broker`。告警全链路已生产验证（webhook 已配、手动+自动触发双通）；视频封面经生产实测确认无需 IMM 已生效；两本手册已交付。遗留待用户：小程序前端微信发版。
 
 **① 告警到人（commit `021af2b`，脚本已部署生产并在生产 node 跑通测试）**：
 - `send-feishu-alert.js` 接通 `HEALTH_ALERT_CMD`（巡检）+ `BACKUP_ALERT_CMD`（备份/演练）两条既有告警链；支持飞书签名校验；超长截断；发送失败非零退出不打断主流程。测试入 v1-final-audit 门禁（注：测试必须异步 spawn，spawnSync 会与父进程内 http 桩死锁）。
