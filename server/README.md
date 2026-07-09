@@ -215,12 +215,17 @@ Environment=FOOTPRINT_MAX_ROWS=30000
 
 ## 小程序端鉴权
 
-小程序登录接口：
+小程序登录接口（账号密码制）：
 
 ```http
-POST /mini/auth/login
-POST /mini/auth/register
+POST /mini/auth/login      body: { phone, password }
+POST /mini/auth/register   body: { name, phone, password }
 ```
+
+- **登录 = 手机号 + 密码**。服务端只匹配未软删用户，并用 `verifyPassword`（scrypt）校验密码。以下一律 403、不发 token：手机号未开通（引导联系管理员开通）、账号未设密码（fail-closed，引导联系管理员重置）、密码错误（统一提示「手机号或密码不正确」，不暴露命中与否）。缺密码返回 400。登录入口按客户端 IP 限流（20/min）防暴力破解。
+- **注册 = 申请-审核-开通**。任何人可提交注册申请（含自设密码，服务端立即 scrypt 哈希存进申请记录），但**注册一律不发 token**：新手机号落 `registrationRequests` 待审核并提示「已收到您的注册信息…请联系寓你住一起管理员开通账号权限」（403）；已开通手机号返回 409 引导直接登录（不再免密发 token）。管理员在后台 `/admin/registrations` 审核通过后，注册时自设的密码即写入新账号，用户可直接用该密码登录。
+- **密码存储**：`scrypt$<salt>$<hash>`（随机 salt + `timingSafeEqual` 恒定时间比对，实现见 `src/auth-util.js`，与后台管理员账号共用）。DB 不存明文；`passwordHash` 绝不随 `/mini/auth/me`、`/mini/profile`、`/mini/auth/login`、`/admin/users`、`/admin/registrations` 等任何响应外泄。
+- **存量/后台建号设密**：管理员在后台「账号管理」对中介/员工点「设置/重置密码」，或调 `POST /admin/users/:id/password`（仅超级管理员）为无密码账号发初始密码；后台建号 `POST /admin/users` 也可带可选初始密码。未设密码的账号一律 fail-closed 禁登。
 
 登录成功后，后端签发小程序 token，并返回 `token` 与 `tokenExpiresAt`。小程序请求需使用：
 
@@ -236,7 +241,7 @@ AUTH_TOKEN_SECRET=
 
 token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在或被禁用都会返回 `401`。
 
-`X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id` 的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端以 token 内的真实用户为准，忽略伪造请求头。
+`X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id`、篡改 payload 沿用旧签名、换错误密钥重签的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端以 token 内的真实用户为准，忽略伪造请求头。
 
 游客模式边界：
 
@@ -569,7 +574,7 @@ POST /admin/llm-config/test
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，仍保留但不要作为当前 V1 验收主线。
 
-当前 V1 验收脚本为以下五个：
+当前 V1 验收脚本为以下七个：
 
 ```bash
 cd server
@@ -578,6 +583,8 @@ node scripts/assistant-v1-test.js
 node scripts/backend-contract-v1-test.js
 node scripts/guest-mode-v1-test.js
 node scripts/auth-token-v1-test.js
+node scripts/mini-login-password-v1-test.js
+node scripts/mini-pending-no-data-v1-test.js
 ```
 
 其中覆盖：
@@ -586,7 +593,9 @@ node scripts/auth-token-v1-test.js
 - 助手需求解析与匹配。
 - 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签、报备/签单。
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
-- Bearer token 鉴权、7 天有效期、伪造 `X-User-Id` 无效。
+- Bearer token 鉴权、7 天有效期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
+- 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录。
+- 待审核/无密码账号拿不到任何 token，无 token 拿不到 `/mini` 数据（公司房源匿名可见口径不变）。
 
 找房助手另有真实需求行为基线：
 

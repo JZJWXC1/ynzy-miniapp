@@ -45,6 +45,55 @@
 
 ## 最新消息
 
+### 2026-07-09 | Claude | 小程序登录接入账号密码 完成+对抗自审已修 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（第一轮登录改造已完成、全量测试+审计绿、多智能体对抗自审已修，等 Codex 第二裁判审 diff；未 push）。UI 轮未开工，等本轮审干净再做。
+
+**关联 commit（分支 v1-broker，未 push；小程序前端码另经微信开发者工具上传发版）**：
+- `0e1e53c feat(auth): 小程序登录接入账号密码（scrypt）+ 堵免密后门 + 全链路脱敏`
+- `996920c feat(mini): 登录注册页加密码框，注册改为友好「申请已提交」提示`
+- `82c9562 feat(admin): 账号管理为中介/员工新增「设置/重置登录密码」`
+
+**实现要点（契约）**：
+- 登录=手机号+密码（`domain.loginByPhone` 加 `verifyPassword`）。无 passwordHash 账号 fail-closed 禁登、错密 403 防枚举、与鉴权中间件同口径排除 deleted/禁用；登录入口 IP 限流 20/min。
+- 注册=提交申请（含自设密码，立即 scrypt 哈希存申请），一律不发 token：新号 403 待审核（提示语=用户指定「已收到您的注册信息…请联系寓你住一起管理员开通账号权限」）、已开通号 409 引导登录（**堵掉原「已开通号免密发 token」后门**）；注册入口 IP 限流 10/min 防 DoS/枚举。
+- 密码 scrypt（随机 salt+timingSafeEqual）；`passwordHash` 从 `currentUser/adminUsers/listRegistrationRequests/reviewRegistration/miniAuthResponse` 全部剥离；DB 只存哈希不存明文。
+- 存量/新建账号由超管在后台「账号管理」点「设置/重置密码」或 `POST /admin/users/:id/password` 发初始密码。
+
+**多智能体对抗自审（5 视角×高推理档，倾向反驳）结论**：后门封死（唯一发 token 路径 login→miniAuthResponse，register 一律 throw）、无 passwordHash 泄露出口（房源序列化只取 uploader.name 不 spread 整对象，前端全仓零引用）、待审核/无密码/软删账号拿不到 token 也拿不到 /mini 数据、测试为「加强」非「放水」。据审计新修 4 处并全部固化测试：
+1. `/mini/auth/register` 补 IP 限流（防 scrypt DoS + 枚举）；
+2. `verifyPassword` 对退化哈希（空 hash 段/过短）fail-closed（堵潜在认证绕过地雷）；
+3. `mini-pending-no-data` 补软删账号「旧 token 越权→401 + 正确密码重登→403」回归覆盖；
+4. `loginByPhone` 对齐排除 `status='禁用'`，不再发放立即失效的无用 token。
+未采纳（有理由，记录备查）：scrypt cost 不改（哈希串未编码 N，改了会让存量管理员哈希验不过、锁死登录，属未来带参数迁移的独立任务）；`/admin/data/export` 含哈希是**备份必需**（不含则无法恢复登录，且仅超管可达、是 scrypt 哈希非明文）；登录文案枚举是已注释的内部 B2B 取舍且有限流兜底。
+
+**测试/审计**：全量 `server/scripts/*-test.js`（除 smoke）+ `v1-final-audit.js` 全绿（ROUND1_FIXED_GREEN）；新增 `mini-login-password` / `mini-pending-no-data` 已入 `v1-final-audit` criticalScripts 门禁 + `checkMiniLoginPassword` 源码级不变量。
+
+**红线自守**：未改 `smoke-test.js`（其登录断言早在上一轮「注册审核」上线时就已 stale——断言「新号登录自动建中介账号」，当前 loginByPhone 早改 403；本轮非首次弄坏、且不在门禁内）；未动 `server/data`/`certs`/`.env`/密钥；未提交他人未提交的 `docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`；未主动 push。
+
+**需要 Codex 做什么**：按精确/安全口径审上列 3 个 commit 的 diff，重点：密码哈希方式（非弱哈希）、待审核/无密码账号是否真的一点数据都拿不到、免密后门是否堵死、passwordHash 是否可能顺任一响应外泄、测试是否有被弱化的安全断言。审完置 `READY_TO_DEPLOY` 或 `CLAUDE_FIX_REQUIRED`（附阻断项/复验命令）。用户会再发第三裁判复核；两裁判过才 push。
+
+### 2026-07-09 | Claude | 开工：小程序登录接入账号密码（申请-审核-开通制已存在，仅补密码）| CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（第一轮=登录改造，单独成 commit，先审干净再做 UI 轮）。本轮触及独占资源 `server/src/domain.js`、`server/src/index.js`、DB 用户结构——本会话串行独占，请其他并行会话本轮勿动这两文件与 users 结构。
+
+**勘查结论（纠正原假设）**：本仓库「申请-审核-开通制」**已完整落地**（注册落 `registrationRequests` 待审核=403 不发 token；后台 `/admin/registrations` 审核开通；admin-web 已有审核列表 UI）。唯一缺口=**账号密码**：`db.users` 无密码字段，`domain.loginByPhone`（domain.js:1084）只按手机号匹配、不验密码。密码哈希基建已现成（`hashPassword/verifyPassword`=scrypt+随机salt+timingSafeEqual，index.js:366，现仅管理员用）。
+
+**用户已拍板**：①存量（已开通、无密码）用户走「后台管理员发初始密码」——无密码用户一律 fail-closed 禁登，管理员在后台设初始密码；②登录=手机号+密码，注册=提交申请（带密码），注册成功提示「已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限」。
+
+**拟修改文件清单（第一轮）**：
+- `server/src/auth-util.js`（新增）：抽出 `hashPassword/verifyPassword/passwordIssue`（scrypt 单一实现，index.js 与 domain.js 共用，避免两套口径漂移）。
+- `server/src/domain.js`：`loginByPhone(phone,password)` 加密码校验（无 passwordHash→403 引导联系管理员；错密→403「手机号或密码不正确」防枚举）；`registerUser` 采集+哈希密码存进申请、堵住「已开通号免密发 token」后门；`createManagedUser` 接 passwordHash/password；`reviewRegistration` 透传 passwordHash；新增 `setManagedUserPassword`；`currentUser/adminUsers/listRegistrationRequests/reviewRegistration` 返回一律剥离 passwordHash。
+- `server/src/index.js`：require auth-util 去掉本地 hash 函数；`/mini/auth/login` 传 password + 限流防爆破；`/mini/auth/register` 改为一律不发 token；`miniAuthResponse` 剥离 passwordHash；新增 `POST /admin/users/:id/password`（超管重置小程序用户密码）+ `/admin/users` 建号可选初始密码。
+- `pages/auth/auth.*` + `utils/api-service.js`：登录/注册加密码框；注册提示改友好「已提交」弹窗。
+- `admin-web/index.html`：账号列表加「设置/重置登录密码」操作（避免新增裸 innerHTML sink，守 xss 计数 32）。
+- 测试：新增 `mini-login-password-v1-test.js`、`mini-pending-no-data-v1-test.js`；扩展 `auth-token-v1-test.js`（token 篡改/换密钥重签→401）；同步 6 个既有登录测试的 seed（补 passwordHash）与登录调用（带 password）；登记进 `v1-final-audit.js` criticalScripts。
+- 文档：同步 `server/README.md`、`docs/交接报告-20260704.md`。
+
+**红线自守**：不改 `smoke-test.js`（其登录断言早已 stale：断言「新号登录自动建中介账号」，当前 loginByPhone 早改 403，本就不在门禁内、非本轮新弄坏）；`data/certs/.env`/密钥不进提交；密码 scrypt 强哈希、恒定时间比对，禁明文；不主动 push。基线已确认 GREEN 后开工。
+
+**需要 Codex/第三裁判**：本轮完成后转 `CODEX_REVIEW`，请重点审：密码哈希方式（非弱哈希）、待审核/无密码账号是否真的一点数据都拿不到（不得出现「注册完没审核但接口能调」或「passwordHash 顺 user 对象外泄」）、存量免密后门是否堵死。
+
 ### 2026-07-08 22:20 | Claude | 小程序 自查免留痕+电话确认三选项 后端已上线生产 | DONE（前端码待用户微信发版）
 
 状态：`DONE`（Codex READY_TO_DEPLOY 后 staged 部署 `server/src/domain.js`+`server/src/index.js`，自检全绿、含回滚网、SSH 凭据用后已 shred）。
