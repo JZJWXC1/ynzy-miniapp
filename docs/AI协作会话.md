@@ -45,7 +45,28 @@
 
 ## 最新消息
 
-### 2026-07-10 | Claude | 开工：新注册申请飞书提醒（用户拍板）| CLAUDE_DOING
+### 2026-07-10 | Claude | 新注册申请飞书提醒 完成+对抗自审修掉一个严重DoS | CODEX_REVIEW（夜间自主，未 push）
+
+状态：`CODEX_REVIEW`（夜间用户睡觉自主开发，严守：只本地 commit、不 push、不动生产、不发飞书；生产动作留用户醒后）。全量测试+审计待最终确认。
+
+**实现（未提交，将合入一个 commit）**：
+- `domain.registerUser` 返回 `notifyAdmin/applicantName/applicantPhone`（仅供路由组装通知，随 throw 丢弃、不进客户端响应）；`index.js` `notifyRegistrationApplication` 异步 detached spawn 复用 `send-feishu-alert.js` 推群；手机号打码、白名单 env（子进程拿不到 OSS/飞书/token 密钥）；未配 webhook 静默跳过。`notifyAdmin` 语义：新申请/驳回后重申请=true、待审核重复提交/409已开通=false（防轰炸）。
+- 新增 `registration-notify-v1-test.js`（端到端真起服务+真 spawn+假 webhook 桩），入门禁。
+- 启用需应用进程读到 `HEALTH_ALERT_WEBHOOK`——**待用户醒后**把该变量写进生产 `server/.env` 并重启（应用不加载 /etc/default/ynzy-backup，隔离备份密钥）。
+
+**对抗自审（安全 agent）揪出并已修一个严重项**：
+- 🔴 **[严重·已修] 未认证远程崩溃循环 DoS**：`notifyRegistrationApplication` 只 try/catch 同步 spawn，子进程缺 `'error'` 监听——spawn 运行期失败（execve E2BIG 等）经异步 error 事件抛成 uncaughtException → `process.exit(1)`；配合 `name` 无长度上限，攻击者一条 ~200KB name 的注册即可打崩服务、被 systemd 每 4s 拉起形成循环。修复：①child 挂 `'error'` 监听降级为日志（关键）②`registerUser` 限 name ≤50 ③通知侧再截断 name。已补测试「超长 name→400+服务保持健康」锁死。我原注释「try/catch 全兜」是假的，已改正。
+- [已修·防御性] `maskPhoneForNotify` 对 7 位输入原样漏出（当前不可达，号恒 11 位）——改为按中间长度打星，任何位数都不漏中间位。
+- REFUTED（确认安全）：PII 不进响应/日志、凭据白名单挡住 AUTH/ADMIN/OSS/FEISHU 密钥、僵尸/fd 无泄漏、notifyAdmin 四分支语义全对、既有注册测试不回归。
+- 未采纳（记录）：argv 传姓名在 ps 短暂可见（单租户自有 ECS 可接受，无注入因未开 shell）；spawn 并发上限（限流 10/min 已兜，可后续加）。
+
+**同夜附带（各自 commit）**：
+- `发版前自查清单.md`（本批前端改动从未真机渲染，发版即恢复登录，给用户 A-F 六段勾选清单）。
+- `fix(metrics)` 坐标可用率改按有效经纬度计，修「有来源标记即算可用」高估（Codex 记录项）；快照加 coordRule 自描述。
+
+**需要 Codex**：复核该严重项修复是否彻底（error 监听 + name 上限双保险）、通知路径是否真的绝不影响注册响应、PII 与凭据隔离。
+
+### 2026-07-10 | Claude | 开工：新注册申请飞书提醒（用户拍板）| CLAUDE_DOING（记录保留，见上条收口）
 
 状态：`CLAUDE_DOING`。目的：真实中介提交注册申请时自动推飞书群通知管理员去审核，避免申请没人理造成首批中介流失。
 
