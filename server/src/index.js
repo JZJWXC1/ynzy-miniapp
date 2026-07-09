@@ -1086,6 +1086,15 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, domain.currentUser(db, userId))
   }
 
+  if (method === 'POST' && pathname === '/mini/auth/password') {
+    // 登录后自助修改密码：userId 来自已验签 token，忽略请求体里的任何身份字段。
+    assertMiniLogin(userId)
+    // 已登录端点也按 IP 限流：防持有效 token 但不知原密码者在线爆破原密码、以及每次 scrypt 的 CPU 放大。
+    assertGuestRateLimit(req, 'mini-change-password', 10)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.changeOwnPassword(nextDb, userId, body)))
+  }
+
   if (method === 'POST' && pathname === '/mini/auth/wechat-openid') {
     assertMiniLogin(userId)
     const body = await parseBody(req)

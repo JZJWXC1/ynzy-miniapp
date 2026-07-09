@@ -24,6 +24,7 @@ const NEW_PHONE = '13900000044'
 const NEW_PASSWORD = 'broker-new-123'
 const RESET_PASSWORD = 'broker-reset-456'
 const BADHASH_PHONE = '13900000045'
+const CHANGED_PASSWORD = 'changed-ok-789'
 
 function seedDb() {
   const db = {
@@ -203,6 +204,29 @@ async function run() {
     assert.strictEqual(nopwLoginAfter.statusCode, 200, '设初始密码后存量账号应能登录')
     assert.ok(hasToken(nopwLoginAfter), '设初始密码后登录应发 token')
     assert.strictEqual(dataOf(nopwLoginAfter).passwordHash, undefined, '设密后登录响应仍不得带 passwordHash')
+
+    // 11. 登录后自助修改密码（userId 由 token 解析，不信任客户端身份）
+    // 无 token → 401
+    const changeNoAuth = await request('POST', '/mini/auth/password', { oldPassword: OK_PASSWORD, newPassword: CHANGED_PASSWORD })
+    assert.strictEqual(changeNoAuth.statusCode, 401, '未登录改密必须 401')
+    // 错误原密码 → 403
+    const changeWrongOld = await request('POST', '/mini/auth/password', { oldPassword: 'wrong-old-999', newPassword: CHANGED_PASSWORD }, okAuth)
+    assert.strictEqual(changeWrongOld.statusCode, 403, '原密码错误改密必须 403')
+    // 弱新密码 → 400
+    const changeWeak = await request('POST', '/mini/auth/password', { oldPassword: OK_PASSWORD, newPassword: '123' }, okAuth)
+    assert.strictEqual(changeWeak.statusCode, 400, '弱新密码必须 400')
+    // 新旧相同 → 400
+    const changeSame = await request('POST', '/mini/auth/password', { oldPassword: OK_PASSWORD, newPassword: OK_PASSWORD }, okAuth)
+    assert.strictEqual(changeSame.statusCode, 400, '新密码与原密码相同必须 400')
+    // 正确改密 → 200，响应不带 passwordHash
+    const changeOk = await request('POST', '/mini/auth/password', { oldPassword: OK_PASSWORD, newPassword: CHANGED_PASSWORD }, okAuth)
+    assert.strictEqual(changeOk.statusCode, 200, '正确原密码改密应 200')
+    assert.strictEqual(dataOf(changeOk).passwordHash, undefined, '改密响应不得带 passwordHash')
+    // 旧密码失效、新密码可登
+    const oldLoginAfterChange = await login(OK_PHONE, OK_PASSWORD)
+    assert.strictEqual(oldLoginAfterChange.statusCode, 403, '改密后旧密码不能再登录')
+    const newLoginAfterChange = await login(OK_PHONE, CHANGED_PASSWORD)
+    assert.strictEqual(newLoginAfterChange.statusCode, 200, '改密后新密码可登录')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })

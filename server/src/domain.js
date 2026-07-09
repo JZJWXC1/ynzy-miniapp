@@ -1362,6 +1362,46 @@ function setManagedUserPassword(db, payload = {}) {
   return withoutSecret(user)
 }
 
+// 小程序用户登录后自助修改密码：userId 由服务端 token 解析（不信任客户端身份），校验原密码后写入新密码哈希。
+function changeOwnPassword(db, userId, payload = {}) {
+  const oldPassword = String(payload.oldPassword == null ? '' : payload.oldPassword)
+  const newPassword = String(payload.newPassword == null ? '' : payload.newPassword)
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === userId && !item.deleted && item.status !== '禁用')
+  if (!user) {
+    const error = new Error('登录用户不存在或已停用')
+    error.statusCode = 401
+    throw error
+  }
+  if (!oldPassword) {
+    const error = new Error('请输入原密码')
+    error.statusCode = 400
+    throw error
+  }
+  // 已登录用户必然已设密码；无 passwordHash 或原密码不对一律 403（不泄露是哪种）。
+  if (!user.passwordHash || !verifyPassword(oldPassword, user.passwordHash)) {
+    const error = new Error('原密码不正确')
+    error.statusCode = 403
+    throw error
+  }
+  const issue = passwordIssue(newPassword)
+  if (issue) {
+    const error = new Error(issue)
+    error.statusCode = 400
+    throw error
+  }
+  if (verifyPassword(newPassword, user.passwordHash)) {
+    const error = new Error('新密码不能与原密码相同')
+    error.statusCode = 400
+    throw error
+  }
+  user.passwordHash = hashPassword(newPassword)
+  delete user.password
+  user.passwordUpdatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+  user.passwordUpdatedBy = 'self'
+  return withoutSecret(user)
+}
+
 // 审核注册申请：通过→按管理员选定类型(中介/员工)开通 db.users；驳回→标记拒绝 + 可留原因。
 function reviewRegistration(db, payload = {}) {
   const targetId = String(payload.id || '').trim()
@@ -4709,6 +4749,7 @@ module.exports = {
   createManagedUser,
   deleteManagedUser,
   setManagedUserPassword,
+  changeOwnPassword,
   listRegistrationRequests,
   reviewRegistration,
   migrateCompanyListings,

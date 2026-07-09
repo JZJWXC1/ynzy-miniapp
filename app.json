@@ -5,6 +5,7 @@
     "pages/match-chat/match-chat",
     "pages/map/map",
     "pages/auth/auth",
+    "pages/change-password/change-password",
     "pages/my-listings/my-listings",
     "pages/upload/upload",
     "pages/listing-detail/listing-detail",

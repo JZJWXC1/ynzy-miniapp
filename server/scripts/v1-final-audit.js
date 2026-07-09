@@ -422,6 +422,7 @@ function checkMiniLoginPassword() {
   assertOk(/if \(!user\.passwordHash\)/.test(domainJs), '无 passwordHash 账号必须 fail-closed 禁登')
   assertOk(/delete safe\.passwordHash/.test(indexJs), '登录响应必须剥离 passwordHash')
   assertOk(domainJs.includes('function withoutSecret'), 'user 序列化必须过 withoutSecret 剥离密码哈希')
+  assertOk(indexJs.includes("pathname === '/mini/auth/password'") && domainJs.includes('function changeOwnPassword'), '必须提供登录后自助修改密码入口（/mini/auth/password → changeOwnPassword）')
   return '小程序登录已接密码校验（scrypt）、无密码账号 fail-closed、passwordHash 不外泄'
 }
 

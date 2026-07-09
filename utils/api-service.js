@@ -445,6 +445,15 @@ function bindWechatOpenid(code) {
   })
 }
 
+function changePassword(oldPassword, newPassword) {
+  return apiClient.call({
+    path: '/mini/auth/password',
+    method: 'POST',
+    data: { oldPassword, newPassword },
+    mock: () => mockData.getCurrentUser()
+  })
+}
+
 function matchListings(condition) {
   return apiClient.call({
     path: '/mini/listings/match',
@@ -940,6 +949,7 @@ module.exports = {
   registerUser,
   getCurrentUser,
   bindWechatOpenid,
+  changePassword,
   matchListings,
   chatAssistant,
   submitAssistantFeedback,

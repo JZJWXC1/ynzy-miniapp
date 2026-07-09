@@ -13,6 +13,7 @@
       </view>
       <view class="account-actions">
         <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+        <button wx:if="{{user.id}}" class="password-button" bindtap="handleTap" data-name="修改密码" data-url="/pages/change-password/change-password">修改密码</button>
         <button wx:if="{{user.id}}" class="logout-button" bindtap="logout">退出登录</button>
       </view>
     </view>
