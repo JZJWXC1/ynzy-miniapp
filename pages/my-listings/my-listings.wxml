@@ -85,7 +85,7 @@
               <text wx:if="{{item.rentMode === '整租'}}" class="company-rent-mode-badge">整</text>
               <text class="company-listing-title">{{item.title}}</text>
             </view>
-            <view class="company-listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
+            <view class="company-listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber || item.block || item.address}}</view>
             <view class="company-listing-sub">{{item.layout}} · {{item.rentMode || item.type || '整租'}} · {{item.status}}</view>
             <view wx:if="{{item.landlordPhone}}" class="listing-landlord">房东电话：{{item.landlordPhone}}（自己上传，直接展示）</view>
             <view wx:if="{{item.features}}" class="listing-feature-row">

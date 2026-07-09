@@ -114,9 +114,9 @@ function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
   return `${ossHost()}/${encodeObjectPath(objectKey)}?${parts.join('&')}`
 }
 
-// 判断对象键是否是可截帧的视频（复用与 domain.hasListingVideo 一致的后缀口径）。
+// 判断对象键是否是可截帧的视频（与 domain.looksLikeVideoPath 同口径：含 #/? 结尾兜底）。
 function looksLikeVideoPath(value) {
-  return /\.(mp4|mov|m4v|webm)(\?|$)/i.test(String(value || ''))
+  return /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(String(value || '').trim())
 }
 
 function putObjectBuffer(objectKey, buffer, contentType) {

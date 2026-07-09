@@ -71,13 +71,33 @@ function includesText(hay, needle) {
   return !key || String(hay || '').indexOf(key) !== -1
 }
 
+// 户型按室数比较，与后端 domain.matchesLayoutFilter 同口径：房源落库用「二室」，筛选栏用「两室」，
+// 必须归一到室数否则「两室」永远匹配不到、「三室以上」漏掉四室以上。
+function roomCountFromLayout(text) {
+  const matched = String(text || '').match(/([一二两三四五六七八九]|\d+)\s*室/)
+  if (!matched) return 0
+  const map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+  return map[matched[1]] || Number(matched[1]) || 0
+}
+
+function matchLayoutFilter(item, layoutFilter) {
+  const filter = String(layoutFilter || '').trim()
+  if (!filter || filter === '不限') return true
+  const roomCount = roomCountFromLayout([item.layout, item.room, item.type, item.rentMode].join(' '))
+  if (filter === '一室') return roomCount === 1
+  if (filter === '两室' || filter === '二室') return roomCount === 2
+  if (filter === '三室') return roomCount === 3
+  if (filter === '三室以上') return roomCount >= 3
+  return String(item.layout || '').indexOf(filter) !== -1
+}
+
 // 本地过滤我的房源：复用公司房源那套筛选维度（整租合租/小区/租金为用户明确要求，另兼容区域/板块/户型）。
 function matchOwnerFilter(item, filters) {
   const f = filters || {}
   if (f.district && !includesText(`${item.district || ''}${item.area || ''}`, f.district)) return false
   if (f.block && !includesText(item.block, f.block)) return false
   if (f.community && !includesText(`${item.community || ''}${item.locationSummary || ''}${item.title || ''}`, f.community)) return false
-  if (f.layout && f.layout !== '不限' && !includesText(item.layout, f.layout.replace('以上', ''))) return false
+  if (!matchLayoutFilter(item, f.layout)) return false
   if (f.rentMode && f.rentMode !== '不限' && String(item.rentMode || item.type || '') !== f.rentMode) return false
   const rent = Number(String(item.rent == null ? '' : item.rent).replace(/[^0-9.]/g, ''))
   if (f.rentMin && rent && rent < Number(f.rentMin)) return false
