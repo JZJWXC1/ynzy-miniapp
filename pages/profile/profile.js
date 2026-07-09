@@ -70,13 +70,14 @@ Page({
     const sourceStats = profile.sourceStats || []
     const listingCount = findStatValue(sourceStats, ['房源', '上传'], sourceStats[0] ? sourceStats[0].value : 0)
     const commissionCount = findStatValue(sourceStats, ['分佣', '成交'], sourceStats[2] ? sourceStats[2].value : 0)
+    // 工作台精简：只保留功能名称 + 数值徽标，去掉每项的说明文字（desc 已从卡片模板移除）。
     return [
-      { title: '我的房源', value: `${listingCount} 套`, desc: '查看自己上传的房源', url: '/pages/my-listings/my-listings' },
-      { title: '上传房源', value: '视频房源', desc: '上传真实可租房源', url: '/pages/upload/upload' },
-      { title: '房源足迹', value: `${footprintCount} 条`, desc: '查看地址电话访问记录', url: '/pages/footprint/footprint' },
-      { title: '分佣记录', value: `${commissionCount} 单`, desc: '查看已确认的分佣记录', url: '/pages/commissions/commissions' },
-      { title: '房态维护', value: '3/5/7天', desc: '维护在租状态和失效提醒', url: '/pages/my-listings/my-listings' },
-      { title: '登录与账号信息', value: profile.user && profile.user.authed ? profile.user.authed : '账号', desc: '查看或切换当前登录账号', url: '/pages/auth/auth' }
+      { title: '我的房源', value: `${listingCount} 套`, url: '/pages/my-listings/my-listings' },
+      { title: '上传房源', value: '视频房源', url: '/pages/upload/upload' },
+      { title: '房源足迹', value: `${footprintCount} 条`, url: '/pages/footprint/footprint' },
+      { title: '分佣记录', value: `${commissionCount} 单`, url: '/pages/commissions/commissions' },
+      { title: '房态维护', value: '3/5/7天', url: '/pages/my-listings/my-listings' },
+      { title: '登录与账号信息', value: profile.user && profile.user.authed ? profile.user.authed : '账号', url: '/pages/auth/auth' }
     ];
   },
 

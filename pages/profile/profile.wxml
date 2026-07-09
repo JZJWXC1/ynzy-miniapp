@@ -34,7 +34,6 @@
           <view class="workbench-title">{{item.title}}</view>
           <view class="workbench-value">{{item.value}}</view>
         </view>
-        <view class="workbench-desc">{{item.desc}}</view>
       </button>
     </view>
 
@@ -51,7 +50,7 @@
     </view>
 
     <view class="section-title">
-      <view class="section-title-main">防跳单与分佣提醒</view>
+      <view class="section-title-main">今日工作台</view>
       <button class="section-title-action" bindtap="handleTap" data-name="查看全部提醒">全部</button>
     </view>
 
