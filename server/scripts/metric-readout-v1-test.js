@@ -23,11 +23,11 @@ const db = {
     { needId: 'N2', status: '待管理员确认', dealMonthlyRentFen: 400000, landlordCommissionFen: 0 }
   ], // L3提交 {N1,N2}=2/4=50%；L3已确认 {N1}=1/4=25%
   listings: [
-    { coordinateSource: 'admin' },
-    { coordinateSource: 'static-library' },
-    { coordinateSource: 'pending-map-coordinate' },
-    {} // 无 coordinateSource
-  ], // 坐标可用 2/4=50%；无坐标 2/4=50%
+    { coordinateSource: 'admin', mapLatitude: 30.35, mapLongitude: 120.16 }, // 有效坐标
+    { coordinateSource: 'static-library', mapLatitude: 30.29, mapLongitude: 120.17 }, // 有效坐标
+    { coordinateSource: 'admin', mapLatitude: 999, mapLongitude: 120.16 }, // 有来源标记但纬度非法 → 不可用（旧口径的高估病例）
+    {} // 无坐标
+  ], // 坐标可用 2/4=50%；无坐标 2/4=50%（按有效经纬度口径）
   rechargeBills: [
     { status: '已确认到账', amount: 100 },
     { status: '待支付', amount: 999 }
@@ -50,12 +50,18 @@ assert.strictEqual(m.pct(1, 3), 33.3, '一位小数')
   assert.strictEqual(f.fillL3_dealConfirmedPct, 25, 'L3 成交已确认 25%')
 }
 
-// 3) 供给坐标可用率。
+// 3) 供给坐标可用率（有效经纬度口径：来源标记存在但坐标非法的不计入）。
 {
   const s = m.computeSupply(db)
   assert.strictEqual(s.listingsTotalRaw, 4)
-  assert.strictEqual(s.coordAvailable, 2)
+  assert.strictEqual(s.coordAvailable, 2, '纬度 999 的病例不得计入可用')
   assert.strictEqual(s.coordAvailableRatePct, 50, '坐标可用率 50%')
+  assert.strictEqual(s.coordRule, 'valid-latlng', '快照需自描述坐标口径')
+  // 边界：(0,0) 占位、缺经度、字符串坐标均不可用；合法边界值可用
+  assert.strictEqual(m.computeSupply({ listings: [{ mapLatitude: 0, mapLongitude: 0 }] }).coordAvailable, 0, '(0,0) 占位不可用')
+  assert.strictEqual(m.computeSupply({ listings: [{ mapLatitude: 30.1 }] }).coordAvailable, 0, '缺经度不可用')
+  assert.strictEqual(m.computeSupply({ listings: [{ mapLatitude: '30.35', mapLongitude: '120.16' }] }).coordAvailable, 1, '数值字符串坐标可用')
+  assert.strictEqual(m.computeSupply({ listings: [{ mapLatitude: -90, mapLongitude: 180 }] }).coordAvailable, 1, '合法边界值可用')
 }
 
 // 4) 成交：仅已确认计入。

@@ -66,16 +66,27 @@ function computeFillRate(db) {
   }
 }
 
+// 坐标真实有效才算可用：有限数值 + 合法范围 + 排除 (0,0) 占位。修正旧口径「有 coordinateSource
+// 标记即算可用」的高估（Codex 记录项：标记存在≠经纬度有效，脏数据/空坐标会虚抬可用率）。
+function hasValidCoordinate(listing) {
+  if (!listing) return false
+  const lat = Number(listing.mapLatitude)
+  const lng = Number(listing.mapLongitude)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false
+  if (lat === 0 && lng === 0) return false // (0,0) 视为占位脏数据
+  return true
+}
+
 // 供给数据完备率：坐标可用率（能进半径/地图检索）。无坐标房源在 match-service 被静默过滤。
 function computeSupply(db) {
   const listings = Array.isArray(db.listings) ? db.listings : []
-  const withCoord = listings.filter(
-    (l) => l && l.coordinateSource && l.coordinateSource !== 'pending-map-coordinate'
-  ).length
+  const withCoord = listings.filter(hasValidCoordinate).length
   return {
     listingsTotalRaw: listings.length,
     coordAvailable: withCoord,
-    coordAvailableRatePct: pct(withCoord, listings.length) // 全库口径（分母为整库，非 publicListings）
+    coordAvailableRatePct: pct(withCoord, listings.length), // 全库口径（分母为整库，非 publicListings）
+    coordRule: 'valid-latlng' // 口径自描述：2026-07-10 起按有效经纬度计，历史快照(按来源标记计)趋势对比需知此变化
   }
 }
 
@@ -101,12 +112,10 @@ function computeMonetization(db) {
   return { rechargeConfirmedCount: paid.length, rechargeConfirmedAmountYuan: Math.round(amt * 100) / 100 }
 }
 
-// 护栏只读监控：幽灵/无坐标供给率（防堆陈旧房源做大供给深度）。
+// 护栏只读监控：幽灵/无坐标供给率（防堆陈旧房源做大供给深度）。与 computeSupply 同口径互补。
 function computeGuardrails(db) {
   const listings = Array.isArray(db.listings) ? db.listings : []
-  const noCoord = listings.filter(
-    (l) => !l || !l.coordinateSource || l.coordinateSource === 'pending-map-coordinate'
-  ).length
+  const noCoord = listings.filter((l) => !hasValidCoordinate(l)).length
   return { ghostNoCoordRatePct: pct(noCoord, listings.length) }
 }
 
