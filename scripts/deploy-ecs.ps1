@@ -170,10 +170,21 @@ echo "Rollback code: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server
 "@
 
 $remoteScript = $remoteScript -replace "`r`n", "`n"
-$remoteScript | ssh @sshArgs $sshTarget "bash -s"
+# 不再用 stdin 管道传 bash（`$remoteScript | ssh "bash -s"`）：Windows PowerShell 会按 $OutputEncoding
+# 给管道流加 UTF-8 BOM，bash 把首行读成「﻿set」直接报 command not found，且 set -euo pipefail 因此失效、
+# 后续步骤在无保护状态下继续执行（2026-07-10 实际发生：文件已替换但服务未重启的半成品部署）。
+# 改为写「UTF-8 无 BOM + LF」临时脚本 → scp → bash 执行，编码完全确定。
+$remoteScriptPath = Join-Path $env:TEMP "ynzy-remote-deploy-$stamp.sh"
+[System.IO.File]::WriteAllText($remoteScriptPath, $remoteScript, (New-Object System.Text.UTF8Encoding($false)))
+scp @sshArgs $remoteScriptPath "${sshTarget}:/tmp/ynzy-remote-deploy.sh"
+if ($LASTEXITCODE -ne 0) {
+  throw "Upload remote script failed: scp exited with code $LASTEXITCODE"
+}
+ssh @sshArgs $sshTarget "bash /tmp/ynzy-remote-deploy.sh; rc=`$?; rm -f /tmp/ynzy-remote-deploy.sh; exit `$rc"
 if ($LASTEXITCODE -ne 0) {
   throw "Remote deploy failed: ssh exited with code $LASTEXITCODE"
 }
+Remove-Item -LiteralPath $remoteScriptPath -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath $tempDir -Recurse -Force
 Remove-Item -LiteralPath $archivePath -Force
