@@ -20,6 +20,8 @@ const criticalScripts = [
   // DB 只存 scrypt 哈希；以及「待审核/无密码账号拿不到任何 token、无 token 拿不到 /mini 数据」正面固化。
   'server/scripts/mini-login-password-v1-test.js',
   'server/scripts/mini-pending-no-data-v1-test.js',
+  // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
+  'server/scripts/oss-video-snapshot-v1-test.js',
   // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',

@@ -18,6 +18,7 @@
         <video
           class="listing-video"
           src="{{listing.videoUrl}}"
+          poster="{{listing.coverUrl}}"
           controls
           show-center-play-btn
           object-fit="cover"

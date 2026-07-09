@@ -86,6 +86,39 @@ function createSignedReadUrl(objectKey, expiresInSeconds) {
   return `${ossHost()}/${encodeObjectPath(objectKey)}?${query}`
 }
 
+// 视频首帧封面：阿里云 OSS 私有桶对视频对象用 x-oss-process=video/snapshot 实时截帧成 JPG。
+// 私有桶必须把 x-oss-process 作为 subresource 一并纳入 V1 签名的 CanonicalizedResource，否则
+// 返回 SignatureDoesNotMatch。t_0=首帧、m_fast=取最近关键帧（更快、更省）、w_640 控制列表缩略图大小。
+// 需要 bucket 开通媒体处理（IMM/视频处理）能力；未开通/编码不支持时该 URL 会取图失败，前端退占位图兜底。
+const VIDEO_SNAPSHOT_PROCESS = 'video/snapshot,t_0,f_jpg,w_640,h_0,m_fast'
+
+function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
+  if (!objectKey || missingConfigKeys().length || !looksLikeVideoPath(objectKey)) return ''
+
+  const expires = Math.floor(Date.now() / 1000) + (expiresInSeconds || config.oss.readUrlExpireSeconds)
+  // 签名串里 x-oss-process 用字面值（不 URL 编码），与下方 query 中同样字面的 x-oss-process 一致，避免签名不匹配。
+  const resourcePath = `/${config.oss.bucket}/${objectKey}?x-oss-process=${VIDEO_SNAPSHOT_PROCESS}`
+  const stringToSign = ['GET', '', '', String(expires), resourcePath].join('\n')
+  const signature = signOssString(stringToSign)
+
+  // x-oss-process 的值只含 /、,、_ 与字母数字，都是 query 合法字符，保持字面以匹配签名串。
+  const parts = [
+    `x-oss-process=${VIDEO_SNAPSHOT_PROCESS}`,
+    `OSSAccessKeyId=${encodeURIComponent(config.oss.accessKeyId)}`,
+    `Expires=${expires}`,
+    `Signature=${encodeURIComponent(signature)}`
+  ]
+  if (config.oss.securityToken) {
+    parts.push(`security-token=${encodeURIComponent(config.oss.securityToken)}`)
+  }
+  return `${ossHost()}/${encodeObjectPath(objectKey)}?${parts.join('&')}`
+}
+
+// 判断对象键是否是可截帧的视频（复用与 domain.hasListingVideo 一致的后缀口径）。
+function looksLikeVideoPath(value) {
+  return /\.(mp4|mov|m4v|webm)(\?|$)/i.test(String(value || ''))
+}
+
 function putObjectBuffer(objectKey, buffer, contentType) {
   const missing = missingConfigKeys()
   if (missing.length) {
@@ -277,5 +310,6 @@ module.exports = {
   createGroupScreenshotUploadPolicy,
   createShowingPhotoUploadPolicy,
   createSignedReadUrl,
+  createVideoSnapshotUrl,
   putObjectBuffer
 }

@@ -196,6 +196,13 @@
   border-radius: 18rpx;
 }
 
+.listing-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .media-window {
   position: absolute;
   inset: 42rpx 28rpx 24rpx;

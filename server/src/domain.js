@@ -1,5 +1,6 @@
 const { clone } = require('./db')
 const { hashPassword, verifyPassword, passwordIssue } = require('./auth-util')
+const oss = require('./oss')
 const config = require('./config')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
@@ -141,6 +142,14 @@ function hasListingVideo(listing = {}) {
   const videoKey = String(listing.videoKey || '').trim()
   const videoUrl = String(listing.videoUrl || '').trim()
   return looksLikeVideoPath(videoKey) || looksLikeVideoPath(videoUrl)
+}
+
+// 房源卡片封面：有视频的房源用 OSS 视频首帧（video/snapshot 实时截帧的签名 URL）。createVideoSnapshotUrl
+// 是纯签名（无网络、无 OSS 配置时返空串），故放 domain 序列化层不影响可测性；无视频/非 OSS 对象返空，
+// 前端退占位图兜底。列表/详情统一走这里，保证公司/合作/我的/全部房源封面口径一致。
+function listingCoverUrl(listing = {}) {
+  const videoKey = String(listing.videoKey || '').trim()
+  return videoKey ? oss.createVideoSnapshotUrl(videoKey) : ''
 }
 
 function isCompanySheetListing(listing = {}) {
@@ -1585,6 +1594,8 @@ function formatHomeListing(db, listing) {
     price: `¥${listing.rent}/月`,
     tag: companyListing ? '公司房源' : `${commissionRateForListing(listing, db)}%`,
     videoUrl: listing.videoUrl || '',
+    hasVideo: hasListingVideo(listing),
+    coverUrl: listingCoverUrl(listing),
     layout: listing.layout || '',
     rentMode: listing.rentMode || listing.type || '',
     type: listing.type || listing.rentMode || '',
@@ -1780,6 +1791,8 @@ function buildListingDetail(db, listing) {
     videoLabel: listing.videoLabel || '房源实拍视频',
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
+    hasVideo: hasListingVideo(listing),
+    coverUrl: listingCoverUrl(listing),
     type: listing.type || listing.rentMode || '',
     rentMode: listing.rentMode || listing.type || '',
     room: listing.room || '',
@@ -1978,6 +1991,8 @@ function ownedListings(db, userId) {
         title: publicListingTitle(listing, location),
         ...location,
         rent: String(listing.rent),
+        hasVideo: hasListingVideo(listing),
+        coverUrl: listingCoverUrl(listing),
         commissionRate: display.noCommission ? '不分佣' : `${commissionRateForListing(listing, db)}%`,
         commissionText: display.commissionText,
         noCommission: display.noCommission,

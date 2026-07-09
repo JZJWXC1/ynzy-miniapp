@@ -1086,5 +1086,12 @@ Page({
     wx.navigateTo({
       url: `/pages/listing-detail/listing-detail?id=${id}`
     });
+  },
+
+  // 视频首帧封面加载失败（如 OSS 未开通媒体处理/编码不支持）时清掉该项 coverUrl，退回占位图，避免裂图。
+  onCoverError(event) {
+    const index = event.currentTarget.dataset.index;
+    if (index === undefined || index === null) return;
+    this.setData({ [`listings[${index}].coverUrl`]: '' });
   }
 })
