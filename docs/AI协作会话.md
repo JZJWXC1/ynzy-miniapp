@@ -46,6 +46,22 @@
 
 ## 最新消息
 
+### 2026-07-10 21:23 | CODEX_DEV（主开发） | P1.3 需求转化漏斗完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。功能 commit：`e6efbf802ba99f6dbb47f5787605ab3ba48e1fe4`（`feat(metrics): 固化需求转化漏斗`）；已 rebase 到最新 `origin/v1-broker@1c77ced`，唯一的追加式协作文档冲突已按时间保留双方记录后解决，分支 `wt/需求转化漏斗`。未 push、未部署、未上传体验版；P1.3 放行并完成发布后按用户指示暂停，不认领 P2。
+
+**实际范围（16 个文件）**：`docs/AI协作会话.md`、`docs/交接报告-20260704.md`、`docs/经营指标体系.md`、`pages/listing-detail/listing-detail.js`、`server/README.md`、`server/scripts/metric-readout-v1-test.js`、`server/scripts/metric-readout.js`、`server/scripts/need-funnel-v1-test.js`（新增）、`server/scripts/show-metric-trend-v1-test.js`、`server/scripts/show-metric-trend.js`、`server/scripts/v1-final-audit.js`、`server/src/assistant-service.js`、`server/src/domain.js`、`server/src/index.js`、`server/src/need-funnel.js`（新增）、`utils/mock-data.js`。与开工及扩展声明完全一致；远端小区库/看房方式记录只在 rebase 时按追加式规则保留，未修改其业务实现。
+
+**实现结论**：持久需求新增 `need-funnel-v1` 六个首次可信里程碑（有效推荐、L1 敏感查看、L2 报备、审核通过带看、L3 提交、L3 管理员确认）；每次写入都以服务端当前用户与需求所有人交叉校验，重复事件不覆盖首次时间。新客户端带看只携带非临时 `needId`，服务端验归属；旧客户端无 `needId` 仍可提交但不计漏斗。每日快照继续以 `fillL2` 为北极星，新增首推 P50/P95、带看率、成交确认率及样本数；历史业务行只在事件用户等于需求所有人时兼容回读。`/readyz` 仅按数量显示仍待审核的注册通知死信，存在时返回 503，已审核历史死信不计且不输出申请内容。
+
+**先红后绿与测试**：新 `need-funnel-v1-test.js` 在旧实现上连续稳定红于“需求应固化 funnel 里程碑对象”，实现后转绿，并覆盖空推荐、跨用户串绑、首次时间去重、待审/通过带看、旧客户端、L3 提交/确认分离、聚合脱敏、readyz 503 与死信数量。rebase 前非 smoke **89/89** + `v1-final-audit.js` 全绿；rebase 后连同远端新增小区库测试从头实跑 **90/90** + 最终审计全绿。12 个改动 JavaScript 文件 `node --check` 通过，`git diff --check` 通过。
+
+**红线自审**：提交级扫描文件数 16；范围外文件、`server/data`、`server/certs`、`.env`、lark/private config、私钥/真实 webhook 形态、新增运行时手机号字面量、新增裸 `innerHTML`、客户端权限/分佣字段、`smoke-test.js` 改动均为 0。测试仅使用合成数据和临时数据库，未读取或输出真实申请、客户、房源或凭据。
+
+**风险与复审重点**：旧客户端带看没有可信 `needId`，有意保持可提交但不进入带看率；首推耗时只统计能解析需求创建时间且实际返回房源的可测样本，因此快照同时输出样本数，零分母返回 `null`；持久里程碑可抵抗 trace/足迹滚动淘汰，历史数据则只按现存可信记录回读，不冒充完整回填。请 Claude Code 只读复审功能 commit `e6efbf8`，重点手推：①六阶段来源是否都由服务端业务成功点触发；②伪造/他人 `needId` 与原始串绑记录是否 fail-closed；③重复事件、旧客户端与历史回读；④P50/P95、带看率/确认率零分母；⑤快照和 readyz 脱敏、死信只计待审核。无阻断写 `READY_TO_DEPLOY`；有阻断写 `CODEX_FIX_REQUIRED` 并给复现命令。
+
+---
+
 ### 2026-07-10 20:24 | CODEX_DEV（主开发） | P1.3 基线通过并扩展文件声明 | CODEX_DOING
 
 状态：`CODEX_DOING`。最新 `origin/v1-broker@2d361b3` 基线已实跑非 smoke **88/88**，`server/scripts/v1-final-audit.js` 全绿。阅读真实链路后确认：敏感查看、报备、成交记录和生产每日 `metric-readout` 已有基础 `needId` 口径；本模块需在此基础上固化需求里程碑，补首次有效推荐耗时、带看率、成交确认率，并收紧聚合时的用户归属过滤，而不是新建重复事件表。
