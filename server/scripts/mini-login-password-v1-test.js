@@ -17,6 +17,13 @@ const baseUrl = `http://127.0.0.1:${port}`
 
 const OK_PHONE = '13900000041'
 const OK_PASSWORD = 'broker-ok-123'
+const ADMIN_PHONE = '13900000009'
+const ADMIN_SYNC_PASSWORD = 'admin-mini-sync-123'
+const ADMIN_SYNC_PASSWORD_NEXT = 'admin-mini-sync-456'
+const LAZY_PHONE = '13900000008'
+const LAZY_PASSWORD = 'existing-admin-123'
+const AMBIG_PHONE = '13900000007'
+const AMBIG_PASSWORD = 'ambiguous-admin-123'
 const NOPW_PHONE = '13900000042'
 const DEL_PHONE = '13900000043'
 const DEL_PASSWORD = 'broker-del-123'
@@ -24,23 +31,32 @@ const NEW_PHONE = '13900000044'
 const NEW_PASSWORD = 'broker-new-123'
 const RESET_PASSWORD = 'broker-reset-456'
 const BADHASH_PHONE = '13900000045'
+const LINKED_PHONE = '13900000046'
+const LINKED_PASSWORD = 'linked-admin-123'
 const CHANGED_PASSWORD = 'changed-ok-789'
 
 function seedDb() {
   const db = {
     users: [
-      { id: 'U-ADMIN', name: '超管员工', phone: '13900000009', isAdmin: true },
+      { id: 'U-ADMIN', name: '超管员工', phone: ADMIN_PHONE, isAdmin: true },
+      { id: 'U-LAZY', name: '已有后台密码管理员', phone: LAZY_PHONE, isAdmin: true },
+      { id: 'U-AMBIG', name: '多重绑定管理员', phone: AMBIG_PHONE, isAdmin: true },
       { id: 'U-OK', name: '已设密中介', phone: OK_PHONE, role: '中介', isAdmin: false, authed: '手机号登录', passwordHash: hashPassword(OK_PASSWORD) },
       { id: 'U-NOPW', name: '存量无密码中介', phone: NOPW_PHONE, role: '中介', isAdmin: false, authed: '手机号登录' },
       { id: 'U-DEL', name: '软删中介', phone: DEL_PHONE, role: '中介', isAdmin: false, deleted: true, status: '已删除', passwordHash: hashPassword(DEL_PASSWORD) },
       // 退化哈希（空 hash 段）：verifyPassword 必须 fail-closed，任意密码都不能登录（防认证绕过地雷）。
-      { id: 'U-BADHASH', name: '坏哈希账号', phone: BADHASH_PHONE, role: '中介', isAdmin: false, authed: '手机号登录', passwordHash: 'scrypt$abcsalt$' }
+      { id: 'U-BADHASH', name: '坏哈希账号', phone: BADHASH_PHONE, role: '中介', isAdmin: false, authed: '手机号登录', passwordHash: 'scrypt$abcsalt$' },
+      { id: 'U-LINKED', name: '待绑定员工', phone: LINKED_PHONE, role: '内部员工', isAdmin: false, authed: '手机号登录' }
     ],
     listings: [],
     footprints: [],
     registrationRequests: [],
     adminAccounts: [
-      { id: 'A-SUPER', account: 'super1', password: 'super1pass', name: '超管', userId: 'U-ADMIN', permission: '全部后台权限', status: '启用' }
+      { id: 'A-SUPER', account: 'super1', passwordHash: hashPassword('super1pass'), name: '超管', userId: 'U-ADMIN', permission: '全部后台权限', status: '启用' },
+      { id: 'A-LAZY', account: 'lazy1', passwordHash: hashPassword(LAZY_PASSWORD), name: '已有后台密码管理员', userId: 'U-LAZY', permission: '区域查看权限', status: '启用' },
+      { id: 'A-AMBIG-1', account: 'ambig1', passwordHash: hashPassword(AMBIG_PASSWORD), name: '多重绑定一', userId: 'U-AMBIG', permission: '区域查看权限', status: '启用' },
+      { id: 'A-AMBIG-2', account: 'ambig2', passwordHash: hashPassword('ambiguous-admin-456'), name: '多重绑定二', userId: 'U-AMBIG', permission: '区域查看权限', status: '启用' },
+      { id: 'A-UNLINKED', account: 'unlinked1', password: 'unlinked-pass-1', name: '未绑定管理账号', permission: '区域查看权限', status: '启用' }
     ]
   }
   fs.writeFileSync(dataFile, JSON.stringify(db, null, 2), 'utf8')
@@ -198,6 +214,80 @@ async function run() {
     assert.strictEqual(okRow.hasPassword, true, '已设密账号 hasPassword 应为 true')
     assert.strictEqual(nopwRow.hasPassword, false, '无密码账号 hasPassword 应为 false')
 
+    // 10a. 已经在旧版本完成后台改密的唯一绑定账号：第一次用现有后台密码登录时安全回填，无需再重置。
+    const lazyLogin = await login(LAZY_PHONE, LAZY_PASSWORD)
+    assert.strictEqual(lazyLogin.statusCode, 200, '唯一绑定账号应可用已有后台密码首次登录小程序并完成安全回填')
+    assert.ok(hasToken(lazyLogin), '安全回填后必须签发小程序 token')
+    const lazyDb = readDb()
+    const lazyAccount = lazyDb.adminAccounts.find((item) => item.id === 'A-LAZY')
+    const lazyUser = lazyDb.users.find((item) => item.id === 'U-LAZY')
+    assert.strictEqual(lazyUser.passwordHash, lazyAccount.passwordHash, '惰性回填必须复用唯一绑定管理账号的服务端哈希')
+    assert.ok(Number(lazyUser.tokenVersion || 0) >= 1, '惰性回填必须撤销可能存在的旧小程序会话')
+
+    const ambiguousLogin = await login(AMBIG_PHONE, AMBIG_PASSWORD)
+    assert.strictEqual(ambiguousLogin.statusCode, 403, '同一用户绑定多个管理账号时必须拒绝猜测使用哪个密码')
+    const ambiguousUser = readDb().users.find((item) => item.id === 'U-AMBIG')
+    assert.strictEqual(ambiguousUser.passwordHash, undefined, '多重绑定失败不得回填任意管理账号密码')
+
+    // 10b. 管理账号按服务端 userId 绑定同步小程序密码；不按账号文本或手机号猜测。
+    const adminNoPwLogin = await login(ADMIN_PHONE, ADMIN_SYNC_PASSWORD)
+    assert.strictEqual(adminNoPwLogin.statusCode, 403, '修复前绑定管理员用户没有小程序密码时应 fail-closed')
+    const resetLinkedAdmin = await request('POST', '/admin/accounts/A-SUPER/password', { password: ADMIN_SYNC_PASSWORD }, superAuth)
+    assert.strictEqual(resetLinkedAdmin.statusCode, 200, '管理账号改密应成功')
+    assert.strictEqual(dataOf(resetLinkedAdmin).miniLoginSynced, true, '绑定管理账号改密必须同步小程序登录密码')
+    assert.strictEqual(JSON.stringify(resetLinkedAdmin.body).includes('passwordHash'), false, '管理账号改密响应不得泄露密码哈希')
+    const adminMiniLogin = await login(ADMIN_PHONE, ADMIN_SYNC_PASSWORD)
+    assert.strictEqual(adminMiniLogin.statusCode, 200, '绑定管理账号改密后应可用同一新密码登录小程序')
+    assert.ok(hasToken(adminMiniLogin), '绑定管理员小程序登录必须签发 token')
+    const adminMiniAuth = { Authorization: `Bearer ${dataOf(adminMiniLogin).token}` }
+    const oldAdminWebLogin = await request('POST', '/admin/auth/login', { account: 'super1', password: 'super1pass' })
+    assert.strictEqual(oldAdminWebLogin.statusCode, 403, '管理账号改密后后台旧密码必须失效')
+    const newAdminWebLogin = await request('POST', '/admin/auth/login', { account: 'super1', password: ADMIN_SYNC_PASSWORD })
+    assert.strictEqual(newAdminWebLogin.statusCode, 200, '管理账号改密后后台新密码应生效')
+    const newSuperAuth = { Authorization: `Bearer ${dataOf(newAdminWebLogin).token}` }
+
+    const resetLinkedAgain = await request('POST', '/admin/accounts/A-SUPER/password', { password: ADMIN_SYNC_PASSWORD_NEXT }, newSuperAuth)
+    assert.strictEqual(resetLinkedAgain.statusCode, 200, '绑定管理账号再次改密应成功')
+    assert.strictEqual(dataOf(resetLinkedAgain).miniLoginSynced, true, '再次改密仍必须同步小程序密码')
+    const staleAdminMiniSession = await request('GET', '/mini/auth/me', null, adminMiniAuth)
+    assert.strictEqual(staleAdminMiniSession.statusCode, 401, '后台同步改密后必须撤销该用户全部旧小程序会话')
+    const oldAdminMiniLogin = await login(ADMIN_PHONE, ADMIN_SYNC_PASSWORD)
+    assert.strictEqual(oldAdminMiniLogin.statusCode, 403, '后台再次改密后小程序旧密码必须失效')
+    const nextAdminMiniLogin = await login(ADMIN_PHONE, ADMIN_SYNC_PASSWORD_NEXT)
+    assert.strictEqual(nextAdminMiniLogin.statusCode, 200, '后台再次改密后小程序新密码应生效')
+
+    const linkedDb = readDb()
+    const linkedAdminAccount = linkedDb.adminAccounts.find((item) => item.id === 'A-SUPER')
+    const linkedAdminUser = linkedDb.users.find((item) => item.id === 'U-ADMIN')
+    assert.ok(/^scrypt\$/.test(String(linkedAdminAccount.passwordHash || '')), '后台管理账号必须只存 scrypt 哈希')
+    assert.strictEqual(linkedAdminUser.passwordHash, linkedAdminAccount.passwordHash, '绑定账号与小程序用户应保存同一轮服务端哈希')
+    assert.ok(Number(linkedAdminUser.tokenVersion || 0) >= 2, '每次后台同步改密都必须提升小程序 tokenVersion')
+    assert.strictEqual(JSON.stringify(linkedDb).includes(ADMIN_SYNC_PASSWORD_NEXT), false, '数据库不得保存同步密码明文')
+
+    // 10c. 未绑定管理账号只改后台密码，不得按账号文本猜测或改写任意小程序用户。
+    const usersBeforeUnlinkedReset = readDb().users.map((item) => ({ id: item.id, passwordHash: item.passwordHash || '', tokenVersion: item.tokenVersion || 0 }))
+    const resetUnlinkedAdmin = await request('POST', '/admin/accounts/A-UNLINKED/password', { password: 'unlinked-pass-2' }, newSuperAuth)
+    assert.strictEqual(resetUnlinkedAdmin.statusCode, 200, '未绑定管理账号仍应允许更新后台密码')
+    assert.strictEqual(dataOf(resetUnlinkedAdmin).miniLoginSynced, false, '未绑定管理账号必须明确返回未同步小程序')
+    const usersAfterUnlinkedReset = readDb().users.map((item) => ({ id: item.id, passwordHash: item.passwordHash || '', tokenVersion: item.tokenVersion || 0 }))
+    assert.deepStrictEqual(usersAfterUnlinkedReset, usersBeforeUnlinkedReset, '未绑定管理账号改密不得改写任何小程序用户')
+
+    // 10d. 新建管理账号时若显式绑定 userId，初始密码也应同步；未绑定时仍保持分离。
+    const linkedNoPwLogin = await login(LINKED_PHONE, LINKED_PASSWORD)
+    assert.strictEqual(linkedNoPwLogin.statusCode, 403, '绑定前员工没有小程序密码时应 fail-closed')
+    const createLinkedAdmin = await request('POST', '/admin/accounts', {
+      account: 'linkedstaff',
+      password: LINKED_PASSWORD,
+      name: '绑定员工后台账号',
+      userId: 'U-LINKED',
+      permission: '区域查看权限'
+    }, newSuperAuth)
+    assert.strictEqual(createLinkedAdmin.statusCode, 200, '显式绑定用户的新管理账号应创建成功')
+    assert.strictEqual(dataOf(createLinkedAdmin).miniLoginSynced, true, '新建已绑定管理账号必须同步小程序初始密码')
+    const linkedLoginAfterCreate = await login(LINKED_PHONE, LINKED_PASSWORD)
+    assert.strictEqual(linkedLoginAfterCreate.statusCode, 200, '新建绑定管理账号后应可用同一密码登录小程序')
+    assert.strictEqual(JSON.stringify(createLinkedAdmin.body).includes('passwordHash'), false, '新建管理账号响应不得泄露密码哈希')
+
     const setPw = await request('POST', '/admin/users/U-NOPW/password', { password: RESET_PASSWORD }, superAuth)
     assert.strictEqual(setPw.statusCode, 200, '超管为存量账号设初始密码应 200')
     const nopwLoginAfter = await login(NOPW_PHONE, RESET_PASSWORD)
@@ -227,6 +317,11 @@ async function run() {
     assert.strictEqual(oldLoginAfterChange.statusCode, 403, '改密后旧密码不能再登录')
     const newLoginAfterChange = await login(OK_PHONE, CHANGED_PASSWORD)
     assert.strictEqual(newLoginAfterChange.statusCode, 200, '改密后新密码可登录')
+
+    const adminWebSource = fs.readFileSync(path.join(serverDir, '..', 'admin-web', 'index.html'), 'utf8')
+    assert.ok(adminWebSource.includes('miniLoginSynced'), '后台改密 UI 必须按服务端同步结果提示')
+    assert.ok(adminWebSource.includes('小程序登录密码已同步'), '绑定账号应明确提示小程序密码已同步')
+    assert.ok(adminWebSource.includes('未绑定小程序用户'), '未绑定账号应明确提示没有同步小程序密码')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })

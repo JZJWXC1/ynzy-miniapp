@@ -236,6 +236,7 @@ POST /mini/auth/register   body: { name, phone, password }
 - **注册申请飞书提醒**：新申请或驳回/开通后的重新申请落库时，服务端异步推飞书群提醒管理员审核（复用 `scripts/send-feishu-alert.js`）。姓名中的标签边界、换行和控制字符会先转义/清理，手机号只发打码值；子进程 env 只含系统变量与 `HEALTH_ALERT_*`，拿不到 OSS/token 等应用密钥。发送状态与次数写在申请记录的 `notifyStatus` / `notifyAttempts`：只有发送脚本退出码为 0 才记成功，失败默认在 1 秒、5 秒后重试，总次数最多 3 次；进程重启会恢复未完成任务。第三次仍失败时状态进入 `dead_letter`，同时记录 `notifyDeadLetterAt` / `notifyDeadLetterReason`，并通过同一 `HEALTH_ALERT_WEBHOOK` 升级发送 `REGISTRATION_NOTIFY_DEAD_LETTER` 告警；死信告警只包含分组后的申请追踪 id、次数、时间和失败摘要，不包含姓名、手机号、密码或完整申请内容。告警以“成功送达最多一次”为准：若发送失败或进程在 `sending` 中断，重启后会补发；一旦记为 `sent`，后续重启不再重复。通知链始终不阻塞注册响应。启用条件：应用进程能读到 `HEALTH_ALERT_WEBHOOK`——需把该变量**同步写进 `server/.env`**（应用不加载 `/etc/default/ynzy-backup`，是有意隔离：避免备份加密密钥进入应用进程环境），改后 `systemctl restart ynzy-miniapp` 生效；未配置则保留 `pending` 状态且不发送，配置后重启会补发。测试环境可用 `REGISTRATION_NOTIFY_RETRY_DELAYS_MS=40,80` 缩短两次重试间隔，生产通常保持默认值。
 - **密码存储**：`scrypt$<salt>$<hash>`（随机 salt + `timingSafeEqual` 恒定时间比对，实现见 `src/auth-util.js`，与后台管理员账号共用）。DB 不存明文；`passwordHash` 绝不随 `/mini/auth/me`、`/mini/profile`、`/mini/auth/login`、`/admin/users`、`/admin/registrations` 等任何响应外泄。
 - **存量/后台建号设密**：管理员在后台「账号管理」对中介/员工点「设置/重置密码」，或调 `POST /admin/users/:id/password`（仅超级管理员）为无密码账号发初始密码；后台建号 `POST /admin/users` 也可带可选初始密码。未设密码的账号一律 fail-closed 禁登。
+- **绑定管理账号单向同步**：`adminAccounts`（后台登录）与 `db.users`（小程序手机号登录）仍是两套鉴权记录；只有管理账号持久化了有效 `userId` 绑定时，`POST /admin/accounts` 创建和 `POST /admin/accounts/:id/password` 重置才会把同一轮服务端 scrypt 哈希同步给该既有用户，并提升其 `tokenVersion` 撤销全部旧小程序会话。服务端绝不按管理账号文本或手机号猜测绑定，也不自动创建小程序身份；未绑定或绑定用户已删除时只更新后台密码，响应 `miniLoginSynced=false`，后台会明确提示小程序密码未同步。若旧版本已改过后台密码但绑定用户仍缺小程序密码，首次输入正确后台密码登录小程序时，仅在“一个用户唯一绑定一个有效、带哈希管理账号”且 scrypt 验证通过后安全回填；未绑定、多重绑定、停用账号、坏哈希或密码错误均不写入。小程序用户自助改密不会反向修改高权限后台密码。
 
 登录成功后，后端签发小程序 token，并返回 `token` 与 `tokenExpiresAt`。小程序请求需使用：
 
@@ -632,7 +633,7 @@ node scripts/mini-pending-no-data-v1-test.js
 - 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签、报备/签单。
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
 - Bearer token 鉴权、7 天有效期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
-- 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录。
+- 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录；显式 `userId` 绑定的管理账号创建/改密会单向同步小程序密码，未绑定账号不按手机号串绑。
 - 改密会话撤销：存量无版本 token 平滑兼容；自助改密后当前设备换发新 token、其他旧会话立即 `401`；管理员重置后全部旧会话失效；`tokenVersion` 不向客户端泄露。
 - 待审核/无密码账号拿不到任何 token，无 token 拿不到 `/mini` 数据（公司房源匿名可见口径不变）。
 

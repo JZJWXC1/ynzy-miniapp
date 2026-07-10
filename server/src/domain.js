@@ -1120,6 +1120,21 @@ function assertKnownUser(db, userId) {
   throw error
 }
 
+function backfillUniqueLinkedAdminPassword(db, user, password) {
+  if (!user || user.passwordHash || !user.id) return false
+  const linkedAccounts = (db.adminAccounts || []).filter((account) => (
+    account &&
+    !account.deleted &&
+    account.status !== '禁用' &&
+    String(account.userId || '').trim() === String(user.id) &&
+    String(account.passwordHash || '').trim()
+  ))
+  if (linkedAccounts.length !== 1) return false
+  const account = linkedAccounts[0]
+  if (!verifyPassword(password, account.passwordHash)) return false
+  return syncLinkedAdminUserPasswordHash(db, account, account.passwordHash, 'linked-admin-login')
+}
+
 function loginByPhone(db, phone, password) {
   const target = String(phone || '').trim()
   if (!/^1\d{10}$/.test(target)) {
@@ -1142,7 +1157,9 @@ function loginByPhone(db, phone, password) {
     throw error
   }
   // 存量/后台新建但未设密码的账号：fail-closed 一律禁登，等管理员在后台设初始密码，绝不免密放行
-  // （否则任何人凭手机号即可绕过密码登录）。
+  // （否则任何人凭手机号即可绕过密码登录）。唯一例外是服务端 userId 唯一绑定了一个有效管理账号，
+  // 且本次输入已通过该管理账号的 scrypt 哈希验证：此时安全回填同一哈希，让已发生的后台改密立即生效。
+  if (!user.passwordHash) backfillUniqueLinkedAdminPassword(db, user, pass)
   if (!user.passwordHash) {
     const error = new Error('账号尚未设置登录密码，请联系管理员开通或重置密码')
     error.statusCode = 403
@@ -1560,6 +1577,23 @@ function setManagedUserPassword(db, payload = {}) {
   // 管理员设密/重置后，所有已签发的小程序 token 立即失效。
   revokeUserTokens(user)
   return withoutSecret(user)
+}
+
+// 管理账号与小程序用户是两套鉴权记录，但可通过服务端 userId 显式绑定同一人。后台创建/重置
+// 管理账号密码时，只沿这个持久绑定单向同步；绝不按账号文本或手机号猜测，避免串改他人密码。
+function syncLinkedAdminUserPasswordHash(db, account = {}, passwordHash, operator) {
+  const linkedUserId = String(account.userId || '').trim()
+  const nextHash = String(passwordHash || '').trim()
+  if (!linkedUserId || !nextHash) return false
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === linkedUserId && !item.deleted)
+  if (!user) return false
+  user.passwordHash = nextHash
+  delete user.password
+  user.passwordUpdatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+  user.passwordUpdatedBy = String(operator || '') || 'admin'
+  revokeUserTokens(user)
+  return true
 }
 
 // 小程序用户登录后自助修改密码：userId 由服务端 token 解析（不信任客户端身份），校验原密码后写入新密码哈希。
@@ -5092,6 +5126,7 @@ module.exports = {
   createManagedUser,
   deleteManagedUser,
   setManagedUserPassword,
+  syncLinkedAdminUserPasswordHash,
   changeOwnPassword,
   listRegistrationRequests,
   reviewRegistration,

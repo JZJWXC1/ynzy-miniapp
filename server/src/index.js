@@ -2188,17 +2188,26 @@ async function handleAdmin(req, res, pathname, searchParams) {
         throw error
       }
       const user = (nextDb.users || []).find((item) => item.id === body.userId)
-      nextDb.adminAccounts.unshift({
+      const passwordHash = hashPassword(password)
+      const account = {
         id: `A${Date.now()}`,
         account: accountName,
-        passwordHash: hashPassword(password),
+        passwordHash,
         name: String(body.name || (user && user.name) || accountName).trim(),
         userId: body.userId || (user && user.id) || '',
         permission: body.permission || '后台查看权限',
         status: '启用',
         createdAt: new Date().toLocaleString('zh-CN', { hour12: false })
-      })
+      }
+      nextDb.adminAccounts.unshift(account)
+      const miniLoginSynced = domain.syncLinkedAdminUserPasswordHash(
+        nextDb,
+        account,
+        passwordHash,
+        adminAccount.id || adminAccount.account
+      )
       return {
+        miniLoginSynced,
         users: domain.adminUsers(nextDb),
         admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
       }
@@ -2254,10 +2263,18 @@ async function handleAdmin(req, res, pathname, searchParams) {
         error.statusCode = 404
         throw error
       }
-      account.passwordHash = hashPassword(nextPassword)
+      const passwordHash = hashPassword(nextPassword)
+      account.passwordHash = passwordHash
       delete account.password
       account.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+      const miniLoginSynced = domain.syncLinkedAdminUserPasswordHash(
+        nextDb,
+        account,
+        passwordHash,
+        adminAccount.id || adminAccount.account
+      )
       return {
+        miniLoginSynced,
         users: domain.adminUsers(nextDb),
         admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
       }

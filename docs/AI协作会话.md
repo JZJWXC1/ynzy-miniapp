@@ -46,6 +46,28 @@
 
 ## 最新消息
 
+### 2026-07-10 22:49 | CODEX_DEV（主开发） | 后台改密同步：基线、红测与现有状态安全回填完成 | CODEX_DOING
+
+状态：`CODEX_DOING`。最新 `origin/v1-broker@d17069d` 基线已实跑非 smoke **90/90** 与 `v1-final-audit.js` 全绿。生产只读聚合确认：有效管理账号 4 个，其中 2 个通过 `userId` 绑定小程序用户，两个绑定用户均缺小程序密码；这 2 个用户都是“一人唯一绑定一个带 scrypt 哈希的有效管理账号”，多重绑定为 0。全过程只返回数量，未读取或输出姓名、手机号、密码或哈希。
+
+**先红后绿**：扩展关键门禁 `mini-login-password-v1-test.js` 后，旧实现连续两次稳定红于“绑定管理账号改密必须同步小程序登录密码”（actual `undefined`）；实现后转绿。新增契约覆盖：管理账号创建/重置只沿服务端 `userId` 单向同步同一轮哈希、后台与小程序旧密码失效、小程序旧 token 撤销、响应零哈希/明文、未绑定不改任意用户、多重绑定不猜测；已在旧版本完成改密且小程序用户仍缺密码时，首次输入正确后台密码会先通过唯一绑定账号的 scrypt 哈希验证再安全回填，无需用户重新改密。
+
+**当前验证**：关键登录测试转绿，管理员权限/账号类型/token 撤销/待审核/游客等 7 项定向回归 **7/7**。现有文件范围不扩展；下一步完成全文 diff 自审、完整 90 项回归、最终审计和红线扫描，再提交交审。未修改生产账号，未 push、未部署。
+
+---
+
+### 2026-07-10 22:32 | CODEX_DEV（主开发） | 后台管理账号改密未同步小程序登录修复开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。用户真机反馈：后台“管理账号”执行修改密码后，小程序手机号登录仍提示账号未设置登录密码。静态链路已确认根因：`/admin/accounts/:id/password` 只更新 `adminAccounts.passwordHash`，小程序 `/mini/auth/login` 只读取 `db.users.passwordHash`；管理账号已有服务端 `userId` 绑定，但当前改密流程没有同步绑定用户。
+
+**独立工作树与拟修改文件**：分支 `wt/后台改密同步小程序登录`，工作树 `C:\Users\吴志坚\.codex\worktrees\admin-mini-password-sync`，基于最新 `origin/v1-broker@d17069d`。拟修改 `docs/AI协作会话.md`、`server/src/domain.js`（独占）、`server/src/index.js`（独占）、`admin-web/index.html`、`server/scripts/mini-login-password-v1-test.js`、`server/README.md`、`docs/交接报告-20260704.md`。不修改 `smoke-test.js`、生产 data/certs/env、Yooni 文档或其它任务文件。
+
+**修复边界**：只按管理账号持久化的 `userId` 同步已存在且未删除的同一 `db.users` 用户，禁止按账号文本/手机号猜测、禁止自动创建小程序身份；同步后撤销该用户全部旧小程序会话。未绑定用户的管理账号仍只更新后台密码，接口与后台 UI 必须明确返回/提示未同步，不能假装小程序可登录。创建已绑定管理账号与后续重置密码采用同一口径；响应继续剥离全部密码哈希和明文。
+
+**验证顺序**：先在本工作树实跑当前 90 项非 smoke 基线与 `v1-final-audit.js`；再把“已绑定管理账号改密后，小程序新密码可登录、旧密码失效、旧 token 撤销；未绑定账号不串绑用户”的真实 HTTP 契约补成稳定红测，确认旧实现失败后再修代码。完成后全文自审、全量测试、红线扫描、单模块提交并转 `CLAUDE_REVIEW`，未放行前不 push、不部署、不修改生产账号。
+
+---
+
 ### 2026-07-10 22:08 | Codex（主开发） | P1.3 已推送、部署并完成生产验证，P1 全部收口 | DONE
 
 状态：`DONE`。Claude Code 已对功能 commit `e6efbf8` 给出 `READY_TO_DEPLOY`；审计记录 commit `f82f2d7` 后，干净发布工作区将 `v1-broker` 从 `origin@1c77ced` 纯快进到 `f82f2d7` 并正常推送，无强推。后端从同一干净提交成套部署，生产 `/healthz` 运行 commit 精确为 `f82f2d7472646a6f31011747175d0fff493423b6`。至此 PROGRAM_ALIGNED 的 P1.1 注册死信告警、P1.2 找房结果轻量反馈、P1.3 可信需求漏斗均已完成代码、双审、推送与后端发布；按用户指示暂停，不认领 P2。

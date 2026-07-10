@@ -3356,13 +3356,15 @@
         return;
       }
 
-      await adminRequest(`/admin/accounts/${id}/password`, {
+      const result = await adminRequest(`/admin/accounts/${id}/password`, {
         method: 'POST',
         body: JSON.stringify({ password: nextPassword })
       });
       await renderAdmins();
       await renderLaunchCheck();
-      alert('密码已更新，请妥善保存。');
+      alert(result && result.miniLoginSynced
+        ? '后台密码与小程序登录密码已同步更新，旧小程序会话已失效。'
+        : '后台密码已更新；该管理账号未绑定小程序用户，小程序登录密码未同步。');
     }
 
     function readAdminAccountForm() {
@@ -3447,14 +3449,16 @@
         return;
       }
 
-      await adminRequest('/admin/accounts', {
+      const result = await adminRequest('/admin/accounts', {
         method: 'POST',
         body: JSON.stringify(form)
       });
       resetAdminAccountForm();
       await renderAdmins();
       await renderLaunchCheck();
-      alert('管理员账号已创建。');
+      alert(result && result.miniLoginSynced
+        ? '管理员账号已创建，小程序登录密码已同步。'
+        : '管理员账号已创建；未绑定小程序用户。');
     }
 
     async function changeAdminStatus(id, account, action) {
