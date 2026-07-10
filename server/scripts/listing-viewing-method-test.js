@@ -350,4 +350,166 @@ function baseForm(extra) {
   assert.strictEqual(detail.viewingMethod, '联系房东', '保存后详情仍展示联系房东')
 }
 
-console.log('listing-viewing-method-test passed')
+// 17) 真实前端载荷锁定（返修 Codex 2026-07-10 18:20 P2-1/P2-2）：加载真实 pages/upload/upload.js
+//     捕获 Page 定义，经 loadEditableListing → buildSubmitPayload 走通四条路径：
+//     ① 页面持有旧真密码、服务端并发变为腾房备注、只改租金 → 备注保留、有效方式=联系房东；
+//     ② 页面持有旧腾房备注、服务端并发变为真密码 → 不被旧页覆盖、有效方式=密码；
+//     ③ 用户确实修改当前密码 → 仍能保存（脏检查放行）；
+//     ④ 显式切换与新建的三键契约不回退。
+;(async () => {
+  const path = require('path')
+  const repoRoot = path.join(__dirname, '..', '..')
+  const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+  const uploadPagePath = require.resolve(path.join(repoRoot, 'pages', 'upload', 'upload.js'))
+
+  // api-service 桩占住 require 缓存，让真实 upload.js 加载时直接取到（不触真实网络层/mock 层）
+  const apiStub = {
+    _editable: null,
+    getEditableListing() { return Promise.resolve(JSON.parse(JSON.stringify(apiStub._editable))) },
+    getCurrentUser() { return Promise.resolve({ id: 'ADMIN', isAdmin: true }) },
+    getCommissionConfig() { return Promise.resolve({}) }
+  }
+  require.cache[apiServicePath] = { id: apiServicePath, filename: apiServicePath, loaded: true, exports: apiStub }
+  let pageDef = null
+  global.Page = (def) => { pageDef = def }
+  global.wx = {
+    showLoading() {}, hideLoading() {}, showToast() {}, showModal() {},
+    navigateTo() {}, navigateBack() {}, redirectTo() {}, chooseMedia() {}
+  }
+  require(uploadPagePath)
+  assert.ok(pageDef && typeof pageDef.buildSubmitPayload === 'function', '真实上传页 Page 定义已捕获')
+
+  function makePage() {
+    const instance = Object.assign({}, pageDef)
+    instance.data = JSON.parse(JSON.stringify(pageDef.data))
+    // 小程序 setData 语义：支持 'form.x' 点路径 + 回调
+    instance.setData = function (patch, callback) {
+      Object.keys(patch || {}).forEach((key) => {
+        const parts = key.split('.')
+        let target = instance.data
+        for (let i = 0; i < parts.length - 1; i += 1) target = target[parts[i]]
+        target[parts[parts.length - 1]] = patch[key]
+      })
+      if (typeof callback === 'function') callback()
+    }
+    return instance
+  }
+  async function openEditPage(editable) {
+    apiStub._editable = editable
+    const page = makePage()
+    page.setData({ isAdmin: true, currentUser: { id: 'ADMIN', isAdmin: true } })
+    page.loadEditableListing(editable.id)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.strictEqual(page.data.mode, 'edit', '编辑态加载完成')
+    return page
+  }
+  function inputField(page, field, value) {
+    page.updateField({ currentTarget: { dataset: { field } }, detail: { value } })
+  }
+  function submitPayload(page) {
+    const validation = page.validateForm()
+    assert.strictEqual(validation.ok, true, `前端校验应通过：${validation.message || ''}`)
+    return page.buildSubmitPayload(validation, null)
+  }
+  function pushCompanyListing(db, id, roomNumber, viewingPassword) {
+    db.listings.push({
+      id, uploaderId: 'ADMIN', status: '在租', lifecycleStatus: 'active',
+      rent: 3200, address: `杭州拱墅区半山家苑3栋1单元${roomNumber}室`, layout: '整租二室1厅1卫',
+      community: '半山家苑', building: '3', unit: '1', roomNumber,
+      companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
+      landlordPhone: '公司统一维护', viewingPassword,
+      features: ['电梯'], videoKey: 'v.mp4', videoUrl: 'https://example.com/v.mp4', communityMatched: true
+    })
+  }
+  // 飞书同步形状：恒带显式 viewingPassword 键、从不带 viewingMethod 键
+  function feishuConcurrentWrite(db, id, viewingPassword) {
+    domain.updateNormalListing(db, 'ADMIN', id, { viewingPassword }, { admin: true })
+  }
+
+  // ① 页面旧真密码 vs 飞书并发腾房备注：只改租金保存，备注须保留
+  {
+    const db = makeDb()
+    pushCompanyListing(db, 'L-CC-1', '801', '9527#')
+    const page = await openEditPage(domain.editableListingDetail(db, 'ADMIN', 'L-CC-1', { admin: true }))
+    assert.strictEqual(page.data.form.viewingMethod, '密码', '页面按真密码推导为密码方式')
+    feishuConcurrentWrite(db, 'L-CC-1', '20号空出')
+    inputField(page, 'rent', '3300')
+    const payload = submitPayload(page)
+    assert.ok(!('viewingMethod' in payload) && !('viewingPassword' in payload) && !('viewingKeyLocation' in payload),
+      '方式未切换且密码未改动：三键全省略')
+    domain.updateNormalListing(db, 'ADMIN', 'L-CC-1', payload, { admin: true })
+    const listing = db.listings.find((item) => item.id === 'L-CC-1')
+    assert.strictEqual(listing.rent, 3300, '租金已更新')
+    assert.strictEqual(listing.viewingPassword, '20号空出', '飞书并发新备注不被页面旧密码覆盖')
+    assert.strictEqual(domain.listingDetail(db, 'L-CC-1').viewingMethod, '联系房东', '有效方式为联系房东')
+  }
+
+  // ② 页面旧腾房备注 vs 飞书并发真密码：不被旧页覆盖
+  {
+    const db = makeDb()
+    pushCompanyListing(db, 'L-CC-2', '802', '15号空出')
+    const page = await openEditPage(domain.editableListingDetail(db, 'ADMIN', 'L-CC-2', { admin: true }))
+    assert.strictEqual(page.data.form.viewingMethod, '联系房东', '页面按腾房备注推导为联系房东')
+    feishuConcurrentWrite(db, 'L-CC-2', '6688#')
+    inputField(page, 'rent', '3400')
+    const payload = submitPayload(page)
+    assert.ok(!('viewingMethod' in payload) && !('viewingPassword' in payload) && !('viewingKeyLocation' in payload),
+      '联系房东未切换：三键全省略')
+    domain.updateNormalListing(db, 'ADMIN', 'L-CC-2', payload, { admin: true })
+    assert.strictEqual(db.listings.find((item) => item.id === 'L-CC-2').viewingPassword, '6688#', '并发真密码保留')
+    assert.strictEqual(domain.listingDetail(db, 'L-CC-2').viewingMethod, '密码', '有效方式为密码')
+  }
+
+  // ③ 用户确实修改当前密码：脏检查放行，仍能保存
+  {
+    const db = makeDb()
+    pushCompanyListing(db, 'L-CC-3', '803', '9527#')
+    const page = await openEditPage(domain.editableListingDetail(db, 'ADMIN', 'L-CC-3', { admin: true }))
+    inputField(page, 'viewingPassword', '8888#')
+    const payload = submitPayload(page)
+    assert.strictEqual(payload.viewingPassword, '8888#', '改动过的密码照常下发')
+    assert.ok(!('viewingMethod' in payload), '方式未切换仍不物化')
+    domain.updateNormalListing(db, 'ADMIN', 'L-CC-3', payload, { admin: true })
+    assert.strictEqual(db.listings.find((item) => item.id === 'L-CC-3').viewingPassword, '8888#', '新密码已保存')
+  }
+
+  // ④ 契约不回退：显式切换清旧值；新建三键显式下发
+  {
+    const db = makeDb()
+    pushCompanyListing(db, 'L-CC-4', '804', '9527#')
+    const page = await openEditPage(domain.editableListingDetail(db, 'ADMIN', 'L-CC-4', { admin: true }))
+    page.selectLayoutOption({ currentTarget: { dataset: { field: 'viewingMethod', value: '钥匙' } } })
+    inputField(page, 'viewingKeyLocation', '门店前台')
+    const payload = submitPayload(page)
+    assert.strictEqual(payload.viewingMethod, '钥匙', '切换后显式下发新方式')
+    assert.strictEqual(payload.viewingKeyLocation, '门店前台')
+    assert.strictEqual(payload.viewingPassword, '', '切换后旧密码显式清空')
+    domain.updateNormalListing(db, 'ADMIN', 'L-CC-4', payload, { admin: true })
+    const listing = db.listings.find((item) => item.id === 'L-CC-4')
+    assert.strictEqual(listing.viewingMethod, '钥匙')
+    assert.strictEqual(listing.viewingPassword, '', '切换方式后密码被清空')
+
+    const createPage = makePage()
+    createPage.setData({
+      isAdmin: false,
+      videoPath: '/tmp/v.mp4',
+      videoFile: { tempFilePath: '/tmp/v.mp4', fileName: 'v.mp4', size: 1024, mimeType: 'video/mp4' },
+      'form.community': '半山家苑',
+      'form.building': '3',
+      'form.unit': '1',
+      'form.roomNumber': '805',
+      'form.rent': '3500',
+      'form.contact': '13800006666',
+      'form.features': ['电梯']
+    })
+    const createPayload = submitPayload(createPage)
+    assert.strictEqual(createPayload.viewingMethod, '联系房东', '新建显式下发默认方式')
+    assert.strictEqual(createPayload.viewingKeyLocation, '', '新建非钥匙方式下发空串')
+    assert.strictEqual(createPayload.viewingPassword, '', '新建非密码方式下发空串')
+  }
+
+  console.log('listing-viewing-method-test passed')
+})().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})

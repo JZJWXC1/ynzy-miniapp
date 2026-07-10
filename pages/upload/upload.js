@@ -162,8 +162,12 @@ Page({
       { value: '业主房源', title: '业主房源', desc: '合作房源，提交后需管理员审核通过才上架' }
     ],
     viewingMethodOptions: ['钥匙', '密码', '联系房东'],
-    // 编辑态打开时的看房方式（可能是服务端推导值）；提交时与之比较，未切换则不下发方式相关字段
+    // 编辑态打开时的看房方式与敏感输入初值（方式可能是服务端推导值）。提交时与之比较：
+    // 未切换方式则不下发方式字段；未改动的敏感输入也不下发（脏检查），
+    // 让服务端此刻的最新值获胜，避免页面停留期间飞书并发更新被旧值覆盖
     initialViewingMethod: '',
+    initialViewingKeyLocation: '',
+    initialViewingPassword: '',
     featureOptions: buildFeatureOptions(defaultForm.features),
     communitySuggestions: [],
     communityPanelVisible: false,
@@ -432,6 +436,8 @@ Page({
         listingId: id,
         form: nextForm,
         initialViewingMethod: nextForm.viewingMethod,
+        initialViewingKeyLocation: nextForm.viewingKeyLocation,
+        initialViewingPassword: nextForm.viewingPassword,
         featureOptions: buildFeatureOptions(nextForm.features),
         communityMatchMessage: getCommunityMessage(nextForm.community, getCommunitySuggestions(nextForm.community)),
         communityReviewTip: getCommunityReviewTip(nextForm.community),
@@ -556,8 +562,14 @@ Page({
       payload.viewingKeyLocation = method === '钥匙' ? form.viewingKeyLocation : ''
       payload.viewingPassword = method === '密码' ? form.viewingPassword : ''
     } else {
-      if (method === '钥匙') payload.viewingKeyLocation = form.viewingKeyLocation
-      if (method === '密码') payload.viewingPassword = form.viewingPassword
+      // 未切换方式：仅当用户确实改动了当前方式的可见输入才下发（脏检查）；未改动则省略该键，
+      // 让服务端此刻的最新值获胜——否则页面停留期间飞书并发写入的新备注/新密码会被页面旧值覆盖
+      if (method === '钥匙' && form.viewingKeyLocation !== this.data.initialViewingKeyLocation) {
+        payload.viewingKeyLocation = form.viewingKeyLocation
+      }
+      if (method === '密码' && form.viewingPassword !== this.data.initialViewingPassword) {
+        payload.viewingPassword = form.viewingPassword
+      }
     }
     if (video) {
       payload.videoUrl = video.fileUrl
