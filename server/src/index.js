@@ -406,10 +406,15 @@ function signMiniAuthPayload(payload) {
   return `${encoded}.${signature}`
 }
 
-function issueMiniAuthToken(userId) {
+function miniAuthTokenVersion(user) {
+  const value = Number(user && user.tokenVersion)
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+function issueMiniAuthToken(userId, tokenVersion = 0) {
   const tokenExpiresAt = Date.now() + MINI_AUTH_TOKEN_TTL_MS
   return {
-    token: signMiniAuthPayload({ userId, exp: tokenExpiresAt }),
+    token: signMiniAuthPayload({ userId, exp: tokenExpiresAt, tokenVersion }),
     tokenExpiresAt
   }
 }
@@ -605,7 +610,11 @@ function verifyMiniAuthToken(token) {
   const userId = String(payload.userId || '').trim()
   const exp = Number(payload.exp || 0)
   if (!userId || !Number.isFinite(exp) || exp <= Date.now()) throw miniAuthError()
-  return { userId, exp }
+  // 上线前签发的存量 token 没有 tokenVersion，按 0 兼容；显式携带非法版本则拒绝。
+  const hasTokenVersion = Object.prototype.hasOwnProperty.call(payload, 'tokenVersion')
+  const tokenVersion = hasTokenVersion ? payload.tokenVersion : 0
+  if (!Number.isSafeInteger(tokenVersion) || tokenVersion < 0) throw miniAuthError()
+  return { userId, exp, tokenVersion }
 }
 
 function miniUserIdFromRequest(req, db) {
@@ -616,15 +625,19 @@ function miniUserIdFromRequest(req, db) {
   // 否则删除/停用无法即时踢掉已登录设备（旧 token 在过期前仍可访问登录态接口）。
   const user = (db.users || []).find((item) => item.id === payload.userId && item.status !== '禁用' && !item.deleted)
   if (!user) throw miniAuthError('登录用户不存在或已停用')
+  if (payload.tokenVersion !== miniAuthTokenVersion(user)) {
+    throw miniAuthError('登录状态已失效，请使用新密码重新登录')
+  }
   return user.id
 }
 
 function miniAuthResponse(user) {
-  const auth = issueMiniAuthToken(user.id)
+  const auth = issueMiniAuthToken(user.id, miniAuthTokenVersion(user))
   // 剥离密码哈希/明文：登录响应平铺整个 user，绝不能把 passwordHash 顺出去。
   const safe = { ...user }
   delete safe.passwordHash
   delete safe.password
+  delete safe.tokenVersion
   return {
     ...safe,
     token: auth.token,
@@ -1253,7 +1266,13 @@ async function handleMini(req, res, pathname, searchParams) {
     // 已登录端点也按 IP 限流：防持有效 token 但不知原密码者在线爆破原密码、以及每次 scrypt 的 CPU 放大。
     assertGuestRateLimit(req, 'mini-change-password', 10)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.changeOwnPassword(nextDb, userId, body)))
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      domain.changeOwnPassword(nextDb, userId, body)
+      const changedUser = (nextDb.users || []).find((item) => item.id === userId)
+      if (!changedUser) throw miniAuthError('登录用户不存在或已停用')
+      // 当前设备拿到新版本 token 后继续登录；其他设备仍持有旧版本 token，会在下一次请求时 401。
+      return miniAuthResponse(changedUser)
+    }))
   }
 
   if (method === 'POST' && pathname === '/mini/auth/wechat-openid') {

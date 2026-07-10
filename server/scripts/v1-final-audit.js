@@ -19,6 +19,8 @@ const criticalScripts = [
   // 小程序登录接入账号密码：正确/错误/缺密/存量无密码/待审核/软删登录口径 + passwordHash 不外泄 +
   // DB 只存 scrypt 哈希；以及「待审核/无密码账号拿不到任何 token、无 token 拿不到 /mini 数据」正面固化。
   'server/scripts/mini-login-password-v1-test.js',
+  // 改密会话撤销：自助改密给当前设备换发新 token、其他旧会话立即失效；管理员重置使全部旧会话失效。
+  'server/scripts/mini-token-revocation-v1-test.js',
   'server/scripts/mini-pending-no-data-v1-test.js',
   // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
   'server/scripts/oss-video-snapshot-v1-test.js',
@@ -430,9 +432,14 @@ function checkMiniLoginPassword() {
   assertOk(/verifyPassword\(/.test(domainJs), 'loginByPhone 必须用 verifyPassword 校验密码')
   assertOk(/if \(!user\.passwordHash\)/.test(domainJs), '无 passwordHash 账号必须 fail-closed 禁登')
   assertOk(/delete safe\.passwordHash/.test(indexJs), '登录响应必须剥离 passwordHash')
+  assertOk(/delete safe\.tokenVersion/.test(indexJs) && /delete copy\.tokenVersion/.test(domainJs), 'tokenVersion 不得作为用户字段外泄')
   assertOk(domainJs.includes('function withoutSecret'), 'user 序列化必须过 withoutSecret 剥离密码哈希')
   assertOk(indexJs.includes("pathname === '/mini/auth/password'") && domainJs.includes('function changeOwnPassword'), '必须提供登录后自助修改密码入口（/mini/auth/password → changeOwnPassword）')
-  return '小程序登录已接密码校验（scrypt）、无密码账号 fail-closed、passwordHash 不外泄'
+  assertOk(/signMiniAuthPayload\(\{ userId, exp: tokenExpiresAt, tokenVersion \}\)/.test(indexJs), '小程序 token 必须签入账号 tokenVersion')
+  assertOk(/payload\.tokenVersion !== miniAuthTokenVersion\(user\)/.test(indexJs), '鉴权必须校验 tokenVersion 与账号当前版本一致')
+  assertOk(/revokeUserTokens\(user\)/.test(domainJs), '改密必须提升账号 tokenVersion 撤销旧会话')
+  assertOk(/return miniAuthResponse\(changedUser\)/.test(indexJs), '自助改密后必须为当前设备换发新 token')
+  return '小程序登录已接密码校验（scrypt）、无密码账号 fail-closed、敏感字段不外泄、改密撤销旧会话'
 }
 
 function checkRunnableV1Scripts() {

@@ -240,7 +240,7 @@ Authorization: Bearer <token>
 AUTH_TOKEN_SECRET=
 ```
 
-token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在或被禁用都会返回 `401`。
+token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在或被禁用都会返回 `401`。token 还签入账号级 `tokenVersion`：用户自助修改密码时版本递增，服务端向当前设备返回新版本 token，其他设备的旧 token 下一次请求立即 `401`；管理员重置密码同样递增版本，所有小程序旧会话立即失效，用户需用新密码重新登录。上线前签发、未携带版本号的存量 token 按版本 0 兼容，直到该账号首次改密。`tokenVersion` 只保存在服务端 DB 与签名载荷，不作为用户资料字段下发。
 
 `X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id`、篡改 payload 沿用旧签名、换错误密钥重签的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端以 token 内的真实用户为准，忽略伪造请求头。
 
@@ -575,7 +575,7 @@ POST /admin/llm-config/test
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，仍保留但不要作为当前 V1 验收主线。
 
-当前 V1 验收脚本为以下七个：
+当前 V1 验收脚本为以下八个：
 
 ```bash
 cd server
@@ -585,6 +585,7 @@ node scripts/backend-contract-v1-test.js
 node scripts/guest-mode-v1-test.js
 node scripts/auth-token-v1-test.js
 node scripts/mini-login-password-v1-test.js
+node scripts/mini-token-revocation-v1-test.js
 node scripts/mini-pending-no-data-v1-test.js
 ```
 
@@ -596,6 +597,7 @@ node scripts/mini-pending-no-data-v1-test.js
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
 - Bearer token 鉴权、7 天有效期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
 - 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录。
+- 改密会话撤销：存量无版本 token 平滑兼容；自助改密后当前设备换发新 token、其他旧会话立即 `401`；管理员重置后全部旧会话失效；`tokenVersion` 不向客户端泄露。
 - 待审核/无密码账号拿不到任何 token，无 token 拿不到 `/mini` 数据（公司房源匿名可见口径不变）。
 
 找房助手另有真实需求行为基线：

@@ -115,7 +115,25 @@ function withoutSecret(user) {
   const copy = clone(user)
   delete copy.passwordHash
   delete copy.password
+  // tokenVersion 是服务端会话撤销状态，只能进入签名 token，不能作为用户资料下发。
+  delete copy.tokenVersion
   return copy
+}
+
+function userTokenVersion(user) {
+  const value = Number(user && user.tokenVersion)
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+function revokeUserTokens(user) {
+  const current = userTokenVersion(user)
+  if (current >= Number.MAX_SAFE_INTEGER) {
+    const error = new Error('账号会话版本异常，请联系管理员')
+    error.statusCode = 500
+    throw error
+  }
+  user.tokenVersion = current + 1
+  return user.tokenVersion
 }
 
 function listingById(db, listingId) {
@@ -1316,6 +1334,7 @@ function createManagedUser(db, payload = {}) {
     isAdmin: false,
     authed: preset.authed,
     brokerStatus: '启用',
+    tokenVersion: 0,
     points: 0,
     createdAt: nowText,
     createdBy: String(payload.operator || '') || 'admin',
@@ -1468,6 +1487,8 @@ function setManagedUserPassword(db, payload = {}) {
   delete user.password
   user.passwordUpdatedAt = nowText
   user.passwordUpdatedBy = String(payload.operator || '') || 'admin'
+  // 管理员设密/重置后，所有已签发的小程序 token 立即失效。
+  revokeUserTokens(user)
   return withoutSecret(user)
 }
 
@@ -1508,6 +1529,8 @@ function changeOwnPassword(db, userId, payload = {}) {
   delete user.password
   user.passwordUpdatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
   user.passwordUpdatedBy = 'self'
+  // 自助改密同样撤销全部旧会话；路由层会为当前设备签发新版本 token。
+  revokeUserTokens(user)
   return withoutSecret(user)
 }
 

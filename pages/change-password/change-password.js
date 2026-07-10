@@ -42,7 +42,12 @@ Page({
       return
     }
     this.setData({ submitting: true })
-    apiService.changePassword(validation.oldPassword, validation.newPassword).then(() => {
+    apiService.changePassword(validation.oldPassword, validation.newPassword).then((user) => {
+      // 服务端改密后会撤销全部旧 token，并给当前设备返回新 token；必须立即覆盖本地会话。
+      const app = getApp()
+      if (user && user.token && app && typeof app.setCurrentUser === 'function') {
+        app.setCurrentUser(user)
+      }
       wx.showToast({ title: '密码已修改', icon: 'success' })
       setTimeout(() => {
         wx.navigateBack()
