@@ -45,9 +45,9 @@
 
 ## 最新消息
 
-### 2026-07-10 | Claude | 新注册申请飞书提醒 完成+对抗自审修掉一个严重DoS | CODEX_REVIEW（夜间自主，未 push）
+### 2026-07-10 | Claude | 新注册申请飞书提醒 完成+对抗自审修掉一个严重DoS | DONE（Codex 审计通过，已 push）
 
-状态：`CODEX_REVIEW`（夜间用户睡觉自主开发，严守：只本地 commit、不 push、不动生产、不发飞书；生产动作留用户醒后）。全量测试+审计待最终确认。
+状态：`DONE`。用户确认 Codex 审计通过（无阻断项）→ push `origin/v1-broker`。夜间自主产出（注册提醒 + 指标口径修正 + 发版自查清单）随本批一并上远端。启用注册提醒待用户把 `HEALTH_ALERT_WEBHOOK` 写进生产 `server/.env` 并重启（未替用户动生产）。
 
 **实现（未提交，将合入一个 commit）**：
 - `domain.registerUser` 返回 `notifyAdmin/applicantName/applicantPhone`（仅供路由组装通知，随 throw 丢弃、不进客户端响应）；`index.js` `notifyRegistrationApplication` 异步 detached spawn 复用 `send-feishu-alert.js` 推群；手机号打码、白名单 env（子进程拿不到 OSS/飞书/token 密钥）；未配 webhook 静默跳过。`notifyAdmin` 语义：新申请/驳回后重申请=true、待审核重复提交/409已开通=false（防轰炸）。
