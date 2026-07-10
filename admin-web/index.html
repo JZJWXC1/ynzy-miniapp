@@ -55,6 +55,41 @@
       transform: translateY(0);
     }
 
+    .admin-data-failure {
+      display: none;
+      position: sticky;
+      top: 12px;
+      z-index: 120;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      color: #7b2418;
+      background: #fff1ed;
+      border: 1px solid #f2b4a6;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(122, 36, 24, .12);
+    }
+
+    .admin-data-failure.active {
+      display: flex;
+    }
+
+    .admin-data-failure span {
+      flex: 1;
+      line-height: 1.5;
+    }
+
+    .admin-data-failure button {
+      flex: 0 0 auto;
+    }
+
+    .app.data-unavailable .panel {
+      opacity: .28;
+      pointer-events: none;
+      user-select: none;
+    }
+
     .login-screen {
       min-height: 100vh;
       display: grid;
@@ -1151,6 +1186,12 @@
         <div class="admin-tag">管理员：admin</div>
       </div>
 
+      <div class="admin-data-failure" id="adminDataFailure" role="alert" aria-live="assertive" hidden>
+        <strong>后台数据加载失败</strong>
+        <span id="adminDataFailureText">当前内容不可作为真实数据使用，请重新加载。</span>
+        <button type="button" class="ghost-button" id="retryAdminData">重新加载</button>
+      </div>
+
       <section class="panel active" id="dashboard">
         <div class="stats" id="dashboardStats"></div>
 
@@ -1922,6 +1963,26 @@
       }, 2200);
     }
 
+    function showAdminDataFailure(failureCount) {
+      const container = document.getElementById('adminDataFailure');
+      const message = document.getElementById('adminDataFailureText');
+      if (!container || !message) return;
+      const count = Math.max(1, Number(failureCount) || 1);
+      message.textContent = `${count} 项后台数据读取失败。为避免把预览数据或空表误当成真实数据，当前操作区已停用；请检查网络或服务状态后重新加载。`;
+      container.hidden = false;
+      container.classList.add('active');
+      app.classList.add('data-unavailable');
+    }
+
+    function clearAdminDataFailure() {
+      const container = document.getElementById('adminDataFailure');
+      if (container) {
+        container.hidden = true;
+        container.classList.remove('active');
+      }
+      app.classList.remove('data-unavailable');
+    }
+
     function maskPhone(value) {
       const text = String(value || '').trim();
       return text.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
@@ -2037,8 +2098,9 @@
       if (!canUseAdminApi()) return fallback();
       try {
         return await adminRequest(path);
-      } catch (error) {
-        return fallback();
+      } catch (requestError) {
+        showAdminDataFailure(1);
+        throw requestError;
       }
     }
 
@@ -3062,8 +3124,9 @@
       if (!canUseAdminApi()) return dataCenter.getShowingUploadRows();
       try {
         return await adminRequest('/admin/showings');
-      } catch (error) {
-        return dataCenter.getShowingUploadRows();
+      } catch (requestError) {
+        showAdminDataFailure(1);
+        throw requestError;
       }
     }
 
@@ -3211,7 +3274,12 @@
       const response = await fetch(path, Object.assign({}, options, { headers }));
       const body = await response.json();
       if (!response.ok || (body.code && body.code !== 0)) {
-        throw new Error(body.message || '后台接口请求失败');
+        if (response.status === 401) {
+          clearAdminSession(body.message || '管理员登录已失效，请重新登录。');
+        }
+        const requestError = new Error(body.message || '后台接口请求失败');
+        requestError.statusCode = response.status;
+        throw requestError;
       }
       return body.data;
     }
@@ -4055,13 +4123,8 @@
 
     async function loadSavedLlmConfig() {
       if (!canUseAdminApi()) return getSavedLlmConfig();
-      try {
-        const config = await adminRequest('/admin/llm-config');
-        return normalizeLlmConfig(config || {});
-      } catch (error) {
-        showLlmStatus('后端配置读取失败，当前展示浏览器本地配置。');
-        return getSavedLlmConfig();
-      }
+      const config = await adminRequest('/admin/llm-config');
+      return normalizeLlmConfig(config || {});
     }
 
     function readLlmConfigForm() {
@@ -4131,18 +4194,19 @@
 
     async function saveLlmConfig() {
       const config = readLlmConfigForm();
-      localStorage.setItem('ynzy_llm_config', JSON.stringify(config));
       try {
         if (canUseAdminApi()) {
           const saved = await adminRequest('/admin/llm-config', {
             method: 'PUT',
             body: JSON.stringify(config)
           });
+          localStorage.setItem('ynzy_llm_config', JSON.stringify(saved));
           fillLlmConfigForm(saved);
           showLlmStatus('LLM 配置已保存到后端。小程序会通过 /mini/assistant/chat 使用该配置。');
-          renderLaunchCheck();
+          await renderLaunchCheck();
           return;
         }
+        localStorage.setItem('ynzy_llm_config', JSON.stringify(config));
         renderLlmConfigPreview(config);
         showLlmStatus('LLM 配置已保存到浏览器本地。通过后端地址打开后台后，可保存到服务端。');
       } catch (error) {
@@ -4193,39 +4257,58 @@
 
     async function initLlmConfigPanel() {
       if (llmConfigInitialized) return;
-      llmConfigInitialized = true;
-      fillLlmConfigForm(getSavedLlmConfig());
-      fillLlmConfigForm(await loadSavedLlmConfig());
+      const saved = await loadSavedLlmConfig();
+      fillLlmConfigForm(saved);
       document.getElementById('llmProvider').addEventListener('change', applyProviderDefault);
       document.getElementById('saveLlmConfig').addEventListener('click', saveLlmConfig);
       document.getElementById('testLlmConfig').addEventListener('click', testLlmConfig);
       document.getElementById('resetLlmConfig').addEventListener('click', resetLlmConfig);
-      ['llmProtocol', 'llmApiBaseUrl', 'llmModel', 'llmSecretName', 'llmSystemPrompt'].forEach((id) => {
+      ['llmProtocol', 'llmApiBaseUrl', 'llmModel', 'llmNeedParserModel', 'llmComplexNeedParserModel', 'llmReplyModel', 'llmSecretName', 'llmSystemPrompt'].forEach((id) => {
         document.getElementById(id).addEventListener('input', () => renderLlmConfigPreview(readLlmConfigForm()));
       });
+      llmConfigInitialized = true;
     }
 
-    function renderAll() {
-      renderDashboardStats();
-      renderAreaStats();
-      renderMaintenanceRule();
-      renderCommissionConfig();
-      renderListings();
-      renderListingReviews();
-      renderExpiredListings();
-      renderAdminLogs();
-      renderReports();
-      renderDeals();
-      renderCommissions();
-      renderShowingUploads();
-      renderAssistantFeedbacks();
-      renderAssistantTraces();
-      renderAdmins();
-      renderRegistrations();
-      renderFeishuSync();
-      renderLaunchCheck();
-      renderBackupStatus();
-      initLlmConfigPanel();
+    async function renderAll() {
+      clearAdminDataFailure();
+      const tasks = [
+        renderDashboardStats(),
+        renderAreaStats(),
+        renderMaintenanceRule(),
+        renderListings(),
+        renderListingReviews(),
+        renderExpiredListings(),
+        renderAdminLogs(),
+        renderReports(),
+        renderDeals(),
+        renderCommissions(),
+        renderShowingUploads()
+      ];
+      if (currentAdminIsSuper) {
+        tasks.push(
+          renderCommissionConfig(),
+          renderAssistantFeedbacks(),
+          renderAssistantTraces(),
+          renderAdmins(),
+          renderRegistrations(),
+          renderFeishuSync(),
+          renderLaunchCheck(),
+          renderBackupStatus(),
+          initLlmConfigPanel()
+        );
+      }
+      const results = await Promise.allSettled(tasks);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) {
+        showAdminDataFailure(failures.length);
+        return false;
+      }
+      clearAdminDataFailure();
+      return true;
+    }
+
+    function refreshListingViews() {
+      return Promise.allSettled([renderListings(), renderExpiredListings()]);
     }
 
     function applyAdminRole(admin) {
@@ -4246,19 +4329,42 @@
       });
     }
 
-    async function openAdminApp(admin) {
+    async function openAdminApp(admin, roleVerified = false) {
+      let currentAdmin = admin || {};
+      if (canUseAdminApi() && !roleVerified) {
+        currentAdmin = await adminRequest('/admin/auth/me');
+      }
+      applyAdminRole(currentAdmin);
       loginScreen.style.display = 'none';
       app.style.display = 'block';
-      document.querySelector('.admin-tag').textContent = `管理员：${admin.account}`;
-      applyAdminRole(admin);
-      if (canUseAdminApi()) {
-        try {
-          applyAdminRole(await adminRequest('/admin/auth/me'));
-        } catch (roleError) {
-          // 拉取角色失败时沿用登录返回信息，不阻断进入后台。
-        }
-      }
+      document.querySelector('.admin-tag').textContent = `管理员：${currentAdmin.account || 'admin'}`;
       await renderAll();
+    }
+
+    function clearAdminSession(message) {
+      adminToken = '';
+      currentAdminId = '';
+      sessionStorage.removeItem('ynzy_admin_token');
+      clearAdminDataFailure();
+      app.style.display = 'none';
+      loginScreen.style.display = '';
+      error.textContent = message || '管理员登录已失效，请重新登录。';
+    }
+
+    async function restoreAdminSession() {
+      if (!canUseAdminApi() || !adminToken) return false;
+      try {
+        const admin = await adminRequest('/admin/auth/me');
+        await openAdminApp(admin, true);
+        return true;
+      } catch (restoreError) {
+        if (Number(restoreError.statusCode) === 401 || Number(restoreError.statusCode) === 403) {
+          clearAdminSession(restoreError.message || '管理员登录已失效，请重新登录。');
+        } else {
+          error.textContent = '后台服务暂时无法连接，当前会话已保留；服务恢复后刷新页面即可继续。';
+        }
+        return false;
+      }
     }
 
     async function loginByBackend(account, password) {
@@ -4477,19 +4583,17 @@
         title.textContent = panelTitles[button.dataset.panel] || button.textContent;
         if (button.dataset.panel === 'listingReviews') showListingReviewList();
         if (button.dataset.panel === 'expiredListings') showExpiredListingList();
-        if (button.dataset.panel === 'assistantFeedback') renderAssistantFeedbacks();
-        if (button.dataset.panel === 'assistantTraces') renderAssistantTraces();
+        if (button.dataset.panel === 'assistantFeedback') renderAssistantFeedbacks().catch(() => {});
+        if (button.dataset.panel === 'assistantTraces') renderAssistantTraces().catch(() => {});
       });
     });
 
     [areaFilter, blockFilter, communityFilter, sourceFilter, statusFilter, missingVideoFilter].forEach((item) => {
       item.addEventListener('input', () => {
-        renderListings();
-        renderExpiredListings();
+        refreshListingViews();
       });
       item.addEventListener('change', () => {
-        renderListings();
-        renderExpiredListings();
+        refreshListingViews();
       });
     });
     document.getElementById('resetListingFilters').addEventListener('click', () => {
@@ -4499,8 +4603,7 @@
       sourceFilter.value = '';
       statusFilter.value = '';
       missingVideoFilter.value = '';
-      renderListings();
-      renderExpiredListings();
+      refreshListingViews();
     });
     document.getElementById('saveListingEditor').addEventListener('click', () => {
       submitListingEditor().catch((error) => {
@@ -4600,6 +4703,22 @@
       }
       alert('当前浏览器不支持自动复制，请手动选中文本复制。');
     });
+
+    document.getElementById('retryAdminData').addEventListener('click', async () => {
+      const button = document.getElementById('retryAdminData');
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = '正在加载';
+      try {
+        const ready = await renderAll();
+        if (ready) showAdminToast('后台数据已重新加载');
+      } finally {
+        button.disabled = false;
+        button.textContent = '重新加载';
+      }
+    });
+
+    restoreAdminSession();
 
   </script>
 </body>
