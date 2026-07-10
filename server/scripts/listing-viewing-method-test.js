@@ -319,4 +319,35 @@ function baseForm(extra) {
   assert.strictEqual(db.listings[0].viewingMethod, '钥匙', '兼容别名 key 归一为钥匙')
 }
 
+// 16) 小程序编辑页原样保存不丢公司腾房备注（返修 Codex 2026-07-10 16:39 P2）：
+//     公司房源 viewingPassword='15号空出'（推导展示为联系房东）经 editableListingDetail 加载后，
+//     未切换方式只改租金保存——upload.js 此时不下发 viewingMethod/viewingKeyLocation/viewingPassword
+//     三个键（编辑态方式未变不物化推导值、不清空非当前方式旧值）——备注必须原样保留。
+{
+  const db = makeDb()
+  db.listings.push({
+    id: 'L-VACANT-EDIT', uploaderId: 'ADMIN', status: '在租', lifecycleStatus: 'active',
+    rent: 3200, address: '杭州拱墅区皋塘运都3栋1单元701室', layout: '整租二室1厅1卫',
+    community: '皋塘运都', building: '3', unit: '1', roomNumber: '701',
+    companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
+    landlordPhone: '公司统一维护', viewingPassword: '15号空出',
+    features: ['电梯'], videoKey: 'v.mp4', videoUrl: 'https://example.com/v.mp4', communityMatched: true
+  })
+  const editable = domain.editableListingDetail(db, 'ADMIN', 'L-VACANT-EDIT', { admin: true })
+  assert.strictEqual(editable.viewingMethod, '联系房东', '编辑回包下发推导方式')
+  assert.strictEqual(editable.viewingPassword, '15号空出', '编辑回包带原始备注')
+  // 小程序编辑页等价 payload：方式未切换 → 不含 viewingMethod/viewingKeyLocation/viewingPassword 键
+  domain.updateNormalListing(db, 'ADMIN', 'L-VACANT-EDIT', {
+    city: '杭州', district: '拱墅区', community: '皋塘运都', building: '3', unit: '1', roomNumber: '701',
+    contact: editable.contact, rent: 3300, rentMode: '整租', room: '二室', hall: '1厅', bath: '1卫',
+    features: ['电梯'], companyListing: true, source: '公司房源'
+  }, { admin: true })
+  const listing = db.listings.find((item) => item.id === 'L-VACANT-EDIT')
+  assert.strictEqual(listing.rent, 3300, '租金已更新')
+  assert.strictEqual(listing.viewingPassword, '15号空出', '腾房备注不被原样保存清空')
+  assert.strictEqual(String(listing.viewingMethod || ''), '', '推导方式未被物化落库')
+  const detail = domain.listingDetail(db, 'L-VACANT-EDIT')
+  assert.strictEqual(detail.viewingMethod, '联系房东', '保存后详情仍展示联系房东')
+}
+
 console.log('listing-viewing-method-test passed')

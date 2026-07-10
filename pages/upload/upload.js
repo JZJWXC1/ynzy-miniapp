@@ -162,6 +162,8 @@ Page({
       { value: '业主房源', title: '业主房源', desc: '合作房源，提交后需管理员审核通过才上架' }
     ],
     viewingMethodOptions: ['钥匙', '密码', '联系房东'],
+    // 编辑态打开时的看房方式（可能是服务端推导值）；提交时与之比较，未切换则不下发方式相关字段
+    initialViewingMethod: '',
     featureOptions: buildFeatureOptions(defaultForm.features),
     communitySuggestions: [],
     communityPanelVisible: false,
@@ -429,6 +431,7 @@ Page({
         pageTitle: '修改房源',
         listingId: id,
         form: nextForm,
+        initialViewingMethod: nextForm.viewingMethod,
         featureOptions: buildFeatureOptions(nextForm.features),
         communityMatchMessage: getCommunityMessage(nextForm.community, getCommunitySuggestions(nextForm.community)),
         communityReviewTip: getCommunityReviewTip(nextForm.community),
@@ -523,10 +526,6 @@ Page({
       roomNumber: form.roomNumber,
       address: validation.address,
       contact: form.contact,
-      // 非当前方式的字段显式传空串，编辑切换方式时清掉服务端旧值
-      viewingMethod: form.viewingMethod || '联系房东',
-      viewingKeyLocation: form.viewingMethod === '钥匙' ? form.viewingKeyLocation : '',
-      viewingPassword: form.viewingMethod === '密码' ? form.viewingPassword : '',
       rent: form.rent,
       layout: validation.layout,
       type: form.rentMode,
@@ -546,6 +545,19 @@ Page({
       communityMatchStatus: validation.communityMatchStatus,
       requiresManualReview: validation.needsManualReview,
       manualReviewReason: validation.manualReviewReason
+    }
+    // 编辑态未切换看房方式时，不下发方式与非当前方式字段：服务端下发的可能是存量推导值（并非库里显式方式），
+    // 原样回传会把推导值物化落库，并误清空另一方式字段里的旧值——如飞书公司房源存于 viewingPassword 的
+    // 「15号空出」腾房备注，只改租金保存也会被写空。切换方式（或新建）才显式下发并清非当前方式旧值。
+    const method = form.viewingMethod || '联系房东'
+    const methodChanged = this.data.mode !== 'edit' || method !== this.data.initialViewingMethod
+    if (methodChanged) {
+      payload.viewingMethod = method
+      payload.viewingKeyLocation = method === '钥匙' ? form.viewingKeyLocation : ''
+      payload.viewingPassword = method === '密码' ? form.viewingPassword : ''
+    } else {
+      if (method === '钥匙') payload.viewingKeyLocation = form.viewingKeyLocation
+      if (method === '密码') payload.viewingPassword = form.viewingPassword
     }
     if (video) {
       payload.videoUrl = video.fileUrl
