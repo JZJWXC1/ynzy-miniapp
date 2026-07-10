@@ -112,9 +112,16 @@ Page({
     isVerified: false,
     sensitiveAuthLabel: '可查看',
     sensitiveVisible: false,
+    sensitivePlaceholder: '完成确认后可查看',
     listing: {},
     unavailableListing: {},
+    listingLoading: false,
+    listingLoadFailed: false,
+    listingLoadErrorText: '',
+    listingAccessRequired: false,
     logs: [],
+    ownSensitiveLoading: false,
+    ownSensitiveLoadFailed: false,
     showingSubmitting: false,
     showingPhotoPath: '',
     showingCanvasWidth: SHOWING_CANVAS_WIDTH,
@@ -185,29 +192,54 @@ Page({
   },
 
   loadListing(id) {
+    this.listingId = id
+    this.setData({
+      listing: {},
+      unavailableListing: {},
+      listingLoading: true,
+      listingLoadFailed: false,
+      listingLoadErrorText: '',
+      listingAccessRequired: false,
+      logs: [],
+      sensitiveVisible: false,
+      sensitivePlaceholder: '完成确认后可查看',
+      ownSensitiveLoading: false,
+      ownSensitiveLoadFailed: false
+    })
     Promise.all([
       apiService.getListingDetail(id),
       apiService.getListingLogs(id).catch(() => []),
       // profile 只影响“可查看敏感信息”按钮态，属辅助请求：任何失败（鉴权或网络/5xx）都降级为
       // 未登录空用户，不能因它 fail-fast 拖垮整个 Promise.all，否则公司房源在弱网下会误报
       // “房源不存在或已下架”（此时 getListingDetail 往往已成功）。
-      apiService.getProfileState().catch(() => ({ user: {} }))
-    ]).then(([listing, logs, profile]) => {
+      apiService.getProfileState()
+        .then((profile) => ({ profile }))
+        .catch(() => ({ profile: { user: {} } }))
+    ]).then(([listing, logs, profileState]) => {
       if (listing && listing.unavailable) {
         this.setData({
           listing: {},
           unavailableListing: listing,
+          listingLoading: false,
+          listingLoadFailed: false,
+          listingAccessRequired: false,
           logs: [],
           sensitiveVisible: false,
+          sensitivePlaceholder: '完成确认后可查看',
           isVerified: false,
+          isOwnListing: false,
+          ownSensitiveLoading: false,
+          ownSensitiveLoadFailed: false,
           canShareVideo: false,
           shareBrokerName: '',
           shareStateText: '这套房源已更新，请重新找房。'
         })
         return
       }
+      const profile = profileState.profile || {}
       const user = profile && profile.user ? profile.user : {}
       const canTrySensitive = Boolean(
+        currentAuthToken() ||
         user.isAdmin ||
         user.authed === '已实名' ||
         user.authed === '手机号登录' ||
@@ -219,9 +251,16 @@ Page({
       this.setData({
         listing,
         unavailableListing: {},
+        listingLoading: false,
+        listingLoadFailed: false,
+        listingLoadErrorText: '',
+        listingAccessRequired: false,
         logs,
         isOwnListing: ownListing,
-        sensitiveVisible: companyListing || ownListing,
+        sensitiveVisible: companyListing,
+        sensitivePlaceholder: ownListing ? '正在读取' : '完成确认后可查看',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: false,
         isVerified: canTrySensitive,
         sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
@@ -236,18 +275,56 @@ Page({
       }
     }).catch((error) => {
       if (isAuthError(error)) {
-        this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
+        this.setData({
+          listing: {},
+          unavailableListing: {},
+          listingLoading: false,
+          listingLoadFailed: false,
+          listingAccessRequired: true,
+          isVerified: false,
+          sensitiveVisible: false,
+          canShareVideo: false
+        })
+        if (Number(error.statusCode) === 403) {
+          this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
+        }
         return
       }
-      wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
+      if (Number(error && error.statusCode) === 404) {
+        wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
+        this.setData({
+          listing: {},
+          listingLoading: false,
+          listingLoadFailed: false,
+          listingAccessRequired: false,
+          unavailableListing: {
+            unavailable: true,
+            reason: 'not-found',
+            reasonText: '这套房源不存在或已下架，请返回重新找房。'
+          }
+        })
+        return
+      }
+      wx.showToast({ title: '房源加载失败，请重试', icon: 'none' })
       this.setData({
-        unavailableListing: {
-          unavailable: true,
-          reason: 'not-found',
-          reasonText: '这套房源不存在或已下架，请返回重新找房。'
-        }
+        listing: {},
+        unavailableListing: {},
+        listingLoading: false,
+        listingLoadFailed: true,
+        listingLoadErrorText: '暂时无法读取这套房源，请检查网络后重试。',
+        listingAccessRequired: false,
+        sensitiveVisible: false,
+        canShareVideo: false
       })
     });
+  },
+
+  retryListing() {
+    if (this.listingId) this.loadListing(this.listingId)
+  },
+
+  goLoginFromListing() {
+    wx.navigateTo({ url: '/pages/auth/auth' })
   },
 
   noop() {},
@@ -437,13 +514,35 @@ Page({
   // 上传人自查：调后端免留痕分支（空 body）直接取地址/房东电话填充，不需 needId/用途、不留痕、不耗额度。
   loadOwnSensitive(listingId) {
     if (!listingId) return
+    this.setData({
+      ownSensitiveLoading: true,
+      ownSensitiveLoadFailed: false,
+      sensitiveVisible: false,
+      sensitivePlaceholder: '正在读取'
+    })
     apiService.addSensitiveFootprint(listingId, {}).then((result) => {
       const sensitive = result && result.sensitive ? result.sensitive : {}
       this.setData({
         listing: Object.assign({}, this.data.listing, sensitive),
-        sensitiveVisible: true
+        sensitiveVisible: true,
+        sensitivePlaceholder: '',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: false
       })
-    }).catch(() => { /* 自查取数失败：静默降级，仍标记已直接展示 */ })
+    }).catch(() => {
+      this.setData({
+        sensitiveVisible: false,
+        sensitivePlaceholder: '读取失败，请重试',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: true
+      })
+      wx.showToast({ title: '地址和电话加载失败，请重试', icon: 'none' })
+    })
+  },
+
+  retryOwnSensitive() {
+    const listing = this.data.listing || {}
+    if (!this.data.ownSensitiveLoading && listing.id) this.loadOwnSensitive(listing.id)
   },
 
   revealSensitive() {

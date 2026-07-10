@@ -46,6 +46,24 @@
 
 ## 最新消息
 
+### 2026-07-11 00:31 | CODEX_DEV（主开发） | 详情读取状态与上传人敏感信息真值修复完成 | CODEX_DOING
+
+状态：`CODEX_DOING`。发现项 5 已先红后绿完成：真实 Page 门禁在旧实现稳定失败于“详情网络/5xx 必须进入可重试失败态（undefined !== true）”。房源详情页和租客视频页现在明确区分加载中、合作房源需要登录、404/服务端结构化失效、网络或 5xx 可重试故障，不再把断网误报成下架；合作房源游客取消引导后仍有清晰登录入口。详情重载会先清除旧房源与敏感状态，避免退出登录后残留已解锁数据。上传人地址/电话只有免留痕接口成功返回后才标记可见，失败会显示重试入口；profile 辅助请求短暂失败但本机仍有有效 token 时，不再误关敏感查看与视频转发能力。
+
+**定向回归**：`mini-detail-loading-state-v1-test.js`、`mini-page-resume-state-v1-test.js`、`listing-detail-own-view-wxml-test.js`、`listing-detail-availability-test.js`、`video-share-v1-test.js` 共 **5/5 通过**；新增门禁覆盖详情/视频页网络 5xx、404、403、上传人敏感读取失败后重试和有效 token + profile 失败。两个页面脚本均通过语法检查，`git diff --check` 通过。本模块仅修改先前声明的 6 个文件；暂不交 Claude、不 push、不部署，继续审计列表、地图、上传、找房助手等剩余写后刷新和错误态。
+
+---
+
+### 2026-07-11 00:26 | CODEX_DEV（主开发） | 全产品自审发现项 5：详情故障误报下架且上传人敏感信息假成功 | CODEX_DOING
+
+状态：`CODEX_DOING`。详情读取链路核对确认：房源详情页与租客视频页把网络中断、超时和服务端 5xx 统一提示为“房源不存在或已下架”，详情页还写入不可用房源状态，导致真实故障被误判成业务下架且没有重试入口；合作房源游客取消登录引导后只剩空白详情。另有上传人自查分支在地址/电话接口返回前就把 `sensitiveVisible` 设为真，接口失败后静默保留“已直接展示”文案，实际只显示占位值。辅助 profile 请求短暂失败时，即使本机仍有有效登录 token，也会把敏感查看和视频转发能力误降为未登录。
+
+**本模块拟修改文件**：`docs/AI协作会话.md`、`pages/listing-detail/listing-detail.js`、`pages/listing-detail/listing-detail.wxml`、`pages/shared-video/shared-video.js`、`pages/shared-video/shared-video.wxml`、新增 `server/scripts/mini-detail-loading-state-v1-test.js`。不修改服务端、数据库、`smoke-test.js`、列表页或其它业务模块。
+
+**修复目标与先红后绿**：先加载真实 Page 定义固化“404 才能进入不存在状态，网络/5xx 必须进入可重试失败态，403 必须保留明确登录入口，上传人敏感信息失败不得标记已展示且可重试，有有效 token 时 profile 辅助请求失败不得伪装退出登录，租客视频页同样区分故障与失效”的失败契约；再补齐加载/错误状态和模板入口，任何敏感字段仍只采用服务端成功响应。
+
+---
+
 ### 2026-07-11 00:21 | CODEX_DEV（主开发） | 公共导航栏首页与旧基础库兼容修复完成 | CODEX_DOING
 
 状态：`CODEX_DOING`。发现项 4 已先红后绿完成：真实 Component 门禁在旧实现稳定失败于“导航栏必须实现模板绑定的 `home` 方法”，修复后首页按钮会优先 `switchTab` 到首页，切换失败时安全 `reLaunch`，并触发一次 `home` 组件事件；原有普通页面返回与 `back` 事件保持不变。组件挂载时现在先检测 `getDeviceInfo/getWindowInfo` 是否可用，仅在缺失时读取一次 `getSystemInfoSync`，旧基础库 Android 平台、窗口宽度和安全区布局均能正常计算。
