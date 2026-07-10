@@ -176,11 +176,44 @@ async function testSuccessDoesNotLog() {
   }
 }
 
+async function testPathPiiRedaction() {
+  const pathPhone = '+8613800138000'
+  const longPhone = '138001380009999'
+  const encodedEmail = 'john%40example%2Ecom'
+  setupEnv({
+    request(options) {
+      options.fail({ errMsg: `request:fail timeout ${options.url}` })
+    }
+  })
+  const diagnostics = captureDiagnostics()
+  try {
+    const client = loadFresh()
+    const error = await expectRejected(client.request({
+      path: `/mini/user/${pathPhone}/${encodedEmail}/${longPhone}/detail`,
+      method: 'GET'
+    }))
+
+    const text = `${error.message}\n${error.requestUrl}\n${diagnostics.lines.join('\n')}`
+    assert.ok(error.requestUrl.includes('[手机号已隐藏]'), 'requestUrl 字段本身必须脱敏 path 内手机号')
+    assert.ok(error.requestUrl.includes('[邮箱已隐藏]'), 'requestUrl 字段本身必须脱敏 URL 编码邮箱')
+    assert.ok(!text.includes(pathPhone), '日志与 Error 不得泄露 +86 手机号')
+    assert.ok(!text.includes('13800138000'), '长数字标识中的连续手机号也必须隐藏')
+    assert.ok(!text.toLowerCase().includes(encodedEmail.toLowerCase()), '日志与 Error 不得泄露 URL 编码邮箱')
+
+    const direct = client.sanitizeDiagnosticText('86 138-0013-8000 / alice@example.com / alice%40example%2Ecom')
+    assert.strictEqual((direct.match(/\[手机号已隐藏\]/g) || []).length, 1, '带空格/短横线的 86 手机号应完整脱敏')
+    assert.strictEqual((direct.match(/\[邮箱已隐藏\]/g) || []).length, 2, '普通与 URL 编码邮箱都应脱敏')
+  } finally {
+    diagnostics.restore()
+  }
+}
+
 async function main() {
   await testNetworkTimeout()
   await testHttpErrorTrace()
   await testUploadRedaction()
   await testSuccessDoesNotLog()
+  await testPathPiiRedaction()
   console.log('api-client-diagnostics-v1-test passed')
 }
 

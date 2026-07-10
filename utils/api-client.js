@@ -41,8 +41,11 @@ function sanitizeDiagnosticText(value) {
     })
     .replace(/([?&](?:Signature|OSSAccessKeyId|Expires|security-token|x-oss-security-token)=)[^&\s]+/ig, '$1[已隐藏]')
     .replace(/(Authorization\s*:\s*Bearer\s+)[^\s]+/ig, '$1[已隐藏]')
-    .replace(/\b1[3-9]\d{9}\b/g, '[手机号已隐藏]')
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig, '[邮箱已隐藏]')
+    // 诊断文本可能来自 URL path，不保证手机号有单词边界；允许 +86/86、空格/短横线，
+    // 即使后面还粘着数字也优先过度脱敏，避免真实手机号成为长标识的一部分后漏出。
+    .replace(/(?:(?:\+|%2b)?86[\s-]*)?1[3-9](?:[\s-]*\d){9}/ig, '[手机号已隐藏]')
+    // URL path 中邮箱常把 @ / . 编成 %40 / %2E；不整体 decode，避免改变其余诊断语义。
+    .replace(/[A-Z0-9._%+-]+(?:@|%40)[A-Z0-9.%+-]+(?:\.|%2e)[A-Z]{2,}/ig, '[邮箱已隐藏]')
 }
 
 function createRequestError(message, context = {}) {
@@ -51,7 +54,7 @@ function createRequestError(message, context = {}) {
   error.errMsg = sanitizeDiagnosticText(context.errMsg || safeMessage)
   error.requestType = context.requestType || 'request'
   error.requestMethod = String(context.method || '').toUpperCase()
-  error.requestUrl = urlWithoutQuery(context.url)
+  error.requestUrl = sanitizeDiagnosticText(urlWithoutQuery(context.url))
   error.timeout = Number(context.timeout) || 0
   error.durationMs = Math.max(0, Number(context.durationMs) || 0)
   error.traceId = String(context.traceId || '')
@@ -67,7 +70,7 @@ function reportRequestError(error) {
     console.error('[api-request-fail]', JSON.stringify({
       type: error.requestType,
       method: error.requestMethod,
-      url: error.requestUrl,
+      url: sanitizeDiagnosticText(error.requestUrl),
       statusCode: error.statusCode,
       timeout: error.timeout,
       durationMs: error.durationMs,
