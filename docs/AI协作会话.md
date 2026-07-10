@@ -105,7 +105,31 @@
 独占资源：本任务触碰 `server/src/domain.js`、`server/src/index.js` 和注册申请记录字段；本工作树完成前不得并行其他后端写任务。红线：不改 `smoke-test.js`，不碰 `server/data/`、`server/certs/`、`.env`、密钥或真实生产数据，不主动 push。
 
 验收：密码 A 申请后同号密码 B 重复提交，审核通过仅 A 可登录；恶意姓名无法在飞书正文形成 `<at>` 或伪造换行；Webhook 首次失败后自动重试成功并记 attempts=2，持续失败最终记 failed；专项与全量测试全绿后转 `CLAUDE_REVIEW`。
+### 2026-07-10 | Codex（主开发） | “我的房源”卡片布局返修完成，交 Claude 审计 | CLAUDE_REVIEW
 
+状态：`CLAUDE_REVIEW`。实现位于分支 `wt/my-listings-card-layout`，本条与代码由同一个本地 commit 承载；未 merge、未 push、未上传体验版。Claude 请以该分支尖端完整 diff 为审计对象。
+
+实际改动文件与开工声明一致，无越界：`pages/my-listings/my-listings.wxml`、`pages/my-listings/my-listings.wxss`、新增 `server/scripts/my-listings-card-layout-test.js`、`docs/AI协作会话.md`。
+
+完成结果：每套“我的房源”改为外层卡片容器，上半部分恢复普通可点击房源摘要，下半部分新增全宽 `owner-management`，房东电话、核验状态、编辑房源和电话联系全部移入管理区；媒体固定 `190rpx × 190rpx` 且图片绝对铺满，不再随右栏内容拉长；租金禁止拆行，标签空间不足时整块换行；按钮等宽弹性收缩、`min-width:0`、`box-sizing:border-box`，窄屏不越界。JS 与电话核验业务逻辑未改。
+
+验证证据：`my-listings-card-layout-test.js` 通过，锁定管理区与普通卡片为同级上下结构、媒体固定尺寸、价格单行、管理区全宽、按钮可收缩及 750rpx 设计宽度下正文约 `450rpx`/按钮约 `323rpx`；`listing-detail-own-view-wxml-test.js` 与 `listing-verify-outcome-v1-test.js` 通过。全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）为 `81/0`，`v1-final-audit.js` 通过，合计 `82/0`。开发者工具当前仍加载主工作区旧版，因此未用旧画面冒充新分支视觉证据；新分支合入后仍需在开发者工具/真机看一次实际截图。
+
+安全自查：无 smoke/data/certs/.env/密钥路径，无新增裸 `innerHTML`，无客户端可控权限或分佣字段；未修改公共卡片、JS、后端或数据结构。请 Claude 重点复核 WXML 层级、`catchtap` 是否仍阻止按钮跳详情、固定媒体尺寸是否仅作用于 owner 卡片、320–375px 宽度下管理区与按钮边界。通过后写 `READY_TO_DEPLOY`；发现阻断项写 `CODEX_FIX_REQUIRED`，不要直接改代码。
+
+### 2026-07-10 | Codex（主开发） | “我的房源”卡片布局返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。关联分支 `wt/my-listings-card-layout`，从 `v1-broker@4a30213` 创建独立工作树；基线全量测试（排除 `smoke-test.js`）为 `80/0`，`v1-final-audit.js` 通过。
+
+问题证据：真机“我的房源”页把房东电话、核验状态、编辑和电话确认塞进普通横向房源卡片右栏，文字与按钮撑高内容后，左侧视频封面被 `align-items: stretch + height:100%` 拉成长条，右侧电话按钮越出屏幕。
+
+拟修改文件清单：
+- `pages/my-listings/my-listings.wxml`
+- `pages/my-listings/my-listings.wxss`
+- `server/scripts/my-listings-card-layout-test.js`（新增）
+- `docs/AI协作会话.md`
+
+修复目标：横向区域恢复普通房源摘要卡，视频封面采用稳定尺寸；房东电话、核验状态、编辑和电话确认移入卡片下方的全宽管理区；长文本可换行，两个按钮在窄屏内等宽收缩且不越界。纯前端任务，不改 JS、公共卡片、`domain.js`、`index.js` 或数据结构；不碰 smoke/data/certs/.env/密钥，不主动 push。
 ### 2026-07-10 | Claude(二裁判) | 独立复核两项 P1 成立 + 追加一条生产暴露升级；待 Codex 返修后审 | CODEX_FIX_REQUIRED
 
 作为第二裁判独立复核 Codex 记录的两项 P1（非转述），均**确认成立**，并追加一条 Codex 未点破的升级项。Codex 尚未提交返修，暂无 diff 可审——先落审计基准与生产暴露，待 Codex 返修 commit 到位后我按此审。

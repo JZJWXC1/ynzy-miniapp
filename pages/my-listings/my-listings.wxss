@@ -240,6 +240,29 @@ page {
   padding: 18rpx;
 }
 
+.owner-listing-shell {
+  overflow: hidden;
+  padding: 0;
+}
+
+.owner-listing-card {
+  width: 100%;
+  box-sizing: border-box;
+  align-items: flex-start;
+}
+
+.owner-listing-card .company-listing-bottom {
+  flex-wrap: wrap;
+}
+
+.owner-listing-card .company-price {
+  white-space: nowrap;
+}
+
+.owner-listing-card .company-commission {
+  max-width: 100%;
+}
+
 .company-listing-media {
   flex: 0 0 190rpx;
   min-height: 168rpx;
@@ -253,6 +276,18 @@ page {
   width: 100%;
   height: 100%;
   min-height: 168rpx;
+}
+
+.owner-listing-card .company-listing-media {
+  height: 190rpx;
+  min-height: 190rpx;
+  align-self: flex-start;
+}
+
+.owner-listing-card .company-media-image {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
 }
 
 .company-media-window {
@@ -378,25 +413,68 @@ page {
   color: #7A572D;
 }
 
-.listing-landlord {
-  margin-top: 8rpx;
-  color: #7A572D;
-  font-size: 22rpx;
-  font-weight: 700;
-  word-break: break-word;
+.owner-management {
+  width: 100%;
+  box-sizing: border-box;
+  border-top: 1rpx solid #E4E9E5;
+  padding: 16rpx 18rpx 18rpx;
+  background: #FAFCFA;
 }
 
-/* 我的房源新卡片底部的动作区：编辑 / 电话确认 两个按钮并排（catchtap 已阻止冒泡到卡片跳转）。 */
+.owner-contact-row {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 12rpx;
+  row-gap: 4rpx;
+}
+
+.owner-contact-label {
+  flex: 0 0 auto;
+  color: #6A7671;
+  font-size: 21rpx;
+  font-weight: 800;
+}
+
+.owner-contact-phone {
+  min-width: 0;
+  max-width: 100%;
+  color: #182E2A;
+  font-size: 25rpx;
+  font-weight: 900;
+  word-break: break-all;
+}
+
+.owner-contact-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #7A572D;
+  font-size: 20rpx;
+  font-weight: 700;
+}
+
+/* 页面专属操作独占卡片下方一行，不再挤压普通房源摘要或拉长视频封面。 */
 .owner-card-actions {
   display: flex;
   align-items: center;
+  width: 100%;
+  box-sizing: border-box;
   gap: 12rpx;
-  flex: 0 0 auto;
+  margin-top: 14rpx;
 }
 
 .owner-card-actions .edit-button,
 .owner-card-actions .verify-button {
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
+  width: auto;
   margin: 0;
+  height: 64rpx;
+  padding: 0 12rpx;
+  font-size: 23rpx;
+  line-height: 64rpx;
 }
 
 .listing-actions {
