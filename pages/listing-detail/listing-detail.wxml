@@ -85,8 +85,20 @@
         <view class="hidden-value">{{sensitiveVisible ? listing.address : '完成确认后可查看'}}</view>
       </view>
       <view class="hidden-row">
+        <view class="hidden-label">看房方式</view>
+        <view class="hidden-value">{{listing.viewingMethodText || '联系房东'}}</view>
+      </view>
+      <view wx:if="{{listing.viewingMethod === '钥匙'}}" class="hidden-row">
+        <view class="hidden-label">钥匙在哪</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.viewingKeyLocation || '待补充') : '完成确认后可查看'}}</view>
+      </view>
+      <view wx:if="{{listing.viewingMethod === '密码'}}" class="hidden-row">
+        <view class="hidden-label">看房密码</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.viewingPassword || '待补充') : '完成确认后可查看'}}</view>
+      </view>
+      <view wx:if="{{listing.companyListing || listing.viewingMethod === '联系房东' || !listing.viewingMethod}}" class="hidden-row">
         <view class="hidden-label">{{listing.companyListing ? '公司看房电话' : '房东电话'}}</view>
-        <view class="hidden-value">{{sensitiveVisible ? (listing.companyContactPhoneText || listing.landlordPhone) : '完成确认后可查看'}}</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.companyContactPhoneText || listing.landlordPhone || '待补充') : '完成确认后可查看'}}</view>
       </view>
       <view wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row {{needId ? 'bound' : ''}}">
         <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>

@@ -102,9 +102,24 @@
         <view class="hint">至少选择一个特点；没有明显特点请选择“无”。</view>
       </view>
 
-      <view class="field">
-        <view class="label">房东联系方式</view>
-        <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="手机号或微信" />
+      <view class="form-section">
+        <view class="section-label">看房方式</view>
+        <view class="chip-row">
+          <view wx:for="{{viewingMethodOptions}}" wx:key="*this" class="option-chip {{item === form.viewingMethod ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="viewingMethod" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view wx:if="{{form.viewingMethod === '钥匙'}}" class="field">
+          <view class="label">钥匙在哪</view>
+          <input value="{{form.viewingKeyLocation}}" data-field="viewingKeyLocation" bindinput="updateField" placeholder="如 前台领取 / 3栋门卫处" />
+        </view>
+        <view wx:if="{{form.viewingMethod === '密码'}}" class="field">
+          <view class="label">看房密码</view>
+          <input value="{{form.viewingPassword}}" data-field="viewingPassword" bindinput="updateField" placeholder="如 1234#" />
+        </view>
+        <view wx:if="{{form.viewingMethod === '联系房东'}}" class="field">
+          <view class="label">房东手机号</view>
+          <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="房东手机号" />
+        </view>
+        <view class="hint">选钥匙填钥匙在哪，选密码填看房密码；房东手机号仅在「联系房东」时必填。</view>
       </view>
 
       <view class="field">

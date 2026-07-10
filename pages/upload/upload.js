@@ -39,7 +39,11 @@ const defaultForm = {
   bath: '公卫',
   features: [],
   companyListing: false,
-  ownerType: '二房东房源'
+  ownerType: '二房东房源',
+  // 看房方式：钥匙/密码/联系房东；房东手机号仅在「联系房东」时必填
+  viewingMethod: '联系房东',
+  viewingKeyLocation: '',
+  viewingPassword: ''
 }
 
 function normalizePart(value, suffix) {
@@ -157,6 +161,7 @@ Page({
       { value: '二房东房源', title: '二房东房源', desc: '合作房源，可按房态规则维护' },
       { value: '业主房源', title: '业主房源', desc: '合作房源，提交后需管理员审核通过才上架' }
     ],
+    viewingMethodOptions: ['钥匙', '密码', '联系房东'],
     featureOptions: buildFeatureOptions(defaultForm.features),
     communitySuggestions: [],
     communityPanelVisible: false,
@@ -413,7 +418,11 @@ Page({
         bath: listing.bath || '公卫',
         features: normalizeUploadFeatures(listing.features),
         companyListing: Boolean(listing.companyListing),
-        ownerType: listing.ownerType || listing.houseSourceType || '二房东房源'
+        ownerType: listing.ownerType || listing.houseSourceType || '二房东房源',
+        // 服务端已按存量信息推导 viewingMethod（有密码→密码，有电话→联系房东）；兜底同口径
+        viewingMethod: listing.viewingMethod || (listing.viewingPassword ? '密码' : '联系房东'),
+        viewingKeyLocation: listing.viewingKeyLocation || '',
+        viewingPassword: listing.viewingPassword || ''
       }
       this.setData({
         mode: 'edit',
@@ -451,13 +460,17 @@ Page({
     const hasExistingVideo = this.data.mode === 'edit' && Boolean(this.data.existingVideoUrl)
     const hasVideo = hasNewVideo || hasExistingVideo
     const videoRequired = requiresUploadVideo(form)
+    const viewingMethod = form.viewingMethod || '联系房东'
     const missingFields = []
     if (isBlank(community)) missingFields.push('小区名称')
     if (isBlank(building)) missingFields.push('几栋')
     if (isBlank(unit)) missingFields.push('几单元')
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(rentMode)) missingFields.push('租法')
-    if (isBlank(contact)) missingFields.push('房东联系方式')
+    // 房东手机号只在看房方式=联系房东时必填；钥匙/密码各自必填对应信息
+    if (viewingMethod === '钥匙' && isBlank(form.viewingKeyLocation)) missingFields.push('钥匙在哪')
+    if (viewingMethod === '密码' && isBlank(form.viewingPassword)) missingFields.push('看房密码')
+    if (viewingMethod === '联系房东' && isBlank(contact)) missingFields.push('房东手机号')
     if (isBlank(rent)) missingFields.push('租金')
     if (videoRequired && !hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
     if (missingFields.length) {
@@ -510,6 +523,10 @@ Page({
       roomNumber: form.roomNumber,
       address: validation.address,
       contact: form.contact,
+      // 非当前方式的字段显式传空串，编辑切换方式时清掉服务端旧值
+      viewingMethod: form.viewingMethod || '联系房东',
+      viewingKeyLocation: form.viewingMethod === '钥匙' ? form.viewingKeyLocation : '',
+      viewingPassword: form.viewingMethod === '密码' ? form.viewingPassword : '',
       rent: form.rent,
       layout: validation.layout,
       type: form.rentMode,
