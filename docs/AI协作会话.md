@@ -46,6 +46,20 @@
 
 ## 最新消息
 
+### 2026-07-10 19:47 | Codex（主开发） | P1.2 找房结果轻量反馈已推送、部署并验证 | DONE
+
+状态：`DONE`。已审分支以纯快进方式整合到干净 `v1-broker`，`origin/v1-broker` 从 `16d388e` 推送到 `3a55d83`，无强推；后端从同一干净发布分支成套部署，生产运行 commit 精确为 `3a55d8361cd9eba8936569cf6a8169b4fbefcc34`。主工作区、Yooni 协作文档及其它未提交改动均未触碰或夹带。
+
+**发版前证据**：独立只读审计结论为 `READY_TO_DEPLOY`，全量非 smoke `88/88`、`v1-final-audit.js` 和红线扫描全绿；同步远端后在功能工作树及实际干净 `v1-broker` 各重跑一轮，均为 `88/88` 与最终审计全绿。任务范围 13 个文件，受限路径、密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段、运行时代码手机号字面量均为 0，`git diff --check` 通过。
+
+**部署包**：默认不带 `IncludeData` 或 `IncludeEnv`，ZIP 共 169 个条目；按《打包与脱敏清单》第四节扫描，`server/data`、`server/certs`、`.env`、private config、lark JSON、PEM 均为 0，路径穿越、私钥正文、真实飞书 webhook、云密钥、JWT、smoke 默认凭据均为 0，`version.json` 与 `v1-broker@3a55d83` 精确一致。包内手机号形态只存在于三个基线未改的合成评测/mock 文件，不是生产数据，也不属于本次运行代码改动。
+
+**生产验证**：上次发布记录为 `listings=84`，本次部署前已为 85，说明两次发布间线上已有 1 条业务新增；本次部署和隔离测试前后均为 **85 → 85**，差异 0。公网 `/healthz` 与 `/readyz` 均为 200，`readyz pass=9 / pending=1 / todo=0`；服务 `active`、重启计数 0、近 10 分钟 error 级日志 0，部署脚本真实房源详情探针 200，发布台账已记录 `scope=full / verify=ok`。部署机使用临时数据库运行 `guest-mode-v1-test.js`、`assistant-trace-log-test.js`、`admin-feedback-conversation-v1-test.js` 全部通过；完整 `match-result-feedback-v1-test.js` 的远端尝试因后端部署包按设计不含 `pages/` 而在前端静态契约读取处退出，未冒充通过，其完整断言已在两轮干净本地全量测试和独立审计中通过。
+
+**生效边界与保留风险**：P1.2 后端反馈契约、持久需求绑定、后台分诊与对话查询已经生产生效；小程序端两步反馈 UI 已进入 `v1-broker`，但本轮没有执行微信开发者工具整包上传，因此真实客户端需随下一次已审整包上传后才展示入口。超时 fallback 可能留下客户端拿不到 ID 的孤立 trace，仅形成诊断存储噪声，不具备反馈写入条件，独立审计判为非阻断。既有公网 IP Nginx `server_name` 重复警告仍出现但 `nginx -t` 成功，本模块未越界处理；用户已接受的旧凭据风险也未在本模块内变更。
+
+---
+
 ### 2026-07-10 19:27 | 独立只读审计（第二裁判） | P1.2 第三轮返修复验通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。审计精确范围为功能 commit `a4e3e93`（交接 commit `f6ae100` 仅作上下文），基线 `origin/v1-broker@16d388e`；审计前后工作树均洁净，未修改、创建、暂存或提交文件，未 push、部署、上传体验版或运行真实 smoke。
