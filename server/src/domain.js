@@ -5,6 +5,7 @@ const config = require('./config')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const locationMap = require('./location-map')
+const needFunnel = require('./need-funnel')
 const {
   refreshRecommendationProfile,
   clearRecommendationProfile
@@ -3268,6 +3269,7 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
     quotaCategory: access.category,
     sync: '已同步上传人和管理员'
   })
+  needFunnel.markMilestone(db, userId, purposePayload.needId, 'l1')
   listing.sensitiveViews = Number(listing.sensitiveViews || 0) + 1
   const location = listingLocationFields(listing)
   const quota = brokerSensitiveUsage(db, userId)
@@ -3350,12 +3352,16 @@ function recordShowing(db, userId, listingId, payload = {}) {
     throw error
   }
 
+  const needId = String(payload.needId || payload.rentalNeedId || payload.clientNeedId || '').trim()
+  if (needId) assertUserNeed(db, userId, needId)
+
   db.showingUploads = db.showingUploads || []
   const location = publicListingLocationFields(listing)
   const showing = {
     id: id('SH'),
     listingId,
     userId,
+    ...(needId ? { needId } : {}),
     listingTitle: publicListingTitle(listing, location),
     community: listing.community || '',
     photoUrl: payload.photoUrl || '',
@@ -3420,12 +3426,16 @@ function reviewShowingUpload(db, adminId, showingId, payload = {}) {
       listingId: showing.listingId,
       viewerId: showing.userId,
       action: '记录带看',
+      ...(showing.needId ? { needId: showing.needId } : {}),
       time: '刚刚',
       dateKey: todayKey(),
       showingUploadId: showing.id,
       proofStatus: '已通过',
       sync: '已同步上传人和管理员'
     })
+  }
+  if (isApprove && showing.needId) {
+    needFunnel.markMilestone(db, showing.userId, showing.needId, 'showing')
   }
 
   db.pointLogs = db.pointLogs || []
@@ -3561,6 +3571,7 @@ function createClientReport(db, userId, listingId, payload = {}) {
   }
   db.clientReports = db.clientReports || []
   db.clientReports.unshift(report)
+  needFunnel.markMilestone(db, userId, needId, 'l2')
   return {
     message: '报备已创建',
     report: formatClientReport(db, report)
@@ -3722,6 +3733,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   }
   db.dealRecords = db.dealRecords || []
   db.dealRecords.unshift(deal)
+  needFunnel.markMilestone(db, report.brokerId, report.needId, 'l3Submitted')
 
   report.dealId = deal.id
   report.status = '待确认签单'
@@ -3759,6 +3771,7 @@ function confirmDeal(db, adminId, dealId) {
     || (deal.dealSnapshot && deal.dealSnapshot.commissionRule)
     || commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
   if (deal.status === '已确认') {
+    needFunnel.markMilestone(db, deal.brokerId, deal.needId, 'l3Confirmed', deal.confirmedAt)
     return {
       message: '签单已确认',
       deal: formatDealRecord(db, deal),
@@ -3804,6 +3817,7 @@ function confirmDeal(db, adminId, dealId) {
     listing.lifecycleStatus = 'sold'
     listing.updatedAt = now
     clearListingRecommendationProfile(listing, 'sold')
+    needFunnel.markMilestone(db, deal.brokerId, deal.needId, 'l3Confirmed')
 
     return {
       message: '签单已确认，公司房源不生成分佣记录',
@@ -3855,6 +3869,7 @@ function confirmDeal(db, adminId, dealId) {
   listing.lifecycleStatus = 'sold'
   listing.updatedAt = now
   clearListingRecommendationProfile(listing, 'sold')
+  needFunnel.markMilestone(db, deal.brokerId, deal.needId, 'l3Confirmed')
 
   return {
     message: '签单已确认，正式分佣记录已生成',

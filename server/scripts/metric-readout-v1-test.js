@@ -7,21 +7,37 @@ const m = require('./metric-readout')
 
 // 合成 db（含 PII 探针 customerName/needId，用于验证不外泄）。
 const db = {
-  rentalNeeds: [{ id: 'N1' }, { id: 'N2' }, { id: 'N3' }, { id: 'N4' }], // 4 条需求
+  rentalNeeds: [
+    { id: 'N1', brokerId: 'U1', createdAt: '2026-07-08T00:00:00.000Z', funnel: { version: 'need-funnel-v1', firstRecommendedAt: '2026-07-08T00:05:00.000Z' } },
+    { id: 'N2', brokerId: 'U1', createdAt: '2026-07-08T00:00:00.000Z' },
+    { id: 'N3', brokerId: 'U1', createdAt: '2026-07-08T00:00:00.000Z' },
+    { id: 'N4', brokerId: 'U1', createdAt: '2026-07-08T00:00:00.000Z' }
+  ], // 4 条需求
   footprints: [
     { action: '查看地址和电话', needId: 'N1', viewerId: 'U1' },
     { action: '查看地址和电话', needId: 'N2', viewerId: 'U1' },
-    { action: '记录带看', needId: 'N3' }, // 非敏感查看 → 不计 L1
-    { action: '查看地址和电话', needId: '' } // 空 needId → 不计
+    { action: '记录带看', needId: 'N3', viewerId: 'U1' }, // 非敏感查看 → 不计 L1
+    { action: '查看地址和电话', needId: '' }, // 空 needId → 不计
+    { action: '查看地址和电话', needId: 'N3', viewerId: 'U-OTHER' } // 串绑用户 → 不计
   ], // L1 = {N1,N2} = 2/4 = 50%
   clientReports: [
-    { needId: 'N1', customerName: '张三丰', dateKey: '2026/7/8' },
-    { needId: 'N1', customerName: '李四' } // 同 needId 去重 → {N1} = 1/4 = 25%
+    { needId: 'N1', brokerId: 'U1', customerName: '张三丰', dateKey: '2026/7/8' },
+    { needId: 'N1', brokerId: 'U1', customerName: '李四' }, // 同 needId 去重 → {N1} = 1/4 = 25%
+    { needId: 'N3', brokerId: 'U-OTHER', customerName: '串绑探针' }
+  ],
+  showingUploads: [
+    { needId: 'N1', userId: 'U1', status: '已通过' },
+    { needId: 'N3', userId: 'U-OTHER', status: '已通过' }
   ],
   dealRecords: [
-    { needId: 'N1', status: '已确认', dealMonthlyRentFen: 350000, landlordCommissionFen: 100000 },
-    { needId: 'N2', status: '待管理员确认', dealMonthlyRentFen: 400000, landlordCommissionFen: 0 }
-  ], // L3提交 {N1,N2}=2/4=50%；L3已确认 {N1}=1/4=25%
+    { needId: 'N1', brokerId: 'U1', status: '已确认', dealMonthlyRentFen: 350000, landlordCommissionFen: 100000 },
+    { needId: 'N2', brokerId: 'U1', status: '待管理员确认', dealMonthlyRentFen: 400000, landlordCommissionFen: 0 },
+    { needId: 'N3', brokerId: 'U-OTHER', status: '已驳回', dealMonthlyRentFen: 999900, landlordCommissionFen: 999900 }
+  ], // N3 串绑记录仍属于原始成交行，但不得进入 need 漏斗；L3有效提交 {N1,N2}=2/4=50%
+  assistantTraceLogs: [
+    { feedbackNeedId: 'N2', userId: 'U1', createdAt: '2026-07-08T00:20:00.000Z', listings: [{ id: 'L2' }] },
+    { feedbackNeedId: 'N3', userId: 'U-OTHER', createdAt: '2026-07-08T00:01:00.000Z', listings: [{ id: 'L3' }] }
+  ],
   listings: [
     { coordinateSource: 'admin', mapLatitude: 30.35, mapLongitude: 120.16 }, // 有效坐标
     { coordinateSource: 'static-library', mapLatitude: 30.29, mapLongitude: 120.17 }, // 有效坐标
@@ -48,6 +64,11 @@ assert.strictEqual(m.pct(1, 3), 33.3, '一位小数')
   assert.strictEqual(f.fillL2_reportPct, 25, 'L2 报备 25%（同 needId 去重）')
   assert.strictEqual(f.fillL3_dealSubmitPct, 50, 'L3 成交提交 50%')
   assert.strictEqual(f.fillL3_dealConfirmedPct, 25, 'L3 成交已确认 25%')
+  assert.strictEqual(f.firstRecommendationMeasuredCount, 2, '只统计归属一致且有房源的首推')
+  assert.strictEqual(f.firstEffectiveRecommendationMedianMinutes, 12.5, '首推耗时 P50')
+  assert.strictEqual(f.firstEffectiveRecommendationP95Minutes, 20, '首推耗时 P95')
+  assert.strictEqual(f.showingRatePct, 100, '带看率按 L2→审核通过带看计算')
+  assert.strictEqual(f.dealConfirmationRatePct, 50, '成交确认率按 L3 提交→确认计算')
 }
 
 // 3) 供给坐标可用率（有效经纬度口径：来源标记存在但坐标非法的不计入）。
@@ -67,7 +88,7 @@ assert.strictEqual(m.pct(1, 3), 33.3, '一位小数')
 // 4) 成交：仅已确认计入。
 {
   const d = m.computeDeals(db)
-  assert.strictEqual(d.dealsSubmitted, 2)
+  assert.strictEqual(d.dealsSubmitted, 3, '原始成交提交计数保留全部业务行')
   assert.strictEqual(d.dealsConfirmed, 1, '仅已确认单')
   assert.strictEqual(d.gmvConfirmedYuan, 3500, 'GMV=350000分/100')
   assert.strictEqual(d.landlordCommissionConfirmedYuan, 1000)
@@ -96,6 +117,10 @@ assert.strictEqual(m.pct(1, 3), 33.3, '一位小数')
   assert.strictEqual(snap.northStar.valueAxis_fillL2_reportPct, 25, '北极星价值主轴=L2 25%')
   assert.strictEqual(snap.activity.userCount, 9, '活跃复用 dashboardSummary 口径')
   assert.strictEqual(snap.supply.effectiveListingCount, 3, '有效供给数取 summary')
+  assert.strictEqual(snap.funnel.contract, 'need-funnel-v1', '快照应自描述漏斗契约')
+  assert.strictEqual(snap.funnel.firstEffectiveRecommendationMedianMinutes, 12.5, '快照包含首次有效推荐耗时')
+  assert.strictEqual(snap.funnel.showingRatePct, 100, '快照包含带看率')
+  assert.strictEqual(snap.funnel.dealConfirmationRatePct, 50, '快照包含成交确认率')
 }
 
 // 8) summary 缺失（domain 不可用）不崩，活跃字段降级 null。

@@ -28,13 +28,22 @@ https://zf-api.ynzyqbot.cn
 健康检查：
 
 - `GET /healthz`：进程探活，正常返回 `ok: true`，并在 `data.version` 返回当前运行版本。
-- `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`；同样带 `data.version`。
+- `GET /readyz`：上线就绪检查，依赖配置项完整性，不通过时返回 `503`；同样带 `data.version`。待审核注册申请若通知三次重试耗尽，会新增仅含数量的“注册通知死信 N 条”需处理项，不返回申请姓名、手机号或失败正文；已完成审核的历史申请不再计入待办。
 
 版本追溯（`server/src/version.js` + `server/scripts/gen-version.js`）：`/healthz`、`/readyz` 的 `data.version` 与启动日志都会给出当前运行的代码版本 `{version, commit, shortCommit, branch, builtAt, committedAt, source}`，用于把「链路日志定位到哪条请求」补上「当时跑的是哪版代码」。因为部署是 scp 单文件、生产目录 `/opt/ynzy-miniapp` **不是 git 仓库**，运行时无法 `git rev-parse`，版本信息按优先级来源：① 环境变量 `APP_VERSION`/`APP_COMMIT`/`APP_BRANCH`/`APP_BUILT_AT`；② `server/version.json`（部署/构建期生成）；③ 兜底 `package.json` 的 version + `commit=unknown`。`server/version.json` 为**生成物、已 gitignore、不入库**；部署时在有 git 的本地执行 `node scripts/gen-version.js` 生成它，再随 `src/` 一起 scp 到服务器。缺文件/坏 JSON 均优雅降级、不阻断启动。`source` 字段标明本次版本信息取自哪一层。
 
 发布记录（`server/scripts/record-release.js` + `server/scripts/show-releases.js`）：version.json 记「现网是哪版」，发布记录记「历史每次上线」。每次生产上线向 `server/releases.jsonl`（append-only JSON Lines）追加一条 `{t, commit, shortCommit, branch, version, scope: full|targeted, files, verify, note, host, by}`，形成**可审计的上线台账**——本轮 SEV1 部署漂移、定向部署等就是缺这份历史。`deploy-ecs.ps1` 成套部署成功后自动 `node server/scripts/record-release.js --scope=full --verify=ok`；定向/手工部署也应调用（可传 `--scope=targeted --files=... --note=...`）。查看：`node server/scripts/show-releases.js [--last=20]`。`commit` 默认取 `server/version.json`；`releases.jsonl` 为**生成物、已 gitignore、每环境各自的运行期台账、不入库**；只记非敏感元数据（无密钥/token）。坏行读取时跳过、不崩。
 
 健康巡检（`server/scripts/health-check.js` + `deploy/ynzy-health-check.{service,timer}`）：独立于 `/healthz` 的定时巡检，检查「会拖垮生产但 `/healthz` 未必发现」的信号——**db 可解析**（JSON 有效且含 listings 数组）、**磁盘余量**（`df -Pk`，低于 `DISK_MIN_FREE_PCT`% 告警，默认 10）、**备份新鲜度**（复用 `backup.checkFreshness`，超 `BACKUP_MAX_AGE_HOURS` 小时无新备份告警，默认 24；未配置备份目录则跳过不误报）、**服务端点**（`curl /healthz` 是否 200）。打一行 `[health] {"ok","checks","failures"}` 到 journald，**任一失败非零退出**（systemd 可据此告警）；配了 `HEALTH_ALERT_CMD` 时经环境变量把摘要传给外部通知命令（仓库不写凭据/webhook）。systemd 定时器每 15 分钟跑一次（`install-on-server.sh` 自动加装）；服务单元 `EnvironmentFile=-/etc/default/ynzy-backup` 复用备份环境。不改 `index.js`/`/readyz`，是纯旁路巡检。查看：`journalctl -u ynzy-health-check --since "1 hour ago"`。
+
+需求转化漏斗（`server/src/need-funnel.js` + `server/scripts/metric-readout.js`）：服务端在持久需求的 `funnel` 对象中只保存固定版本和首次里程碑 ISO 时间，包含首次有效推荐、L1 敏感查看、L2 报备、审核通过带看、L3 成交提交与管理员确认；不保存客户、房源、地址或自由文本。业务记录仍保留各自 `needId`，计算时会再次校验需求 `brokerId` 与 trace/足迹/报备/带看/成交的服务端用户字段，串绑记录不计。重复请求不覆盖首次时间；足迹或 trace 达保留上限后，需求里程碑仍可持续读出。
+
+- 主指标 `fillL2_reportPct`：有可信报备的需求数 / 持久需求总数。
+- 首次有效推荐耗时：需求创建到首个“绑定同一需求且实际返回房源”的持久 trace，输出 P50/P95 分钟和可测样本数。
+- 带看率 `showingRatePct`：有审核通过带看的需求数 / 已报备需求数；待审核或驳回照片不计。
+- 成交确认率 `dealConfirmationRatePct`：管理员已确认成交的需求数 / 已提交成交的需求数；提交不能冒充确认。
+- 新客户端带看会提交当前持久 `needId` 并由服务端验归属；临时/空需求及旧客户端仍可提交带看证明，但不计入需求漏斗，避免破坏兼容。
+- 每日 `ynzy-metric-snapshot.timer` 继续只读追加 `metrics-snapshots.jsonl`；查看当前聚合用 `node scripts/metric-readout.js --pretty`，查看趋势用 `node scripts/show-metric-trend.js --last=14`。两者只输出计数、比例和耗时，不输出任何原始 `needId` 或 PII。
 
 请求链路日志（`server/src/request-log.js`）：每个请求分配一个 `traceId`，通过响应头 **`X-Trace-Id`** 回给客户端，并在响应结束时向 stdout（systemd journal 可见）打一行结构化 JSON：`[req] {"t","lvl","trace","method","path","status","ms","ip"}`。用于「后端查无请求、前端只报统一网络错误」这类真机问题——前端把 `X-Trace-Id` 记下来，后端 `journalctl -u ynzy-miniapp | grep <trace>` 即可看到该请求是否到达、走了哪条路径、状态码与耗时。**只记 `pathname`，不记查询串、请求体、手机号/地址等 PII**。`REQUEST_LOG=0`/`off` 可关闭日志（仍回 `X-Trace-Id` 头便于关联）。userId 关联留作后续（当前无中央鉴权点）。
 
@@ -48,7 +57,7 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 
 - `users`：中介用户。
 - `listings`：房源。
-- `rentalNeeds`：需求单。
+- `rentalNeeds`：需求单；`funnel` 子对象只保存 `need-funnel-v1` 固定里程碑时间。
 - `clientReports`：报备记录。
 - `dealRecords`：签单记录。
 - `commissionRecords`：分佣记录。

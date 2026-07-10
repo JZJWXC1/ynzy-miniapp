@@ -646,6 +646,7 @@ Page({
       const uploaded = await apiService.uploadShowingPhoto(watermarked.tempFilePath, policy)
       wx.showLoading({ title: '提交审核' })
       const result = await apiService.recordShowing(listing.id, {
+        needId: this.data.needTemporary ? '' : this.data.needId,
         photoUrl: uploaded.fileUrl,
         photoKey: uploaded.objectKey,
         watermarkText: watermarked.watermarkText,

@@ -1866,10 +1866,20 @@
     if (!data.photoUrl && !data.photoKey) {
       throw new Error('记录带看必须上传带时间地点水印的现场照片');
     }
+    var needId = String(data.needId || data.rentalNeedId || data.clientNeedId || '').trim();
+    if (needId) {
+      var need = (state.rentalNeeds || []).find(function (item) {
+        return item && item.id === needId;
+      });
+      if (!need || need.brokerId !== state.currentUserId) {
+        throw new Error('只能使用自己的需求单');
+      }
+    }
     var showing = {
       id: 'SH' + Date.now(),
       listingId: listingId,
       userId: state.currentUserId,
+      needId: needId,
       listingTitle: listing ? (listing.title || listing.shortTitle || '') : '',
       community: listing ? (listing.community || '') : '',
       photoUrl: data.photoUrl || '',
@@ -2235,6 +2245,7 @@
         listingId: showing.listingId,
         viewerId: showing.userId,
         action: '记录带看',
+        needId: showing.needId || '',
         time: '刚刚',
         dateKey: todayKey(),
         showingUploadId: showing.id,

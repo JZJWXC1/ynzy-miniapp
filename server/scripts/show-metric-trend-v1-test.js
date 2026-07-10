@@ -22,10 +22,20 @@ const t = require('./show-metric-trend')
 
 // 2) formatRow：正常行含日期与北极星；缺字段不崩、以 - 占位。
 {
-  const line = t.formatRow({ t: '2026-07-08T02:30:00Z', northStar: { valueAxis_fillL2_reportPct: 0 }, fillRate: { needsTotal: 8, fillL1_viewPct: 50 }, supply: { effectiveListingCount: 37, expiredListingCount: 40 }, deals: { dealsConfirmed: 0 } })
+  const line = t.formatRow({
+    t: '2026-07-08T02:30:00Z',
+    northStar: { valueAxis_fillL2_reportPct: 0 },
+    fillRate: { needsTotal: 8, fillL1_viewPct: 50 },
+    funnel: { firstEffectiveRecommendationMedianMinutes: 3.5, showingRatePct: 40, dealConfirmationRatePct: 25 },
+    supply: { effectiveListingCount: 37, expiredListingCount: 40 },
+    deals: { dealsConfirmed: 0 }
+  })
   assert.ok(line.indexOf('2026-07-08') !== -1, '含日期')
   assert.ok(line.indexOf('NS-fillL2=0%') !== -1, '含北极星 fillL2')
   assert.ok(line.indexOf('有效供给=37') !== -1)
+  assert.ok(line.indexOf('首推P50=3.5分') !== -1, '含首次有效推荐耗时')
+  assert.ok(line.indexOf('带看率=40%') !== -1, '含带看率')
+  assert.ok(line.indexOf('成交确认率=25%') !== -1, '含成交确认率')
   const empty = t.formatRow({})
   assert.ok(empty.indexOf('-') !== -1, '缺字段以 - 占位不崩')
   assert.doesNotThrow(() => t.formatRow(null), 'null 不崩')

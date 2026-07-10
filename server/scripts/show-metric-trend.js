@@ -34,22 +34,26 @@ function num(v) {
   return v == null ? '-' : String(v)
 }
 
-// 一行关键指标：日期 | 北极星fillL2 | 有效供给 | 已过期 | 需求数 | L1查看% | 成交(确认)。
+// 一行关键指标：日期 | 北极星fillL2 | 首推耗时 | 带看率 | 成交确认率 | 有效供给 | 需求数。
 function formatRow(rec) {
   const r = rec && typeof rec === 'object' ? rec : {}
   const fill = r.fillRate || {}
   const supply = r.supply || {}
   const deals = r.deals || {}
   const ns = r.northStar || {}
+  const funnel = r.funnel || {}
   const day = String(r.t || '').slice(0, 10) || '(无时间)'
   return [
     day.padEnd(11),
     ('NS-fillL2=' + num(ns.valueAxis_fillL2_reportPct != null ? ns.valueAxis_fillL2_reportPct : fill.fillL2_reportPct) + '%').padEnd(16),
+    ('首推P50=' + num(funnel.firstEffectiveRecommendationMedianMinutes) + '分').padEnd(14),
+    ('带看率=' + num(funnel.showingRatePct) + '%').padEnd(12),
+    ('成交确认率=' + num(funnel.dealConfirmationRatePct) + '%').padEnd(15),
     ('有效供给=' + num(supply.effectiveListingCount)).padEnd(13),
     ('过期=' + num(supply.expiredListingCount)).padEnd(9),
     ('需求=' + num(fill.needsTotal)).padEnd(8),
     ('L1查看=' + num(fill.fillL1_viewPct) + '%').padEnd(13),
-    '成交确认=' + num(deals.dealsConfirmed)
+    '确认单=' + num(deals.dealsConfirmed)
   ].join(' ')
 }
 

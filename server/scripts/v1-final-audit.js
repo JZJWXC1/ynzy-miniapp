@@ -39,6 +39,8 @@ const criticalScripts = [
   // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',
+  // P1.3 需求漏斗：首推/L1/L2/带看/L3 必须绑定服务端可信 needId，聚合零 PII，readyz 显示死信数量。
+  'server/scripts/need-funnel-v1-test.js',
   'server/scripts/video-share-v1-test.js',
   'server/scripts/v1-acceptance-check.js',
   // db.json 解析缓存/clone 隔离/写后刷新/抛异常回滚的契约（飞书同步与助手长 await 路径依赖）。

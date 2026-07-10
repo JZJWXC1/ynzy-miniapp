@@ -2,6 +2,7 @@ const { runAssistantGraph } = require('./assistant/graph')
 const threadStore = require('./assistant/state-store')
 const assistantFeedback = require('./assistant-feedback')
 const matchService = require('./match-service')
+const needFunnel = require('./need-funnel')
 const {
   safeNeed,
   safeListings,
@@ -31,6 +32,12 @@ function responseWithFeedbackMessageId(response, feedbackMessageId) {
   return next
 }
 
+function createFeedbackTrace(targetDb, userId, payload, response, context) {
+  const traceLog = assistantFeedback.createAssistantTraceLog(targetDb, userId, payload, response, context)
+  needFunnel.recordRecommendation(targetDb, userId, payload.needId, traceLog)
+  return traceLog
+}
+
 async function chat(db, payload = {}, context = {}) {
   const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
   const previous = threadStore.getThread(threadId) || {}
@@ -47,7 +54,7 @@ async function chat(db, payload = {}, context = {}) {
     lastTraceSummary: result.traceSummary || null
   })
 
-  const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, result.response, {
+  const writeTraceLog = (targetDb) => createFeedbackTrace(targetDb, context.userId, payload, result.response, {
     threadId,
     traceSummary: result.traceSummary,
     feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
@@ -91,7 +98,7 @@ function fallbackChat(db, payload = {}, context = {}, options = {}) {
     lastTraceSummary: null
   })
 
-  const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, response, {
+  const writeTraceLog = (targetDb) => createFeedbackTrace(targetDb, context.userId, payload, response, {
     threadId,
     traceSummary: null,
     feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
@@ -107,7 +114,7 @@ function recordFeedbackResult(db, payload = {}, response = {}, context = {}) {
   const feedbackNeedId = ownedPersistentNeedId(db, context.userId, payload.needId)
   if (!feedbackNeedId) return responseWithFeedbackMessageId(response, '')
   const threadId = String(response.threadId || payload.threadId || '').trim() || threadStore.resolveThreadId('')
-  const traceLog = assistantFeedback.createAssistantTraceLog(db, context.userId, payload, {
+  const traceLog = createFeedbackTrace(db, context.userId, payload, {
     ...response,
     threadId
   }, {

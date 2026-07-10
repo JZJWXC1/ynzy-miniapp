@@ -16,6 +16,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const needFunnel = require('../src/need-funnel')
 
 const SERVER_DIR = path.join(__dirname, '..')
 
@@ -49,21 +50,7 @@ function coveredNeedIds(rows, needIds, pred) {
 
 // 需求填充率 L1/L2/L3：一条需求是否产生了下游撮合动作（按 needId 归因）。价值主轴本体。
 function computeFillRate(db) {
-  const needs = Array.isArray(db.rentalNeeds) ? db.rentalNeeds : []
-  const needIds = new Set(needs.map((n) => n && n.id).filter(Boolean))
-  const total = needIds.size
-  const l1 = coveredNeedIds(db.footprints, needIds, (f) => f.action === '查看地址和电话') // 敏感查看解锁
-  const l2 = coveredNeedIds(db.clientReports, needIds, () => true) // 报备（价值主轴）
-  const l3s = coveredNeedIds(db.dealRecords, needIds, () => true) // 成交提交
-  const l3c = coveredNeedIds(db.dealRecords, needIds, (d) => d.status === '已确认') // 成交已确认
-  return {
-    needsTotal: total,
-    fillL1_viewPct: pct(l1, total),
-    fillL2_reportPct: pct(l2, total),
-    fillL3_dealSubmitPct: pct(l3s, total),
-    fillL3_dealConfirmedPct: pct(l3c, total),
-    _counts: { l1, l2, l3s, l3c }
-  }
+  return needFunnel.computeMetrics(db)
 }
 
 // 坐标真实有效才算可用：有限数值 + 合法范围 + 排除 (0,0) 占位。修正旧口径「有 coordinateSource
@@ -146,6 +133,14 @@ function buildSnapshot(db, summary) {
       fillL2_reportPct: fill.fillL2_reportPct,
       fillL3_dealSubmitPct: fill.fillL3_dealSubmitPct,
       fillL3_dealConfirmedPct: fill.fillL3_dealConfirmedPct
+    },
+    funnel: {
+      contract: needFunnel.FUNNEL_VERSION,
+      firstRecommendationMeasuredCount: fill.firstRecommendationMeasuredCount,
+      firstEffectiveRecommendationMedianMinutes: fill.firstEffectiveRecommendationMedianMinutes,
+      firstEffectiveRecommendationP95Minutes: fill.firstEffectiveRecommendationP95Minutes,
+      showingRatePct: fill.showingRatePct,
+      dealConfirmationRatePct: fill.dealConfirmationRatePct
     },
     deals: computeDeals(db),
     monetization: computeMonetization(db),

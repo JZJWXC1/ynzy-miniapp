@@ -1150,6 +1150,9 @@ function buildLaunchCheck(db) {
   const listingCount = (db.listings || []).length
   const groupCount = (db.groups || []).length
   const baseStatus = userCount && groupCount ? (listingCount ? '通过' : '待确认') : '需处理'
+  const registrationDeadLetterCount = (db.registrationRequests || [])
+    .filter((request) => request && request.status === '待审核' && request.notifyStatus === 'dead_letter')
+    .length
 
   const items = [
     launchCheckItem(
@@ -1195,6 +1198,12 @@ function buildLaunchCheck(db) {
       baseStatus,
       `用户 ${userCount} 个，房源 ${listingCount} 套，历史群素材 ${groupCount} 个`,
       listingCount ? '上线后持续核验房源状态' : '当前没有真实房源时小程序展示空状态，员工上传后会自动显示'
+    ),
+    launchCheckItem(
+      `注册通知死信 ${registrationDeadLetterCount} 条`,
+      registrationDeadLetterCount ? '需处理' : '通过',
+      registrationDeadLetterCount ? '存在通知重试耗尽的注册申请，已通过健康告警通道通知管理员' : '当前没有注册通知死信',
+      registrationDeadLetterCount ? '在后台核对待审核申请并人工联系，处理后由申请人重新提交或完成审核' : '持续保留死信告警与重启补发巡检'
     ),
     launchCheckItem(
       '微信合法域名',

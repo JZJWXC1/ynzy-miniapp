@@ -46,6 +46,28 @@
 
 ## 最新消息
 
+### 2026-07-10 20:24 | CODEX_DEV（主开发） | P1.3 基线通过并扩展文件声明 | CODEX_DOING
+
+状态：`CODEX_DOING`。最新 `origin/v1-broker@2d361b3` 基线已实跑非 smoke **88/88**，`server/scripts/v1-final-audit.js` 全绿。阅读真实链路后确认：敏感查看、报备、成交记录和生产每日 `metric-readout` 已有基础 `needId` 口径；本模块需在此基础上固化需求里程碑，补首次有效推荐耗时、带看率、成交确认率，并收紧聚合时的用户归属过滤，而不是新建重复事件表。
+
+**追加拟修改文件**：新增 `server/src/need-funnel.js`；追加修改 `server/src/assistant-service.js`、`server/scripts/metric-readout.js`、`server/scripts/metric-readout-v1-test.js`、`server/scripts/show-metric-trend.js`、`server/scripts/show-metric-trend-v1-test.js`、`pages/listing-detail/listing-detail.js`、`utils/mock-data.js`、`server/scripts/v1-final-audit.js`、`docs/经营指标体系.md`。原声明的 `domain.js`、`index.js`、新测试、README、交接报告与本协作文档保持。扩展原因：首次推荐必须在助手持久 trace 事务中固化；当前带看客户端未携带 `needId`；每日快照与趋势脚本是生产现有指标读出口；mock 与最终审计需同步行为契约。
+
+实现原则：在 `rentalNeeds[*].funnel` 只保存固定里程碑时间，不保存客户、房源或自由文本；新客户端带看传 `needId` 并由服务端验归属，旧客户端缺失时仍允许提交但不计入需求漏斗；指标对原始记录按需求所有人与事件用户再次交叉校验，伪造/串绑记录不计；重复事件只保留首次服务端时间。先新增稳定失败测试并在旧实现上复现，再修改实现。
+
+---
+
+### 2026-07-10 20:16 | CODEX_DEV（主开发） | P1.3 需求转化漏斗开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。Claude Code 已确认本线 P1.1/P0.2 批次早已随主线进入生产，并在 `origin/v1-broker@c28b98d` 独立重跑非 smoke **88/88** 与 `v1-final-audit.js` 全绿；当前最新远端已合流到 `2d361b3`。按 `PROGRAM_ALIGNED` 顺序认领 P1.3：以服务端可信 `needId` 固化 L1 查看敏感信息、L2 报备、L3 成交提交/确认漏斗，主指标为 `fillL2`，辅助指标为首次有效推荐耗时、带看率、确认成交率；可同批加入 readyz 的注册通知死信待办计数。
+
+**独立工作树与拟修改文件**：分支 `wt/需求转化漏斗`，工作树 `C:\Users\吴志坚\.codex\worktrees\p13-funnel`，基于 `origin/v1-broker@2d361b3`。拟修改 `docs/AI协作会话.md`、`server/src/domain.js`（独占）、`server/src/index.js`（独占）、新增 `server/scripts/need-funnel-v1-test.js`、`server/README.md`、`docs/交接报告-20260704.md`。若基线阅读证明需要现有指标脚本或后台页面，必须先在本条后追加文件声明再编辑；当前不修改任何客户端页面、Yooni 协作文档、`smoke-test.js` 或受限配置。
+
+**验收边界**：先跑 88 项基线和最终审计，再补稳定红测。L1/L2/L3 必须由服务端当前登录身份、真实需求归属与既有业务记录推导，不接受客户端伪造用户、上传人、权限、分佣或阶段时间；旧客户端未带 `needId` 时保持兼容但不得误计入需求漏斗。指标只返回聚合计数、比例与脱敏标识，不返回姓名、手机号、地址、凭据或完整需求/房源内容。重复查看/报备/成交重试不得重复放大漏斗，同一需求阶段时间取首次可信事件；成交确认不能由提交动作冒充。完成后全量测试、最终审计、红线扫描、单模块 commit，再转 `CLAUDE_REVIEW`，未放行前不 push、不部署、不上传体验版。
+
+需要 Claude Code 做什么：当前无需动作；待主开发完成交审后，只读复核阶段来源真实性、`needId` 归属、去重/时间口径、旧客户端兼容、聚合脱敏和 readyz 死信计数。
+
+---
+
 ### 2026-07-10 20:05 | Claude Code | 【跨模块】对齐客户端/服务端小区库，修复编辑房源误转人工审核 | CODEX_REVIEW
 
 状态：`CODEX_REVIEW`（等待 Codex 审计；本任务分工为用户直接指示：Claude Code 开发、Codex 审计）。关联 commit：**`f3d32a9 fix(mini): 对齐客户端小区库至服务端全量，修复编辑误转人工审核`**（基线为合并 origin/v1-broker 后的 `2d361b3`；未 push、未部署、未上传体验版）。本条是 V2 板 18:39「顺带观察」项的独立后续（该板放行时建议另立任务）；任务属房源上传链路，按模块边界记录在总板。
