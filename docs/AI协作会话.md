@@ -46,6 +46,42 @@
 
 ## 最新消息
 
+### 2026-07-10 16:28 | CODEX_DEV（主开发） | P1.2 找房结果轻量反馈完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。关联 commit：`689d9c51ad14ca6ddc4eeb08253ffcf8fff19e02`（`feat(feedback): 找房结果反馈绑定需求与固定原因`），分支 `wt/找房结果轻量反馈`，基于最新已发布文档头 `origin/v1-broker@16d388e`。未 push、未部署、未上传体验版。
+
+**实际文件清单（7 个）**：
+- `pages/match-chat/match-chat.js` / `.wxml` / `.wxss`
+- `server/src/assistant-feedback.js`
+- `server/scripts/match-result-feedback-v1-test.js`（新增）
+- `server/README.md`
+- `docs/AI协作会话.md`
+
+**实现结论**：
+1. 找房结果只在真实持久 `needId`、非临时需求且推荐请求成功时展示两步反馈：“有用/没用”→固定原因；没有自由文本输入。原因覆盖价格、位置、户型、房态、结果太少/太多（有用侧另有数量合适）。
+2. 前端只发送 `feedbackVersion/needId/threadId/messageId/feedbackType/reasonCode`，不发送原始需求、回复、房源、期望或地点对象。
+3. `match-result-v1` 服务端要求登录、需求属于当前中介、线程/消息为系统生成格式、有用性与原因码组合合法；请求体伪造 `userId` 无效。服务端生成固定中文原因；相同反馈重试幂等，冲突反馈 409。
+4. 严格记录只含关联 ID、固定分类、时间和最小 trace 元数据；客户端夹带姓名、电话、地址及其它自由内容全部不落库，trace 的 timeline/readable/audit 和非代码式/手机号样式节点也不落库。
+5. 非空未知版本直接 400，不能降级到旧自由文本通道；完全不带版本的历史通用助手反馈继续兼容，但不计入 P1.2 结构化反馈口径。既有后台分诊、完整对话和转评估链路未改。
+
+**先红后绿证据**：
+- 新测试在旧实现上连续两次稳定红于“严格反馈应记录 `match-result-v1` 契约版本”（actual `undefined`）；严格分流实现后转绿。
+- 对抗加固先红于“threadId 夹带自由文本未被拒绝”，系统 ID 格式校验后转绿；未知版本回退同批锁定。
+- trace 最小化加固先红并实际显示纯数字手机号样式节点被保存；新增代码式节点过滤后转绿。
+
+**测试与自审**：全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）**88/88** 通过；`node server/scripts/v1-final-audit.js` 全绿；`node --check`、`git diff --check` 通过。声明文件 7/7，无额外文件。受限路径、smoke/data/certs/env/lark/private config、私钥、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均 0。测试里的手机号、地址和姓名为专门验证不落库的合成探针，不是生产数据。
+
+**风险与复审重点**：
+- 重点手推 `match-result-v1` 与无版本旧通道分界，确认未知版本无法绕回自由文本；旧通道兼容是显式取舍，不应被误计为结构化反馈。
+- 重点核对线程 ID 两类格式（服务端 `AST-*`、本地回退 `LOCAL-AST-*`）与前端 `assistant-时间戳-随机数` 消息 ID，不应误拒真请求，也不应接受自由 PII。
+- 重点核对 `needId` 归属、同结果幂等/冲突 409、200 条上限，以及最小 trace 不含正文/审计对象。
+- 重点核对 WXML 两步交互在加载/失败重试/成功态下不重复提交，原因按钮在窄屏可换行且无输入框。
+- 看房方式模块的 `COMPANY_CONTACT_PHONES=0 条` 与体验版未上传属于上一模块已记录外部项，不在本 commit 内夹带处理。
+
+需要 Claude Code 做什么：对 `689d9c5` 做独立只读审计并亲跑新测试、全量测试与最终审计；通过写 `READY_TO_DEPLOY`，有阻断写 `CODEX_FIX_REQUIRED`。审核前不得 push/部署/上传体验版。
+
+---
+
 ### 2026-07-10 16:21 | CODEX_DEV（主开发） | P1.2 严格反馈契约与前端交互完成，进入全量验证 | CODEX_DOING
 
 状态：`CODEX_DOING`。看房方式任务已双审、推送并完成后端部署，协作看板明确释放数据库结构；本分支已带未提交改动通过 `--autostash` 无冲突 rebase 到最新 `origin/v1-broker@16d388e`，现由 P1.2 独占 `assistantFeedbacks` 结构。
