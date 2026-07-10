@@ -21,6 +21,8 @@ function seedDb() {
     footprints: [],
     // 按落库顺序（新→旧，unshift 语义）排列同一 threadId 的多轮
     assistantTraceLogs: [
+      { id: 'ATLMATCHRESULTOWN01', createdAt: '2026-07-07T11:01:00Z', userId: 'U1', threadId: 'T-SHARED', intent: 'rental_match', sourceText: '本人的结构化反馈结果', reply: '本人结果', listings: [] },
+      { id: 'ATLMATCHRESULTOTHER', createdAt: '2026-07-07T11:00:00Z', userId: 'U2', threadId: 'T-SHARED', intent: 'rental_match', sourceText: '其他用户同线程内容', reply: '其他用户结果', listings: [] },
       { id: 'ATL3', createdAt: '2026-07-07T10:02:00Z', threadId: 'T1', intent: 'rental_match', sourceText: '那有没有两室的', reply: '为你找到两室房源', nextQuestion: '', replyMode: 'match', need: {}, listings: [{ id: 'L1783427664217530', title: '阳光小区两室', community: '阳光小区', rent: 3000 }] },
       { id: 'ATL2', createdAt: '2026-07-07T10:01:00Z', threadId: 'T1', intent: 'rental_match', sourceText: '预算3000', reply: '好的，预算3000', nextQuestion: '那你要几室？', replyMode: 'ask', need: {}, listings: [] },
       { id: 'ATL1', createdAt: '2026-07-07T10:00:00Z', threadId: 'T1', intent: 'rental_match', sourceText: '拱墅区找房', reply: '好的，拱墅区', nextQuestion: '预算多少？', replyMode: 'ask', need: {}, listings: [] },
@@ -29,7 +31,9 @@ function seedDb() {
     assistantFeedbacks: [
       { id: 'F1', createdAt: '2026-07-07T10:03:00Z', status: 'open', threadId: 'T1', feedbackType: 'bad_recommendation', sourceText: '那有没有两室的', reply: '为你找到两室房源' },
       { id: 'F2', createdAt: '2026-07-07T10:04:00Z', status: 'open', threadId: '', feedbackType: 'other', sourceText: '无会话反馈', reply: '' },
-      { id: 'F3', createdAt: '2026-07-07T10:05:00Z', status: 'open', threadId: 'T-GONE', feedbackType: 'other', sourceText: '会话已清理', reply: '' }
+      { id: 'F3', createdAt: '2026-07-07T10:05:00Z', status: 'open', threadId: 'T-GONE', feedbackType: 'other', sourceText: '会话已清理', reply: '' },
+      { id: 'F4', createdAt: '2026-07-07T11:02:00Z', status: 'open', feedbackVersion: 'match-result-v1', messageId: 'ATLMATCHRESULTOWN01', userId: 'U1', needId: 'N1', feedbackType: 'helpful', reasonCode: 'price', reason: '价格合适' },
+      { id: 'F5', createdAt: '2026-07-07T11:03:00Z', status: 'open', feedbackVersion: 'match-result-v1', messageId: 'ATLMATCHRESULTGONE1', userId: 'U1', needId: 'N1', feedbackType: 'bad_recommendation', reasonCode: 'too_few', reason: '结果太少' }
     ],
     adminAccounts: [
       { id: 'A-SUPER', account: 'superadmin', password: 'superpass123', name: '超管', userId: 'U1', permission: '全部后台权限', status: '启用' },
@@ -114,6 +118,19 @@ async function run() {
     assert.ok(data.turns.every((t) => t.userInput !== '别的会话'), '不得混入别的会话')
     // listing.id 原样保留（不被误脱敏）
     assert.strictEqual(data.turns[2].listings[0].id, 'L1783427664217530', 'listing.id 必须原样保留')
+
+    // 严格反馈不保存 threadId：必须按服务端结果 ID 反查；同 threadId 的其他用户轮次不得混入。
+    const strict = await request('GET', '/admin/assistant/feedbacks/F4/conversation', null, superAuth)
+    assert.strictEqual(strict.statusCode, 200, '严格反馈结果 ID 反查对话应 200')
+    assert.strictEqual(strict.body.data.threadId, 'T-SHARED', '严格反馈应由结果 trace 解析 threadId')
+    assert.strictEqual(strict.body.data.turnCount, 1, '严格反馈对话只能包含所属用户轮次')
+    assert.strictEqual(strict.body.data.turns[0].userInput, '本人的结构化反馈结果', '严格反馈取错所属用户 trace')
+    assert.strictEqual(strict.body.data.truncated, false, '结果 trace 存在时不应标记截断')
+
+    const strictGone = await request('GET', '/admin/assistant/feedbacks/F5/conversation', null, superAuth)
+    assert.strictEqual(strictGone.statusCode, 200, '严格反馈结果 trace 已清理仍应 200 降级')
+    assert.strictEqual(strictGone.body.data.turnCount, 0, '严格反馈结果 trace 已清理应为 0 轮')
+    assert.strictEqual(strictGone.body.data.truncated, true, '严格反馈结果 trace 已清理必须标记 truncated')
 
     // 有 threadId 但 trace 已被滚动清理 → 优雅降级：turnCount 0 且 truncated
     const gone = await request('GET', '/admin/assistant/feedbacks/F3/conversation', null, superAuth)

@@ -811,9 +811,9 @@ function assertAdminCapability(account) {
 }
 
 // ---------- 客服反馈完整对话重建（需求3） ----------
-// 完整对话直接由既有 trace log（db.assistantTraceLogs）按 threadId 重建：每条 trace log 即一轮
-// （用户输入 sourceText / 助手回复 reply / 推荐 listings），落库时已脱敏、listing.id 原样保留，
-// 无需二次脱敏、无需新增持久化、无需改小程序。
+// 完整对话直接由既有 trace log（db.assistantTraceLogs）重建：旧反馈沿用 threadId，严格反馈先用
+// 服务端结果 messageId 精确定位所属用户 trace，再取同用户同 threadId 的轮次。trace 落库时已脱敏、
+// listing.id 原样保留，无需额外保存对话副本。
 function buildFeedbackConversation(db, feedbackId) {
   const id = String(feedbackId || '').trim()
   const feedback = (db.assistantFeedbacks || []).find((item) => item.id === id)
@@ -822,9 +822,20 @@ function buildFeedbackConversation(db, feedbackId) {
     error.statusCode = 404
     throw error
   }
-  const threadId = String(feedback.threadId || '').trim()
+  const resultTrace = feedback.feedbackVersion === 'match-result-v1'
+    ? (db.assistantTraceLogs || []).find((item) => (
+      item &&
+      item.id === feedback.messageId &&
+      String(item.userId || '').trim() === String(feedback.userId || '').trim()
+    ))
+    : null
+  const threadId = String((resultTrace && resultTrace.threadId) || feedback.threadId || '').trim()
   const rows = threadId
-    ? assistantService.traceRows(db, { threadId, limit: 200 }).slice().reverse()
+    ? assistantService.traceRows(db, {
+      threadId,
+      userId: resultTrace ? feedback.userId : '',
+      limit: 200
+    }).slice().reverse()
     : []
   const turns = rows.map((row, index) => ({
     round: index + 1,
@@ -845,7 +856,7 @@ function buildFeedbackConversation(db, feedbackId) {
     createdAt: feedback.createdAt || '',
     turnCount: turns.length,
     // threadId 存在却取不到轮次：多为 trace log 达上限（500 条）被滚动清理，如实告知运营。
-    truncated: Boolean(threadId) && turns.length === 0,
+    truncated: (feedback.feedbackVersion === 'match-result-v1' && !resultTrace) || (Boolean(threadId) && turns.length === 0),
     turns
   }
 }
@@ -1458,8 +1469,11 @@ async function handleMini(req, res, pathname, searchParams) {
       const resultBody = guest ? guestListingFilter(body) : body
       if (guest) assertGuestRateLimit(req, 'mini-llm-match')
       const result = await llm.matchRentalNeed(resultDb, resultBody)
+      const response = !guest && resultBody.stage === 'match' && resultBody.needId && !resultBody.needTemporary
+        ? dbStore.updateDb((nextDb) => assistantService.recordFeedbackResult(nextDb, resultBody, result, { userId }))
+        : result
       console.log(`[llm-match] status=200 durationMs=${Date.now() - startedAt} guest=${guest}`)
-      return sendJson(res, result)
+      return sendJson(res, response)
     } catch (error) {
       console.log(`[llm-match] status=${error.statusCode || 500} durationMs=${Date.now() - startedAt} guest=${guest}`)
       throw error

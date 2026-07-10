@@ -19,6 +19,7 @@ async function main() {
   assert.strictEqual(db.assistantTraceLogs.length, 1, '应记录一条 trace log')
 
   const log = db.assistantTraceLogs[0]
+  assert.strictEqual(result.feedbackMessageId, log.id, '普通聊天响应必须返回持久 trace 的服务端结果 ID')
   assert.strictEqual(log.threadId, result.threadId, 'trace log 应关联 threadId')
   assert.strictEqual(log.userId, 'U001', 'trace log 应记录用户')
   assert.strictEqual(log.intent, 'rental_match', 'trace log 应记录意图')

@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const {
   scrubSensitiveText,
   scrubDeep,
@@ -38,7 +39,7 @@ const MAX_TEXT_LENGTH = 500
 const MAX_LISTINGS = 8
 const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
 const MATCH_RESULT_THREAD_ID_PATTERN = /^(?:AST-[a-z0-9]+-[a-z0-9]{6}|LOCAL-AST-\d{10,16}(?:-\d{1,5})?)$/i
-const MATCH_RESULT_MESSAGE_ID_PATTERN = /^assistant-\d{10,16}-\d{1,5}$/
+const MATCH_RESULT_MESSAGE_ID_PATTERN = /^ATL[A-Z0-9]{10,24}$/
 const SYSTEM_ID_MIN_TIMESTAMP_MS = 1000000000000
 const SYSTEM_ID_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
 const MATCH_RESULT_FEEDBACK_REASONS = {
@@ -64,7 +65,7 @@ function nowIso() {
 }
 
 function createTraceLogId() {
-  const random = Math.random().toString(36).slice(2, 7).toUpperCase()
+  const random = crypto.randomBytes(6).toString('hex').toUpperCase()
   return `ATL${Date.now().toString(36).toUpperCase()}${random}`
 }
 
@@ -110,11 +111,6 @@ function threadTimestampFromId(threadId) {
   return localMatch ? Number(localMatch[1]) : NaN
 }
 
-function messageTimestampFromId(messageId) {
-  const match = String(messageId || '').match(/^assistant-(\d{10,16})-\d{1,5}$/)
-  return match ? Number(match[1]) : NaN
-}
-
 function assertSystemTimestamp(timestamp, fieldName) {
   if (
     !Number.isSafeInteger(timestamp) ||
@@ -125,13 +121,14 @@ function assertSystemTimestamp(timestamp, fieldName) {
   }
 }
 
-function assertOwnedMatchResultThread(db, userId, threadId) {
+function assertOwnedMatchResultTrace(db, userId, threadId, messageId) {
   const trace = (Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []).find((item) => (
     item &&
+    item.id === messageId &&
     item.threadId === threadId &&
     String(item.userId || '').trim() === userId
   ))
-  if (!trace) throw matchResultFeedbackError('threadId无当前用户的服务端追踪记录')
+  if (!trace) throw matchResultFeedbackError('messageId无当前用户的服务端结果记录')
   return trace
 }
 
@@ -189,7 +186,7 @@ function compactMatchResultTraceSummary(traceSummary) {
   }
 }
 
-function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
+function createMatchResultFeedback(db, userId, payload = {}) {
   const normalizedUserId = String(userId || '').trim()
   if (!normalizedUserId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
   const needId = requiredCorrelationId(payload.needId, 'needId')
@@ -197,8 +194,6 @@ function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
   const threadId = requiredCorrelationId(payload.threadId, 'threadId', MATCH_RESULT_THREAD_ID_PATTERN)
   const messageId = requiredCorrelationId(payload.messageId, 'messageId', MATCH_RESULT_MESSAGE_ID_PATTERN)
   assertSystemTimestamp(threadTimestampFromId(threadId), 'threadId')
-  assertSystemTimestamp(messageTimestampFromId(messageId), 'messageId')
-  assertOwnedMatchResultThread(db, normalizedUserId, threadId)
   const feedbackType = String(payload.feedbackType || '').trim()
   const reasons = ownMapValue(MATCH_RESULT_FEEDBACK_REASONS, feedbackType)
   if (!reasons) throw matchResultFeedbackError('反馈类型只能是有用或没用')
@@ -210,14 +205,18 @@ function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
     item &&
     item.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION &&
     item.userId === normalizedUserId &&
-    item.needId === needId &&
-    item.threadId === threadId &&
     item.messageId === messageId
   ))
   if (existing) {
-    if (existing.feedbackType === feedbackType && existing.reasonCode === reasonCode) return existing
+    if (
+      existing.needId === needId &&
+      existing.feedbackType === feedbackType &&
+      existing.reasonCode === reasonCode
+    ) return existing
     throw matchResultFeedbackError('该找房结果已提交过不同反馈', 409)
   }
+
+  const resultTrace = assertOwnedMatchResultTrace(db, normalizedUserId, threadId, messageId)
 
   const feedback = {
     id: createFeedbackId(),
@@ -226,13 +225,12 @@ function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
     status: 'open',
     userId: normalizedUserId,
     needId,
-    threadId,
     messageId,
     feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
     feedbackType,
     reasonCode,
     reason,
-    traceSummary: compactMatchResultTraceSummary(context.traceSummary)
+    traceSummary: compactMatchResultTraceSummary(resultTrace.traceSummary)
   }
 
   db.assistantFeedbacks.unshift(feedback)
@@ -351,10 +349,12 @@ function createAssistantTraceLog(db, userId, payload = {}, response = {}, contex
 
 function assistantTraceRows(db, options = {}) {
   const threadId = String(options.threadId || '').trim()
+  const userId = String(options.userId || '').trim()
   const intent = String(options.intent || '').trim()
   const limit = Math.min(Math.max(Number(options.limit) || 100, 1), MAX_TRACE_ROWS)
   return (db.assistantTraceLogs || [])
     .filter((item) => !threadId || item.threadId === threadId)
+    .filter((item) => !userId || String(item.userId || '').trim() === userId)
     .filter((item) => !intent || item.intent === intent)
     .slice(0, limit)
 }

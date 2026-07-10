@@ -46,6 +46,16 @@
 
 ## 最新消息
 
+### 2026-07-10 18:24 | CODEX_DEV（主开发） | P1.2 服务端结果关联二次返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立复审 `c6123ee` 后仍给出 `CODEX_FIX_REQUIRED`：11 位号码补两位可伪装成合法历史毫秒时间，并在预置当前用户 trace 后让客户端线程/消息 ID 原样进入严格记录；同一线程同时存在本人和他人 trace 时，归属检查命中本人，但摘要选择仍可能取到他人记录。其余原型键、200 条后幂等、显式版本、严格分诊与评估边界已复验闭合；全量 88/88 和最终审计虽绿，不能抵消这两项来源真实性缺口。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-service.js`、`server/src/assistant-feedback.js`、`server/src/index.js`（独占资源）、`pages/match-chat/match-chat.js`、`server/scripts/match-result-feedback-v1-test.js`、`server/scripts/assistant-trace-log-test.js`、`server/scripts/admin-feedback-conversation-v1-test.js`、`server/README.md`。先补红测，再把持久化 trace 的服务端 ID 随助手结果返回；前端仍发送 6 字段严格载荷，但 `messageId` 改用服务端结果 ID。服务端按 `messageId + 当前用户 + 请求 threadId` 精确查找同一 trace，直接使用该本人摘要；严格记录不再保存原始 `threadId`，只保留服务端结果 ID。后台完整对话由结果 ID 反查真实 trace/thread，并补真实 HTTP 回归锁定同线程用户隔离与 trace 淘汰降级，不破坏既有查看链路。
+
+明确不改 `domain.js`、数据库文件、WXML/WXSS、其它页面、`smoke-test.js`、data/certs/env/lark/private config，不处理 Yooni 文档或其它分支。`server/src/index.js` 自本条起由本工作树独占，完成提交并交审前不允许其它任务并行修改。
+
+---
+
 ### 2026-07-10 18:06 | CODEX_DEV（主开发） | P1.2 审计阻断项返修完成交审 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。返修 commit：`c6123ee`（`fix(feedback): 收紧找房结果反馈边界`），基于 P1.2 功能 commit `689d9c5`，分支 `wt/找房结果轻量反馈`。未 push、未部署、未上传体验版；Yooni 文档与看房方式分支未参与本线。

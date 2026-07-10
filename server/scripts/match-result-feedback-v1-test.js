@@ -7,6 +7,7 @@ const assistantService = require('../src/assistant-service')
 
 const MATCH_RESULT_VERSION = 'match-result-v1'
 const THREAD_ID = 'AST-mre65mo0-abc123'
+const RESULT_MESSAGE_ID = 'ATLMRE65MO0ABCDE'
 const USER_ID = 'U-BROKER-1'
 const NEED_ID = 'N-OWN-1'
 
@@ -19,7 +20,7 @@ function makeDb() {
     ],
     assistantFeedbacks: [],
     assistantTraceLogs: [{
-      id: 'ATL-MATCH-RESULT-1',
+      id: RESULT_MESSAGE_ID,
       userId: USER_ID,
       threadId: THREAD_ID,
       createdAt: '2026-07-10T00:00:01.000Z',
@@ -59,7 +60,7 @@ function strictPayload(overrides = {}) {
     userId: 'U-BROKER-2',
     needId: NEED_ID,
     threadId: THREAD_ID,
-    messageId: 'assistant-1783670000000-1',
+    messageId: RESULT_MESSAGE_ID,
     feedbackType: 'bad_recommendation',
     reasonCode: 'too_few',
     reason: '测试客户甲 13900000001 觉得结果少',
@@ -104,7 +105,7 @@ function testStrictRecordAndPiiBoundary() {
   assert.strictEqual(feedback.userId, USER_ID, '反馈身份只能来自服务端上下文，忽略请求体伪造 userId')
   assert.strictEqual(db.assistantFeedbacks.length, 1, '严格反馈应落库一次')
 
-  ;['sourceText', 'reply', 'need', 'listings', 'selectedListingIds', 'expected', 'placeResolution', 'operatorNote', 'resolution'].forEach((key) => {
+  ;['threadId', 'sourceText', 'reply', 'need', 'listings', 'selectedListingIds', 'expected', 'placeResolution', 'operatorNote', 'resolution'].forEach((key) => {
     assert.strictEqual(Object.prototype.hasOwnProperty.call(feedback, key), false, `严格反馈不得保存自由上下文字段：${key}`)
   })
   assert(feedback.traceSummary, '应保留最小服务端追踪元数据')
@@ -134,13 +135,12 @@ function testReasonWhitelistCoverage() {
 
   Object.entries(negativeReasons).forEach(([reasonCode, label], index) => {
     resetThread()
-    const feedback = createStrict(makeDb(), { messageId: `assistant-${1783670000100 + index}-1`, reasonCode })
+    const feedback = createStrict(makeDb(), { reasonCode })
     assert.strictEqual(feedback.reason, label, `没用原因映射错误：${reasonCode}`)
   })
   Object.entries(helpfulReasons).forEach(([reasonCode, label], index) => {
     resetThread()
     const feedback = createStrict(makeDb(), {
-      messageId: `assistant-${1783670000200 + index}-1`,
       feedbackType: 'helpful',
       reasonCode
     })
@@ -154,7 +154,6 @@ function testReasonWhitelistRejectsPrototypeKeys() {
     const db = makeDb()
     expectStatus(
       () => createStrict(db, {
-        messageId: `assistant-${1783670000300 + index}-1`,
         reasonCode
       }),
       400,
@@ -172,8 +171,7 @@ function testReasonWhitelistRejectsPrototypeKeys() {
     const db = makeDb()
     expectStatus(
       () => createStrict(db, {
-        ...payload,
-        messageId: `assistant-${1783670000400 + index}-1`
+        ...payload
       }),
       400,
       `反馈类型白名单不得接受原型链组合：${payload.feedbackType}/${payload.reasonCode}`
@@ -281,6 +279,95 @@ function testIdempotencySurvivesLegacyRetentionLimit() {
   )
 }
 
+function testIdempotencySurvivesTraceRetentionLimit() {
+  resetThread()
+  const db = makeDb()
+  const first = createStrict(db, { reasonCode: 'price' })
+  db.assistantTraceLogs = []
+
+  const repeated = createStrict(db, { reasonCode: 'price' })
+  assert.strictEqual(repeated.id, first.id, '结果 trace 滚动清理后，相同反馈重试仍须返回原记录')
+  expectStatus(
+    () => createStrict(db, { reasonCode: 'location' }),
+    409,
+    '结果 trace 滚动清理后，冲突反馈仍须返回 409'
+  )
+}
+
+function testServerResultIdSelectsOwnedTrace() {
+  resetThread()
+  const db = makeDb()
+  db.assistantTraceLogs.unshift({
+    id: 'ATLMRE65MO0OTHER',
+    userId: 'U-BROKER-2',
+    threadId: THREAD_ID,
+    createdAt: '2026-07-10T00:00:02.000Z',
+    traceSummary: {
+      version: 'assistant-trace-v1',
+      eventCount: 1,
+      startedAt: '2026-07-10T00:00:01.000Z',
+      endedAt: '2026-07-10T00:00:02.000Z',
+      nodes: ['other_user_trace_node']
+    }
+  })
+
+  const feedback = createStrict(db)
+  assert.deepStrictEqual(feedback.traceSummary.nodes, ['listing_search_tool', 'ranking_tool', 'output_guard'], '严格反馈必须使用结果 ID 精确命中的本人 trace 摘要')
+  assert.strictEqual(feedback.traceSummary.nodes.includes('other_user_trace_node'), false, '不得按同 threadId 误取其他用户摘要')
+
+  expectStatus(
+    () => createStrict(makeDb(), { messageId: 'ATLMRE65MO0NOLOG' }),
+    400,
+    '客户端伪造的服务端结果 ID 没有精确 trace 时必须拒绝'
+  )
+}
+
+function testServerIssuesResultIdForMatchResponse() {
+  resetThread()
+  const db = makeDb()
+  db.assistantTraceLogs = []
+  const response = assistantService.recordFeedbackResult(db, {
+    threadId: THREAD_ID,
+    needId: NEED_ID,
+    text: '合成找房条件'
+  }, {
+    reply: '合成找房结果',
+    listings: []
+  }, { userId: USER_ID })
+
+  assert(response.feedbackMessageId, '服务端匹配结果必须签发反馈结果 ID')
+  assert.strictEqual(db.assistantTraceLogs.length, 1, '服务端匹配结果必须持久化一条结果 trace')
+  assert.strictEqual(response.feedbackMessageId, db.assistantTraceLogs[0].id, '反馈结果 ID 必须等于持久 trace ID')
+  assert.strictEqual(response.threadId, db.assistantTraceLogs[0].threadId, '响应 threadId 必须与持久 trace 一致')
+}
+
+function testPaddedPhoneThreadIsNotPersisted() {
+  resetThread()
+  const paddedThreadId = 'LOCAL-AST-1390000000100-1'
+  const paddedResultId = 'ATLMRE65MO0PAD01'
+  const db = makeDb()
+  db.assistantTraceLogs.unshift({
+    id: paddedResultId,
+    userId: USER_ID,
+    threadId: paddedThreadId,
+    createdAt: '2026-07-10T00:00:01.000Z',
+    traceSummary: {
+      version: 'assistant-trace-v1',
+      eventCount: 1,
+      startedAt: '2026-07-10T00:00:00.000Z',
+      endedAt: '2026-07-10T00:00:01.000Z',
+      nodes: ['listing_search_tool']
+    }
+  })
+
+  const feedback = createStrict(db, {
+    threadId: paddedThreadId,
+    messageId: paddedResultId
+  })
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(feedback, 'threadId'), false, '严格记录不得保存客户端线程 ID')
+  assert.strictEqual(JSON.stringify(feedback).includes('13900000001'), false, '13 位填充线程不得把手机号序列带入严格记录')
+}
+
 function testStrictReviewKeepsUserFeedbackImmutable() {
   resetThread()
   const db = makeDb()
@@ -354,6 +441,8 @@ function testFrontendContract() {
     assert.strictEqual(submitBlock.includes(field), false, `前端严格反馈不得上传自由上下文：${field}`)
   })
   assert(/Boolean\([^\n]*needId/.test(js) && /!needTemporary/.test(js), '只有真实 needId 的结果才应开放反馈')
+  assert(/Boolean\([^\n]*feedbackMessageId/.test(js), '只有服务端签发结果 ID 的消息才应开放反馈')
+  assert(submitBlock.includes('messageId: message.feedbackMessageId'), '前端严格反馈必须提交服务端签发的结果 ID')
   ;['有用', '没用', '价格不合适', '位置不合适', '户型不合适', '房态不准', '结果太少', '结果太多'].forEach((label) => {
     assert(js.includes(label) || wxml.includes(label), `反馈界面缺少固定选项：${label}`)
   })
@@ -379,16 +468,46 @@ function testAdminEvalContract() {
   assert(adminHtml.includes('assistantFeedbackReviewButton.dataset.version'), '后台分诊点击事件必须把反馈版本传给分诊函数')
 }
 
+function testServerConversationUsesResultId() {
+  const root = path.join(__dirname, '..', '..')
+  const serverIndex = fs.readFileSync(path.join(root, 'server', 'src', 'index.js'), 'utf8')
+  const start = serverIndex.indexOf('function buildFeedbackConversation')
+  const end = serverIndex.indexOf('// ---------- 数据备份', start)
+  const conversationBlock = serverIndex.slice(start, end)
+
+  assert(start >= 0 && end > start, '找不到后台反馈完整对话重建函数')
+  assert(conversationBlock.includes('feedback.messageId'), '严格反馈完整对话必须由服务端结果 ID 反查 trace')
+  assert(conversationBlock.includes('assistantTraceLogs'), '严格反馈完整对话必须从持久 trace 解析真实 threadId')
+}
+
+function testMatchRouteIssuesResultId() {
+  const root = path.join(__dirname, '..', '..')
+  const serverIndex = fs.readFileSync(path.join(root, 'server', 'src', 'index.js'), 'utf8')
+  const start = serverIndex.indexOf("if (method === 'POST' && pathname === '/mini/llm/match')")
+  const end = serverIndex.indexOf("if (method === 'POST' && pathname === '/mini/assistant/chat')", start)
+  const routeBlock = serverIndex.slice(start, end)
+
+  assert(start >= 0 && end > start, '找不到 /mini/llm/match 路由')
+  assert(routeBlock.includes('assistantService.recordFeedbackResult'), '持久需求的确认匹配结果必须签发服务端结果 ID')
+  assert(routeBlock.includes('!guest') && routeBlock.includes('resultBody.needId') && routeBlock.includes('!resultBody.needTemporary'), '游客或临时需求不得签发可写严格反馈的结果 ID')
+}
+
 testStrictRecordAndPiiBoundary()
 testReasonWhitelistCoverage()
 testReasonWhitelistRejectsPrototypeKeys()
 testValidationAndOwnership()
 testIdempotency()
 testIdempotencySurvivesLegacyRetentionLimit()
+testIdempotencySurvivesTraceRetentionLimit()
+testServerResultIdSelectsOwnedTrace()
+testServerIssuesResultIdForMatchResponse()
+testPaddedPhoneThreadIsNotPersisted()
 testStrictReviewKeepsUserFeedbackImmutable()
 testStrictFeedbackEvalRequiresExplicitText()
 testLegacyFeedbackCompatibility()
 testFrontendContract()
 testAdminEvalContract()
+testServerConversationUsesResultId()
+testMatchRouteIssuesResultId()
 
 console.log('match-result-feedback-v1-test passed')

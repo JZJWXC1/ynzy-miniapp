@@ -615,12 +615,14 @@ Page({
       : (this.lastAssistantPayload || this.lastRequestPayload || {})
     const needId = matchResult.needId || requestPayload.needId || ''
     const needTemporary = Boolean(requestPayload.needTemporary || matchResult.needTemporary)
+    const feedbackMessageId = matchResult.feedbackMessageId || ''
     const assistantMessageId = createMessageId('assistant')
     const assistantMessage = {
       id: assistantMessageId,
       role: 'assistant',
       text: buildAssistantText(matchResult, listings),
       threadId: matchResult.threadId || this.currentThreadId || '',
+      feedbackMessageId,
       sourceText: requestPayload.text || '',
       degradedNotice: matchResult.degraded ? (matchResult.degradedNotice || '智能解读稍后重试') : '',
       needTags: buildNeedTags(matchResult.need),
@@ -636,7 +638,7 @@ Page({
       retryAction: matchResult.networkFailed ? 'assistant-chat' : 'match',
       retryText: '重试匹配',
       empty: !listings.length && !(matchResult.nextQuestion || matchResult.followUpQuestion),
-      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId) && Boolean(needId) && !needTemporary,
+      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId) && Boolean(feedbackMessageId) && Boolean(needId) && !needTemporary,
       feedbackLoading: false,
       feedbackSent: false,
       feedbackType: '',
@@ -715,7 +717,7 @@ Page({
       feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
       needId: message.needId,
       threadId: message.threadId || this.currentThreadId || '',
-      messageId,
+      messageId: message.feedbackMessageId,
       feedbackType,
       reasonCode
     }).then(() => {
@@ -839,7 +841,8 @@ Page({
       const nextPayload = Object.assign({}, payload, {
         needId,
         needTemporary,
-        need
+        need,
+        threadId: this.currentThreadId || message.threadId || ''
       })
       this.lastNeedContext = {
         needId,

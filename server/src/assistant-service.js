@@ -32,13 +32,14 @@ async function chat(db, payload = {}, context = {}) {
   // 慢速 LLM 调用已在只读快照上跑完，留痕交由调用方在同步写事务里落到最新 db，
   // 避免 await 期间的并发写入被旧快照整库回写覆盖（见 db.js 写窗口竞态）。
   // 未提供 persistTrace 时（测试等直调场景）保持原语义：直接写进传入的 db。
-  if (typeof context.persistTrace === 'function') {
-    context.persistTrace(writeTraceLog)
-  } else {
-    writeTraceLog(db)
-  }
+  const traceLog = typeof context.persistTrace === 'function'
+    ? context.persistTrace(writeTraceLog)
+    : writeTraceLog(db)
 
-  return result.response
+  return {
+    ...result.response,
+    feedbackMessageId: traceLog && traceLog.id ? traceLog.id : ''
+  }
 }
 
 function fallbackChat(db, payload = {}, context = {}, options = {}) {
@@ -74,13 +75,30 @@ function fallbackChat(db, payload = {}, context = {}, options = {}) {
     threadId,
     traceSummary: null
   })
-  if (typeof context.persistTrace === 'function') {
-    context.persistTrace(writeTraceLog)
-  } else {
-    writeTraceLog(db)
-  }
+  const traceLog = typeof context.persistTrace === 'function'
+    ? context.persistTrace(writeTraceLog)
+    : writeTraceLog(db)
 
-  return response
+  return {
+    ...response,
+    feedbackMessageId: traceLog && traceLog.id ? traceLog.id : ''
+  }
+}
+
+function recordFeedbackResult(db, payload = {}, response = {}, context = {}) {
+  const threadId = String(response.threadId || payload.threadId || '').trim() || threadStore.resolveThreadId('')
+  const traceLog = assistantFeedback.createAssistantTraceLog(db, context.userId, payload, {
+    ...response,
+    threadId
+  }, {
+    threadId,
+    traceSummary: context.traceSummary || null
+  })
+  return {
+    ...response,
+    threadId: traceLog.threadId || threadId,
+    feedbackMessageId: traceLog.id
+  }
 }
 
 function feedback(db, payload = {}, context = {}) {
@@ -125,6 +143,7 @@ function traceRows(db, options = {}) {
 module.exports = {
   chat,
   fallbackChat,
+  recordFeedbackResult,
   feedback,
   feedbackRows,
   reviewFeedback,
