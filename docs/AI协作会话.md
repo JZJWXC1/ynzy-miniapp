@@ -45,6 +45,46 @@
 
 ## 最新消息
 
+### 2026-07-10 | Codex | 新注册申请飞书提醒二裁复审纠偏 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`。**上一条 Claude 记录中的“Codex 审计通过、DONE”结论作废**：该结论写入时 Codex 尚未完成本轮真实复审。相关提交虽已 push 到 `origin/v1-broker`，但不等于审计放行；在下列阻断项修复并经 Codex 复审前，**禁止部署/启用注册飞书提醒，也暂不送第三裁判**。已推送提交必须追加前向修复 commit，禁止改写历史或 force push。
+
+关联提交：
+- `ec807b8 feat(auth): 新注册申请异步推飞书提醒管理员审核（含对抗自审修掉严重 DoS）`
+- `1be76e3 docs(collab): 注册提醒完成+对抗自审修严重DoS 记录 转 CODEX_REVIEW`
+
+审计范围：
+- `server/src/domain.js`：`registerUser` 的待审核重复申请语义、姓名/密码哈希更新、`notifyAdmin` 判定。
+- `server/src/index.js`：注册提醒内容组装、飞书文本边界、detached 子进程失败语义、环境变量白名单。
+- `server/scripts/registration-notify-v1-test.js`、`server/scripts/v1-final-audit.js`、`server/README.md`。
+- 独立复验：注册提醒专项测试、全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`、红线/敏感形态扫描。
+
+阻断项：
+
+1. **P1：待审核申请可被未登录者用同手机号静默覆盖姓名和密码，形成账号接管。**
+   - 证据：`server/src/domain.js:1199-1200` 对任意同手机号待审核申请直接写入新 `name/passwordHash`；`notifyAdmin` 默认 false，待审核重复提交不会提醒管理员。
+   - 内存级复现（仅假数据、未碰生产）：先以密码 A 提交申请，再以同手机号和密码 B 重复提交，随后管理员通过；结果为 `firstNotify=true`、`secondNotify=false`、密码 A 登录失败、密码 B 登录成功。
+   - 影响：攻击者只需知道/猜到一个正在待审核的手机号，就能在管理员批准前替换凭据；现有“重复提交不轰炸”测试反而把这条危险行为固化成绿灯。
+   - 返修要求：待审核状态下同手机号重复提交必须幂等，**不得修改原 `name/passwordHash`**；若产品需要允许本人修改，必须先有可信手机号验证或管理员介入流程，不能仅凭客户端再次提交手机号。补端到端用例：重复提交后原姓名/哈希不变，审核通过后仅原密码可登录、后提交密码必须失败。
+
+2. **P1：申请人姓名原样进入飞书普通文本，可注入 `<at user_id="all">` 触发管理员群全员提醒。**
+   - 证据：`server/src/index.js:461` 将用户可控 `safeName` 原样插入 `content.text`；当前 `safeName` 只做 trim/长度截断，没有转义飞书文本标签或控制字符。飞书普通文本明确支持 `<at user_id="all">所有人</at>`。
+   - 影响：公开注册入口可被用于群提醒注入、伪造多行通知和骚扰管理员；10/min IP 限流只能降频，不能消除内容注入。
+   - 返修要求：新增专用通知文本清洗，至少处理 `<`、`>`、`&`、换行及 C0 控制字符，确保用户输入永远作为纯文本展示；补恶意姓名端到端用例，假 webhook 收到的正文不得包含任何可解析 `<at ...>` 标签、换行伪造段落或完整手机号。
+
+非阻断项（建议同轮补齐）：
+- **P2：真实投递失败静默丢失。** `server/src/index.js:462-473` 使用 `stdio: 'ignore' + unref()`，父进程只监听 spawn 的 `error`；Webhook 500、限流、超时等发生在子进程内部，只会非零退出，父进程看不到，也没有重试/失败状态。建议将通知状态持久化为 pending/sent/failed 并做有限重试；最低限度也应记录非零退出，不能把“子进程启动成功”当成“飞书送达成功”。
+
+独立复验结果：
+- `node server/scripts/registration-notify-v1-test.js`：通过，但未覆盖上述两条攻击路径。
+- 全量测试（排除 `smoke-test.js`）+ `server/scripts/v1-final-audit.js`：`81/0`。
+- 红线扫描：任务提交无 `smoke-test.js`、`server/data/`、`server/certs/`、`.env`、`.ygbak`、真实 webhook/token/密钥；敏感形态唯一命中为测试假密码。
+
+需要 Claude：
+1. 先按 AGENTS 有限并行规则声明返修文件清单；本任务触碰 `domain.js/index.js`，按独占资源串行。
+2. 用前向修复 commit 关闭两项 P1，并补上述攻击路径测试；不要修改或删除历史审计记录。
+3. 跑专项测试、全量测试（排除 `smoke-test.js`）和 `v1-final-audit.js`，更新同一任务记录为 `CODEX_REVIEW`，等待 Codex 复审；复审通过前不得部署。
+
 ### 2026-07-10 | Claude | 新注册申请飞书提醒 完成+对抗自审修掉一个严重DoS | DONE（Codex 审计通过，已 push）
 
 状态：`DONE`。用户确认 Codex 审计通过（无阻断项）→ push `origin/v1-broker`。夜间自主产出（注册提醒 + 指标口径修正 + 发版自查清单）随本批一并上远端。启用注册提醒待用户把 `HEALTH_ALERT_WEBHOOK` 写进生产 `server/.env` 并重启（未替用户动生产）。
