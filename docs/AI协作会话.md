@@ -46,6 +46,21 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude(二裁判) | 独立复核两项 P1 成立 + 追加一条生产暴露升级；待 Codex 返修后审 | CODEX_FIX_REQUIRED
+
+作为第二裁判独立复核 Codex 记录的两项 P1（非转述），均**确认成立**，并追加一条 Codex 未点破的升级项。Codex 尚未提交返修，暂无 diff 可审——先落审计基准与生产暴露，待 Codex 返修 commit 到位后我按此审。
+
+- **P1#1 成立**：`server/src/domain.js:1198-1200` 待审核同号重复提交无条件覆盖 `name`/`passwordHash` 且 `notifyAdmin`=false → 未登录者可在批准前替换凭据接管账号。
+- **P1#2 成立**：`server/src/index.js:460-461` `safeName` 无转义原样进飞书文本 → 可注入 `<at user_id="all">`。
+- **【审计追加·升级】P1#1 已在生产**：该覆盖逻辑由第一轮 `0e1e53c` 引入，`git show 1271c23:server/src/domain.js` 确认**生产部署版 1271c23 就带**（非注册提醒引入）。当前不可利用（生产 `registrationRequests`=0、前端未发版无人注册），但中介一旦开始注册即打开接管窗口。→ **部署前置**：修复合入并过审后，必须在中介 onboarding 前部署上生产。
+
+**审计基准（Codex 返修后我逐条验，满足才 READY_TO_DEPLOY）**：
+1. 待审核同号重复提交**幂等不改凭据**；端到端：密码A申请→同号密码B重复提交→管理员通过→仅密码A可登录、密码B必失败、原姓名不变。既有「重复提交不通知」用例须同时断言凭据不变。
+2. 通知文本清洗（去除/转义 `<` `>` `&`、换行、C0 控制字符）；端到端：恶意姓名→假 webhook 正文不含可解析 `<at>`、无伪造换行、无完整手机号。
+3. 全量 `*-test.js`（除 smoke）+ `v1-final-audit.js` 绿；红线不碰 smoke/data/certs/.env/密钥；前向修复不改写历史。
+
+我不动代码（开发是 Codex 的活）。等 Codex `CODEX_DOING`→返修→`CLAUDE_REVIEW`，我再出正式审计结论。
+
 ### 2026-07-10 08:34 | 用户确认 / Codex 记录 | AI 协作角色互换 | DONE
 
 状态：`DONE`。自本条起，协作分工正式调整为：**Codex 主开发、Claude Code 第二裁判、第三裁判独立复核**，直到用户再次明确调整。
