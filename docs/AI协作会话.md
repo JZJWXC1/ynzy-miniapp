@@ -46,6 +46,48 @@
 
 ## 最新消息
 
+### 2026-07-10 13:22 | Codex（主开发 / CODEX_DEV） | 注册通知重试耗尽死信告警完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。本轮只完成第一代码模块：注册通知三次重试耗尽后的可追踪死信状态与 `HEALTH_ALERT` 升级告警；未处理反馈、漏斗、隐私页面、Nginx 或数据库指标。提交信息：`feat: 注册通知耗尽进入死信告警`（本条记录随该模块单提交落地）。
+
+实际修改文件：
+- `server/src/domain.js`：三次耗尽时将申请通知状态固化为 `dead_letter`，记录 `notifyDeadLetterAt` / `notifyDeadLetterReason`；新增死信告警一次性领取与发送结果回写字段，重新申请时清理上一轮死信与告警状态。
+- `server/src/index.js`：普通通知第三次失败后复用 `scripts/send-feishu-alert.js` + `HEALTH_ALERT_WEBHOOK` 发送 `REGISTRATION_NOTIFY_DEAD_LETTER`；告警只带分组后的申请追踪 id、尝试次数、死信时间和失败摘要，不带姓名、手机号、密码或完整申请内容；重启恢复会补发尚未尝试过的死信告警，但已尝试过的不重复。
+- `server/scripts/registration-notify-v1-test.js`：先补红灯用例，锁定三次失败后 `dead_letter`、一次性死信告警、脱敏、达到上限不再继续发送、重启不重复告警。
+- `server/README.md`：同步注册提醒状态机、死信字段、告警脱敏与一次性口径。
+- `docs/AI协作会话.md`：记录开工与交审。
+
+测试与验证：
+- 基线：补齐本地依赖后，`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+- 红灯确认：新增断言在旧实现上失败，失败点为“连续失败应尝试满 3 次并追加 1 次死信告警”。
+- 局部验证：`node --check src/domain.js`、`node --check src/index.js`、`node --check scripts/registration-notify-v1-test.js`、`registration-notify-v1-test.js`、`send-feishu-alert-v1-test.js`、`admin-registration-review-v1-test.js` 均通过。
+- rebase：已 rebase 到本地最新 `v1-broker`（`921e507`），无冲突。
+- rebase 后全量：`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+
+红线与自审：
+- 未修改 `server/scripts/smoke-test.js`；未触碰 `server/data/`、`server/certs/`、`.env`、`lark-*.json`、`project.private.config.json` 或任何凭据文件。
+- `git diff --check` 通过；diff 文件范围符合开工声明；未新增裸 `innerHTML`；未新增客户端可控权限/分佣字段。
+- 敏感形态扫描未发现真实密钥、token、证书、手机号明文或凭据；命中的 `password` 仅为 README/API 测试字段说明。
+
+风险与复审重点：
+- 死信告警复用同一个 `HEALTH_ALERT_WEBHOOK`。若 webhook 本身不可用，申请仍会留在 `dead_letter`，告警尝试状态会记为 `failed`，并按“同一申请最多一次”不继续刷屏；请重点复审该取舍是否符合“最多一次”的运营口径。
+- 请 Claude Code 只读复审：`dead_letter` 状态是否可追踪、告警是否真正脱敏、同申请是否只告警一次、旧 attemptId 防接管/幂等/重启恢复是否未回归、README 口径是否准确。
+
+### 2026-07-10 13:11 | Codex（主开发 / CODEX_DEV） | 注册通知重试耗尽死信告警开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。本轮只执行第一代码模块：注册通知三次重试耗尽后的可追踪死信状态与 `HEALTH_ALERT` 升级告警；不提前处理反馈、漏斗、隐私页面、Nginx 或数据库指标。P0 凭据轮换与微信后台合规核对由用户并行完成，不阻塞本地开发；未完成前不得发布或开放真实注册。
+
+拟修改文件：
+- `docs/AI协作会话.md`：记录开工、完成交审、测试与自审结果。
+- `server/src/index.js`：注册通知队列、三次重试、重启恢复与健康告警接入点，按独占资源处理。
+- `server/src/domain.js`：仅在现有注册申请状态持久化需要服务端领域方法配合时修改，按独占资源处理。
+- `server/scripts/*registration*-test.js` 或新增同范围测试脚本：先补稳定复现失败的验收断言，再修代码。
+- `server/README.md`：若新增死信状态或告警口径影响业务规则/数据结构/运维说明，则同步更新。
+
+红线：不修改 `server/scripts/smoke-test.js`；不提交 `server/data/`、`server/certs/`、任何 `.env`、`lark-*.json`、`project.private.config.json` 或凭据；告警不得包含手机号、姓名、凭据或完整申请内容；同一申请耗尽告警最多一次；不得破坏注册幂等、重启恢复、防接管和正常通知路径。
+
+需要 Claude Code 做什么：待 Codex 完成 commit、全量测试、自审与本记录更新后，只读复审本模块边界、死信幂等、告警脱敏、重启恢复和红线扫描。
+
 ### 2026-07-10 | 用户 + Codex + Claude/Fable 复核意见 | 上线后闭环优化统一总目标 | PROGRAM_ALIGNED
 
 状态：`PROGRAM_ALIGNED`。三方事实口径已统一：生产基线为原始房源 83、用户 9、足迹 59，报备/成交/分佣均为 0；系统已证明“能展示和浏览”，尚未证明“能推动报备与成交”。固定协作方式不变：Codex 独立工作树开发、测试、逐模块提交并自审，Claude Code 只读复审；未取得 `READY_TO_DEPLOY` 不 push、不部署、不上传体验版。Fable/第三裁判继续做独立经营与风险复核。

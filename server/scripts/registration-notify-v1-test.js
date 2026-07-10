@@ -190,14 +190,18 @@ async function run() {
   const hits = []
   let failResponsesRemaining = 0
   let failAllResponses = false
+  const isDeadLetterAlert = (hit) => notificationText(hit).includes('REGISTRATION_NOTIFY_DEAD_LETTER')
+  const alertTraceId = (id) => String(id || '').replace(/(\d{4})(?=\d)/g, '$1-')
   const stub = http.createServer((req, res) => {
     let raw = ''
     req.on('data', (chunk) => { raw += chunk })
     req.on('end', () => {
       let payload
       try { payload = JSON.parse(raw) } catch (error) { payload = { raw } }
-      const shouldFail = failAllResponses || failResponsesRemaining > 0
-      if (failResponsesRemaining > 0) failResponsesRemaining -= 1
+      const text = notificationText(payload)
+      const isRegistrationNotice = text.includes('新的注册申请')
+      const shouldFail = isRegistrationNotice && (failAllResponses || failResponsesRemaining > 0)
+      if (isRegistrationNotice && failResponsesRemaining > 0) failResponsesRemaining -= 1
       payload.__responseStatus = shouldFail ? 500 : 200
       hits.push(payload)
       res.writeHead(shouldFail ? 500 : 200, { 'Content-Type': 'application/json' })
@@ -305,7 +309,7 @@ async function run() {
     assert.ok(retried, '重试成功后应落库 sent')
     assert.strictEqual(retried.notifyAttempts, 2, '首败后成功应记录 2 次尝试')
 
-    // P2：连续失败最多 3 次，最终状态可见，不能无限重试。
+    // P2：连续失败最多 3 次，最终进入死信，并且只发一次脱敏升级告警。
     failAllResponses = true
     const exhaustStart = hits.length
     const exhaustApply = await request('POST', '/mini/auth/register', {
@@ -314,12 +318,26 @@ async function run() {
       password: 'exhaust-pass-123'
     })
     assert.strictEqual(exhaustApply.statusCode, 403, '连续通知失败也不得影响注册响应')
-    assert.ok(await waitForHits(hits, exhaustStart + 3), '连续失败应尝试满 3 次')
-    const exhausted = await waitForRegistration(superAuth, EXHAUST_PHONE, (item) => item.notifyStatus === 'failed' && item.notifyAttempts === 3)
-    assert.ok(exhausted, '达到上限后应落库 failed/attempts=3')
+    assert.ok(await waitForHits(hits, exhaustStart + 4), '连续失败应尝试满 3 次并追加 1 次死信告警')
+    const exhausted = await waitForRegistration(
+      superAuth,
+      EXHAUST_PHONE,
+      (item) => item.notifyStatus === 'dead_letter' && item.notifyAttempts === 3 && item.notifyDeadLetterAlertStatus === 'sent'
+    )
+    assert.ok(exhausted, '达到上限后应落库 dead_letter/attempts=3，并记录死信告警已发送')
+    assert.ok(exhausted.notifyDeadLetterAt, '死信状态应记录进入死信时间')
+    assert.ok(exhausted.notifyDeadLetterAlertAttemptedAt, '死信状态应记录升级告警尝试时间')
     assert.ok(String(exhausted.notifyLastError || '').length > 0, '最终失败应留下不含密钥的错误摘要')
+    const deadLetterAlerts = hits.slice(exhaustStart).filter(isDeadLetterAlert)
+    assert.strictEqual(deadLetterAlerts.length, 1, '同一申请重试耗尽只允许发 1 次死信升级告警')
+    const deadLetterText = notificationText(deadLetterAlerts[0])
+    assert.ok(deadLetterText.includes(alertTraceId(exhausted.id)), '死信告警应带可追踪申请 id')
+    assert.ok(!deadLetterText.includes(EXHAUST_PHONE), '死信告警不得含完整手机号')
+    assert.ok(!deadLetterText.includes('139****0067'), '死信告警不得含打码手机号，避免和个人身份绑定')
+    assert.ok(!deadLetterText.includes('连续失败申请人'), '死信告警不得含申请人姓名')
+    assert.ok(!deadLetterText.includes('exhaust-pass-123'), '死信告警不得含注册密码或凭据')
     await sleep(250)
-    assert.strictEqual(hits.length, exhaustStart + 3, '达到 3 次上限后不得继续发送')
+    assert.strictEqual(hits.length, exhaustStart + 4, '达到 3 次上限并告警一次后不得继续发送')
     failAllResponses = false
 
     // 全程 PII 复查：所有通知都不含任何完整 11 位手机号。
@@ -368,6 +386,7 @@ async function run() {
     const recovered = await waitForRegistration(superAuth, RECOVERY_PHONE, (item) => item.notifyStatus === 'sent')
     assert.ok(recovered, '重启恢复任务发送成功后应持久化 sent')
     assert.strictEqual(recovered.notifyAttempts, 1, '恢复任务首次发送成功应记录 1 次')
+    assert.strictEqual(hits.filter(isDeadLetterAlert).length, 1, '重启恢复不得重复发送已告警的注册通知死信')
   } finally {
     await stopServer(server)
   }

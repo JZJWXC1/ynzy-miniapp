@@ -1235,6 +1235,12 @@ function registerUser(db, payload = {}) {
     delete request.notifySentAt
     delete request.notifyLastError
     delete request.notifyAttemptId
+    delete request.notifyDeadLetterAt
+    delete request.notifyDeadLetterReason
+    delete request.notifyDeadLetterAlertAttemptedAt
+    delete request.notifyDeadLetterAlertStatus
+    delete request.notifyDeadLetterAlertSentAt
+    delete request.notifyDeadLetterAlertLastError
     delete request.rejectReason
     delete request.reviewedAt
     delete request.reviewedBy
@@ -1384,13 +1390,22 @@ function registrationNotifyAttempts(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
+function sanitizeRegistrationNotifySummary(value, fallback = '通知发送失败') {
+  const summary = String(value || fallback)
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+  return summary || fallback
+}
+
 // 通知发送前原子领取一次尝试。sending 也允许在进程重启后重新领取，提供至少一次送达语义；
 // index.js 的进程内任务集合负责避免同一进程重复领取，持久化 attempts 负责封住最多三次的上限。
 function beginRegistrationNotification(db, requestId, maxAttempts = 3) {
   const targetId = String(requestId || '').trim()
   const limit = Math.max(1, Number.parseInt(maxAttempts, 10) || 3)
   const request = (db.registrationRequests || []).find((item) => item.id === targetId)
-  if (!request || request.status !== '待审核' || request.notifyStatus === 'sent') return null
+  if (!request || request.status !== '待审核' || request.notifyStatus === 'sent' || request.notifyStatus === 'dead_letter') return null
 
   const attempts = registrationNotifyAttempts(request.notifyAttempts)
   if (attempts >= limit) return null
@@ -1411,6 +1426,7 @@ function beginRegistrationNotification(db, requestId, maxAttempts = 3) {
 
 function finishRegistrationNotification(db, requestId, result = {}) {
   const targetId = String(requestId || '').trim()
+  const limit = Math.max(1, Number.parseInt(result.maxAttempts, 10) || 3)
   const request = (db.registrationRequests || []).find((item) => item.id === targetId)
   if (!request) return null
 
@@ -1429,20 +1445,30 @@ function finishRegistrationNotification(db, requestId, result = {}) {
     request.notifyStatus = 'sent'
     request.notifySentAt = nowText()
     delete request.notifyLastError
+    delete request.notifyDeadLetterAt
+    delete request.notifyDeadLetterReason
   } else {
-    const summary = String(result.error || '通知发送失败')
-      .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 200)
-    request.notifyStatus = 'failed'
-    request.notifyLastError = summary || '通知发送失败'
+    const summary = sanitizeRegistrationNotifySummary(result.error, '通知发送失败')
+    request.notifyLastError = summary
+    if (registrationNotifyAttempts(request.notifyAttempts) >= limit) {
+      request.notifyStatus = 'dead_letter'
+      request.notifyDeadLetterAt = request.notifyDeadLetterAt || nowText()
+      request.notifyDeadLetterReason = summary
+    } else {
+      request.notifyStatus = 'failed'
+      delete request.notifyDeadLetterAt
+      delete request.notifyDeadLetterReason
+    }
   }
   return {
     id: request.id,
     stale: false,
     notifyStatus: request.notifyStatus,
-    notifyAttempts: registrationNotifyAttempts(request.notifyAttempts)
+    notifyAttempts: registrationNotifyAttempts(request.notifyAttempts),
+    notifyLastError: request.notifyLastError || '',
+    deadLetter: request.notifyStatus === 'dead_letter',
+    notifyDeadLetterAt: request.notifyDeadLetterAt || '',
+    notifyDeadLetterReason: request.notifyDeadLetterReason || ''
   }
 }
 
@@ -1450,8 +1476,51 @@ function pendingRegistrationNotificationIds(db, maxAttempts = 3) {
   const limit = Math.max(1, Number.parseInt(maxAttempts, 10) || 3)
   return (db.registrationRequests || [])
     .filter((item) => item && item.id && item.status === '待审核')
-    .filter((item) => item.notifyStatus !== 'sent')
+    .filter((item) => item.notifyStatus !== 'sent' && item.notifyStatus !== 'dead_letter')
     .filter((item) => registrationNotifyAttempts(item.notifyAttempts) < limit)
+    .map((item) => item.id)
+}
+
+function claimRegistrationNotifyDeadLetterAlert(db, requestId) {
+  const targetId = String(requestId || '').trim()
+  const request = (db.registrationRequests || []).find((item) => item.id === targetId)
+  if (!request || request.status !== '待审核' || request.notifyStatus !== 'dead_letter') return null
+  if (request.notifyDeadLetterAlertAttemptedAt) return null
+  request.notifyDeadLetterAlertAttemptedAt = nowText()
+  request.notifyDeadLetterAlertStatus = 'sending'
+  delete request.notifyDeadLetterAlertLastError
+  return {
+    id: request.id,
+    notifyAttempts: registrationNotifyAttempts(request.notifyAttempts),
+    notifyLastError: request.notifyLastError || '',
+    notifyDeadLetterAt: request.notifyDeadLetterAt || '',
+    notifyDeadLetterReason: request.notifyDeadLetterReason || ''
+  }
+}
+
+function finishRegistrationNotifyDeadLetterAlert(db, requestId, result = {}) {
+  const targetId = String(requestId || '').trim()
+  const request = (db.registrationRequests || []).find((item) => item.id === targetId)
+  if (!request || request.notifyStatus !== 'dead_letter' || !request.notifyDeadLetterAlertAttemptedAt) return null
+  if (result.ok) {
+    request.notifyDeadLetterAlertStatus = 'sent'
+    request.notifyDeadLetterAlertSentAt = nowText()
+    delete request.notifyDeadLetterAlertLastError
+  } else {
+    request.notifyDeadLetterAlertStatus = 'failed'
+    request.notifyDeadLetterAlertLastError = sanitizeRegistrationNotifySummary(result.error, '死信告警发送失败')
+  }
+  return {
+    id: request.id,
+    notifyDeadLetterAlertStatus: request.notifyDeadLetterAlertStatus
+  }
+}
+
+function pendingRegistrationNotifyDeadLetterAlertIds(db) {
+  return (db.registrationRequests || [])
+    .filter((item) => item && item.id && item.status === '待审核')
+    .filter((item) => item.notifyStatus === 'dead_letter')
+    .filter((item) => !item.notifyDeadLetterAlertAttemptedAt)
     .map((item) => item.id)
 }
 
@@ -4887,6 +4956,9 @@ module.exports = {
   beginRegistrationNotification,
   finishRegistrationNotification,
   pendingRegistrationNotificationIds,
+  claimRegistrationNotifyDeadLetterAlert,
+  finishRegistrationNotifyDeadLetterAlert,
+  pendingRegistrationNotifyDeadLetterAlertIds,
   migrateCompanyListings,
   listingMaintenanceRule,
   setListingMaintenanceRule,

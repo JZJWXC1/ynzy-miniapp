@@ -427,7 +427,7 @@ function miniAuthError(message = '登录已过期，请重新登录') {
 
 // ---------- 注册申请飞书提醒 ----------
 // 注册响应与通知发送彻底解耦：请求只把持久化申请 ID 排入内存任务，发送结果再回写同一申请。
-// 进程内 Set 防重复执行；DB 中 pending/sending/failed + attempts 支持进程重启续跑并封顶三次。
+// 进程内 Set 防重复执行；DB 中 pending/sending/failed/dead_letter + attempts 支持进程重启续跑并封顶三次。
 const NOTIFY_ENV_SYSTEM_KEYS = [
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME',
   'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR', 'TEMP', 'TMP'
@@ -484,6 +484,12 @@ function registrationNotifyErrorSummary(error, fallback) {
   return code ? `${fallback}(${code})` : fallback
 }
 
+function formatRegistrationAlertTraceId(id) {
+  return String(id || '')
+    .replace(/(\d{4})(?=\d)/g, '$1-')
+    .slice(0, 80)
+}
+
 function scheduleRegistrationNotification(requestId, delayMs = 0) {
   const targetId = String(requestId || '').trim()
   if (!targetId || registrationNotifyJobs.has(targetId)) return false
@@ -518,7 +524,8 @@ function runRegistrationNotification(requestId) {
       state = dbStore.updateDb((db) => domain.finishRegistrationNotification(db, requestId, {
         ok,
         error: errorSummary,
-        attemptId: job.notifyAttemptId
+        attemptId: job.notifyAttemptId,
+        maxAttempts: REGISTRATION_NOTIFY_MAX_ATTEMPTS
       }))
     } catch (error) {
       process.stderr.write(`[register-notify] 回写通知状态失败 id=${requestId}：${(error && error.message) || error}\n`)
@@ -527,6 +534,10 @@ function runRegistrationNotification(requestId) {
     registrationNotifyJobs.delete(requestId)
     if (state && state.stale) {
       scheduleRegistrationNotification(requestId)
+      return
+    }
+    if (!ok && state && state.deadLetter) {
+      sendRegistrationDeadLetterAlert(requestId)
       return
     }
     const attempts = Number((state && state.notifyAttempts) || job.notifyAttempts || 0)
@@ -565,6 +576,77 @@ function runRegistrationNotification(requestId) {
   }
 }
 
+function finishRegistrationDeadLetterAlert(requestId, ok, errorSummary = '') {
+  try {
+    dbStore.updateDb((db) => domain.finishRegistrationNotifyDeadLetterAlert(db, requestId, {
+      ok,
+      error: errorSummary
+    }))
+  } catch (error) {
+    process.stderr.write(`[register-notify] 回写死信告警状态失败 id=${requestId}：${(error && error.message) || error}\n`)
+  }
+}
+
+function sendRegistrationDeadLetterAlert(requestId) {
+  let alertJob
+  try {
+    alertJob = dbStore.updateDb((db) => domain.claimRegistrationNotifyDeadLetterAlert(db, requestId))
+  } catch (error) {
+    process.stderr.write(`[register-notify] 领取死信告警失败 id=${requestId}：${(error && error.message) || error}\n`)
+    return false
+  }
+  if (!alertJob) return false
+
+  const traceId = formatRegistrationAlertTraceId(alertJob.id)
+  const detail = {
+    registrationRequestTraceId: traceId,
+    notifyAttempts: alertJob.notifyAttempts,
+    deadLetterAt: alertJob.notifyDeadLetterAt || '',
+    reason: alertJob.notifyDeadLetterReason || alertJob.notifyLastError || '通知重试耗尽'
+  }
+  const env = {
+    ...buildNotifyEnv(process.env),
+    ALERT_KIND: 'REGISTRATION_NOTIFY_DEAD_LETTER',
+    ALERT_MESSAGE: `注册通知重试耗尽：申请 ${traceId} 已进入死信，请到后台注册审核人工处理`,
+    ALERT_DETAIL: JSON.stringify(detail)
+  }
+
+  let settled = false
+  const settle = (ok, errorSummary = '') => {
+    if (settled) return
+    settled = true
+    finishRegistrationDeadLetterAlert(requestId, ok, errorSummary)
+  }
+
+  try {
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'scripts', 'send-feishu-alert.js')], {
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    child.once('error', (error) => {
+      process.stderr.write(`[register-notify] 死信告警子进程启动失败 id=${requestId}：${(error && error.message) || error}\n`)
+      settle(false, registrationNotifyErrorSummary(error, '死信告警子进程启动失败'))
+    })
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        settle(true)
+        return
+      }
+      const detailText = signal ? `死信告警子进程被信号终止(${String(signal).slice(0, 30)})` : `死信告警子进程退出码异常(${Number(code) || 1})`
+      process.stderr.write(`[register-notify] ${detailText} id=${requestId}\n`)
+      settle(false, detailText)
+    })
+    child.unref()
+    return true
+  } catch (error) {
+    process.stderr.write(`[register-notify] 死信告警触发失败 id=${requestId}：${(error && error.message) || error}\n`)
+    settle(false, registrationNotifyErrorSummary(error, '死信告警触发失败'))
+    return false
+  }
+}
+
 function notifyRegistrationApplication(outcome) {
   if (!outcome || !outcome.notifyAdmin) return false
   return scheduleRegistrationNotification(outcome.registrationRequestId)
@@ -573,10 +655,15 @@ function notifyRegistrationApplication(outcome) {
 function resumePendingRegistrationNotifications() {
   if (!String(process.env.HEALTH_ALERT_WEBHOOK || '').trim()) return 0
   try {
-    const ids = domain.pendingRegistrationNotificationIds(dbStore.readDb(), REGISTRATION_NOTIFY_MAX_ATTEMPTS)
+    const db = dbStore.readDb()
+    const ids = domain.pendingRegistrationNotificationIds(db, REGISTRATION_NOTIFY_MAX_ATTEMPTS)
+    const deadLetterAlertIds = domain.pendingRegistrationNotifyDeadLetterAlertIds(db)
     ids.forEach((requestId) => scheduleRegistrationNotification(requestId))
-    if (ids.length) console.log(`[register-notify] 已恢复 ${ids.length} 个未完成通知任务`)
-    return ids.length
+    deadLetterAlertIds.forEach((requestId) => sendRegistrationDeadLetterAlert(requestId))
+    if (ids.length || deadLetterAlertIds.length) {
+      console.log(`[register-notify] 已恢复 ${ids.length} 个未完成通知任务、${deadLetterAlertIds.length} 个死信告警`)
+    }
+    return ids.length + deadLetterAlertIds.length
   } catch (error) {
     process.stderr.write(`[register-notify] 恢复未完成通知失败：${(error && error.message) || error}\n`)
     return 0
