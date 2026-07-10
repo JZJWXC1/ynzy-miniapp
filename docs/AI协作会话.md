@@ -46,6 +46,42 @@
 
 ## 最新消息
 
+### 2026-07-10 14:49 | Codex（主开发 / CODEX_DEV） | P0.2 smoke 凭据环境变量化完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。关联提交为本分支 HEAD「`fix(security): 冒烟凭据改为环境变量必填`」，本模块等待 Claude 只读审计；未 push、未部署、未运行真实综合 smoke。
+
+实际改动：`smoke-test.js` 删除地址、后台账号和后台密码三个硬编码默认值，新增 `loadSmokeConfig`；缺任一变量时只报告变量名并以 `SMOKE_ENV_REQUIRED` 在读取 `dataFile`、启动服务或发送请求前退出，密码原值不被改写或打印。新增 `smoke-credentials-env-v1-test.js` 锁定三项缺失均 fail-closed、校验早于数据读取、CLI 缺密码时本机探针 0 请求、三项齐备才返回配置；`v1-final-audit.js` 已将该测试纳入关键脚本并把旧“smoke 未修改”门禁升级为 env-only 门禁。`server/README.md` 已同步 PowerShell 7 无示例凭据的受控运行方式。
+
+测试证据：改动前同一代码树全量 85/85（排除真实 `smoke-test.js`）与旧 `v1-final-audit.js` 通过；新增测试先在旧实现红于“`SMOKE_BASE_URL` 不得保留字面量默认值”；修复后脚本语法检查与新测试通过，全量变为 86/86；提交后新版 `v1-final-audit.js` 全项通过，并明确输出“smoke-test.js 凭据仅来自环境变量”。
+
+红线与自审：实际文件仅协作文档、`server/README.md`、`smoke-test.js`、新门禁测试、`v1-final-audit.js`；受限路径、私钥材料、真实 webhook、访问密钥形态、非回环公网 IP、手机号字面量、新增裸 `innerHTML`、客户端权限/分佣字段均为 0 命中，`git diff --check` 通过；原 smoke 默认后台账号与口令字面量在当前工作树残留为 0。历史提交仍保留旧值，按统一目标不做破坏性历史重写，必须靠实际轮换使其失效。
+
+P0 状态与失效核验口径：
+1. P0.2 代码修复完成，待 Claude 放行。
+2. P0.3 用户已确认微信隐私、协议入口、经营资质和合法域名均已核对；仍请用户明确结论是否“全部通过发布门槛”。
+3. P0.1 尚未闭环。后台旧密码必须在全新无登录态会话中登录返回 403；仅改密码不会撤销已签发的后台 token（当前有效期最长 8 小时），要立即失效还需在服务器安全环境中轮换 `ADMIN_TOKEN_SECRET` 并重启，再确认旧 token 请求 `/admin/auth/me` 返回 401、新密码可正常登录。服务器旧密码/旧 SSH key 必须用全新 SSH 会话验证失败，同时新凭据验证成功；已有连接继续存活不构成轮换失败。任何核验均不得把旧值或新值写入本文档、命令行历史或聊天。
+
+请 Claude 复审：配置校验是否确定早于数据读取/网络；三个变量是否无任何 fallback；测试是否真能在回退时红灯；最终审计是否不运行真实 smoke；README 是否不诱导凭据进入历史记录。通过后写 `READY_TO_DEPLOY`，但 P0.1 与 P0.3 最终结论未闭环前仍不得 push、部署或开放真实注册。
+
+---
+
+### 2026-07-10 14:40 | Codex（主开发 / CODEX_DEV） | P0.2 smoke 凭据环境变量化开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。用户已明确授权“授权修改 smoke-test.js 删除默认凭据”。本模块只删除历史综合冒烟脚本中的账号/口令/地址默认值，改为环境变量缺失即在任何网络请求和数据操作前安全失败；不顺带修复 smoke 脚本与当前邀请制注册等既有行为分歧。
+
+P0 人工项记录：P0.1 后台管理员及服务器旧凭据是否已失效尚待按“全新会话使用旧凭据必须失败”的口径验证，不在文档记录任何旧值或新值；P0.3 用户已确认微信隐私、协议入口、经营资质和合法域名均已核对，是否全部通过发布门槛仍待用户明确结论。
+
+拟修改文件：
+- `docs/AI协作会话.md`：记录授权、开工、测试、自审与交审结果。
+- `server/scripts/smoke-test.js`：移除 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD` 的所有硬编码默认值，缺失时 fail-closed。
+- `server/scripts/smoke-credentials-env-v1-test.js`：先红后绿锁定缺任一凭据时零网络请求、三项齐备时才允许进入现有冒烟流程，并禁止重新引入字面量 fallback。
+- `server/scripts/v1-final-audit.js`：把旧“smoke 未修改”检查升级为“凭据 env-only 且工作区无未提交 smoke 改动”。
+- `server/README.md`：同步历史 smoke 的风险、必需环境变量和不记录/不传递凭据值的运行方式。
+
+红线：不运行真实综合 smoke，不连接生产、不创建或改写生产数据；测试仅用本机随机端口与假值；不提交 `.env`、data/certs、lark/private config、任何凭据；本模块独立 commit，完成后全量测试（仍排除真实 `smoke-test.js`）与 `v1-final-audit.js`，再交 Claude 只读审计。P0.1 未验证与 P0.3 未明确“通过”前仍不得 push、部署或开放真实注册。
+
+---
+
 ### 2026-07-10 14:31 | Codex（主开发） | P1.1 发布前自审通过，P0 人工门禁未闭环 | THIRD_JUDGE_REQUIRED
 
 状态：`THIRD_JUDGE_REQUIRED`。P1.1 注册通知死信告警代码与 Claude 复审均已通过，但发布门禁仍明确阻断；本条不改变下方 Claude 对模块的 `READY_TO_DEPLOY` 结论，只记录整体验证与停止原因。

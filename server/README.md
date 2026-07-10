@@ -573,7 +573,17 @@ POST /admin/llm-config/test
 
 ## 上线自检
 
-V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，仍保留但不要作为当前 V1 验收主线。
+V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。
+
+PowerShell 7 可在当前进程临时设置变量后运行；以下只展示变量名，不提供任何示例凭据值：
+
+```powershell
+$env:SMOKE_BASE_URL = Read-Host 'SMOKE_BASE_URL'
+$env:SMOKE_ADMIN_ACCOUNT = Read-Host 'SMOKE_ADMIN_ACCOUNT'
+$env:SMOKE_ADMIN_PASSWORD = Read-Host 'SMOKE_ADMIN_PASSWORD' -MaskInput
+node scripts/smoke-test.js
+Remove-Item Env:SMOKE_BASE_URL, Env:SMOKE_ADMIN_ACCOUNT, Env:SMOKE_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+```
 
 当前 V1 验收脚本为以下八个：
 
@@ -625,7 +635,7 @@ cd server
 node scripts/v1-final-audit.js
 ```
 
-该脚本会检查关键 V1 脚本存在并运行其中的核心脚本，同时确认 `server/scripts/smoke-test.js` 未被修改。
+该脚本会检查关键 V1 脚本存在并运行其中的核心脚本，同时确认 `server/scripts/smoke-test.js` 的三项运行配置仅来自环境变量、缺失时 fail-closed，并执行不会连接真实服务的环境变量门禁测试。
 
 ## 部署包与提交红线
 
@@ -646,6 +656,6 @@ powershell -ExecutionPolicy Bypass -File scripts/package-deploy.ps1
 提交红线：
 
 - 不提交 `.env`、密钥、证书、生产数据。
-- 不修改 `server/scripts/smoke-test.js`。
+- `server/scripts/smoke-test.js` 只允许在用户明确授权后做范围受控的安全修复；不得重新加入地址、账号、密码或其他凭据默认值。
 - 不把客户端字段当作分佣、上传人或登录身份的可信来源。
 - 不在日志中输出完整客户手机号、房东电话、微信号或身份证信息。

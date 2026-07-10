@@ -11,6 +11,8 @@ const expectedTabs = [
 ]
 const hiddenV1EntryKeywords = ['房源群', '积分', '充值', '换群', '微信支付']
 const criticalScripts = [
+  // 历史综合 smoke 会写临时业务数据，门禁只执行其 env-only 配置测试，绝不直接跑真实 smoke。
+  'server/scripts/smoke-credentials-env-v1-test.js',
   'server/scripts/map-v1-test.js',
   'server/scripts/assistant-v1-test.js',
   'server/scripts/backend-contract-v1-test.js',
@@ -161,12 +163,20 @@ function checkLegacyVisibleEntryKeywords() {
   return `未出现 ${hiddenV1EntryKeywords.join('、')}`
 }
 
-function checkSmokeTestUnchanged() {
+function checkSmokeTestEnvOnly() {
   assertOk(fs.existsSync(repoPath('server/scripts/smoke-test.js')), 'server/scripts/smoke-test.js 不存在')
+  const source = readText('server/scripts/smoke-test.js')
+  const requiredNames = ['SMOKE_BASE_URL', 'SMOKE_ADMIN_ACCOUNT', 'SMOKE_ADMIN_PASSWORD']
+  requiredNames.forEach((name) => {
+    assertOk(source.includes(name), `server/scripts/smoke-test.js 缺少 ${name} 环境变量入口`)
+    const literalFallback = new RegExp(`process\\.env\\.${name}\\s*(?:\\|\\||\\?\\?)\\s*['\"\\x60]`)
+    assertOk(!literalFallback.test(source), `server/scripts/smoke-test.js 的 ${name} 不得带字面量默认值`)
+  })
+  assertOk(source.includes('SMOKE_ENV_REQUIRED'), 'server/scripts/smoke-test.js 缺少环境变量时必须 fail-closed')
   const unstaged = runGit(['diff', '--name-only', '--', 'server/scripts/smoke-test.js'])
   const staged = runGit(['diff', '--cached', '--name-only', '--', 'server/scripts/smoke-test.js'])
   assertOk(!unstaged && !staged, 'server/scripts/smoke-test.js 存在未提交或已暂存改动')
-  return '未修改'
+  return '三项运行配置仅来自环境变量，缺失即在请求前退出'
 }
 
 function checkCriticalScriptsExist() {
@@ -452,7 +462,7 @@ function checkRunnableV1Scripts() {
 
 const checks = [
   ['app.json 与自定义 tabBar 固定为找房/房源/地图/我的', checkTabBar],
-  ['server/scripts/smoke-test.js 未被修改', checkSmokeTestUnchanged],
+  ['server/scripts/smoke-test.js 凭据仅来自环境变量', checkSmokeTestEnvOnly],
   ['关键 V1 脚本存在', checkCriticalScriptsExist],
   ['第一版可见入口不暴露历史关键词', checkLegacyVisibleEntryKeywords],
   ['前端与 Mock 房态固定 7 天自动失效', checkFrontendVerifyRule],
