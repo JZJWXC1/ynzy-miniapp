@@ -304,7 +304,7 @@ PUT /mini/my/listings/:id
 
 必填字段由服务端校验：城市、区域、小区、楼栋、房号、租金、户型和特点标签。非公司房源还必须有真实视频。
 
-小区匹配与人工审核：服务端已知小区 = `server/src/community-library.js` 的 `GONGSHU_COMMUNITIES` 名单 ∪ `server/src/community-coordinates.js` 的坐标表键（归一化去重后的并集）。匹配判定以服务端 `isKnownCommunity` 复核为权威：库外小区名的房源一律进入人工审核、审核通过后才上架；客户端的「已匹配」声明不被采信，客户端申报只允许收紧（可主动申请人工审核，不能豁免审核）。客户端联想库 `utils/gongshu-communities.js` 由 `node server/scripts/sync-client-community-library.js` 从服务端库自动生成，请勿手改；新增小区只改服务端名单或坐标表后重跑该脚本，两端一致性由 `server/scripts/community-library-parity-test.js` 锁定（客户端缺库内小区会导致编辑/上传被误转人工审核）。
+小区匹配与人工审核：服务端已知小区 = `server/src/community-library.js` 的 `GONGSHU_COMMUNITIES` 名单 ∪ `server/src/community-coordinates.js` 的坐标表键（归一化去重后的并集）。匹配判定以服务端 `isKnownCommunity` 复核为权威——新建房源或把小区改为库外名称时，服务端判未匹配并进入人工审核、审核通过后才上架；小区名未变且历史已匹配（含兼容字段推导）的存量房源沿用历史判定，不因编辑重新进入审核；普通调用方的库外「已匹配」声明不被采信，申报只允许收紧（可主动申请人工审核，不能豁免）；管理员显式提交 `requiresManualReview=false` 时可豁免人工审核。客户端联想库 `utils/gongshu-communities.js` 由 `node server/scripts/sync-client-community-library.js` 从服务端库自动生成，请勿手改；新增小区只改服务端名单或坐标表后重跑该脚本，两端一致性由 `server/scripts/community-library-parity-test.js` 锁定（客户端缺库内小区会导致编辑/上传被误转人工审核）。
 
 看房方式（`viewingMethod`）为选项字段：`钥匙` / `密码` / `联系房东`，并按所选方式条件必填对应信息——钥匙必填 `viewingKeyLocation`（钥匙位置）、密码必填 `viewingPassword`（看房密码）、联系房东必填 `contact`（房东手机号）。**房东手机号不再无条件必填**，仅看房方式为联系房东时必填；不传看房方式的旧客户端仍要求联系方式（保证房源至少有一种可看房途径）。
 
