@@ -304,6 +304,8 @@ PUT /mini/my/listings/:id
 
 必填字段由服务端校验：城市、区域、小区、楼栋、房号、租金、户型和特点标签。非公司房源还必须有真实视频。
 
+小区匹配与人工审核：服务端已知小区 = `server/src/community-library.js` 的 `GONGSHU_COMMUNITIES` 名单 ∪ `server/src/community-coordinates.js` 的坐标表键（归一化去重后的并集）。匹配判定以服务端 `isKnownCommunity` 复核为权威：库外小区名的房源一律进入人工审核、审核通过后才上架；客户端的「已匹配」声明不被采信，客户端申报只允许收紧（可主动申请人工审核，不能豁免审核）。客户端联想库 `utils/gongshu-communities.js` 由 `node server/scripts/sync-client-community-library.js` 从服务端库自动生成，请勿手改；新增小区只改服务端名单或坐标表后重跑该脚本，两端一致性由 `server/scripts/community-library-parity-test.js` 锁定（客户端缺库内小区会导致编辑/上传被误转人工审核）。
+
 看房方式（`viewingMethod`）为选项字段：`钥匙` / `密码` / `联系房东`，并按所选方式条件必填对应信息——钥匙必填 `viewingKeyLocation`（钥匙位置）、密码必填 `viewingPassword`（看房密码）、联系房东必填 `contact`（房东手机号）。**房东手机号不再无条件必填**，仅看房方式为联系房东时必填；不传看房方式的旧客户端仍要求联系方式（保证房源至少有一种可看房途径）。
 
 存量房源展示口径（未显式指定方式时推导）：公司房源跟飞书表走——「看房方式密码」列是真密码按 `密码`，是「几号空出」这类腾房备注或为空则按 `联系房东`（详情页电话走 `COMPANY_CONTACT_PHONES` 公司统一看房电话）；非公司房源电话优先——有房东电话按 `联系房东`，只有密码才按 `密码`。钥匙位置与看房密码同地址、房东电话一样属敏感信息：非公司房源留痕后才下发，公司房源随公司公开字段直接下发。
