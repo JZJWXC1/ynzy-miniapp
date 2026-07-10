@@ -17,6 +17,68 @@ function buildUrl(baseUrl, path) {
   return `${base}${target}`
 }
 
+function headerValue(response, name) {
+  const headers = response && (response.header || response.headers)
+  if (!headers || typeof headers !== 'object') return ''
+  const expected = String(name || '').toLowerCase()
+  const matched = Object.keys(headers).find((key) => String(key).toLowerCase() === expected)
+  return matched ? String(headers[matched] || '') : ''
+}
+
+function urlWithoutQuery(value) {
+  const text = String(value || '')
+  const queryAt = text.indexOf('?')
+  const hashAt = text.indexOf('#')
+  const cuts = [queryAt, hashAt].filter((index) => index >= 0)
+  return cuts.length ? text.slice(0, Math.min(...cuts)) : text
+}
+
+function sanitizeDiagnosticText(value) {
+  return String(value || '')
+    .replace(/https?:\/\/[^\s"'<>]+/ig, (url) => {
+      const safeUrl = urlWithoutQuery(url)
+      return safeUrl === url ? url : `${safeUrl}?[查询参数已隐藏]`
+    })
+    .replace(/([?&](?:Signature|OSSAccessKeyId|Expires|security-token|x-oss-security-token)=)[^&\s]+/ig, '$1[已隐藏]')
+    .replace(/(Authorization\s*:\s*Bearer\s+)[^\s]+/ig, '$1[已隐藏]')
+    .replace(/\b1[3-9]\d{9}\b/g, '[手机号已隐藏]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig, '[邮箱已隐藏]')
+}
+
+function createRequestError(message, context = {}) {
+  const safeMessage = sanitizeDiagnosticText(message || '网络请求失败')
+  const error = new Error(safeMessage)
+  error.errMsg = sanitizeDiagnosticText(context.errMsg || safeMessage)
+  error.requestType = context.requestType || 'request'
+  error.requestMethod = String(context.method || '').toUpperCase()
+  error.requestUrl = urlWithoutQuery(context.url)
+  error.timeout = Number(context.timeout) || 0
+  error.durationMs = Math.max(0, Number(context.durationMs) || 0)
+  error.traceId = String(context.traceId || '')
+  error.networkError = Boolean(context.networkError)
+  if (Number.isFinite(Number(context.statusCode))) error.statusCode = Number(context.statusCode)
+  if (context.errorCode !== undefined && context.errorCode !== null) error.errorCode = context.errorCode
+  return error
+}
+
+function reportRequestError(error) {
+  try {
+    if (typeof console === 'undefined' || typeof console.error !== 'function') return
+    console.error('[api-request-fail]', JSON.stringify({
+      type: error.requestType,
+      method: error.requestMethod,
+      url: error.requestUrl,
+      statusCode: error.statusCode,
+      timeout: error.timeout,
+      durationMs: error.durationMs,
+      traceId: error.traceId,
+      networkError: error.networkError,
+      errorCode: error.errorCode,
+      errMsg: sanitizeDiagnosticText(error.errMsg || error.message)
+    }))
+  } catch (logError) {}
+}
+
 let authRedirecting = false
 
 function getAuthToken(config) {
@@ -113,29 +175,57 @@ function request(options) {
   }
 
   return new Promise((resolve, reject) => {
-    wx.request({
-      url: buildUrl(config.baseUrl, options.path),
+    const url = buildUrl(config.baseUrl, options.path)
+    const timeout = options.timeout || config.timeout
+    const startedAt = Date.now()
+    const context = (extra = {}) => ({
+      requestType: 'request',
+      method,
+      url,
+      timeout,
+      durationMs: Date.now() - startedAt,
+      ...extra
+    })
+    const rejectNetwork = (rawError) => {
+      const errMsg = (rawError && (rawError.errMsg || rawError.message)) || '网络请求失败'
+      const error = createRequestError(errMsg, context({
+        errMsg,
+        errorCode: rawError && (rawError.errno !== undefined ? rawError.errno : rawError.errorCode),
+        networkError: true
+      }))
+      reportRequestError(error)
+      reject(error)
+    }
+    const requestOptions = {
+      url,
       method,
       data,
-      timeout: options.timeout || config.timeout,
+      timeout,
       header: {
         'content-type': 'application/json',
         ...authHeader(config)
       },
       success(res) {
         const body = normalizeResponse(res.data)
+        const traceId = headerValue(res, 'X-Trace-Id')
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          const error = new Error(body.message || `接口请求失败：${res.statusCode}`)
-          error.statusCode = res.statusCode
+          const error = createRequestError(body.message || `接口请求失败：${res.statusCode}`, context({
+            statusCode: res.statusCode,
+            traceId
+          }))
           error.data = body.data || null
+          reportRequestError(error)
           handleUnauthorized(error)
           reject(error)
           return
         }
         if (body.code && body.code !== 0) {
-          const error = new Error(body.message || '接口业务失败')
-          error.statusCode = res.statusCode
+          const error = createRequestError(body.message || '接口业务失败', context({
+            statusCode: res.statusCode,
+            traceId
+          }))
           error.data = body.data || null
+          reportRequestError(error)
           handleUnauthorized(error)
           reject(error)
           return
@@ -143,9 +233,14 @@ function request(options) {
         resolve(body)
       },
       fail(error) {
-        reject(new Error(error.errMsg || '网络请求失败'))
+        rejectNetwork(error)
       }
-    })
+    }
+    try {
+      wx.request(requestOptions)
+    } catch (error) {
+      rejectNetwork(error)
+    }
   })
 }
 
@@ -170,17 +265,45 @@ function uploadFile(options) {
   }
 
   return new Promise((resolve, reject) => {
+    const method = 'UPLOAD'
+    const url = options.url
+    const timeout = options.timeout || config.timeout
+    const startedAt = Date.now()
+    const context = (extra = {}) => ({
+      requestType: 'upload',
+      method,
+      url,
+      timeout,
+      durationMs: Date.now() - startedAt,
+      ...extra
+    })
+    const rejectNetwork = (rawError) => {
+      const errMsg = (rawError && (rawError.errMsg || rawError.message)) || '文件上传失败'
+      const error = createRequestError(errMsg, context({
+        errMsg,
+        errorCode: rawError && (rawError.errno !== undefined ? rawError.errno : rawError.errorCode),
+        networkError: true
+      }))
+      reportRequestError(error)
+      reject(error)
+    }
     // 大文件上传允许调用方覆盖超时（默认沿用全局 15s 会导致视频弱网必超时）
-    const uploadTask = wx.uploadFile({
-      url: options.url,
+    let uploadTask
+    const uploadOptions = {
+      url,
       filePath: options.filePath,
       name: options.name || 'file',
       formData: options.formData || {},
       header: options.header || {},
-      timeout: options.timeout || config.timeout,
+      timeout,
       success(res) {
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`文件上传失败：${res.statusCode}`))
+          const error = createRequestError(`文件上传失败：${res.statusCode}`, context({
+            statusCode: res.statusCode,
+            traceId: headerValue(res, 'X-Trace-Id')
+          }))
+          reportRequestError(error)
+          reject(error)
           return
         }
 
@@ -193,9 +316,15 @@ function uploadFile(options) {
         resolve(normalizeResponse(body))
       },
       fail(error) {
-        reject(new Error(error.errMsg || '文件上传失败'))
+        rejectNetwork(error)
       }
-    })
+    }
+    try {
+      uploadTask = wx.uploadFile(uploadOptions)
+    } catch (error) {
+      rejectNetwork(error)
+      return
+    }
     // 透传上传进度（0-100），供页面展示百分比
     if (typeof options.onProgress === 'function' && uploadTask && uploadTask.onProgressUpdate) {
       uploadTask.onProgressUpdate((event) => {
@@ -212,5 +341,9 @@ module.exports = {
   uploadFile,
   getAuthToken,
   authHeader,
-  handleUnauthorized
+  handleUnauthorized,
+  headerValue,
+  urlWithoutQuery,
+  sanitizeDiagnosticText,
+  createRequestError
 }
