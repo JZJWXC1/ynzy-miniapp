@@ -29,6 +29,9 @@ const INJECTION_PHONE = '13900000065'
 const RETRY_PHONE = '13900000066'
 const EXHAUST_PHONE = '13900000067'
 const RECOVERY_PHONE = '13900000068'
+const DEAD_FAILED_PHONE = '13900000072'
+const DEAD_SENDING_PHONE = '13900000073'
+const DEAD_SENT_PHONE = '13900000074'
 
 function seedDb() {
   const db = {
@@ -387,6 +390,82 @@ async function run() {
     assert.ok(recovered, '重启恢复任务发送成功后应持久化 sent')
     assert.strictEqual(recovered.notifyAttempts, 1, '恢复任务首次发送成功应记录 1 次')
     assert.strictEqual(hits.filter(isDeadLetterAlert).length, 1, '重启恢复不得重复发送已告警的注册通知死信')
+  } finally {
+    await stopServer(server)
+  }
+
+  // 返修：死信告警失败/进程中断后，重启应补发；已成功告警的死信不重复。
+  const deadLetterReplayDb = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+  deadLetterReplayDb.registrationRequests.unshift(
+    {
+      id: 'R-DEAD-FAILED',
+      name: '死信失败补发申请',
+      phone: DEAD_FAILED_PHONE,
+      passwordHash: hashPassword('dead-failed-pass-123'),
+      status: '待审核',
+      source: 'mini-register',
+      notifyStatus: 'dead_letter',
+      notifyAttempts: 3,
+      notifyLastError: '通知子进程退出码异常(1)',
+      notifyDeadLetterAt: '2026/7/10 02:00:00',
+      notifyDeadLetterReason: '通知子进程退出码异常(1)',
+      notifyDeadLetterAlertAttemptedAt: '2026/7/10 02:00:01',
+      notifyDeadLetterAlertStatus: 'failed',
+      notifyDeadLetterAlertLastError: '死信告警子进程退出码异常(1)',
+      createdAt: '2026/7/10 02:00:00',
+      updatedAt: '2026/7/10 02:00:00'
+    },
+    {
+      id: 'R-DEAD-SENDING',
+      name: '死信中断补发申请',
+      phone: DEAD_SENDING_PHONE,
+      passwordHash: hashPassword('dead-sending-pass-123'),
+      status: '待审核',
+      source: 'mini-register',
+      notifyStatus: 'dead_letter',
+      notifyAttempts: 3,
+      notifyLastError: '通知子进程退出码异常(1)',
+      notifyDeadLetterAt: '2026/7/10 02:10:00',
+      notifyDeadLetterReason: '通知子进程退出码异常(1)',
+      notifyDeadLetterAlertAttemptedAt: '2026/7/10 02:10:01',
+      notifyDeadLetterAlertStatus: 'sending',
+      createdAt: '2026/7/10 02:10:00',
+      updatedAt: '2026/7/10 02:10:00'
+    },
+    {
+      id: 'R-DEAD-SENT',
+      name: '死信已告警申请',
+      phone: DEAD_SENT_PHONE,
+      passwordHash: hashPassword('dead-sent-pass-123'),
+      status: '待审核',
+      source: 'mini-register',
+      notifyStatus: 'dead_letter',
+      notifyAttempts: 3,
+      notifyLastError: '通知子进程退出码异常(1)',
+      notifyDeadLetterAt: '2026/7/10 02:20:00',
+      notifyDeadLetterReason: '通知子进程退出码异常(1)',
+      notifyDeadLetterAlertAttemptedAt: '2026/7/10 02:20:01',
+      notifyDeadLetterAlertStatus: 'sent',
+      notifyDeadLetterAlertSentAt: '2026/7/10 02:20:02',
+      createdAt: '2026/7/10 02:20:00',
+      updatedAt: '2026/7/10 02:20:00'
+    }
+  )
+  fs.writeFileSync(dataFile, JSON.stringify(deadLetterReplayDb, null, 2), 'utf8')
+  const replayDeadLetterStart = hits.filter(isDeadLetterAlert).length
+  server = spawnServer({ HEALTH_ALERT_WEBHOOK: webhook })
+  try {
+    assert.ok(await waitForServer(), `死信补发测试服务未启动：${server.outputRef()}`)
+    assert.ok(await waitFor(() => hits.filter(isDeadLetterAlert).length >= replayDeadLetterStart + 2), '重启后应补发 failed/sending 两条死信告警')
+    const superAuth = await adminLogin()
+    const failedReplay = await waitForRegistration(superAuth, DEAD_FAILED_PHONE, (item) => item.notifyDeadLetterAlertStatus === 'sent')
+    assert.ok(failedReplay, 'failed 死信告警补发成功后应转 sent')
+    const sendingReplay = await waitForRegistration(superAuth, DEAD_SENDING_PHONE, (item) => item.notifyDeadLetterAlertStatus === 'sent')
+    assert.ok(sendingReplay, 'sending 遗留死信告警补发成功后应转 sent')
+    const sentReplay = await registrationByPhone(superAuth, DEAD_SENT_PHONE)
+    assert.strictEqual(sentReplay.notifyDeadLetterAlertStatus, 'sent', '已 sent 的死信告警仍保持 sent')
+    await sleep(250)
+    assert.strictEqual(hits.filter(isDeadLetterAlert).length, replayDeadLetterStart + 2, '已 sent 的死信告警重启后不得重复发送')
   } finally {
     await stopServer(server)
   }

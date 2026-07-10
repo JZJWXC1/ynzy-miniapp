@@ -1485,7 +1485,7 @@ function claimRegistrationNotifyDeadLetterAlert(db, requestId) {
   const targetId = String(requestId || '').trim()
   const request = (db.registrationRequests || []).find((item) => item.id === targetId)
   if (!request || request.status !== '待审核' || request.notifyStatus !== 'dead_letter') return null
-  if (request.notifyDeadLetterAlertAttemptedAt) return null
+  if (request.notifyDeadLetterAlertStatus === 'sent') return null
   request.notifyDeadLetterAlertAttemptedAt = nowText()
   request.notifyDeadLetterAlertStatus = 'sending'
   delete request.notifyDeadLetterAlertLastError
@@ -1520,7 +1520,7 @@ function pendingRegistrationNotifyDeadLetterAlertIds(db) {
   return (db.registrationRequests || [])
     .filter((item) => item && item.id && item.status === '待审核')
     .filter((item) => item.notifyStatus === 'dead_letter')
-    .filter((item) => !item.notifyDeadLetterAlertAttemptedAt)
+    .filter((item) => item.notifyDeadLetterAlertStatus !== 'sent')
     .map((item) => item.id)
 }
 
