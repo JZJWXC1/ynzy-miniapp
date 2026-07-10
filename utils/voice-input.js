@@ -244,6 +244,26 @@ function clearActiveRecorderRun(controller, generation) {
   return true
 }
 
+function clearSupersededStopTombstone(generation) {
+  const tombstoneGeneration = recorderHub.stopGeneration
+  if (recorderHub.stopPending || !recorderHub.stopOwner) return false
+  if (!tombstoneGeneration || tombstoneGeneration >= generation) return false
+  recorderHub.stopOwner = null
+  recorderHub.stopGeneration = 0
+  return true
+}
+
+function retainTerminalTombstone(controller, generation) {
+  if (!controller || !generation) {
+    recorderHub.stopOwner = null
+    recorderHub.stopGeneration = 0
+    return false
+  }
+  recorderHub.stopOwner = controller
+  recorderHub.stopGeneration = generation
+  return true
+}
+
 function queueControllerStart(controller) {
   const previous = recorderHub.pendingStart
   if (previous && previous !== controller) previous._cancelQueued()
@@ -328,8 +348,8 @@ function bindRecorderRouter(recorder) {
     const owner = recorderHub.stopOwner || recorderHub.active
     const generation = recorderHub.stopOwner ? recorderHub.stopGeneration : recorderHub.activeGeneration
     recorderHub.stopPending = false
-    recorderHub.stopOwner = null
-    recorderHub.stopGeneration = 0
+    // 原生 error/interruption 后可能再补一个 onStop；保留已结算代际，直到尾随终态或新代 onStart。
+    retainTerminalTombstone(owner, generation)
     if (owner) owner._handleRecorderError(error, generation)
     clearActiveRecorderRun(owner, generation)
     drainPendingStart()
@@ -341,8 +361,7 @@ function bindRecorderRouter(recorder) {
       const owner = recorderHub.stopOwner || recorderHub.active
       const generation = recorderHub.stopOwner ? recorderHub.stopGeneration : recorderHub.activeGeneration
       recorderHub.stopPending = false
-      recorderHub.stopOwner = null
-      recorderHub.stopGeneration = 0
+      retainTerminalTombstone(owner, generation)
       if (owner) owner._handleRecorderInterruption(generation)
       clearActiveRecorderRun(owner, generation)
       drainPendingStart()
@@ -641,6 +660,8 @@ function createController(handlers = {}) {
 
   function handleRecorderStart(generation) {
     if (!isOwner() || !isCurrentRecorderGeneration(generation) || cancelled) return
+    // 单例录音器已确认启动新一代后，旧代终态不会再到达；继续保留墓碑会吞掉新一代的自然终态。
+    clearSupersededStopTombstone(generation)
     starting = false
     listening = true
     stopping = false

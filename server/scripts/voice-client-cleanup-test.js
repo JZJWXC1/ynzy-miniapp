@@ -5,6 +5,7 @@ const apiService = require('../../utils/api-service')
 
 function makeRecorder(options = {}) {
   const handlers = {}
+  const autoStart = options.autoStart !== false
   const autoStop = options.autoStop !== false
   return {
     started: false,
@@ -36,7 +37,7 @@ function makeRecorder(options = {}) {
       this.started = true
       this.startCount += 1
       this.options = options
-      if (handlers.start) handlers.start()
+      if (autoStart) this.emitStart()
     },
     stop() {
       this.stopped += 1
@@ -44,6 +45,9 @@ function makeRecorder(options = {}) {
     },
     emitStop(result) {
       if (handlers.stop) handlers.stop(result || { tempFilePath: 'voice.pcm' })
+    },
+    emitStart() {
+      if (handlers.start) handlers.start()
     },
     emitFrame(frameBuffer) {
       if (handlers.frame) handlers.frame({ frameBuffer })
@@ -280,8 +284,35 @@ try {
   lostStopSecond.cancel()
   lostStopRecorder.emitStop()
 
-  // 同一竞态的 onError 路径：旧 stop 超时后 B 已启动，旧原生录音迟到 error 仍只能结算 A。
-  const lateErrorRecorder = makeRecorder({ autoStop: false })
+  // A 的 stop 终态永久丢失时，旧墓碑不能继续吞掉已经真实启动的 B 的自然 onStop。
+  const tombstoneRecorder = makeRecorder({ autoStop: false })
+  const tombstoneSocket1 = makeSocket()
+  const tombstoneSocket2 = makeSocket()
+  currentRecorder = tombstoneRecorder
+  currentSocket = tombstoneSocket1
+  const tombstoneFirst = voiceInput.createController({})
+  tombstoneFirst.start()
+  tombstoneSocket1.open()
+  tombstoneFirst.stop()
+  currentSocket = tombstoneSocket2
+  let tombstoneSecondTranscribing = 0
+  let tombstoneSecondStopped = 0
+  const tombstoneSecond = voiceInput.createController({
+    onTranscribing: () => { tombstoneSecondTranscribing += 1 },
+    onStop: () => { tombstoneSecondStopped += 1 }
+  })
+  tombstoneSecond.start()
+  stopTimeoutCallback()
+  assert.strictEqual(tombstoneRecorder.startCount, 2, '旧 stop 超时后应启动排队的新 controller')
+  tombstoneSocket2.open()
+  tombstoneRecorder.emitStop()
+  assert.strictEqual(tombstoneSecondTranscribing, 1, '新录音真实启动后，其自然 onStop 必须结算到新 controller')
+  tombstoneSocket2.message(JSON.stringify({ type: 'finished' }))
+  assert.strictEqual(tombstoneSecondStopped, 1, '新录音自然结束后必须完成一次识别收尾')
+  assert.strictEqual(tombstoneSecond.isBusy(), false, '新录音自然结束后不得永久卡在 busy')
+
+  // 同一竞态的 onError 路径：B 已发起 start 但尚未收到原生 onStart，旧 error 仍只能结算 A。
+  const lateErrorRecorder = makeRecorder({ autoStart: false, autoStop: false })
   const lateErrorSocket1 = makeSocket()
   const lateErrorSocket2 = makeSocket()
   currentRecorder = lateErrorRecorder
@@ -290,6 +321,7 @@ try {
   let lateNewErrors = 0
   const lateErrorFirst = voiceInput.createController({ onError: () => { lateOldErrors += 1 } })
   lateErrorFirst.start()
+  lateErrorRecorder.emitStart()
   lateErrorSocket1.open()
   lateErrorFirst.stop()
   currentSocket = lateErrorSocket2
@@ -301,11 +333,12 @@ try {
   assert.strictEqual(lateOldErrors, 0, '页面切换取消的旧 controller 不应因迟到 error 再弹错误')
   assert.strictEqual(lateNewErrors, 0, '旧录音迟到 error 不得误报给新 controller')
   assert.strictEqual(lateErrorSecond.isBusy(), true, '旧录音迟到 error 不得结束新 controller')
+  lateErrorRecorder.emitStart()
   lateErrorSecond.cancel()
   lateErrorRecorder.emitStop()
 
   // controller 对象本身也会复用；仅比较 owner 引用不够，必须用每次 recorder.start 的 generation 隔离。
-  const generationRecorder = makeRecorder({ autoStop: false })
+  const generationRecorder = makeRecorder({ autoStart: false, autoStop: false })
   const generationSocket1 = makeSocket()
   const generationSocket2 = makeSocket()
   currentRecorder = generationRecorder
@@ -313,6 +346,7 @@ try {
   let generationErrors = 0
   const generationController = voiceInput.createController({ onError: () => { generationErrors += 1 } })
   generationController.start()
+  generationRecorder.emitStart()
   generationSocket1.open()
   generationController.stop()
   stopTimeoutCallback()
@@ -321,6 +355,7 @@ try {
   generationController.start()
   generationSocket2.open()
   generationRecorder.emitStop()
+  generationRecorder.emitStart()
   assert.strictEqual(generationController.isBusy(), true, '同 controller 上一代迟到 onStop 不得结束新 generation')
   assert.strictEqual(generationErrors, 1, '同 controller 上一代迟到 onStop 不得新增错误')
   generationController.cancel()
@@ -330,6 +365,7 @@ try {
   const generationErrorSocket2 = makeSocket()
   currentSocket = generationErrorSocket1
   generationController.start()
+  generationRecorder.emitStart()
   generationErrorSocket1.open()
   generationController.stop()
   stopTimeoutCallback()
@@ -338,6 +374,7 @@ try {
   generationController.start()
   generationErrorSocket2.open()
   generationRecorder.emitError({ errMsg: '上一代迟到 error PCM record', errType: 1 })
+  generationRecorder.emitStart()
   assert.strictEqual(generationController.isBusy(), true, '同 controller 上一代迟到 onError 不得结束新 generation')
   assert.strictEqual(generationErrors, 2, '同 controller 上一代迟到 onError 不得污染新 generation')
   generationController.cancel()
@@ -346,6 +383,33 @@ try {
   global.setTimeout = nativeSetTimeoutForStop
   global.clearTimeout = nativeClearTimeoutForStop
 }
+
+// 系统中断可能先于同一旧录音的尾随 onStop；B 尚未收到 onStart 前，尾随终态仍应归 A。
+const interruptionTailRecorder = makeRecorder({ autoStart: false, autoStop: false })
+const interruptionTailSocket1 = makeSocket()
+const interruptionTailSocket2 = makeSocket()
+currentRecorder = interruptionTailRecorder
+currentSocket = interruptionTailSocket1
+const interruptionTailFirst = voiceInput.createController({})
+interruptionTailFirst.start()
+interruptionTailRecorder.emitStart()
+interruptionTailSocket1.open()
+currentSocket = interruptionTailSocket2
+let interruptionTailTranscribing = 0
+const interruptionTailSecond = voiceInput.createController({
+  onTranscribing: () => { interruptionTailTranscribing += 1 }
+})
+interruptionTailSecond.start()
+assert.strictEqual(interruptionTailRecorder.stopped, 1, 'B 接管前应先请求停止 A')
+interruptionTailRecorder.emitInterruptionBegin()
+assert.strictEqual(interruptionTailRecorder.startCount, 2, 'A 中断结算后应启动排队的 B')
+interruptionTailRecorder.emitStop()
+assert.strictEqual(interruptionTailTranscribing, 0, 'A 中断后的尾随 onStop 不得提前截断尚未 onStart 的 B')
+interruptionTailRecorder.emitStart()
+assert.strictEqual(interruptionTailSecond.isBusy(), true, '尾随旧终态后 B 仍应正常进入录音态')
+interruptionTailSecond.cancel()
+assert.strictEqual(interruptionTailRecorder.stopped, 2, 'B 真实启动后取消必须停止 B 自己的录音')
+interruptionTailRecorder.emitStop()
 
 // 同一 controller 可复用。上一轮 socket 的延迟 close/error/message 不能污染新一轮会话。
 const reuseRecorder = makeRecorder()
