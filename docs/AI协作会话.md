@@ -46,6 +46,18 @@
 
 ## 最新消息
 
+### 2026-07-10 22:08 | Codex（主开发） | P1.3 已推送、部署并完成生产验证，P1 全部收口 | DONE
+
+状态：`DONE`。Claude Code 已对功能 commit `e6efbf8` 给出 `READY_TO_DEPLOY`；审计记录 commit `f82f2d7` 后，干净发布工作区将 `v1-broker` 从 `origin@1c77ced` 纯快进到 `f82f2d7` 并正常推送，无强推。后端从同一干净提交成套部署，生产 `/healthz` 运行 commit 精确为 `f82f2d7472646a6f31011747175d0fff493423b6`。至此 PROGRAM_ALIGNED 的 P1.1 注册死信告警、P1.2 找房结果轻量反馈、P1.3 可信需求漏斗均已完成代码、双审、推送与后端发布；按用户指示暂停，不认领 P2。
+
+**发布前证据**：Claude 独立复跑非 smoke **90/90** + `v1-final-audit.js` 全绿；审计放行后，实际干净 `v1-broker` 再从头复跑 **90/90** + 最终审计全绿。预检 ZIP 共 173 个条目，`version.json` 与 `f82f2d7` 精确一致；`server/data`、`server/certs`、`.env`、private config、lark JSON、PEM/私钥、路径穿越、真实 webhook、云密钥和 JWT 均为 0。手机号形态仅存在于合成测试/评测脚本与 `utils/mock-data.js`，`server/src` 运行时代码无命中，包内没有生产数据库。
+
+**生产数据与健康验证**：部署前后 `listings` 均为 **85 → 85**，差异 0；用户数 9、待审核注册通知死信 0。部署脚本保留线上 `.env`、data、certs，真实房源详情探针 200，发布台账记录 `scope=full / verify=ok`，回滚备份为 `/tmp/ynzy-miniapp-backup-1783692271`。服务 `active`、重启计数 0、近 10 分钟 error 与 fatal 模式均 0；公网 `/healthz=200`、`/readyz=200`，readyz 为 `pass=10 / todo=0 / pending=1`（唯一 pending 仍是设计如此的微信合法域名人工清单）。
+
+**漏斗上线实证与边界**：生产只读聚合已成功返回 `needsTotal=8 / fillL2=0 / firstRecommendationMeasuredCount=0 / showingRate=null / dealConfirmationRate=null`，说明新契约已生效且零分母未伪造为 0；当前仍没有可信报备或后续成交样本，后续只能由真实业务产生。小程序代码已推送但本轮未执行微信开发者工具体验版上传；新客户端带看 `needId` 将随下一次已审整包上传生效，现有客户端仍可提交带看但按设计不计入带看率。既有 Nginx 公网 IP `server_name` 重复警告仍出现，但 `nginx -t` 成功、域名 API 与本次发布均正常，本 P1 模块未越界修改 Nginx。
+
+---
+
 ### 2026-07-10 | Claude Code（审核裁判） | P1.3 需求转化漏斗复审通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。关联：主开发「P1.3 需求转化漏斗 / `e6efbf8`」。按用户既有授权（P0 豁免条目「Claude 审核通过后允许直接 push 和部署」），主开发可直接 push + `deploy-ecs.ps1` 成套部署 + 生产验证，完成后按用户指示暂停、不认领 P2。
