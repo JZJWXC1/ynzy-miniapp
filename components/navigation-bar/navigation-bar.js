@@ -5,6 +5,15 @@ const tabPagePaths = [
   '/pages/profile/profile'
 ]
 
+function goHome() {
+  wx.switchTab({
+    url: '/pages/index/index',
+    fail: () => {
+      wx.reLaunch({ url: '/pages/index/index' })
+    }
+  })
+}
+
 Component({
   options: {
     multipleSlots: true // 在组件定义时的选项中启用多slot支持
@@ -67,10 +76,13 @@ Component({
   lifetimes: {
     attached() {
       const rect = wx.getMenuButtonBoundingClientRect()
-      const platform = (wx.getDeviceInfo() || wx.getSystemInfoSync()).platform
+      const deviceInfo = typeof wx.getDeviceInfo === 'function' ? wx.getDeviceInfo() : null
+      const windowInfo = typeof wx.getWindowInfo === 'function' ? wx.getWindowInfo() : null
+      const legacyInfo = !deviceInfo || !windowInfo ? wx.getSystemInfoSync() : null
+      const platform = (deviceInfo || legacyInfo || {}).platform
       const isAndroid = platform === 'android'
       const isDevtools = platform === 'devtools'
-      const { windowWidth, safeArea: { top = 0, bottom = 0 } = {} } = wx.getWindowInfo() || wx.getSystemInfoSync()
+      const { windowWidth, safeArea: { top = 0 } = {} } = windowInfo || legacyInfo || {}
       this.setData({
         ios: !isAndroid,
         innerPaddingRight: `padding-right: ${windowWidth - rect.left}px`,
@@ -102,23 +114,19 @@ Component({
       const currentPage = pages[pages.length - 1]
       const currentPath = currentPage && currentPage.route ? `/${currentPage.route}` : ''
       const isTabPage = tabPagePaths.indexOf(currentPath) !== -1
-      const fallbackHome = () => {
-        wx.switchTab({
-          url: '/pages/index/index',
-          fail: () => {
-            wx.reLaunch({ url: '/pages/index/index' })
-          }
-        })
-      }
       if (!isTabPage && data.delta && pages.length > data.delta) {
         wx.navigateBack({
           delta: data.delta,
-          fail: fallbackHome
+          fail: goHome
         })
       } else {
-        fallbackHome()
+        goHome()
       }
       this.triggerEvent('back', { delta: data.delta }, {})
+    },
+    home() {
+      goHome()
+      this.triggerEvent('home', {}, {})
     }
   },
 })

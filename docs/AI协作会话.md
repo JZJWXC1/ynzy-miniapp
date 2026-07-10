@@ -46,6 +46,24 @@
 
 ## 最新消息
 
+### 2026-07-11 00:21 | CODEX_DEV（主开发） | 公共导航栏首页与旧基础库兼容修复完成 | CODEX_DOING
+
+状态：`CODEX_DOING`。发现项 4 已先红后绿完成：真实 Component 门禁在旧实现稳定失败于“导航栏必须实现模板绑定的 `home` 方法”，修复后首页按钮会优先 `switchTab` 到首页，切换失败时安全 `reLaunch`，并触发一次 `home` 组件事件；原有普通页面返回与 `back` 事件保持不变。组件挂载时现在先检测 `getDeviceInfo/getWindowInfo` 是否可用，仅在缺失时读取一次 `getSystemInfoSync`，旧基础库 Android 平台、窗口宽度和安全区布局均能正常计算。
+
+**定向回归**：`navigation-bar-compat-v1-test.js`、`mini-page-resume-state-v1-test.js`、`listing-viewing-method-test.js`、`community-library-parity-test.js` 共 **4/4 通过**。本模块仅修改先前声明的 3 个文件；不启用任何新页面入口，暂不交 Claude、不 push、不部署，继续核对详情页与其它页面的错误态、刷新态和前后端状态映射。
+
+---
+
+### 2026-07-11 00:19 | CODEX_DEV（主开发） | 全产品自审发现项 4：导航栏首页按钮缺失处理且旧基础库挂载会报错 | CODEX_DOING
+
+状态：`CODEX_DOING`。15 个已注册小程序页面的模板事件处理器静态核对无缺失，49 个页面跳转目标均存在于 `app.json`；继续下钻公共组件时发现，导航栏已公开 `homeButton` 属性且模板绑定 `bindtap="home"`，但组件没有 `home` 方法，启用该能力后点击无响应。该组件又在 `attached` 中无条件调用 `wx.getDeviceInfo()` 与 `wx.getWindowInfo()`；较旧微信基础库仅提供 `getSystemInfoSync()` 时，所有引用导航栏的页面都会在挂载阶段抛错。
+
+**本模块拟修改文件**：`docs/AI协作会话.md`、`components/navigation-bar/navigation-bar.js`、新增 `server/scripts/navigation-bar-compat-v1-test.js`。不修改页面业务、服务端、数据库、`smoke-test.js` 或其它组件。
+
+**修复目标与先红后绿**：先加载真实 Component 定义，固化“首页按钮必须切换到首页并在切换失败时安全重启首页、必须触发 `home` 组件事件、仅有旧版系统信息 API 时组件仍能挂载并计算导航栏布局”的失败契约；再补齐方法并对新设备/窗口 API 做能力检测，保持现有返回按钮逻辑和现代基础库表现不变。
+
+---
+
 ### 2026-07-11 00:14 | CODEX_DEV（主开发） | 受限管理员只读操作对齐完成，继续全产品自审 | CODEX_DOING
 
 状态：`CODEX_DOING`。发现项 3 已先红后绿完成：新增门禁在旧实现稳定失败于“后台缺少 `superOnlyActions` 函数”，修复后受限管理员在房源编辑/审核/核验/坐标修正、废房源恢复、签单确认、带看审核等动态操作列中只看到明确的“只读权限”，不再暴露点击后必然 403 的写按钮；房态规则保存按钮也只对超级管理员显示。服务端 `assertAdminCapability` 鉴权保持不变，超级管理员写能力无回退。
