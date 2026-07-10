@@ -46,6 +46,54 @@
 
 ## 最新消息
 
+### 2026-07-10 16:21 | CODEX_DEV（主开发） | P1.2 严格反馈契约与前端交互完成，进入全量验证 | CODEX_DOING
+
+状态：`CODEX_DOING`。看房方式任务已双审、推送并完成后端部署，协作看板明确释放数据库结构；本分支已带未提交改动通过 `--autostash` 无冲突 rebase 到最新 `origin/v1-broker@16d388e`，现由 P1.2 独占 `assistantFeedbacks` 结构。
+
+**先红后绿证据**：
+- 第一轮新测试在旧实现上连续两次稳定红在“严格反馈应记录 `match-result-v1` 契约版本”（actual `undefined`）；实现严格分流后转绿。
+- 绿测后对抗审查新增“系统 ID 格式”和“未知非空版本不得回退旧通道”断言，先稳定红在“threadId 夹带自由文本未被拒绝”，补校验后转绿。
+
+**当前实现**：
+- 找房结果消息仅在存在真实 `needId`、非临时需求且服务端推荐成功时展示反馈；交互为先选“有用/没用”，再点一个固定原因，原因覆盖价格、位置、户型、房态、结果太少/太多，不提供输入框。
+- 前端严格载荷只含版本、`needId`、线程/消息标识、有用性和原因码，不再上传原始需求、助手回复、房源、期望或地点对象。
+- 服务端校验登录身份、需求存在与归属、系统生成的线程/消息 ID 格式、有用性与原因码组合；中文原因由服务端白名单生成。相同结果相同反馈重试幂等，不同反馈 409。
+- 严格记录只保存关联 ID、固定分类和最小 trace 元数据；客户端额外夹带的姓名、电话、地址和所有自由内容均丢弃。未知非空反馈版本 400；无版本的历史通用反馈继续兼容且不计入结构化口径。
+
+**实修改文件清单**：`docs/AI协作会话.md`、`server/README.md`、`server/src/assistant-feedback.js`、新增 `server/scripts/match-result-feedback-v1-test.js`、`pages/match-chat/match-chat.js`、`pages/match-chat/match-chat.wxml`、`pages/match-chat/match-chat.wxss`。未修改 `domain.js`、`index.js`、admin-web、smoke/data/certs/env/lark/private config。
+
+**已通过定向验证**：`match-result-feedback-v1-test`、`assistant-feedback-test`、`assistant-trace-log-test`、`admin-feedback-conversation-v1-test`、后端/前端 `node --check` 与 `git diff --check`。下一步：全文 diff 自审、全量测试、最终审计、红线扫描、单模块 commit 后转 `CLAUDE_REVIEW`。
+
+需要 Claude Code 做什么：暂不审；等待本模块提交后的 `CLAUDE_REVIEW` 交接条目。
+
+---
+
+### 2026-07-10 15:41 | CODEX_DEV（主开发） | P1.2 找房结果轻量反馈：基线完成，先写红测，独占资源待释放 | CODEX_DOING
+
+状态：`CODEX_DOING`（当前仅做不冲突的测试准备，尚未修改数据库结构或实现代码）。关联：「上线后闭环优化统一总目标 / PROGRAM_ALIGNED」P1.2。独立分支/工作树：`wt/找房结果轻量反馈` / `C:\Users\吴志坚\.codex\worktrees\p12-feedback`，基于已发布并推送的 `origin/v1-broker@16c2da4`。
+
+**基线证据**：全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）实跑 **86/86** 通过；`node server/scripts/v1-final-audit.js` 通过。首次运行因新工作树未携带被 Git 忽略的 `node_modules` 而在业务代码加载前缺 `ws`，复用发布工作树同一依赖目录后从头重跑全绿，不计为产品基线失败。
+
+**目标契约**：
+1. 沿用现有 `/mini/assistant/feedback` 与后台反馈闭环，为找房结果反馈增加严格 `match-result-v1` 契约；前端展示“有用/没用”，随后只允许选择固定原因，不提供自由文本输入。
+2. 固定原因至少覆盖价格、位置、户型、房态、结果太少、结果太多；服务端只接受白名单原因码并生成固定中文标签，不信任客户端自由文本。
+3. `needId` 必填且必须属于当前登录中介；同一用户、需求、线程和结果消息的相同反馈重复提交幂等，冲突提交不得生成第二条记录。
+4. 严格反馈记录只保留 `needId`、有用性、固定原因码/标签和最小追踪元数据；丢弃客户端上传的姓名、电话、地址、原始需求、回复、房源、期望与地点等自由内容，追踪摘要不保存可读文本或 audit 正文。
+5. 旧版通用助手反馈契约继续兼容，既有反馈分诊、转评估与后台链路不得回归。
+
+**拟修改文件清单（分阶段串行）**：
+- 当前准备阶段（不占独占资源）：`docs/AI协作会话.md`、新增 `server/scripts/match-result-feedback-v1-test.js`。
+- 待“上传房源看房方式”任务释放数据库结构后：`server/src/assistant-feedback.js`、`pages/match-chat/match-chat.js`、`pages/match-chat/match-chat.wxml`、`pages/match-chat/match-chat.wxss`。
+- 待该任务完成其文档修改后再串行更新：`server/README.md`。
+
+**明确不修改**：`server/src/domain.js`、`server/src/index.js`、`admin-web/index.html`、`server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、任何 `.env`/lark/private config。当前主工作区的房源清单、交接报告、`.claude/`、看房方式实现及其它未提交改动均不夹带、不回滚。
+
+**独占资源状态**：主工作区另一任务“上传房源增加看房方式”仍为 `CLAUDE_DOING`，正在修改 `server/src/domain.js`、房源字段结构与 `server/README.md`；本任务在其提交/交审并明确释放前，只补失败测试，不修改 `assistantFeedbacks` 数据结构或 README。
+
+需要 Claude Code 做什么：先完成正在进行的看房方式任务并释放数据库结构；本任务绿测提交后再按 `CLAUDE_REVIEW` 条目做只读审计。
+
+---
+
 ### 2026-07-10 15:29 | Codex（主开发） | P1.1 死信告警 + P0.2 smoke 安全修复已发布并验证 | DONE
 
 状态：`DONE`。已审发布 commit `f37aa86` 已快进 push 到 `origin/v1-broker`，并从干净 `v1-broker` 成套部署到生产；未上传小程序体验版，未带入主工作区其他未提交改动。

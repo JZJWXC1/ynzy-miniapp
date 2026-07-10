@@ -36,6 +36,26 @@ const MAX_EVAL_ROWS = 300
 const MAX_TRACE_ROWS = 500
 const MAX_TEXT_LENGTH = 500
 const MAX_LISTINGS = 8
+const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
+const MATCH_RESULT_THREAD_ID_PATTERN = /^(?:AST-[a-z0-9]+-[a-z0-9]{6}|LOCAL-AST-\d{10,16}(?:-\d{1,5})?)$/i
+const MATCH_RESULT_MESSAGE_ID_PATTERN = /^assistant-\d{10,16}-\d{1,5}$/
+const MATCH_RESULT_FEEDBACK_REASONS = {
+  helpful: {
+    price: '价格合适',
+    location: '位置合适',
+    layout: '户型合适',
+    availability: '房态准确',
+    result_count: '数量合适'
+  },
+  bad_recommendation: {
+    price: '价格不合适',
+    location: '位置不合适',
+    layout: '户型不合适',
+    availability: '房态不准',
+    too_few: '结果太少',
+    too_many: '结果太多'
+  }
+}
 
 function nowIso() {
   return new Date().toISOString()
@@ -60,6 +80,118 @@ function truncateText(value, maxLength = MAX_TEXT_LENGTH) {
 function normalizeFeedbackType(value) {
   const type = String(value || '').trim()
   return FEEDBACK_TYPES.has(type) ? type : 'other'
+}
+
+function matchResultFeedbackError(message, statusCode = 400) {
+  const error = new Error(message)
+  error.statusCode = statusCode
+  return error
+}
+
+function requiredCorrelationId(value, fieldName, pattern = null) {
+  const text = String(value === undefined || value === null ? '' : value).trim()
+  if (!text) throw matchResultFeedbackError(`${fieldName}必填`)
+  if (text.length > 120 || /[\u0000-\u001f\u007f]/.test(text) || (pattern && !pattern.test(text))) {
+    throw matchResultFeedbackError(`${fieldName}格式无效`)
+  }
+  return text
+}
+
+function assertMatchResultNeed(db, userId, needId) {
+  if (!userId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
+  const needs = Array.isArray(db.rentalNeeds)
+    ? db.rentalNeeds
+    : (Array.isArray(db.clientNeeds) ? db.clientNeeds : [])
+  const need = needs.find((item) => item && item.id === needId)
+  if (!need) throw matchResultFeedbackError('未找到需求单', 404)
+  if (String(need.brokerId || '') !== userId) {
+    throw matchResultFeedbackError('只能反馈自己的需求单', 403)
+  }
+  return need
+}
+
+function safeTraceIdentifier(value, fallback = '') {
+  const text = String(value || '').trim()
+  return text && text.length <= 120 && /^[A-Za-z0-9._:-]+$/.test(text) ? text : fallback
+}
+
+function safeTraceNode(value) {
+  const text = safeTraceIdentifier(value)
+  if (!text || !/[A-Za-z_]/.test(text) || /1[3-9]\d{9}/.test(text)) return ''
+  return text
+}
+
+function safeTraceTimestamp(value) {
+  const text = String(value || '').trim()
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(text) ? text : ''
+}
+
+function compactMatchResultTraceSummary(traceSummary) {
+  if (!traceSummary || typeof traceSummary !== 'object') return null
+  const nodes = (Array.isArray(traceSummary.nodes) ? traceSummary.nodes : [])
+    .map((node) => safeTraceNode(node))
+    .filter(Boolean)
+    .slice(0, 20)
+  const eventCount = Number(traceSummary.eventCount)
+  return {
+    version: safeTraceIdentifier(traceSummary.version, 'assistant-trace-v1'),
+    eventCount: Number.isSafeInteger(eventCount) && eventCount >= 0 ? eventCount : nodes.length,
+    startedAt: safeTraceTimestamp(traceSummary.startedAt),
+    endedAt: safeTraceTimestamp(traceSummary.endedAt),
+    nodes
+  }
+}
+
+function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
+  const normalizedUserId = String(userId || '').trim()
+  if (!normalizedUserId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
+  const needId = requiredCorrelationId(payload.needId, 'needId')
+  assertMatchResultNeed(db, normalizedUserId, needId)
+  const threadId = requiredCorrelationId(payload.threadId, 'threadId', MATCH_RESULT_THREAD_ID_PATTERN)
+  const messageId = requiredCorrelationId(payload.messageId, 'messageId', MATCH_RESULT_MESSAGE_ID_PATTERN)
+  const feedbackType = String(payload.feedbackType || '').trim()
+  const reasons = MATCH_RESULT_FEEDBACK_REASONS[feedbackType]
+  if (!reasons) throw matchResultFeedbackError('反馈类型只能是有用或没用')
+  const reasonCode = String(payload.reasonCode || '').trim()
+  const reason = reasons[reasonCode]
+  if (!reason) throw matchResultFeedbackError('请选择有效的固定反馈原因')
+
+  const existing = db.assistantFeedbacks.find((item) => (
+    item &&
+    item.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION &&
+    item.userId === normalizedUserId &&
+    item.needId === needId &&
+    item.threadId === threadId &&
+    item.messageId === messageId
+  ))
+  if (existing) {
+    if (existing.feedbackType === feedbackType && existing.reasonCode === reasonCode) return existing
+    throw matchResultFeedbackError('该找房结果已提交过不同反馈', 409)
+  }
+
+  const feedback = {
+    id: createFeedbackId(),
+    createdAt: nowIso(),
+    updatedAt: '',
+    status: 'open',
+    userId: normalizedUserId,
+    needId,
+    threadId,
+    messageId,
+    feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
+    feedbackType,
+    reasonCode,
+    reason,
+    traceSummary: compactMatchResultTraceSummary(context.traceSummary),
+    operatorNote: '',
+    resolution: ''
+  }
+
+  db.assistantFeedbacks.unshift(feedback)
+  if (db.assistantFeedbacks.length > MAX_FEEDBACK_ROWS) {
+    db.assistantFeedbacks = db.assistantFeedbacks.slice(0, MAX_FEEDBACK_ROWS)
+  }
+  return feedback
 }
 
 function normalizeFeedbackStatus(value, fallback = 'open') {
@@ -184,6 +316,14 @@ function assistantTraceRows(db, options = {}) {
 function createAssistantFeedback(db, userId, payload = {}, context = {}) {
   db.assistantFeedbacks = Array.isArray(db.assistantFeedbacks) ? db.assistantFeedbacks : []
 
+  const feedbackVersion = String(payload.feedbackVersion || '').trim()
+  if (feedbackVersion && feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
+    throw matchResultFeedbackError('不支持的反馈版本')
+  }
+  if (feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION) {
+    return createMatchResultFeedback(db, userId, payload, context)
+  }
+
   const feedback = {
     id: createFeedbackId(),
     createdAt: nowIso(),
@@ -306,6 +446,9 @@ module.exports = {
     normalizeFeedbackStatus,
     normalizeEvalBehavior,
     normalizeSelectedListingIds,
-    listingIdsFromFeedback
+    listingIdsFromFeedback,
+    compactMatchResultTraceSummary,
+    MATCH_RESULT_FEEDBACK_VERSION,
+    MATCH_RESULT_FEEDBACK_REASONS
   }
 }

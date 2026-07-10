@@ -8,6 +8,24 @@ const {
 } = require('../../utils/listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
+const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
+const MATCH_RESULT_FEEDBACK_REASONS = {
+  helpful: [
+    { code: 'price', label: '价格合适' },
+    { code: 'location', label: '位置合适' },
+    { code: 'layout', label: '户型合适' },
+    { code: 'availability', label: '房态准确' },
+    { code: 'result_count', label: '数量合适' }
+  ],
+  bad_recommendation: [
+    { code: 'price', label: '价格不合适' },
+    { code: 'location', label: '位置不合适' },
+    { code: 'layout', label: '户型不合适' },
+    { code: 'availability', label: '房态不准' },
+    { code: 'too_few', label: '结果太少' },
+    { code: 'too_many', label: '结果太多' }
+  ]
+}
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
@@ -618,9 +636,13 @@ Page({
       retryAction: matchResult.networkFailed ? 'assistant-chat' : 'match',
       retryText: '重试匹配',
       empty: !listings.length && !(matchResult.nextQuestion || matchResult.followUpQuestion),
-      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId),
+      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId) && Boolean(needId) && !needTemporary,
       feedbackLoading: false,
-      feedbackSent: false
+      feedbackSent: false,
+      feedbackType: '',
+      feedbackReasonCode: '',
+      feedbackReasonLabel: '',
+      feedbackReasonOptions: []
     }
     this.appendMessage(assistantMessage, { loading: false, scrollTarget: assistantMessage.id })
   },
@@ -660,31 +682,49 @@ Page({
     this.setData({ messages })
   },
 
-  submitAssistantFeedback(event) {
+  selectAssistantFeedbackType(event) {
     const messageId = event.currentTarget.dataset.messageId
     const feedbackType = event.currentTarget.dataset.type || 'other'
     const message = this.findMessage(messageId) || {}
     if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent) return
+    const feedbackReasonOptions = MATCH_RESULT_FEEDBACK_REASONS[feedbackType] || []
+    if (!feedbackReasonOptions.length) return
+    this.updateMessage(messageId, (item) => {
+      item.feedbackType = feedbackType
+      item.feedbackReasonCode = ''
+      item.feedbackReasonLabel = ''
+      item.feedbackReasonOptions = feedbackReasonOptions
+      return item
+    })
+  },
+
+  submitAssistantFeedback(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    const reasonCode = event.currentTarget.dataset.reasonCode || ''
+    const message = this.findMessage(messageId) || {}
+    const feedbackType = message.feedbackType || ''
+    const reasonOptions = MATCH_RESULT_FEEDBACK_REASONS[feedbackType] || []
+    const reason = reasonOptions.find((item) => item.code === reasonCode)
+    if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent || !reason) return
     this.updateMessage(messageId, (item) => {
       item.feedbackLoading = true
+      item.feedbackReasonCode = reasonCode
       return item
     })
     llmService.submitAssistantFeedback({
+      feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
+      needId: message.needId,
       threadId: message.threadId || this.currentThreadId || '',
       messageId,
       feedbackType,
-      reason: feedbackType === 'helpful' ? '中介认为这条推荐有用' : '中介认为这条推荐不准',
-      sourceText: message.sourceText || '',
-      reply: message.text || '',
-      need: message.need || {},
-      listings: message.listings || [],
-      selectedListingIds: (message.listings || []).map((listing) => listing.id).filter(Boolean),
-      placeResolution: message.placeResolution || null
+      reasonCode
     }).then(() => {
       this.updateMessage(messageId, (item) => {
         item.feedbackLoading = false
         item.feedbackSent = true
         item.feedbackType = feedbackType
+        item.feedbackReasonCode = reasonCode
+        item.feedbackReasonLabel = reason.label
         return item
       })
       wx.showToast({ title: '已记录反馈', icon: 'none' })

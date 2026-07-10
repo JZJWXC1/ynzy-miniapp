@@ -547,6 +547,15 @@ WS   /mini/asr/realtime
 POST /mini/assistant/feedback
 ```
 
+找房结果页提交反馈时使用严格契约 `feedbackVersion=match-result-v1`。请求必须带当前登录中介自己的 `needId`、服务端生成的 `threadId`、当前结果消息 `messageId`、`feedbackType`（仅 `helpful` / `bad_recommendation`）与固定 `reasonCode`。原因码按有用性分组：
+
+- 有用：`price`、`location`、`layout`、`availability`、`result_count`。
+- 没用：`price`、`location`、`layout`、`availability`、`too_few`、`too_many`。
+
+服务端根据原因码生成固定中文标签，不接收自由文本原因；`needId` 缺失、需求不存在、需求不属于当前中介、线程/消息标识不是系统格式、未知反馈版本或原因码与有用性不匹配时分别按边界返回 4xx。同一用户 + `needId` + `threadId` + `messageId` 的相同反馈重复提交幂等返回原记录，不同反馈返回 `409`。
+
+`match-result-v1` 记录只保留关联 ID、有用性、固定原因码/标签和最小服务端 trace 元数据（版本、事件数、时间、节点名）；客户端即使额外提交姓名、电话、地址、原始需求、助手回复、房源、期望或地点对象也全部丢弃。没有 `feedbackVersion` 的历史通用助手反馈仍保留兼容，但不计入找房结果结构化反馈口径；任何非空未知版本直接拒绝，不回退旧通道。
+
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
 生产服务会为 `POST /mini/llm/match` 和 `POST /mini/assistant/chat` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`；助手对话还会记录 `degraded`，用于确认真机登录态是否到达后端。日志不记录请求正文、手机号、地址或房源敏感字段。
 `/mini/llm/match` 与 `/mini/assistant/chat` 的客户端超时都单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
