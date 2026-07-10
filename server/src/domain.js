@@ -4243,16 +4243,27 @@ function normalizeViewingMethod(value) {
   return ''
 }
 
+// 飞书「看房方式密码」列有时填的不是门锁密码，而是「15号空出」这类腾房备注——
+// 这类值不算密码，公司房源按「联系房东」处理（电话走公司统一看房电话）。
+function isViewingVacancyNote(value) {
+  return /空出/.test(String(value || ''))
+}
+
+function realViewingPassword(listing = {}) {
+  const password = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
+  return isViewingVacancyNote(password) ? '' : password
+}
+
 // 存量兼容：未显式指定看房方式的老房源按已有信息推导。
-// 公司房源密码优先（飞书「看房方式密码」列是公司口径权威）；
+// 公司房源跟飞书表走：密码列是真密码 → 密码看房；「几号空出」腾房备注或空 → 联系房东（打公司看房电话）。
 // 非公司房源电话优先（旧详情页只展示房东电话、密码仅后台记录——电话+密码并存的存量必须继续展示电话）。
 function effectiveViewingMethod(listing = {}) {
   const explicit = normalizeViewingMethod(firstText(listing.viewingMethod, listing.showingMethod))
   if (explicit) return explicit
-  const hasPassword = Boolean(firstText(listing.viewingPassword, listing.showingPassword, listing.password))
+  const hasPassword = Boolean(realViewingPassword(listing))
   const hasPhone = Boolean(firstText(listing.landlordPhone, listing.contact))
   if (isCompanyListing(listing)) {
-    return hasPassword ? VIEWING_METHOD_PASSWORD : (hasPhone ? VIEWING_METHOD_LANDLORD : '')
+    return hasPassword ? VIEWING_METHOD_PASSWORD : VIEWING_METHOD_LANDLORD
   }
   return hasPhone ? VIEWING_METHOD_LANDLORD : (hasPassword ? VIEWING_METHOD_PASSWORD : '')
 }
@@ -4260,11 +4271,9 @@ function effectiveViewingMethod(listing = {}) {
 // 详情/编辑展示口径：只含方式名与文案，不含钥匙位置/密码/电话等敏感值本身。
 function listingViewingMethodFields(listing = {}) {
   const method = effectiveViewingMethod(listing)
-  const company = isCompanyListing(listing)
-  const landlordText = company ? '联系公司' : VIEWING_METHOD_LANDLORD
   return {
     viewingMethod: method,
-    viewingMethodText: method === VIEWING_METHOD_LANDLORD ? landlordText : (method || landlordText)
+    viewingMethodText: method || VIEWING_METHOD_LANDLORD
   }
 }
 
@@ -4386,9 +4395,19 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     : firstText(current.viewingPassword, current.showingPassword)
   // 看房方式与钥匙位置同密码语义：显式传空串表示清空，不传才沿用现值
   const viewingMethodInput = firstOwnValue(form, ['viewingMethod', 'showingMethod'])
-  let viewingMethod = viewingMethodInput !== undefined
-    ? normalizeViewingMethod(viewingMethodInput)
-    : normalizeViewingMethod(firstText(current.viewingMethod, current.showingMethod))
+  let viewingMethod
+  if (viewingMethodInput !== undefined) {
+    const rawViewingMethod = String(viewingMethodInput === null || viewingMethodInput === undefined ? '' : viewingMethodInput).trim()
+    viewingMethod = normalizeViewingMethod(rawViewingMethod)
+    // 显式提交了非空但不在枚举/兼容别名内的方式：直接拒绝，不得静默归一成"未指定"混过条件校验
+    if (rawViewingMethod && !viewingMethod) {
+      const error = new Error('看房方式只能是钥匙、密码或联系房东')
+      error.statusCode = 400
+      throw error
+    }
+  } else {
+    viewingMethod = normalizeViewingMethod(firstText(current.viewingMethod, current.showingMethod))
+  }
   const viewingKeyLocationInput = firstOwnValue(form, ['viewingKeyLocation', 'keyLocation'])
   const viewingKeyLocation = viewingKeyLocationInput !== undefined
     ? String(viewingKeyLocationInput || '').trim()

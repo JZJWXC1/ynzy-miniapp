@@ -265,4 +265,58 @@ function baseForm(extra) {
   assert.strictEqual(listing.viewingMethod, '', '依赖密码的显式方式随之回退，不卡 400')
 }
 
+// 14) 公司房源看房方式跟飞书表走：密码列是「几号空出」腾房备注 → 联系房东（电话走公司统一看房电话）；
+//     真密码 → 密码；密码列空 → 联系房东。腾房备注不得当密码渲染。
+{
+  const db = makeDb()
+  const companyBase = {
+    uploaderId: 'ADMIN', status: '在租', lifecycleStatus: 'active',
+    rent: 3200, layout: '整租二室1厅1卫', community: '皋塘运都', building: '3', unit: '1',
+    companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
+    landlordPhone: '公司统一维护', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
+  }
+  db.listings.push(Object.assign({}, companyBase, {
+    id: 'L-VACANT', roomNumber: '601', address: '杭州拱墅区皋塘运都3栋1单元601室', viewingPassword: '15号空出'
+  }))
+  db.listings.push(Object.assign({}, companyBase, {
+    id: 'L-REAL-PWD', roomNumber: '602', address: '杭州拱墅区皋塘运都3栋1单元602室', viewingPassword: '336699#'
+  }))
+  db.listings.push(Object.assign({}, companyBase, {
+    id: 'L-NO-PWD', roomNumber: '603', address: '杭州拱墅区皋塘运都3栋1单元603室', viewingPassword: ''
+  }))
+  const vacant = domain.listingDetail(db, 'L-VACANT')
+  assert.strictEqual(vacant.viewingMethod, '联系房东', '「几号空出」腾房备注不算密码，按联系房东展示')
+  assert.strictEqual(vacant.viewingMethodText, '联系房东')
+  const realPwd = domain.listingDetail(db, 'L-REAL-PWD')
+  assert.strictEqual(realPwd.viewingMethod, '密码', '真密码仍按密码看房')
+  const noPwd = domain.listingDetail(db, 'L-NO-PWD')
+  assert.strictEqual(noPwd.viewingMethod, '联系房东', '公司房源无密码 → 联系房东（打公司看房电话）')
+}
+
+// 15) 非法看房方式枚举必须 400（返修 Codex 2026-07-10 15:49 P2）：
+//     新增/编辑显式提交非空未知方式（即使带联系方式）→ 400 且原记录不变；
+//     字段未传/显式空串维持旧口径；兼容别名（key/password/landlord）仍归一通过。
+{
+  const db = makeDb()
+  assert.throws(
+    () => domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '飞鸽传书', contact: '13800005555' })),
+    (e) => e && e.statusCode === 400 && /看房方式只能是/.test(e.message),
+    '新增非法方式应 400，不得静默归一混过校验'
+  )
+  assert.strictEqual(db.listings.length, 0, '非法方式不落库')
+  domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '联系房东', contact: '13800005555' }))
+  const listingId = db.listings[0].id
+  const before = JSON.stringify(db.listings[0])
+  assert.throws(
+    () => domain.updateNormalListing(db, 'U1', listingId, baseForm({ viewingMethod: 'hacked', contact: '13800005555' })),
+    (e) => e && e.statusCode === 400 && /看房方式只能是/.test(e.message),
+    '编辑非法方式应 400'
+  )
+  assert.strictEqual(JSON.stringify(db.listings[0]), before, '被拒后原记录不变')
+  domain.updateNormalListing(db, 'U1', listingId, baseForm({ viewingMethod: '', contact: '13800005555' }))
+  assert.strictEqual(db.listings[0].viewingMethod, '', '显式空串=清空方式（旧口径），带联系方式仍可保存')
+  domain.addNormalListing(db, 'U1', baseForm({ roomNumber: '702', viewingMethod: 'key', viewingKeyLocation: '前台' }))
+  assert.strictEqual(db.listings[0].viewingMethod, '钥匙', '兼容别名 key 归一为钥匙')
+}
+
 console.log('listing-viewing-method-test passed')
