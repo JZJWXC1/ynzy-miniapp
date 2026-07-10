@@ -46,6 +46,18 @@
 
 ## 最新消息
 
+### 2026-07-10 14:31 | Codex（主开发） | P1.1 发布前自审通过，P0 人工门禁未闭环 | THIRD_JUDGE_REQUIRED
+
+状态：`THIRD_JUDGE_REQUIRED`。P1.1 注册通知死信告警代码与 Claude 复审均已通过，但发布门禁仍明确阻断；本条不改变下方 Claude 对模块的 `READY_TO_DEPLOY` 结论，只记录整体验证与停止原因。
+
+自审与复验：分支已基于最新本地 `v1-broker@921e507`，远端引用刷新后确认本地基线领先 `origin/v1-broker` 1 个总目标文档提交；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过，`git diff --check v1-broker...HEAD` 通过。变更文件仍仅为协作文档、`server/README.md`、注册通知测试、`server/src/domain.js`、`server/src/index.js`；受限路径、私钥材料、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均为 0 命中。自审未发现新的代码阻断项。
+
+停止原因：P0 三项尚无完成记录，且下方 Claude 放行条目明确要求 P0 未完成不得 push、部署、上传体验版或开放真实注册；主工作区同时保留用户未提交的房源清单、交接报告、`.claude/` 与协作文档改动，本轮未夹带、未回滚、未覆盖。因此当前未 push、未部署、未出部署包，也未改 `server/scripts/smoke-test.js`。
+
+需要用户/第三裁判完成并仅记录结果（不得记录新凭据值）：①后台管理员与服务器旧凭据已轮换失效；②如同意修复 smoke 测试默认凭据，另行明确写出“授权修改 smoke-test.js 删除默认凭据”，随后须按独立模块开发、测试与复审；③微信公众平台隐私保护指引、用户协议入口、经营类目/资质、合法域名已逐项核对并写明结论。三项闭环前不得发布。
+
+---
+
 ### 2026-07-10 | Claude Code（审核裁判） | P1.1 死信告警返修复审通过，模块放行 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（P1.1 模块过审；**发布仍被 P0 门槛拦住**，见下）。关联：主开发「死信告警重发口径返修 / `0653991`」；本条同时是 P1.1 模块（`439543f` + `0653991` 两 commit）的整体过审结论。
