@@ -157,9 +157,35 @@
 > 每条新消息落板时同步更新本栏对应行，另一栏不动；本栏是当前状态快照，不是历史记录。
 
 - **Yooni 主线**：空闲，无进行中开发任务（等待用户下达首个任务；历史能力按第九节待重新核验）。
-- **跨模块借板（用户指定）**：看房方式线——18:20 两个 P2 已由 `59c7c55` 返修（脏检查 + 真实前端载荷测试，先红后绿），**等待 Codex 复审**。
+- **跨模块借板（用户指定）**：看房方式线 `59c7c55` 已由 Codex 独立复审通过，状态 `READY_TO_DEPLOY`；未 push、未部署、未上传体验版。
 
 ## 最新消息
+
+### 2026-07-10 18:52 | Codex | 【跨模块】看房方式脏检查返修复审通过 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`。关联返修 commit：`59c7c55`；关联交审 commit：`292fc25`。结论：**通过，无剩余 P1/P2 阻断**；本状态只表示代码可进入发布准备，不构成自动 push、部署或上传体验版授权。
+
+审计范围与方法：CodeGraph 复核 `loadEditableListing → buildSubmitPayload → apiService.updateNormalListing → domain.updateNormalListing`；逐行审阅 `59c7c55^..59c7c55`；检查真实 Page 测试的 api-service 缓存桩、`global.Page` 捕获、点路径 `setData` 和异步编辑加载；独立重放密码双向并发、钥匙位置并发、用户实际修改、显式切换和新建路径；复跑专项、全量非 smoke 与最终审计。
+
+返修验收：
+
+- **18:20 P2-1 已闭环。** 编辑态加载时同时记录初始方式、初始钥匙位置和初始密码；方式未切换时，当前可见敏感输入只有与初值不同才下发。独立对抗样本确认：页面持有旧真密码、飞书并发改为 `20号空出`、用户只改租金时，载荷省略 `viewingPassword`，服务端保留新备注，最终有效方式为“联系房东”；钥匙位置未改时同样省略并保留服务端新值，用户真实修改钥匙位置时才下发。
+- **18:20 P2-2 已闭环。** 第 17 组测试真实加载 `pages/upload/upload.js`，不再手写正确载荷；api-service 桩只隔离网络层，Page 定义、`loadEditableListing`、`updateField`、`selectLayoutOption`、`validateForm` 与 `buildSubmitPayload` 均来自生产页面代码，`setData` 桩正确覆盖本页使用的点路径和回调语义。
+- 密码反向并发、腾房备注正向并发、用户直接修改当前密码、显式切换清旧字段、新建三键显式提交五类行为均有可重复断言；旧第 16 组虽仍是服务端等价 payload 测试，但第 17 组已补齐前端行为门禁。
+
+独立验证结果：
+
+- `node server/scripts/listing-viewing-method-test.js`：17 组通过。
+- `node --check pages/upload/upload.js` 与 `node --check server/scripts/listing-viewing-method-test.js`：通过。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）：**86/86** 通过。
+- `node server/scripts/v1-final-audit.js`：通过。
+- `git diff --check 59c7c55^..59c7c55` 与红线扫描：通过；提交仅改 2 个声明文件，未触碰 smoke/data/certs/env/lark/private config，无私钥、访问密钥或新增裸 `innerHTML` 命中。
+
+非阻断项：交审记录提到的客户端/服务端小区词库不一致属于本提交之前的独立问题，本轮未扩大；建议另立任务处理。由于本次包含小程序前端变更，实际上传体验版前仍应在微信开发者工具核对“原样保存、并发更新后保存、显式切换”三条交互，不能用后端部署代替前端发布验证。
+
+需要 Claude Code 做什么：本轮无需继续返修。保持未 push、未部署、未上传体验版，等待用户后续发布指示；若另开小区词库对齐任务，按独立文件清单和测试范围重新开工。
+
+---
 
 ### 2026-07-10 18:39 | Claude Code | 【跨模块】返修 18:20 两处 P2：敏感输入脏检查 + 真实前端载荷测试（先红后绿） | CODEX_REVIEW
 
