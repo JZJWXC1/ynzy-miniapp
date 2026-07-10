@@ -165,7 +165,15 @@
       <view class="section-title-action tap-target" bindtap="openCategory" data-name="全部">查看全部</view>
     </view>
     <view class="listing-list">
-      <view wx:if="{{!listings.length}}" class="empty-card soft-card">
+      <view wx:if="{{listingsLoadFailed}}" class="empty-card soft-card">
+        <view class="empty-title">推荐房源加载失败</view>
+        <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+        <button class="brand-button" bindtap="retryHomeListings">重新加载</button>
+      </view>
+      <view wx:if="{{!listings.length && listingsLoading}}" class="empty-card soft-card">
+        <view class="empty-title">正在加载推荐房源</view>
+      </view>
+      <view wx:if="{{!listings.length && !listingsLoading && !listingsLoadFailed}}" class="empty-card soft-card">
         <view class="empty-title">暂无推荐房源</view>
         <view class="empty-desc">员工上传真实房源后，这里会自动显示可配房源。</view>
       </view>

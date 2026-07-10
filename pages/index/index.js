@@ -601,6 +601,8 @@ Page({
       }
     ],
     listings: [],
+    listingsLoading: false,
+    listingsLoadFailed: false,
     companySheetSnapshot: null,
     sheetPreview: null,
     sheetSnapshotImagePath: '',
@@ -646,11 +648,29 @@ Page({
       this.loadTodayTasks();
       this.loadCompanySheetSnapshot();
     }
+    this.loadHomeListings();
+  },
+
+  loadHomeListings() {
+    this._homeListingsRequestSeq = (this._homeListingsRequestSeq || 0) + 1
+    const requestSeq = this._homeListingsRequestSeq
+    this.setData({ listingsLoading: true, listingsLoadFailed: false })
     apiService.getHomeListings().then((listings) => {
-      this.setData({ listings })
+      if (requestSeq !== this._homeListingsRequestSeq) return
+      this.setData({
+        listings: listings || [],
+        listingsLoading: false,
+        listingsLoadFailed: false
+      })
     }).catch(() => {
+      if (requestSeq !== this._homeListingsRequestSeq) return
+      this.setData({ listingsLoading: false, listingsLoadFailed: true })
       wx.showToast({ title: '首页房源加载失败', icon: 'none' })
-    });
+    })
+  },
+
+  retryHomeListings() {
+    this.loadHomeListings()
   },
 
   onHide() {

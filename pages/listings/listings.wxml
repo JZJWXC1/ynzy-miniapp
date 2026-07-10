@@ -17,8 +17,14 @@
     ></listing-filter>
 
     <view class="list-summary">
-      <view>{{category}} · {{listings.length}} 套</view>
+      <view>{{loadFailed ? '刷新失败，当前为上次结果' : (category + ' · ' + listings.length + ' 套')}}</view>
       <view>实名查看留痕 · 视频房源</view>
+    </view>
+
+    <view wx:if="{{loadFailed}}" class="empty-card">
+      <view class="empty-title">房源加载失败</view>
+      <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+      <button class="brand-button" bindtap="retryListings">重新加载</button>
     </view>
 
     <view wx:if="{{listings.length}}" class="listing-list">
@@ -47,7 +53,11 @@
       </view>
     </view>
 
-    <view wx:else class="empty-card">
+    <view wx:elif="{{loading}}" class="empty-card">
+      <view class="empty-title">正在加载房源</view>
+    </view>
+
+    <view wx:elif="{{!loading && !loadFailed}}" class="empty-card">
       <view class="empty-title">{{emptyText}}</view>
       <view class="empty-desc">可以调整区域、户型或租金条件后重新筛选。</view>
     </view>

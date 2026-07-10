@@ -97,6 +97,7 @@ Page({
     },
     listings: [],
     loading: false,
+    loadFailed: false,
     emptyText: '暂无符合条件的房源'
   },
 
@@ -191,7 +192,7 @@ Page({
   loadListings() {
     const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeListingRequestId = requestId
-    this.setData({ loading: true })
+    this.setData({ loading: true, loadFailed: false })
     const query = {
       category: this.data.category === '全部' ? '' : this.data.category,
       ...this.data.filters
@@ -210,15 +211,21 @@ Page({
       this.setData({
         listings,
         communityOptions: uniqueCommunities(communityRows),
+        loadFailed: false,
         emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}`
       })
     }).catch(() => {
       if (this.activeListingRequestId !== requestId) return
+      this.setData({ loadFailed: true })
       wx.showToast({ title: '房源加载失败', icon: 'none' })
     }).finally(() => {
       if (this.activeListingRequestId !== requestId) return
       this.setData({ loading: false })
     })
+  },
+
+  retryListings() {
+    this.loadListings()
   },
 
   openListing(event) {

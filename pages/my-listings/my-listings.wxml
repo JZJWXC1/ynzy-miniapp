@@ -44,7 +44,15 @@
       <view class="section-title-main">{{listTitle}}</view>
     </view>
     <view class="listing-list">
-      <view wx:if="{{!listings.length}}" class="empty-card soft-card">
+      <view wx:if="{{loadFailed}}" class="empty-card soft-card">
+        <view class="empty-title">{{isCompanyMode ? '公司房源加载失败' : '我的房源加载失败'}}</view>
+        <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+        <button class="brand-button" bindtap="retryListings">重新加载</button>
+      </view>
+      <view wx:if="{{!listings.length && (companyLoading || ownerLoading)}}" class="empty-card soft-card">
+        <view class="empty-title">正在加载房源</view>
+      </view>
+      <view wx:if="{{!listings.length && !companyLoading && !ownerLoading && !loadFailed}}" class="empty-card soft-card">
         <view class="empty-title">{{emptyTitle}}</view>
         <view class="empty-desc">{{emptyDesc}}</view>
       </view>

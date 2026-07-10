@@ -118,6 +118,7 @@ Page({
     companyCommunityOptions: [],
     ownerFilters: Object.assign({}, defaultOwnerFilters),
     ownerLoading: false,
+    loadFailed: false,
     ownerCommunityOptions: [],
     pageTitle: '我的房源',
     ownerTitle: '我的上传房源',
@@ -155,16 +156,22 @@ Page({
       this.refreshCompanyListings()
       return
     }
+    this._ownerRequestSeq = (this._ownerRequestSeq || 0) + 1
+    const requestSeq = this._ownerRequestSeq
+    this.setData({ ownerLoading: true, loadFailed: false })
     Promise.all([
       apiService.getProfileState(),
       apiService.getOwnedListings()
     ]).then(([profile, listings]) => {
+      if (requestSeq !== this._ownerRequestSeq) return
       // 统计基于我的全部房源（不随筛选变化）；筛选只改变下方展示的列表。
       const all = formatOwnerListings(listings)
+      const sourceStats = profile.sourceStats || []
       this.allOwnerListings = all
       this.setData({
+        loadFailed: false,
         stats: [
-          { label: '在租', value: (profile.sourceStats[0] || {}).value || String(all.length) },
+          { label: '在租', value: (sourceStats[0] || {}).value || String(all.length) },
           { label: '被查看', value: String(all.reduce((total, item) => {
             return total + Number(String(item.views || '').replace(/[^0-9]/g, '') || 0);
           }, 0)) },
@@ -174,7 +181,12 @@ Page({
       });
       this.applyOwnerFilters();
     }).catch(() => {
+      if (requestSeq !== this._ownerRequestSeq) return
+      this.setData({ loadFailed: true })
       wx.showToast({ title: '我的房源加载失败', icon: 'none' })
+    }).finally(() => {
+      if (requestSeq !== this._ownerRequestSeq) return
+      this.setData({ ownerLoading: false })
     });
   },
 
@@ -221,7 +233,7 @@ Page({
     const requestId = `company-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeCompanyRequestId = requestId
     const filters = this.data.companyFilters || defaultCompanyFilters
-    this.setData({ companyLoading: true })
+    this.setData({ companyLoading: true, loadFailed: false })
     const query = {
       category: '公司房源',
       district: filters.district || '',
@@ -246,6 +258,7 @@ Page({
       const maintenanceCount = companyListings.filter((item) => item.needsVerify || (item.verifyStatus && item.verifyStatus !== '正常')).length
       const videoCount = companyListings.filter((item) => item.videoUrl || item.videoKey || item.video).length
       this.setData({
+        loadFailed: false,
         stats: [
           { label: '在租', value: String(companyListings.length) },
           { label: '待维护', value: String(maintenanceCount) },
@@ -256,11 +269,16 @@ Page({
       })
     }).catch(() => {
       if (this.activeCompanyRequestId !== requestId) return
+      this.setData({ loadFailed: true })
       wx.showToast({ title: '公司房源加载失败', icon: 'none' })
     }).finally(() => {
       if (this.activeCompanyRequestId !== requestId) return
       this.setData({ companyLoading: false })
     })
+  },
+
+  retryListings() {
+    this.refresh()
   },
 
   scheduleCompanyFilterRefresh() {
