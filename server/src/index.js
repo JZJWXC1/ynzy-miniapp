@@ -421,15 +421,15 @@ function miniAuthError(message = '登录已过期，请重新登录') {
 }
 
 // ---------- 注册申请飞书提醒 ----------
-// 新注册申请落库后异步推飞书群提醒管理员审核（复用 send-feishu-alert.js 通道）。
-// 三条纪律：①绝不阻塞/影响注册响应（detached spawn + unref + 同步 try/catch + 异步 child.on('error')
-//   双兜——spawn 运行期失败经异步 error 事件上报，缺监听会变 uncaughtException 打崩进程，必须挂）；②子进程 env 走白名单，
-// 只给系统必需变量 + HEALTH_ALERT_*，应用持有的 OSS/飞书/token 密钥一概不透传（与 health-check 同哲学）；
-// ③通知内容手机号打码，不带完整 PII。未配 HEALTH_ALERT_WEBHOOK 时静默跳过（不 spawn、不报错）。
+// 注册响应与通知发送彻底解耦：请求只把持久化申请 ID 排入内存任务，发送结果再回写同一申请。
+// 进程内 Set 防重复执行；DB 中 pending/sending/failed + attempts 支持进程重启续跑并封顶三次。
 const NOTIFY_ENV_SYSTEM_KEYS = [
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'SHELL', 'USER', 'LOGNAME',
   'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR', 'TEMP', 'TMP'
 ]
+const REGISTRATION_NOTIFY_MAX_ATTEMPTS = 3
+const REGISTRATION_NOTIFY_DEFAULT_RETRY_DELAYS_MS = [1000, 5000]
+const registrationNotifyJobs = new Set()
 
 function buildNotifyEnv(sourceEnv) {
   const src = sourceEnv && typeof sourceEnv === 'object' ? sourceEnv : {}
@@ -452,28 +452,129 @@ function maskPhoneForNotify(phone) {
   return `${value.slice(0, 3)}${'*'.repeat(value.length - 7)}${value.slice(-4)}`
 }
 
-function notifyRegistrationApplication(outcome) {
+function sanitizeRegistrationNotifyText(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/[\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/gi, ' ')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .replace(/&/g, '＆')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 50)
+}
+
+function registrationNotifyRetryDelays() {
+  const configured = String(process.env.REGISTRATION_NOTIFY_RETRY_DELAYS_MS || '')
+    .split(',')
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+  return configured.length >= REGISTRATION_NOTIFY_MAX_ATTEMPTS - 1
+    ? configured.slice(0, REGISTRATION_NOTIFY_MAX_ATTEMPTS - 1)
+    : REGISTRATION_NOTIFY_DEFAULT_RETRY_DELAYS_MS
+}
+
+function registrationNotifyErrorSummary(error, fallback) {
+  const code = error && error.code ? String(error.code).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) : ''
+  return code ? `${fallback}(${code})` : fallback
+}
+
+function scheduleRegistrationNotification(requestId, delayMs = 0) {
+  const targetId = String(requestId || '').trim()
+  if (!targetId || registrationNotifyJobs.has(targetId)) return false
+  if (!String(process.env.HEALTH_ALERT_WEBHOOK || '').trim()) return false
+
+  registrationNotifyJobs.add(targetId)
+  const timer = setTimeout(() => runRegistrationNotification(targetId), Math.max(0, Number(delayMs) || 0))
+  timer.unref()
+  return true
+}
+
+function runRegistrationNotification(requestId) {
+  let job
   try {
-    if (!outcome || !outcome.notifyAdmin) return
-    if (!String(process.env.HEALTH_ALERT_WEBHOOK || '').trim()) return
-    // 姓名再兜一层长度截断（domain 已限 ≤50，这里防御性再切），避免任何情况下 argv 过长触发 execve E2BIG。
-    const safeName = String(outcome.applicantName || '').trim().slice(0, 50) || '(未填姓名)'
-    const message = `新的注册申请：${safeName} ${maskPhoneForNotify(outcome.applicantPhone)}，请到管理后台「注册审核」处理，通过后请通知本人可登录`
+    job = dbStore.updateDb((db) => domain.beginRegistrationNotification(db, requestId, REGISTRATION_NOTIFY_MAX_ATTEMPTS))
+  } catch (error) {
+    registrationNotifyJobs.delete(requestId)
+    process.stderr.write(`[register-notify] 领取通知任务失败 id=${requestId}：${(error && error.message) || error}\n`)
+    return
+  }
+  if (!job) {
+    registrationNotifyJobs.delete(requestId)
+    return
+  }
+
+  let settled = false
+  const settle = (ok, errorSummary = '') => {
+    if (settled) return
+    settled = true
+    let state = null
+    try {
+      state = dbStore.updateDb((db) => domain.finishRegistrationNotification(db, requestId, {
+        ok,
+        error: errorSummary,
+        attemptId: job.notifyAttemptId
+      }))
+    } catch (error) {
+      process.stderr.write(`[register-notify] 回写通知状态失败 id=${requestId}：${(error && error.message) || error}\n`)
+    }
+
+    registrationNotifyJobs.delete(requestId)
+    if (state && state.stale) {
+      scheduleRegistrationNotification(requestId)
+      return
+    }
+    const attempts = Number((state && state.notifyAttempts) || job.notifyAttempts || 0)
+    if (!ok && attempts < REGISTRATION_NOTIFY_MAX_ATTEMPTS) {
+      const delays = registrationNotifyRetryDelays()
+      scheduleRegistrationNotification(requestId, delays[Math.max(0, attempts - 1)] || 0)
+    }
+  }
+
+  try {
+    const safeName = sanitizeRegistrationNotifyText(job.name) || '(未填姓名)'
+    const message = `新的注册申请：${safeName} ${maskPhoneForNotify(job.phone)}，请到管理后台「注册审核」处理，通过后请通知本人可登录`
     const child = spawn(process.execPath, [path.join(__dirname, '..', 'scripts', 'send-feishu-alert.js'), message], {
       env: buildNotifyEnv(process.env),
       detached: true,
       stdio: 'ignore',
       windowsHide: true
     })
-    // 关键：spawn 的运行期失败（E2BIG/EMFILE/ENOMEM 等）经异步 'error' 事件上报；不挂监听会变成
-    // uncaughtException → 全局 process.exit(1)，被未认证的注册请求打成崩溃循环。挂上后降级为日志。
-    child.on('error', (error) => {
+    child.once('error', (error) => {
       process.stderr.write(`[register-notify] 通知子进程启动失败：${(error && error.message) || error}\n`)
+      settle(false, registrationNotifyErrorSummary(error, '通知子进程启动失败'))
+    })
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        settle(true)
+        return
+      }
+      const detail = signal ? `通知子进程被信号终止(${String(signal).slice(0, 30)})` : `通知子进程退出码异常(${Number(code) || 1})`
+      process.stderr.write(`[register-notify] ${detail} id=${requestId}\n`)
+      settle(false, detail)
     })
     child.unref()
   } catch (error) {
-    // 通知失败只记日志，绝不影响注册主流程。
     process.stderr.write(`[register-notify] 通知触发失败：${(error && error.message) || error}\n`)
+    settle(false, registrationNotifyErrorSummary(error, '通知触发失败'))
+  }
+}
+
+function notifyRegistrationApplication(outcome) {
+  if (!outcome || !outcome.notifyAdmin) return false
+  return scheduleRegistrationNotification(outcome.registrationRequestId)
+}
+
+function resumePendingRegistrationNotifications() {
+  if (!String(process.env.HEALTH_ALERT_WEBHOOK || '').trim()) return 0
+  try {
+    const ids = domain.pendingRegistrationNotificationIds(dbStore.readDb(), REGISTRATION_NOTIFY_MAX_ATTEMPTS)
+    ids.forEach((requestId) => scheduleRegistrationNotification(requestId))
+    if (ids.length) console.log(`[register-notify] 已恢复 ${ids.length} 个未完成通知任务`)
+    return ids.length
+  } catch (error) {
+    process.stderr.write(`[register-notify] 恢复未完成通知失败：${(error && error.message) || error}\n`)
+    return 0
   }
 }
 
@@ -1125,14 +1226,14 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'POST' && pathname === '/mini/auth/register') {
-    // 注册是免鉴权入口且每次都会跑一次 scrypt 哈希（较贵）：按 IP 限流，既防被拿来放大 CPU/内存做 DoS，
-    // 也压制「按 409/403 差异批量枚举哪些手机号已是内部中介账号」。
+    // 注册是免鉴权入口；新申请/重新申请会跑一次较贵的 scrypt 哈希（待审核同号重复提交不再哈希）：
+    // 按 IP 限流，既防 CPU/内存放大，也压制按 409/403 差异批量枚举内部账号。
     assertGuestRateLimit(req, 'mini-register', 10)
     const body = await parseBody(req)
     // 注册一律不发 token：registerUser 把申请落库（含用户自设密码哈希）后返回 pendingReview，此处据此
     // 返回提示。新号→待审核；已开通号→引导直接登录；已开通未设密码号→引导联系管理员重置。
     const outcome = dbStore.updateDb((nextDb) => domain.registerUser(nextDb, body))
-    // 新申请/重新申请已落库：异步推飞书提醒管理员审核（fire-and-forget，绝不影响注册响应）。
+    // 新申请/重新申请已落库：只排入异步通知任务，飞书成败绝不影响注册响应。
     notifyRegistrationApplication(outcome)
     const error = new Error((outcome && outcome.message) || '注册申请已提交，请等待管理员审核开通账号')
     error.statusCode = (outcome && outcome.statusCode) || 403
@@ -2342,5 +2443,6 @@ server.listen(config.port, config.host, () => {
   console.log(`寓你住一起后端已启动：http://${config.host}:${config.port}`)
   console.log(`版本 ${v.version} commit ${v.shortCommit}${v.branch ? ` (${v.branch})` : ''} built ${v.builtAt || '-'} [来源 ${v.source}]`)
   console.log(`管理后台：http://${config.host}:${config.port}/admin-web/`)
+  resumePendingRegistrationNotifications()
   startFeishuSyncTimer()
 })

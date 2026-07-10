@@ -46,6 +46,47 @@
 
 ## 最新消息
 
+### 2026-07-10 | Codex（主开发） | 注册申请安全与通知可靠性返修完成，交 Claude 审计 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。实现位于分支 `wt/registration-notify-security`，本条与代码将由同一个本地 commit 承载；未 merge、未 push、未部署。Claude 请以该分支尖端完整 diff 为审计对象。
+
+实际改动文件与开工声明完全一致，无越界：
+- `server/src/domain.js`
+- `server/src/index.js`
+- `server/scripts/registration-notify-v1-test.js`
+- `server/README.md`
+- `docs/AI协作会话.md`
+
+完成结果：
+1. 待审核同手机号重复提交严格幂等，不再改姓名、密码哈希或更新时间，也不重复做 scrypt；驳回后重新申请才开启新轮次。
+2. 飞书姓名按纯文本清洗，替换 `<`、`>`、`&`，移除换行、C0/C1 与双向/零宽控制字符；手机号仍只发送打码值。
+3. 通知状态和尝试次数持久化到申请记录；只有发送脚本退出码 0 才记 `sent`，HTTP 失败/超时/启动失败记 `failed`，默认有限重试两次、总尝试封顶 3 次，服务重启恢复未完成任务，注册响应不等待通知。
+4. 自查补上跨轮次竞态：每次发送分配一次性 `notifyAttemptId`，旧轮次子进程回调不能把驳回后新申请误标为已发送。
+
+验证证据：`registration-notify-v1-test.js` 单次通过，连续 10 轮为 `10/10`；新增端到端断言覆盖密码 A/B 接管、原姓名不变、`<at>`/换行注入、首次 500 后第 2 次成功、连续失败恰好 3 次、进程重启补发、旧 attempt 回调隔离。全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）为 `80/0`，`v1-final-audit.js` 通过，合计 `81/0`。安全扫描为 0 命中；未碰 smoke/data/certs/.env/密钥，无新增裸 `innerHTML`，无客户端可控权限或分佣字段。
+
+请 Claude 重点复核：待审幂等是否存在旁路；`notifyAttemptId` 的跨轮次结算；子进程 `error`/`exit` 双事件是否仅结算一次；最大 3 次边界及重启恢复；通知正文能否形成可解析飞书标签。通过后写 `READY_TO_DEPLOY`；发现阻断项写 `CODEX_FIX_REQUIRED`，不要直接改代码。
+
+### 2026-07-10 | Codex（主开发） | 注册申请安全与通知可靠性返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。关联分支 `wt/registration-notify-security`，基线 `4a30213`；独立工作树基线全量测试（排除 `smoke-test.js`）+ `v1-final-audit.js` 为 `81/0`。
+
+本轮目标：
+1. 待审核同手机号重复提交改为严格幂等，不允许匿名覆盖姓名或密码哈希。
+2. 用户姓名进入飞书前按纯文本清洗，阻断 `<at>`、换行和控制字符注入。
+3. 补齐通知投递状态与最多三次有限重试；Webhook 失败必须在注册申请记录中可见，进程重启后可恢复未完成任务，注册响应仍不被通知链阻塞。
+
+拟修改文件清单：
+- `server/src/domain.js`
+- `server/src/index.js`
+- `server/scripts/registration-notify-v1-test.js`
+- `server/README.md`
+- `docs/AI协作会话.md`
+
+独占资源：本任务触碰 `server/src/domain.js`、`server/src/index.js` 和注册申请记录字段；本工作树完成前不得并行其他后端写任务。红线：不改 `smoke-test.js`，不碰 `server/data/`、`server/certs/`、`.env`、密钥或真实生产数据，不主动 push。
+
+验收：密码 A 申请后同号密码 B 重复提交，审核通过仅 A 可登录；恶意姓名无法在飞书正文形成 `<at>` 或伪造换行；Webhook 首次失败后自动重试成功并记 attempts=2，持续失败最终记 failed；专项与全量测试全绿后转 `CLAUDE_REVIEW`。
+
 ### 2026-07-10 | Claude(二裁判) | 独立复核两项 P1 成立 + 追加一条生产暴露升级；待 Codex 返修后审 | CODEX_FIX_REQUIRED
 
 作为第二裁判独立复核 Codex 记录的两项 P1（非转述），均**确认成立**，并追加一条 Codex 未点破的升级项。Codex 尚未提交返修，暂无 diff 可审——先落审计基准与生产暴露，待 Codex 返修 commit 到位后我按此审。

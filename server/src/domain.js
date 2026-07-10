@@ -1186,46 +1186,64 @@ function registerUser(db, payload = {}) {
   }
 
   // 未开通：落库为“待审核”注册申请（含用户自设密码的哈希，审核通过时写入新账号）；此处不发 token，
-  // 路由层据 pendingReview 返回待审核提示。手机号去重：同号已有申请→刷新姓名/密码/时间不重复建；
-  // 已驳回/已通过(账号被删)→重置为待审核允许重新申请。
+  // 路由层据 pendingReview 返回待审核提示。手机号是申请归属凭据：待审核期间的同号重复提交必须严格幂等，
+  // 绝不能覆盖先申请者的姓名或密码；只有已驳回/已通过（账号后来被删）才允许开启一轮重新申请。
   db.registrationRequests = db.registrationRequests || []
-  const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
-  const passwordHash = hashPassword(password)
-  // notifyAdmin：只在「真正产生一条需要管理员处理的新申请」时为 true——新申请或驳回/开通后的重新申请；
-  // 同号在待审核期反复提交只是刷新资料，不重复通知（防轰炸）。路由层据此异步推飞书提醒。
-  let notifyAdmin = false
   const pendingExisted = db.registrationRequests.find((item) => String(item.phone || '') === phone)
-  if (pendingExisted) {
-    pendingExisted.name = name || pendingExisted.name
-    pendingExisted.passwordHash = passwordHash
-    if (pendingExisted.status !== '待审核') {
-      pendingExisted.status = '待审核'
-      pendingExisted.reAppliedAt = nowText
-      delete pendingExisted.rejectReason
-      notifyAdmin = true
+  if (pendingExisted && pendingExisted.status === '待审核') {
+    return {
+      pendingReview: true,
+      statusCode: 403,
+      status: '待审核',
+      notifyAdmin: false,
+      registrationRequestId: pendingExisted.id,
+      message: '已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限'
     }
-    pendingExisted.updatedAt = nowText
+  }
+
+  const createdAt = nowText()
+  const passwordHash = hashPassword(password)
+  let request
+  if (pendingExisted) {
+    request = pendingExisted
+    request.name = name
+    request.passwordHash = passwordHash
+    request.status = '待审核'
+    request.reAppliedAt = createdAt
+    request.updatedAt = createdAt
+    request.notifyStatus = 'pending'
+    request.notifyAttempts = 0
+    delete request.notifyLastAttemptAt
+    delete request.notifySentAt
+    delete request.notifyLastError
+    delete request.notifyAttemptId
+    delete request.rejectReason
+    delete request.reviewedAt
+    delete request.reviewedBy
+    delete request.approvedType
+    delete request.userId
   } else {
-    db.registrationRequests.unshift({
+    request = {
       id: id('R'),
       name,
       phone,
       passwordHash,
       status: '待审核',
       source: 'mini-register',
-      createdAt: nowText,
-      updatedAt: nowText
-    })
-    notifyAdmin = true
+      notifyStatus: 'pending',
+      notifyAttempts: 0,
+      createdAt,
+      updatedAt: createdAt
+    }
+    db.registrationRequests.unshift(request)
   }
-  // applicantName/Phone 仅供路由层组装通知（会打码），随 throw 丢弃、不进客户端响应。
+  // registrationRequestId 仅供路由层排入通知任务，随 throw 丢弃、不进客户端响应。
   return {
     pendingReview: true,
     statusCode: 403,
     status: '待审核',
-    notifyAdmin,
-    applicantName: name,
-    applicantPhone: phone,
+    notifyAdmin: true,
+    registrationRequestId: request.id,
     message: '已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限'
   }
 }
@@ -1340,6 +1358,82 @@ function sanitizeRegistrationRequest(item) {
   const copy = clone(item)
   delete copy.passwordHash
   return copy
+}
+
+function registrationNotifyAttempts(value) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+// 通知发送前原子领取一次尝试。sending 也允许在进程重启后重新领取，提供至少一次送达语义；
+// index.js 的进程内任务集合负责避免同一进程重复领取，持久化 attempts 负责封住最多三次的上限。
+function beginRegistrationNotification(db, requestId, maxAttempts = 3) {
+  const targetId = String(requestId || '').trim()
+  const limit = Math.max(1, Number.parseInt(maxAttempts, 10) || 3)
+  const request = (db.registrationRequests || []).find((item) => item.id === targetId)
+  if (!request || request.status !== '待审核' || request.notifyStatus === 'sent') return null
+
+  const attempts = registrationNotifyAttempts(request.notifyAttempts)
+  if (attempts >= limit) return null
+
+  request.notifyStatus = 'sending'
+  request.notifyAttempts = attempts + 1
+  request.notifyLastAttemptAt = nowText()
+  request.notifyAttemptId = id('RN')
+  delete request.notifyLastError
+  return {
+    id: request.id,
+    name: request.name,
+    phone: request.phone,
+    notifyAttempts: request.notifyAttempts,
+    notifyAttemptId: request.notifyAttemptId
+  }
+}
+
+function finishRegistrationNotification(db, requestId, result = {}) {
+  const targetId = String(requestId || '').trim()
+  const request = (db.registrationRequests || []).find((item) => item.id === targetId)
+  if (!request) return null
+
+  const attemptId = String(result.attemptId || '').trim()
+  if (!attemptId || request.notifyAttemptId !== attemptId) {
+    return {
+      id: request.id,
+      stale: true,
+      notifyStatus: request.notifyStatus,
+      notifyAttempts: registrationNotifyAttempts(request.notifyAttempts)
+    }
+  }
+  delete request.notifyAttemptId
+
+  if (result.ok) {
+    request.notifyStatus = 'sent'
+    request.notifySentAt = nowText()
+    delete request.notifyLastError
+  } else {
+    const summary = String(result.error || '通知发送失败')
+      .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200)
+    request.notifyStatus = 'failed'
+    request.notifyLastError = summary || '通知发送失败'
+  }
+  return {
+    id: request.id,
+    stale: false,
+    notifyStatus: request.notifyStatus,
+    notifyAttempts: registrationNotifyAttempts(request.notifyAttempts)
+  }
+}
+
+function pendingRegistrationNotificationIds(db, maxAttempts = 3) {
+  const limit = Math.max(1, Number.parseInt(maxAttempts, 10) || 3)
+  return (db.registrationRequests || [])
+    .filter((item) => item && item.id && item.status === '待审核')
+    .filter((item) => item.notifyStatus !== 'sent')
+    .filter((item) => registrationNotifyAttempts(item.notifyAttempts) < limit)
+    .map((item) => item.id)
 }
 
 // ---------- 注册审核（需求2） ----------
@@ -4767,6 +4861,9 @@ module.exports = {
   changeOwnPassword,
   listRegistrationRequests,
   reviewRegistration,
+  beginRegistrationNotification,
+  finishRegistrationNotification,
+  pendingRegistrationNotificationIds,
   migrateCompanyListings,
   listingMaintenanceRule,
   setListingMaintenanceRule,

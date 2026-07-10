@@ -1,6 +1,6 @@
-// 注册申请飞书提醒：新申请/驳回后重申请→异步推群提醒管理员；待审核期重复提交不重复轰炸；
-// 已开通号(409)不通知；通知内容手机号打码不带完整 PII；未配 webhook 时注册完全不受影响。
-// 本地 http 桩当假 webhook（真收 send-feishu-alert.js 发的请求），真起服务端到端验证。
+// 注册申请安全与通知可靠性端到端回归：
+// 1. 待审核同号重复提交不得覆盖原姓名/密码；2. 飞书文本不得注入 at/换行；
+// 3. 通知失败最多重试 3 次并落库状态；4. 进程重启后恢复未完成通知。
 const assert = require('assert')
 const fs = require('fs')
 const http = require('http')
@@ -8,6 +8,7 @@ const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 const { hashPassword } = require('../src/auth-util')
+const domain = require('../src/domain')
 
 const serverDir = path.resolve(__dirname, '..')
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-reg-notify-'))
@@ -20,6 +21,14 @@ const EXISTING_PASSWORD = 'exist-pass-123'
 const APPLY_PHONE = '13900000062'
 const APPLY_NAME = '通知测试申请人'
 const NOHOOK_PHONE = '13900000063'
+const TAKEOVER_PHONE = '13900000064'
+const TAKEOVER_NAME = '原申请人'
+const TAKEOVER_PASSWORD = 'original-pass-123'
+const ATTACKER_PASSWORD = 'attacker-pass-456'
+const INJECTION_PHONE = '13900000065'
+const RETRY_PHONE = '13900000066'
+const EXHAUST_PHONE = '13900000067'
+const RECOVERY_PHONE = '13900000068'
 
 function seedDb() {
   const db = {
@@ -35,6 +44,10 @@ function seedDb() {
     ]
   }
   fs.writeFileSync(dataFile, JSON.stringify(db, null, 2), 'utf8')
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function request(method, targetPath, body, headers = {}) {
@@ -60,26 +73,29 @@ function request(method, targetPath, body, headers = {}) {
   })
 }
 
-async function waitForServer() {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 12000) {
-    try {
-      const res = await request('GET', '/healthz')
-      if (res.statusCode === 200) return true
-    } catch (error) {}
-    await new Promise((resolve) => setTimeout(resolve, 150))
-  }
-  return false
-}
-
-// 通知是 detached spawn 的子进程发出的，异步到达：轮询等桩收到第 n 条（上限 8s）。
-async function waitForHits(hits, count, ms = 8000) {
+async function waitFor(check, ms = 8000, intervalMs = 80) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < ms) {
-    if (hits.length >= count) return true
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    const value = await check()
+    if (value) return value
+    await sleep(intervalMs)
   }
-  return hits.length >= count
+  return null
+}
+
+async function waitForServer() {
+  return Boolean(await waitFor(async () => {
+    try {
+      const res = await request('GET', '/healthz')
+      return res.statusCode === 200
+    } catch (error) {
+      return false
+    }
+  }, 12000, 150))
+}
+
+async function waitForHits(hits, count, ms = 8000) {
+  return Boolean(await waitFor(() => hits.length >= count, ms, 80))
 }
 
 function spawnServer(extraEnv) {
@@ -92,27 +108,100 @@ function spawnServer(extraEnv) {
       AUTH_TOKEN_SECRET: 'reg-notify-secret',
       ADMIN_TOKEN_SECRET: 'reg-notify-admin',
       V1_DISABLE_LEGACY_ROUTES: '1',
+      REGISTRATION_NOTIFY_RETRY_DELAYS_MS: '40,80',
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   })
   let output = ''
-  child.stdout.on('data', (c) => { output += c.toString() })
-  child.stderr.on('data', (c) => { output += c.toString() })
+  child.stdout.on('data', (chunk) => { output += chunk.toString() })
+  child.stderr.on('data', (chunk) => { output += chunk.toString() })
   return { child, outputRef: () => output }
 }
 
+async function stopServer(server) {
+  if (!server || server.child.exitCode !== null) return
+  await new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(finish, 2500)
+    server.child.once('exit', finish)
+    server.child.kill()
+  })
+}
+
+async function adminLogin() {
+  const login = await request('POST', '/admin/auth/login', { account: 'super1', password: 'super1pass' })
+  assert.strictEqual(login.statusCode, 200, '超管应能登录')
+  return { Authorization: `Bearer ${login.body.data.token}` }
+}
+
+async function registrationByPhone(superAuth, phone) {
+  const list = await request('GET', '/admin/registrations', null, superAuth)
+  assert.strictEqual(list.statusCode, 200, '超管应能读取注册审核列表')
+  return (list.body.data.requests || []).find((item) => item.phone === phone)
+}
+
+async function waitForRegistration(superAuth, phone, predicate, ms = 8000) {
+  return waitFor(async () => {
+    const item = await registrationByPhone(superAuth, phone)
+    return item && predicate(item) ? item : null
+  }, ms, 100)
+}
+
+function notificationText(hit) {
+  return String((hit && hit.content && hit.content.text) || '')
+}
+
+function assertOldAttemptCannotFinishNewApplicationCycle() {
+  const db = { users: [], registrationRequests: [] }
+  const first = domain.registerUser(db, {
+    name: '第一轮申请人',
+    phone: '13900000071',
+    password: 'first-cycle-pass'
+  })
+  const oldJob = domain.beginRegistrationNotification(db, first.registrationRequestId, 3)
+  assert.ok(oldJob && oldJob.notifyAttemptId, '第一轮通知应领取独立 attemptId')
+  domain.reviewRegistration(db, { id: first.registrationRequestId, action: 'reject', reason: '竞态测试' })
+  domain.registerUser(db, {
+    name: '第二轮申请人',
+    phone: '13900000071',
+    password: 'second-cycle-pass'
+  })
+
+  const staleFinish = domain.finishRegistrationNotification(db, first.registrationRequestId, {
+    ok: true,
+    attemptId: oldJob.notifyAttemptId
+  })
+  const current = db.registrationRequests.find((item) => item.id === first.registrationRequestId)
+  assert.strictEqual(staleFinish.stale, true, '旧发送回调必须被识别为过期')
+  assert.strictEqual(current.notifyStatus, 'pending', '旧发送成功不得把新申请轮次误标为 sent')
+  assert.strictEqual(current.notifyAttempts, 0, '旧发送回调不得污染新轮次尝试次数')
+}
+
 async function run() {
-  // 假 webhook 桩：记录 send-feishu-alert.js 发来的每条消息
+  assertOldAttemptCannotFinishNewApplicationCycle()
   const hits = []
+  let failResponsesRemaining = 0
+  let failAllResponses = false
   const stub = http.createServer((req, res) => {
     let raw = ''
-    req.on('data', (c) => { raw += c })
+    req.on('data', (chunk) => { raw += chunk })
     req.on('end', () => {
-      try { hits.push(JSON.parse(raw)) } catch (error) { hits.push({ raw }) }
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ code: 0 }))
+      let payload
+      try { payload = JSON.parse(raw) } catch (error) { payload = { raw } }
+      const shouldFail = failAllResponses || failResponsesRemaining > 0
+      if (failResponsesRemaining > 0) failResponsesRemaining -= 1
+      payload.__responseStatus = shouldFail ? 500 : 200
+      hits.push(payload)
+      res.writeHead(shouldFail ? 500 : 200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(shouldFail ? { code: 1, msg: 'test failure' } : { code: 0 }))
     })
   })
   await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve))
@@ -123,78 +212,184 @@ async function run() {
 
   try {
     assert.ok(await waitForServer(), `注册提醒测试服务未启动：${server.outputRef()}`)
+    const superAuth = await adminLogin()
 
-    // 1. 新注册申请 → 403 + 一条群通知（含姓名 + 打码手机号，不含完整手机号）
+    // 新申请通知成功，且持久化为 sent。
     const apply = await request('POST', '/mini/auth/register', { name: APPLY_NAME, phone: APPLY_PHONE, password: 'apply-pass-123' })
     assert.strictEqual(apply.statusCode, 403, '新申请应 403 待审核')
     assert.ok(await waitForHits(hits, 1), '新申请应触发 1 条飞书通知')
-    const text1 = String((hits[0].content && hits[0].content.text) || '')
+    const text1 = notificationText(hits[0])
     assert.ok(text1.includes(APPLY_NAME), '通知应含申请人姓名')
     assert.ok(text1.includes('139****0062'), '通知手机号应打码为 139****0062')
     assert.ok(!text1.includes(APPLY_PHONE), '通知绝不能含完整手机号')
     assert.ok(text1.includes('注册审核'), '通知应指引到后台注册审核')
+    const sent = await waitForRegistration(superAuth, APPLY_PHONE, (item) => item.notifyStatus === 'sent')
+    assert.ok(sent, '通知成功后申请应持久化 notifyStatus=sent')
+    assert.strictEqual(sent.notifyAttempts, 1, '首次发送成功只应尝试 1 次')
 
-    // 2. 待审核期重复提交 → 仍 403，但不重复通知（防轰炸）
+    // 待审核期重复提交不重复通知。
     await request('POST', '/mini/auth/register', { name: APPLY_NAME, phone: APPLY_PHONE, password: 'apply-pass-123' })
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    await sleep(300)
     assert.strictEqual(hits.length, 1, `待审核重复提交不应再通知（实收 ${hits.length} 条）`)
 
-    // 3. 管理员驳回后重新申请 → 再通知一条
-    const login = await request('POST', '/admin/auth/login', { account: 'super1', password: 'super1pass' })
-    assert.strictEqual(login.statusCode, 200, '超管应能登录')
-    const superAuth = { Authorization: `Bearer ${login.body.data.token}` }
-    const list = await request('GET', '/admin/registrations', null, superAuth)
-    const target = (list.body.data.requests || []).find((item) => item.phone === APPLY_PHONE)
-    assert.ok(target, '后台应能看到该申请')
+    // 驳回后重新申请属于新一轮审核，应重置通知状态并再发一条。
+    const target = await registrationByPhone(superAuth, APPLY_PHONE)
     const reject = await request('POST', `/admin/registrations/${target.id}/review`, { action: 'reject', reason: '通知测试' }, superAuth)
     assert.strictEqual(reject.statusCode, 200, '驳回应 200')
     const reApply = await request('POST', '/mini/auth/register', { name: APPLY_NAME, phone: APPLY_PHONE, password: 'apply-pass-456' })
     assert.strictEqual(reApply.statusCode, 403, '重新申请应 403 回待审核')
     assert.ok(await waitForHits(hits, 2), '驳回后重新申请应再触发 1 条通知')
+    const resent = await waitForRegistration(superAuth, APPLY_PHONE, (item) => item.notifyStatus === 'sent' && item.notifyAttempts === 1)
+    assert.ok(resent, '重新申请的新通知轮次应成功并从第 1 次重新计数')
 
-    // 4. 已开通号再注册（409 引导登录）→ 不通知
+    // 已开通号再注册只引导登录，不发通知。
     const existed = await request('POST', '/mini/auth/register', { name: '既有中介', phone: EXISTING_PHONE, password: 'whatever-123' })
     assert.strictEqual(existed.statusCode, 409, '已开通号应 409')
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    await sleep(300)
     assert.strictEqual(hits.length, 2, `已开通号注册不应通知（实收 ${hits.length} 条）`)
 
-    // 5. 全程 PII 复查：所有通知都不含任何完整 11 位手机号
+    // P1：同号待审核申请必须严格幂等，后来的姓名和密码都不能接管原申请。
+    const takeoverApply = await request('POST', '/mini/auth/register', {
+      name: TAKEOVER_NAME,
+      phone: TAKEOVER_PHONE,
+      password: TAKEOVER_PASSWORD
+    })
+    assert.strictEqual(takeoverApply.statusCode, 403, '原申请应进入待审核')
+    assert.ok(await waitForHits(hits, 3), '原申请应发送通知')
+    const takeoverDuplicate = await request('POST', '/mini/auth/register', {
+      name: '冒名覆盖者',
+      phone: TAKEOVER_PHONE,
+      password: ATTACKER_PASSWORD
+    })
+    assert.strictEqual(takeoverDuplicate.statusCode, 403, '同号重复提交仍返回待审核')
+    await sleep(300)
+    assert.strictEqual(hits.length, 3, '同号重复提交不得再次通知')
+    const protectedRequest = await registrationByPhone(superAuth, TAKEOVER_PHONE)
+    assert.strictEqual(protectedRequest.name, TAKEOVER_NAME, '待审核申请姓名不得被后来同号请求覆盖')
+    const approve = await request('POST', `/admin/registrations/${protectedRequest.id}/review`, { action: 'approve', type: 'broker' }, superAuth)
+    assert.strictEqual(approve.statusCode, 200, '原申请应能审核通过')
+    const originalLogin = await request('POST', '/mini/auth/login', { phone: TAKEOVER_PHONE, password: TAKEOVER_PASSWORD })
+    assert.strictEqual(originalLogin.statusCode, 200, '审核后必须仍由原申请密码登录')
+    const attackerLogin = await request('POST', '/mini/auth/login', { phone: TAKEOVER_PHONE, password: ATTACKER_PASSWORD })
+    assert.strictEqual(attackerLogin.statusCode, 403, '后来提交的攻击者密码绝不能生效')
+
+    // P1：用户姓名不能构造飞书 <at>、换行或控制字符来伪造系统消息。
+    const injectedName = '正常申请人<at user_id="all">所有人</at>\n伪造通知\r下一行'
+    const injectionApply = await request('POST', '/mini/auth/register', {
+      name: injectedName,
+      phone: INJECTION_PHONE,
+      password: 'injection-pass-123'
+    })
+    assert.strictEqual(injectionApply.statusCode, 403, '含特殊字符的合法长度姓名仍可提交')
+    assert.ok(await waitForHits(hits, 4), '特殊字符申请应正常通知')
+    const injectionText = notificationText(hits[3])
+    assert.ok(!injectionText.includes('<at'), '通知正文不得保留可执行的飞书 <at> 标签')
+    assert.ok(!injectionText.includes('<') && !injectionText.includes('>'), '通知正文不得保留标签边界字符')
+    assert.ok(!injectionText.includes('\r'), '通知正文不得含回车控制字符')
+    assert.strictEqual((injectionText.match(/\n/g) || []).length, 1, '除告警头固定分隔外，用户输入不得新增通知行')
+    assert.ok(!injectionText.includes(INJECTION_PHONE), '注入场景也不得泄露完整手机号')
+
+    // P2：webhook 首次 500 后自动重试，第二次成功并落库 attempts=2/sent。
+    failResponsesRemaining = 1
+    const retryStart = hits.length
+    const retryApply = await request('POST', '/mini/auth/register', {
+      name: '重试成功申请人',
+      phone: RETRY_PHONE,
+      password: 'retry-pass-123'
+    })
+    assert.strictEqual(retryApply.statusCode, 403, '通知失败不得影响注册响应')
+    assert.ok(await waitForHits(hits, retryStart + 2), '首次失败后应自动发起第二次通知')
+    assert.strictEqual(hits[retryStart].__responseStatus, 500, '第一次通知应命中测试桩 500')
+    assert.strictEqual(hits[retryStart + 1].__responseStatus, 200, '第二次通知应成功')
+    const retried = await waitForRegistration(superAuth, RETRY_PHONE, (item) => item.notifyStatus === 'sent')
+    assert.ok(retried, '重试成功后应落库 sent')
+    assert.strictEqual(retried.notifyAttempts, 2, '首败后成功应记录 2 次尝试')
+
+    // P2：连续失败最多 3 次，最终状态可见，不能无限重试。
+    failAllResponses = true
+    const exhaustStart = hits.length
+    const exhaustApply = await request('POST', '/mini/auth/register', {
+      name: '连续失败申请人',
+      phone: EXHAUST_PHONE,
+      password: 'exhaust-pass-123'
+    })
+    assert.strictEqual(exhaustApply.statusCode, 403, '连续通知失败也不得影响注册响应')
+    assert.ok(await waitForHits(hits, exhaustStart + 3), '连续失败应尝试满 3 次')
+    const exhausted = await waitForRegistration(superAuth, EXHAUST_PHONE, (item) => item.notifyStatus === 'failed' && item.notifyAttempts === 3)
+    assert.ok(exhausted, '达到上限后应落库 failed/attempts=3')
+    assert.ok(String(exhausted.notifyLastError || '').length > 0, '最终失败应留下不含密钥的错误摘要')
+    await sleep(250)
+    assert.strictEqual(hits.length, exhaustStart + 3, '达到 3 次上限后不得继续发送')
+    failAllResponses = false
+
+    // 全程 PII 复查：所有通知都不含任何完整 11 位手机号。
     hits.forEach((hit, index) => {
-      const text = String((hit.content && hit.content.text) || '')
+      const text = notificationText(hit)
       assert.ok(!/1\d{10}/.test(text), `通知#${index} 不得含完整手机号：${text}`)
     })
 
-    // 6. 崩溃防线（对抗审发现的严重项）：超长 name 注册被 400 拦在通知路径之前，
-    //    即便到达 spawn，子进程 'error' 监听也把 execve E2BIG 降级为日志——服务必须保持健康、不重启。
-    const before = hits.length
-    const longName = 'x'.repeat(200000) // ~200KB，远超 execve 单 argv 128KiB 上限
-    const longApply = await request('POST', '/mini/auth/register', { name: longName, phone: '13900000064', password: 'longname-pass-123' })
-    assert.strictEqual(longApply.statusCode, 400, '超长 name 应被 400 拦截（长度上限）')
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    assert.strictEqual(hits.length, before, '被拦的注册不应触发通知')
+    // 长姓名在通知链前被拒，服务保持健康。
+    const beforeLongName = hits.length
+    const longApply = await request('POST', '/mini/auth/register', {
+      name: 'x'.repeat(200000),
+      phone: '13900000070',
+      password: 'longname-pass-123'
+    })
+    assert.strictEqual(longApply.statusCode, 400, '超长 name 应被 400 拦截')
+    await sleep(200)
+    assert.strictEqual(hits.length, beforeLongName, '被拦的注册不应触发通知')
     const alive = await request('GET', '/healthz')
-    assert.strictEqual(alive.statusCode, 200, '超长 name 注册后服务必须仍健康（未被打崩重启）')
-    // 崩溃循环会重置内存限流计数并让后续请求异常；再打一条正常查询确认进程连续存活
-    const alive2 = await request('GET', '/healthz')
-    assert.strictEqual(alive2.statusCode, 200, '服务应连续健康（无进程重启迹象）')
+    assert.strictEqual(alive.statusCode, 200, '超长 name 注册后服务必须仍健康')
   } finally {
-    server.child.kill()
+    await stopServer(server)
   }
 
-  // 6. 未配 webhook：注册流程完全不受影响（403 正常、无通知、服务不报错崩溃）
+  // P2：进程重启后扫描并恢复待发送任务，不依赖内存队列。
+  const recoveryDb = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+  recoveryDb.registrationRequests.unshift({
+    id: 'R-RECOVERY',
+    name: '重启恢复申请人',
+    phone: RECOVERY_PHONE,
+    passwordHash: hashPassword('recovery-pass-123'),
+    status: '待审核',
+    source: 'mini-register',
+    notifyStatus: 'pending',
+    notifyAttempts: 0,
+    createdAt: '2026/7/10 01:00:00',
+    updatedAt: '2026/7/10 01:00:00'
+  })
+  fs.writeFileSync(dataFile, JSON.stringify(recoveryDb, null, 2), 'utf8')
+  const recoveryStart = hits.length
+  server = spawnServer({ HEALTH_ALERT_WEBHOOK: webhook })
+  try {
+    assert.ok(await waitForServer(), `重启恢复测试服务未启动：${server.outputRef()}`)
+    assert.ok(await waitForHits(hits, recoveryStart + 1), '重启后应恢复未完成的注册通知')
+    const superAuth = await adminLogin()
+    const recovered = await waitForRegistration(superAuth, RECOVERY_PHONE, (item) => item.notifyStatus === 'sent')
+    assert.ok(recovered, '重启恢复任务发送成功后应持久化 sent')
+    assert.strictEqual(recovered.notifyAttempts, 1, '恢复任务首次发送成功应记录 1 次')
+  } finally {
+    await stopServer(server)
+  }
+
+  // 未配 webhook：注册主流程完全不受影响，也不误发通知。
   server = spawnServer({ HEALTH_ALERT_WEBHOOK: '' })
   try {
     assert.ok(await waitForServer(), `无 webhook 服务未启动：${server.outputRef()}`)
     const before = hits.length
-    const apply = await request('POST', '/mini/auth/register', { name: '无钩子申请人', phone: NOHOOK_PHONE, password: 'nohook-pass-123' })
+    const apply = await request('POST', '/mini/auth/register', {
+      name: '无钩子申请人',
+      phone: NOHOOK_PHONE,
+      password: 'nohook-pass-123'
+    })
     assert.strictEqual(apply.statusCode, 403, '无 webhook 时新申请仍应 403 待审核')
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await sleep(300)
     assert.strictEqual(hits.length, before, '无 webhook 不应有任何通知')
     const health = await request('GET', '/healthz')
     assert.strictEqual(health.statusCode, 200, '服务应保持健康')
   } finally {
-    server.child.kill()
-    stub.close()
+    await stopServer(server)
+    await new Promise((resolve) => stub.close(resolve))
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 }
@@ -202,6 +397,6 @@ async function run() {
 run().then(() => {
   console.log('registration-notify-v1-test passed')
 }).catch((error) => {
-  console.error(`registration-notify-v1-test failed: ${error.message}`)
+  console.error(`registration-notify-v1-test failed: ${error.stack || error.message}`)
   process.exit(1)
 })
