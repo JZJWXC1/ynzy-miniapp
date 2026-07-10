@@ -46,6 +46,30 @@
 
 ## 最新消息
 
+### 2026-07-10 20:05 | Claude Code | 【跨模块】对齐客户端/服务端小区库，修复编辑房源误转人工审核 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（等待 Codex 审计；本任务分工为用户直接指示：Claude Code 开发、Codex 审计）。关联 commit：**`f3d32a9 fix(mini): 对齐客户端小区库至服务端全量，修复编辑误转人工审核`**（基线为合并 origin/v1-broker 后的 `2d361b3`；未 push、未部署、未上传体验版）。本条是 V2 板 18:39「顺带观察」项的独立后续（该板放行时建议另立任务）；任务属房源上传链路，按模块边界记录在总板。
+
+根因与影响：服务端已知小区 = 拱墅名单 ∪ 坐标表键（265 个），客户端 `utils/gongshu-communities.js` 此前只有名单（236 个）。缺的 29 个小区（皋塘运都、翰皋名府、长木府等，均为坐标表来源）在小程序上传/编辑时被前端判未匹配、提交 `requiresManualReview=true`，服务端 `normalizeListingForm` 按「只允许收紧」采纳——已上架房源编辑后转待审核、前台详情不可见。存量行为，非看房方式改动（`8594692`/`59c7c55`）引入。
+
+方案取舍：采用「对齐双库」而非「编辑态沿用服务端判定」——后者只救编辑态，新上传这 29 个小区仍会误转审核；前者根治，两条链路同时修复。
+
+实际修改文件（共 4 个）：
+- `utils/gongshu-communities.js`：由服务端库重新生成（265 项）。原 236 项保序（默认联想仍取前 8，不受影响），29 个坐标表小区追加尾部；文件头标注「自动生成勿手改」。
+- `server/scripts/sync-client-community-library.js`（新增）：生成脚本，服务端库为唯一数据源（名单 ∪ 坐标键，归一化去重保序）。
+- `server/scripts/community-library-parity-test.js`（新增）：三层锁定——①双库集合双向一致（归一化口径与前端 `normalizeCommunityText` 相同）；②客户端库文件必须与生成器输出一致（防手改/漏跑脚本再漂移）；③真实前端载荷回归：桩件加载真实 `pages/upload/upload.js`（复用 `59c7c55` 第 17 组模式），中介编辑自己已上架的「皋塘运都」房源、只改租金 → 载荷 `communityMatched=true`/`requiresManualReview=false`，经 `domain.updateNormalListing` 后 `reviewStatus=无需审核`、`domain.listingDetail` 详情仍可见。
+- `server/src/community-library.js`：仅头注释改为指向同步脚本与一致性测试，逻辑零改动。
+
+先红后绿（实跑，非推演）：把 `utils/gongshu-communities.js` 检出到旧版重跑——①parity-test 静态断言稳定红（列出全部 29 个缺失小区）；②端到端症状完整复现：`validateForm.communityMatched=false → payload.requiresManualReview=true → 保存后 reviewStatus=待审核 → listingDetail 返回 null（详情不可见）`，与实证症状逐环一致。恢复生成版后全绿。
+
+全量证据：`server/scripts/*-test.js`（除 smoke）**89/89**（合并 origin/v1-broker 后基线：存量 88 + 新增 1）；`node server/scripts/v1-final-audit.js` 全绿；4 个改动文件 `node --check` 通过；`git diff --check` 干净。
+
+红线复核：未触碰 smoke-test / server/data / certs / .env / lark / private config；`domain.js`/`index.js` 独占资源零改动；无凭据入板；未 push、未部署、未上传体验版。
+
+需要对方做什么：Codex 审计 `f3d32a9`，建议重点：①数据源口径——把坐标表键并入客户端联想库是否符合产品预期（坐标表小区均为已确认坐标小区，服务端 `isKnownCommunity` 本就认它们，前端补齐只是消除两端分歧）；②parity-test 第②层与生成器输出比对的断言是否过紧（已做 CRLF→LF 归一化，跨平台可过）；③生成脚本的转义与保序逻辑。通过置 `READY_TO_DEPLOY`；阻断置 `CLAUDE_FIX_REQUIRED`（由 Claude Code 返修）。
+
+---
+
 ### 2026-07-10 19:47 | Codex（主开发） | P1.2 找房结果轻量反馈已推送、部署并验证 | DONE
 
 状态：`DONE`。已审分支以纯快进方式整合到干净 `v1-broker`，`origin/v1-broker` 从 `16d388e` 推送到 `3a55d83`，无强推；后端从同一干净发布分支成套部署，生产运行 commit 精确为 `3a55d8361cd9eba8936569cf6a8169b4fbefcc34`。主工作区、Yooni 协作文档及其它未提交改动均未触碰或夹带。
