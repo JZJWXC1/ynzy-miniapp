@@ -39,6 +39,8 @@ const MAX_LISTINGS = 8
 const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
 const MATCH_RESULT_THREAD_ID_PATTERN = /^(?:AST-[a-z0-9]+-[a-z0-9]{6}|LOCAL-AST-\d{10,16}(?:-\d{1,5})?)$/i
 const MATCH_RESULT_MESSAGE_ID_PATTERN = /^assistant-\d{10,16}-\d{1,5}$/
+const SYSTEM_ID_MIN_TIMESTAMP_MS = 1000000000000
+const SYSTEM_ID_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
 const MATCH_RESULT_FEEDBACK_REASONS = {
   helpful: {
     price: '价格合适',
@@ -97,6 +99,51 @@ function requiredCorrelationId(value, fieldName, pattern = null) {
   return text
 }
 
+function ownMapValue(map, key) {
+  return map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined
+}
+
+function threadTimestampFromId(threadId) {
+  const serverMatch = String(threadId || '').match(/^AST-([a-z0-9]+)-[a-z0-9]{6}$/i)
+  if (serverMatch) return parseInt(serverMatch[1], 36)
+  const localMatch = String(threadId || '').match(/^LOCAL-AST-(\d{10,16})(?:-\d{1,5})?$/)
+  return localMatch ? Number(localMatch[1]) : NaN
+}
+
+function messageTimestampFromId(messageId) {
+  const match = String(messageId || '').match(/^assistant-(\d{10,16})-\d{1,5}$/)
+  return match ? Number(match[1]) : NaN
+}
+
+function assertSystemTimestamp(timestamp, fieldName) {
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < SYSTEM_ID_MIN_TIMESTAMP_MS ||
+    timestamp > Date.now() + SYSTEM_ID_MAX_FUTURE_SKEW_MS
+  ) {
+    throw matchResultFeedbackError(`${fieldName}格式无效`)
+  }
+}
+
+function assertOwnedMatchResultThread(db, userId, threadId) {
+  const trace = (Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []).find((item) => (
+    item &&
+    item.threadId === threadId &&
+    String(item.userId || '').trim() === userId
+  ))
+  if (!trace) throw matchResultFeedbackError('threadId无当前用户的服务端追踪记录')
+  return trace
+}
+
+function enforceAssistantFeedbackRetention(db) {
+  let legacyRows = 0
+  db.assistantFeedbacks = db.assistantFeedbacks.filter((item) => {
+    if (item && item.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION) return true
+    legacyRows += 1
+    return legacyRows <= MAX_FEEDBACK_ROWS
+  })
+}
+
 function assertMatchResultNeed(db, userId, needId) {
   if (!userId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
   const needs = Array.isArray(db.rentalNeeds)
@@ -149,12 +196,15 @@ function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
   assertMatchResultNeed(db, normalizedUserId, needId)
   const threadId = requiredCorrelationId(payload.threadId, 'threadId', MATCH_RESULT_THREAD_ID_PATTERN)
   const messageId = requiredCorrelationId(payload.messageId, 'messageId', MATCH_RESULT_MESSAGE_ID_PATTERN)
+  assertSystemTimestamp(threadTimestampFromId(threadId), 'threadId')
+  assertSystemTimestamp(messageTimestampFromId(messageId), 'messageId')
+  assertOwnedMatchResultThread(db, normalizedUserId, threadId)
   const feedbackType = String(payload.feedbackType || '').trim()
-  const reasons = MATCH_RESULT_FEEDBACK_REASONS[feedbackType]
+  const reasons = ownMapValue(MATCH_RESULT_FEEDBACK_REASONS, feedbackType)
   if (!reasons) throw matchResultFeedbackError('反馈类型只能是有用或没用')
   const reasonCode = String(payload.reasonCode || '').trim()
-  const reason = reasons[reasonCode]
-  if (!reason) throw matchResultFeedbackError('请选择有效的固定反馈原因')
+  const reason = ownMapValue(reasons, reasonCode)
+  if (typeof reason !== 'string' || !reason) throw matchResultFeedbackError('请选择有效的固定反馈原因')
 
   const existing = db.assistantFeedbacks.find((item) => (
     item &&
@@ -182,15 +232,11 @@ function createMatchResultFeedback(db, userId, payload = {}, context = {}) {
     feedbackType,
     reasonCode,
     reason,
-    traceSummary: compactMatchResultTraceSummary(context.traceSummary),
-    operatorNote: '',
-    resolution: ''
+    traceSummary: compactMatchResultTraceSummary(context.traceSummary)
   }
 
   db.assistantFeedbacks.unshift(feedback)
-  if (db.assistantFeedbacks.length > MAX_FEEDBACK_ROWS) {
-    db.assistantFeedbacks = db.assistantFeedbacks.slice(0, MAX_FEEDBACK_ROWS)
-  }
+  enforceAssistantFeedbackRetention(db)
   return feedback
 }
 
@@ -316,11 +362,11 @@ function assistantTraceRows(db, options = {}) {
 function createAssistantFeedback(db, userId, payload = {}, context = {}) {
   db.assistantFeedbacks = Array.isArray(db.assistantFeedbacks) ? db.assistantFeedbacks : []
 
-  const feedbackVersion = String(payload.feedbackVersion || '').trim()
-  if (feedbackVersion && feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
-    throw matchResultFeedbackError('不支持的反馈版本')
-  }
-  if (feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION) {
+  const hasFeedbackVersion = Object.prototype.hasOwnProperty.call(payload, 'feedbackVersion')
+  if (hasFeedbackVersion) {
+    if (payload.feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
+      throw matchResultFeedbackError('不支持的反馈版本')
+    }
     return createMatchResultFeedback(db, userId, payload, context)
   }
 
@@ -347,9 +393,7 @@ function createAssistantFeedback(db, userId, payload = {}, context = {}) {
   }
 
   db.assistantFeedbacks.unshift(feedback)
-  if (db.assistantFeedbacks.length > MAX_FEEDBACK_ROWS) {
-    db.assistantFeedbacks = db.assistantFeedbacks.slice(0, MAX_FEEDBACK_ROWS)
-  }
+  enforceAssistantFeedbackRetention(db)
 
   return feedback
 }
@@ -368,10 +412,12 @@ function reviewAssistantFeedback(db, feedbackId, userId, payload = {}) {
   const feedback = findFeedback(db, feedbackId)
   const status = normalizeFeedbackStatus(payload.status, feedback.status || 'open')
   feedback.status = status
-  feedback.feedbackType = payload.feedbackType ? normalizeFeedbackType(payload.feedbackType) : feedback.feedbackType
-  feedback.operatorNote = truncateText(payload.operatorNote || feedback.operatorNote || '', 1000)
-  feedback.resolution = truncateText(payload.resolution || feedback.resolution || '', 1000)
-  if (payload.expected) feedback.expected = scrubDeep(payload.expected)
+  if (feedback.feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
+    feedback.feedbackType = payload.feedbackType ? normalizeFeedbackType(payload.feedbackType) : feedback.feedbackType
+    feedback.operatorNote = truncateText(payload.operatorNote || feedback.operatorNote || '', 1000)
+    feedback.resolution = truncateText(payload.resolution || feedback.resolution || '', 1000)
+    if (payload.expected) feedback.expected = scrubDeep(payload.expected)
+  }
   feedback.updatedAt = nowIso()
   feedback.handledBy = String(userId || '').trim()
   return feedback
@@ -380,7 +426,10 @@ function reviewAssistantFeedback(db, feedbackId, userId, payload = {}) {
 function promoteFeedbackToEvalCase(db, feedbackId, userId, payload = {}) {
   const feedback = findFeedback(db, feedbackId)
   db.assistantEvalCases = Array.isArray(db.assistantEvalCases) ? db.assistantEvalCases : []
-  const text = truncateText(payload.text || payload.sourceText || feedback.sourceText || feedback.reason || '')
+  const explicitText = truncateText(payload.text || payload.sourceText || '')
+  const text = feedback.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION
+    ? explicitText
+    : (explicitText || truncateText(feedback.sourceText || feedback.reason || ''))
   if (!text) {
     const error = new Error('assistant eval case text required')
     error.statusCode = 400

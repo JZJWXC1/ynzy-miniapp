@@ -2952,10 +2952,10 @@
           <td><span class="${pillClass(item.status === 'open' ? '需要处理' : '通过')}">${safeText(assistantFeedbackStatusText(item.status))}</span><span class="sub-cell">${safeText(item.operatorNote || '')}</span></td>
           <td>
             <div class="cell-actions">
-              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="triaged">分诊</button>
-              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="resolved">解决</button>
-              <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="ignored">忽略</button>
-              <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}">加入评估</button>
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="triaged">分诊</button>
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="resolved">解决</button>
+              <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="ignored">忽略</button>
+              <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}">加入评估</button>
               <button class="table-action assistant-conversation-button" data-id="${safeAttr(item.id)}">查看对话</button>
             </div>
           </td>
@@ -3025,12 +3025,12 @@
       empty.hidden = rows.length > 0;
     }
 
-    async function reviewAssistantFeedback(id, status) {
+    async function reviewAssistantFeedback(id, status, feedbackVersion) {
       if (!canUseAdminApi()) {
         alert('请通过后端地址打开后台后再标注客服反馈：/admin-web/');
         return;
       }
-      const operatorNote = window.prompt('填写处理备注，可留空', '') || '';
+      const operatorNote = feedbackVersion === 'match-result-v1' ? '' : (window.prompt('填写处理备注，可留空', '') || '');
       await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/review`, {
         method: 'POST',
         body: JSON.stringify({ status, operatorNote })
@@ -3038,15 +3038,22 @@
       await renderAssistantFeedbacks();
     }
 
-    async function promoteAssistantFeedbackToEval(id) {
+    async function promoteAssistantFeedbackToEval(id, feedbackVersion) {
       if (!canUseAdminApi()) {
         alert('请通过后端地址打开后台后再加入评估集：/admin-web/');
+        return;
+      }
+      const evalText = feedbackVersion === 'match-result-v1'
+        ? String(window.prompt('填写已脱敏的评估问题（必填）', '') || '').trim()
+        : '';
+      if (feedbackVersion === 'match-result-v1' && !evalText) {
+        alert('请填写已脱敏的评估问题');
         return;
       }
       const operatorNote = window.prompt('这条评估样本的备注，可留空', '') || '';
       await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/promote-eval`, {
         method: 'POST',
-        body: JSON.stringify({ behavior: 'recommend', operatorNote })
+        body: JSON.stringify({ behavior: 'recommend', operatorNote, text: evalText })
       });
       await renderAssistantFeedbacks();
     }
@@ -4354,7 +4361,8 @@
       if (assistantFeedbackReviewButton && !assistantFeedbackReviewButton.disabled) {
         reviewAssistantFeedback(
           assistantFeedbackReviewButton.dataset.id,
-          assistantFeedbackReviewButton.dataset.status
+          assistantFeedbackReviewButton.dataset.status,
+          assistantFeedbackReviewButton.dataset.version
         ).catch((error) => {
           alert(error.message || '客服反馈标注失败');
         });
@@ -4363,7 +4371,10 @@
 
       const assistantFeedbackEvalButton = event.target.closest('.assistant-feedback-eval-button');
       if (assistantFeedbackEvalButton && !assistantFeedbackEvalButton.disabled) {
-        promoteAssistantFeedbackToEval(assistantFeedbackEvalButton.dataset.id).catch((error) => {
+        promoteAssistantFeedbackToEval(
+          assistantFeedbackEvalButton.dataset.id,
+          assistantFeedbackEvalButton.dataset.version
+        ).catch((error) => {
           alert(error.message || '加入评估集失败');
         });
         return;

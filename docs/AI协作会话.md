@@ -46,6 +46,16 @@
 
 ## 最新消息
 
+### 2026-07-10 17:32 | CODEX_DEV（主开发） | P1.2 独立审计阻断项返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立只读审计对功能 commit `689d9c5` 给出 `CODEX_FIX_REQUIRED`：固定原因映射存在原型链键绕过；仅按格式校验的线程/消息 ID 可夹带手机号形态值；全局 200 条滚动上限会淘汰严格记录并破坏持久幂等；显式空白/假值版本会降级旧自由文本通道；严格记录缺少原始问题时可被错误提升为无效评估样本。审计实跑全量非 smoke 测试 88/88 与 `v1-final-audit.js` 均通过，但现有测试未覆盖上述对抗路径，因此不得发布。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-feedback.js`、`server/scripts/match-result-feedback-v1-test.js`、`server/README.md`。先在现有 P1.2 测试补稳定失败断言，再做最小实现：原因码只认自有白名单键；系统时间型 ID 拒绝手机号形态且校验真实时间范围；仅“请求中完全不存在 feedbackVersion”兼容旧通道；结构化反馈记录不被旧通道 200 条保留上限淘汰；严格记录无明确脱敏评估文本时禁止提升。后端红测转绿后确认既有后台按钮没有提交评估文本，会让严格反馈操作恒定失败，因此在业务修改前补充声明 `admin-web/index.html`：仅对 `match-result-v1` 要求管理员填写明确脱敏评估问题，旧反馈提升流程不变；对应静态契约继续固化在同一 P1.2 测试。
+
+红线不变：不修改 `domain.js`、`index.js`、`smoke-test.js`、前端页面、数据库文件、data/certs/env/lark/private config；不读取或输出真实凭据/生产数据；不处理 Yooni 文档与看房方式分支。完成后全文自审、全量非 smoke 测试、最终审计和敏感扫描，再提交返修并交回只读复审。
+
+---
+
 ### 2026-07-10 16:28 | CODEX_DEV（主开发） | P1.2 找房结果轻量反馈完成交审 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。关联 commit：`689d9c51ad14ca6ddc4eeb08253ffcf8fff19e02`（`feat(feedback): 找房结果反馈绑定需求与固定原因`），分支 `wt/找房结果轻量反馈`，基于最新已发布文档头 `origin/v1-broker@16d388e`。未 push、未部署、未上传体验版。
