@@ -26,6 +26,15 @@ function isAuthError(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403)
 }
 
+function currentAuthToken() {
+  try {
+    const app = typeof getApp === 'function' ? getApp() : null
+    if (app && app.globalData && app.globalData.authToken) return String(app.globalData.authToken)
+    if (typeof wx !== 'undefined' && wx.getStorageSync) return String(wx.getStorageSync('ynzy_auth_token') || '')
+  } catch (error) {}
+  return ''
+}
+
 function decodeOption(value) {
   if (!value) return ''
   try {
@@ -146,6 +155,8 @@ Page({
       wx.showToast({ title: '请选择房源', icon: 'none' });
       return;
     }
+    this.authTokenSnapshot = currentAuthToken()
+    this.listingId = id
     this.setData({
       needId,
       needTemporary: /^TMP-NEED-/.test(needId),
@@ -156,6 +167,14 @@ Page({
 
   onShow() {
     this.hideNativeShareMenu()
+    const nextToken = currentAuthToken()
+    if (this.authTokenSnapshot === undefined) {
+      this.authTokenSnapshot = nextToken
+      return
+    }
+    if (nextToken === this.authTokenSnapshot || !this.listingId) return
+    this.authTokenSnapshot = nextToken
+    this.loadListing(this.listingId)
   },
 
   hideNativeShareMenu() {
@@ -777,6 +796,10 @@ Page({
       reportModalVisible: true,
       dealModalVisible: false,
       currentReportId: '',
+      reportForm: {
+        customerName: '',
+        customerPhone: ''
+      },
       'dealForm.monthlyRent': listing.rent || '',
       'dealForm.landlordCommission': '',
       'dealForm.remark': ''

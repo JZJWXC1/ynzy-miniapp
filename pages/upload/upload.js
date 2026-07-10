@@ -14,6 +14,15 @@ function isAuthError(error) {
   return Boolean(error) && Number(error.statusCode) === 401
 }
 
+function currentAuthToken() {
+  try {
+    const app = typeof getApp === 'function' ? getApp() : null
+    if (app && app.globalData && app.globalData.authToken) return String(app.globalData.authToken)
+    if (typeof wx !== 'undefined' && wx.getStorageSync) return String(wx.getStorageSync('ynzy_auth_token') || '')
+  } catch (error) {}
+  return ''
+}
+
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
 const FALLBACK_MAX_VIDEO_MB = 300 // 与服务端 OSS 策略默认上限对齐的前端预检兜底值
 const DEFAULT_COMMISSION_CONFIG = {
@@ -185,6 +194,7 @@ Page({
   },
 
   onLoad(options) {
+    this.authTokenSnapshot = currentAuthToken()
     this.loadCurrentUser()
     this.loadCommissionConfig()
     const id = options && options.id ? options.id : ''
@@ -193,6 +203,17 @@ Page({
       return
     }
     this.refreshPreview()
+  },
+
+  onShow() {
+    const nextToken = currentAuthToken()
+    if (this.authTokenSnapshot === undefined) {
+      this.authTokenSnapshot = nextToken
+      return
+    }
+    if (nextToken === this.authTokenSnapshot) return
+    this.authTokenSnapshot = nextToken
+    this.loadCurrentUser()
   },
 
   loadCurrentUser() {
