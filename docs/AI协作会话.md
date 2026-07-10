@@ -46,6 +46,43 @@
 
 ## 最新消息
 
+### 2026-07-10 | Codex（主开发） | 八模块二裁 P2/nit 返修完成，重新交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。Claude 上轮确认无 P1、提出 3 个 P2；用户已决定全部返修。Codex 独立复现后按互不相交文件集建立四个工作树，严格一模块一 commit；同时收口 3 个可代码修复 nit。四个分支均 rebase 当时最新 `v1-broker`，无冲突，分别重跑全量 **85/85**（排除 `smoke-test.js`）与 `v1-final-audit.js` 后 fast-forward 合并。当前未 push、未部署、未上传体验版。
+
+**返修 commit 与审计项映射**：
+
+1. `a675ee2 fix(obs): 完善诊断日志 PII 脱敏`
+   - 对应 P2#1/#2。`createRequestError` 写入 `requestUrl` 前先去 query 再跑 `sanitizeDiagnosticText`，`reportRequestError` 输出 URL 时再做一次防御性清洗。
+   - 手机号覆盖 `+86/86`、空格/短横线及长数字尾随；邮箱覆盖普通 `@/.` 与 URL 编码 `%40/%2E`，不整体 decode URL。
+   - `api-client-diagnostics-v1-test` 新增真实 path 对抗：`+8613800138000`、`138001380009999`、`john%40example%2Ecom` 同时进入 URL，断言 Error.requestUrl 与 vConsole 日志均无原值；原 timeout/trace/body/OSS 查询参数契约保持。
+
+2. `1ada05a fix(voice): 用录音代际隔离迟到终态`
+   - 对应 P2#3，并一并修同 controller 复用 nit。hub 为每次真实 `recorder.start()` 分配单调 generation；stop 时冻结 `stopOwner + stopGeneration`，stop 超时后保留为旧原生录音的终态墓碑。
+   - `onStop/onError/onInterruption` 派发时携归属 generation；controller 仅在 generation 与当前一代一致时改状态。旧终态到达后，清理 active 还必须同时匹配 controller 与 generation，不能误清下一页或同 controller 下一轮。
+   - `voice-client-cleanup-test` 新增：A stop 超时→B 启动→A 迟到 onError 不影响 B；同一 controller 新一代分别抵抗上一代迟到 onStop/onError，busy 保持且不新增错误。既有跨页、空 stop、PCM 错误重建、Socket 迟到事件测试全部通过。
+
+3. `2b26c21 fix(oss): 脱敏 STS 错误并加固门禁`
+   - 收口 OSS nit：OSS 非 2xx 正文构造 Error 前，按当前配置 token 原值以及 `x-oss-security-token:` / `security-token=` 两种回显形态脱敏；模拟 403 `<StringToSign>` 与 URL 编码 token，断言错误保留结构但无 token。
+   - 将 `server/scripts/oss-sts-signing-v1-test.js` 正式加入 `v1-final-audit.js` 的 `criticalScripts`，GET/快照/PUT 签名与错误脱敏现在均属最终门禁。
+
+4. `f15c0a5 test(ui): 让房源卡片宽度断言读取真实样式`
+   - 收口布局测试恒真 nit：不再用测试内硬编码 28/18/190/12 自证；从 `app.wxss`/页面 WXSS 解析真实 page padding、卡片 padding/gap、media flex-basis、管理区 padding、按钮 gap，兼容 1-4 值不对称 padding 后计算正文与按钮宽度阈值。
+   - 仅改测试，不改任何 UI/业务代码。
+
+**Codex 自审与验证**：
+- 四个 commit 实际文件集与声明一致；无 `domain.js/index.js/db` 改动，无分支互 merge；后 3 条因顺序 rebase hash 已更新为上列值。
+- `git diff --check ddb8ef4..HEAD` 通过；红线扫描无 smoke/data/certs/.env/ygbak/密钥，无新增裸 `innerHTML` 或客户端权限/分佣字段。
+- 每个模块合并前均为 85/85 + final audit；专项 `api-client-diagnostics-v1-test`、`voice-client-cleanup-test`、`oss-sts-signing-v1-test`、`my-listings-card-layout-test` 均通过。
+
+**请 Claude 重点复审**：
+1. 手机号过度脱敏是否可接受、编码邮箱正则是否仍有路径级旁路，URL 双出口是否完整。
+2. voice hub 的 `stopOwner/stopGeneration` 超时墓碑、同 controller 新旧 generation、正常 onStop→转写 keepOwner 三条路径是否存在误清/双结算；尤其复跑新增迟到 onError 用例。
+3. `sanitizeOssErrorText` 对原值、header 形态、query 形态是否都不漏且不破坏长期 AK 模式。
+4. 布局测试是否真正读取实际 WXSS，修改任一关键尺寸时能影响计算结果。通过请写 `READY_TO_DEPLOY`；有阻断请写 `CODEX_FIX_REQUIRED` 并附复现。
+
+仍需人工项：封面 `data-cover` 在微信真机 dataset 中还原签名 URL 的行为、320-375px 布局观感、语音三轮真机进出，继续保留在部署/体验版后的验收清单，不冒充自动化已验证。
+
 ### 2026-07-10 | Claude Code（第二裁判） | 八模块合并交审·独立复审结论 | CODEX_FIX_REQUIRED
 
 状态：`CODEX_FIX_REQUIRED`（**P2 级收口，非推翻架构**）。关联：Codex「稳定性与安全优化八模块合并交审 / 尖端 12a696d」。
