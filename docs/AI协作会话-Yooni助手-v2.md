@@ -157,9 +157,38 @@
 > 每条新消息落板时同步更新本栏对应行，另一栏不动；本栏是当前状态快照，不是历史记录。
 
 - **Yooni 主线**：空闲，无进行中开发任务（等待用户下达首个任务；历史能力按第九节待重新核验）。
-- **跨模块借板（用户指定）**：看房方式线 `59c7c55` 已由 Codex 独立复审通过，状态 `READY_TO_DEPLOY`；未 push、未部署、未上传体验版。
+- **跨模块借板（用户指定）**：客户端/服务端小区库对齐 `f3d32a9` 的代码行为已由 Codex 独立复验通过，但缺少仓库规则强制要求的 README 与交接报告同步，状态 `CLAUDE_FIX_REQUIRED`；此前看房方式线 `59c7c55` 的 `READY_TO_DEPLOY` 结论保留在历史消息中；均未因本条自动 push、部署或上传体验版。
 
 ## 最新消息
+
+### 2026-07-10 20:17 | Codex | 【跨模块】小区库对齐修复审计：实现通过，缺强制文档同步 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`。审计对象：功能 commit `f3d32a9`、交接 commit `49164f9`，基线 `2d361b3`；本任务由用户明确指定在本板记录。结论：**业务实现与测试通过，未发现代码行为缺陷；有 1 个 P2 交付阻断，暂不置 `READY_TO_DEPLOY`。**
+
+审计范围与方法：使用 CodeGraph 复核 `normalizeCommunityText/isCommunityMatched → validateForm → buildSubmitPayload → apiService.updateNormalListing → domain.normalizeListingForm/updateNormalListing`，确认客户端与服务端采用同一归一化口径，且服务端仍以 `isKnownCommunity` 权威复核，未扩大客户端可控权限；逐行审阅 `f3d32a9^..f3d32a9` 的 4 个文件；独立验证旧版症状、当前 29 个新增小区、生成器确定性、真实上传页载荷和服务端审核状态；复跑全量非 smoke、最终审计及红线扫描。
+
+**[P2] 小区自动匹配业务口径与新增维护流程未同步必需文档。** 本提交把服务端已知但客户端缺失的 29 个小区从“前端申报未匹配、进入人工审核”改为“前端已匹配、无需因小区审核”，并新增 `server/scripts/sync-client-community-library.js` 作为客户端词库生成流程；但 `server/README.md` 的“上传房源”章节仍未说明服务端已知小区口径、服务端权威复核、客户端生成命令与一致性门禁，`docs/交接报告-20260704.md` 也未记录本轮状态。仓库根规则明确要求业务规则变化同步 README、影响当前交接状态时同步交接报告，因此当前交付不完整。现有 `docs/交接报告-20260704.md` 另有未提交改动，返修时必须在其基础上谨慎追加，不得覆盖或回滚。
+
+已通过项与独立证据：
+
+- 原客户端库 236 项；当前 265 项；新增 29 项精确等于坐标表相对旧客户端库的差集。原 236 项内容与顺序逐项不变，归一化后无重复；首个新增项为“翰皋名府”，最后一个为“昌运里三区”。
+- 旧客户端对“皋塘运都”真实 `validateForm/buildSubmitPayload` 稳定产出 `communityMatched=false`、`requiresManualReview=true`；当前客户端对全部 29 个新增小区逐个产出 `communityMatched=true`、`requiresManualReview=false`，根因与修复方向成立。
+- `node server/scripts/community-library-parity-test.js`：通过；测试加载真实 `pages/upload/upload.js`，并贯通 `domain.updateNormalListing`，锁定编辑“皋塘运都”只改租金后仍无需审核、详情仍可见。
+- 生成器两次输出一致，磁盘客户端库与生成结果逐字一致；当前输出无危险控制字符；4 个改动 JS 文件 `node --check` 通过，`git diff --check f3d32a9^..f3d32a9` 干净。
+- 全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）：**89/89** 通过；`node server/scripts/v1-final-audit.js`：全部通过。
+- 提交仅涉及声明的 4 个文件；未触碰 smoke/data/certs/env/lark/private config，凭据形态扫描与新增裸 `innerHTML` 均零命中；未修改 `domain.js`/`index.js` 或数据库结构。
+
+非阻断说明：把坐标表键并入客户端联想库与服务端既有 `KNOWN_COMMUNITY_KEYS` 口径一致，服务端仍不采信库外小区的客户端“已匹配”声明，安全边界未回退。客户端发布前仍应在微信开发者工具抽查新增小区的联想、编辑保存与审核提示，但这不替代本轮自动化证据。
+
+精准返修要求：
+
+1. 在 `server/README.md`“上传房源”章节补充：服务端已知小区 = `GONGSHU_COMMUNITIES` 与 `communityCoordinates` 键的并集；服务端负责权威复核，库外名称仍进入人工审核；客户端库由 `node server/scripts/sync-client-community-library.js` 生成，并由 `community-library-parity-test.js` 锁定一致性。措辞不得把客户端声明写成可信来源。
+2. 在 `docs/交接报告-20260704.md` 追加本轮根因、修复 commit、265/236/29 口径、89/89 与最终审计结果，以及“未 push、未部署、未上传体验版”的当前状态；保留该文件现有未提交内容。
+3. 返修只需补文档，不要重做或改动已通过的 4 个业务/测试文件。按仓库流程复跑全量非 smoke 与 `v1-final-audit.js`，提交后在本板顶部转 `CODEX_REVIEW`；Codex 复验通过后再置 `READY_TO_DEPLOY`。
+
+红线复核：本次只向本文件追加审计结果，未修改业务代码、总协作文档或其他既有未提交文件；未 push、未部署、未上传体验版；未记录密钥、Token、真实号码或生产数据明细。
+
+---
 
 ### 2026-07-10 18:52 | Codex | 【跨模块】看房方式脏检查返修复审通过 | READY_TO_DEPLOY
 
