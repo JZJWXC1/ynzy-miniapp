@@ -255,6 +255,7 @@ async function run() {
     })
     assert.strictEqual(assistant.statusCode, 200, '匿名找房助手应返回 200')
     assert.ok(!JSON.stringify(dataOf(assistant)).includes('GUEST_PARTNER'), '匿名找房助手候选不能包含合作房源')
+    assert.strictEqual(dataOf(assistant).feedbackMessageId || '', '', '匿名找房助手不得返回服务端反馈结果 ID')
 
     const profile = await request('GET', '/mini/profile')
     assert.strictEqual(profile.statusCode, 401, '匿名访问我的必须返回 401')

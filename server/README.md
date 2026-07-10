@@ -552,11 +552,11 @@ POST /mini/assistant/feedback
 - 有用：`price`、`location`、`layout`、`availability`、`result_count`。
 - 没用：`price`、`location`、`layout`、`availability`、`too_few`、`too_many`。
 
-服务端只按对象自有键读取原因白名单并生成固定中文标签，不接收自由文本原因；`needId` 缺失、需求不存在、需求不属于当前中介、`messageId + threadId + 当前用户` 不能精确命中同一条持久结果 trace、反馈版本不精确匹配或原因码与有用性不匹配时分别按边界返回 4xx。同一用户 + 服务端结果 `messageId` 的相同需求/反馈重复提交幂等返回原记录，任一关联或分类冲突返回 `409`。
+服务端只按对象自有键读取原因白名单并生成固定中文标签，不接收自由文本原因；`needId` 缺失、需求不存在、需求不属于当前中介、`messageId + threadId + 当前用户 + needId` 不能精确命中同一条持久结果 trace、反馈版本不精确匹配或原因码与有用性不匹配时分别按边界返回 4xx。结果 trace 的 `feedbackNeedId` 只来自服务端对持久需求存在性和归属的校验，不采信客户端 `needTemporary`。同一用户 + 服务端结果 `messageId` 的相同需求/反馈重复提交幂等返回原记录，任一关联或分类冲突返回 `409`。
 
 `match-result-v1` 记录只保留 `needId`、服务端结果 `messageId`、有用性、固定原因码/标签和从该精确本人 trace 压缩出的最小元数据（版本、事件数、时间、节点名）；不保存客户端 `threadId`。后台查看完整对话时按服务端结果 ID 反查真实 trace/thread，并继续限制为反馈所属用户。客户端即使额外提交姓名、电话、地址、原始需求、助手回复、房源、期望或地点对象也全部丢弃。后台可流转严格反馈状态，但不能改写用户提交的类型/原因，也不向严格记录追加自由备注、处理结论或期望对象。兼容旧通道仅限请求体完全没有 `feedbackVersion` 属性；显式空白、`null`、数字、布尔值和任何未知版本全部拒绝，不得降级写入自由文本。旧通用反馈仍按最新 200 条保留，结构化找房反馈不受该滚动上限淘汰，以保证持久幂等与冲突保护；已成功写入的反馈即使原结果 trace 后续被 500 条上限滚动清理，相同重试仍返回原记录、冲突仍返回 `409`。严格反馈本身没有原始问题文本，提升评估集时必须由管理员明确提供经过脱敏的评估文本，不能把固定原因标签当作评估问题。
 
-登录中介通过 `/mini/assistant/chat` 获得的每轮结果都会返回 `feedbackMessageId`；确认需求后调用 `/mini/llm/match` 时，只要是非临时持久 `needId`，服务端也会同步写入一条结果 trace 并返回同样的服务端关联 ID。临时需求、游客和识别阶段不签发可写严格反馈的结果 ID。
+登录中介通过 `/mini/assistant/chat` 提交的 `needId` 只有经服务端确认属于本人持久需求时，响应才返回 `feedbackMessageId`；确认需求后调用 `/mini/llm/match` 同样由服务端查库验证，验证成功才写入带 `feedbackNeedId` 的结果 trace 并返回关联 ID。不存在、临时、他人需求、游客和识别阶段均不返回结果 ID；即使客户端伪造 `needTemporary=false` 也不能改变签发结论。
 
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
 生产服务会为 `POST /mini/llm/match` 和 `POST /mini/assistant/chat` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`；助手对话还会记录 `degraded`，用于确认真机登录态是否到达后端。日志不记录请求正文、手机号、地址或房源敏感字段。

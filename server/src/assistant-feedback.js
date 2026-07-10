@@ -121,11 +121,12 @@ function assertSystemTimestamp(timestamp, fieldName) {
   }
 }
 
-function assertOwnedMatchResultTrace(db, userId, threadId, messageId) {
+function assertOwnedMatchResultTrace(db, userId, needId, threadId, messageId) {
   const trace = (Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []).find((item) => (
     item &&
     item.id === messageId &&
     item.threadId === threadId &&
+    item.feedbackNeedId === needId &&
     String(item.userId || '').trim() === userId
   ))
   if (!trace) throw matchResultFeedbackError('messageId无当前用户的服务端结果记录')
@@ -216,7 +217,7 @@ function createMatchResultFeedback(db, userId, payload = {}) {
     throw matchResultFeedbackError('该找房结果已提交过不同反馈', 409)
   }
 
-  const resultTrace = assertOwnedMatchResultTrace(db, normalizedUserId, threadId, messageId)
+  const resultTrace = assertOwnedMatchResultTrace(db, normalizedUserId, needId, threadId, messageId)
 
   const feedback = {
     id: createFeedbackId(),
@@ -321,12 +322,14 @@ function sourceTextFromPayload(payload = {}) {
 function createAssistantTraceLog(db, userId, payload = {}, response = {}, context = {}) {
   db.assistantTraceLogs = Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []
   const traceSummary = compactTraceSummary(context.traceSummary)
+  const feedbackNeedId = String(context.feedbackNeedId || '').trim()
   const audit = (traceSummary && traceSummary.audit) || {}
   const toolOutput = (audit && audit.toolOutput) || {}
   const traceLog = {
     id: createTraceLogId(),
     createdAt: nowIso(),
     userId: String(userId || '').trim(),
+    ...(feedbackNeedId ? { feedbackNeedId } : {}),
     threadId: truncateText(response.threadId || context.threadId || payload.threadId || '', 120),
     intent: truncateText(response.intent || audit.intent || '', 80),
     sourceText: truncateText(sourceTextFromPayload(payload), 1000),

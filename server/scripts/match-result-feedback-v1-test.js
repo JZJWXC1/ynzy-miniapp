@@ -16,12 +16,14 @@ function makeDb() {
     currentUserId: USER_ID,
     rentalNeeds: [
       { id: NEED_ID, brokerId: USER_ID, rawText: '测试需求原文不应进入反馈' },
+      { id: 'N-OWN-2', brokerId: USER_ID, rawText: '本人另一需求' },
       { id: 'N-OTHER-1', brokerId: 'U-BROKER-2', rawText: '其他中介需求' }
     ],
     assistantFeedbacks: [],
     assistantTraceLogs: [{
       id: RESULT_MESSAGE_ID,
       userId: USER_ID,
+      feedbackNeedId: NEED_ID,
       threadId: THREAD_ID,
       createdAt: '2026-07-10T00:00:01.000Z',
       traceSummary: {
@@ -300,6 +302,7 @@ function testServerResultIdSelectsOwnedTrace() {
   db.assistantTraceLogs.unshift({
     id: 'ATLMRE65MO0OTHER',
     userId: 'U-BROKER-2',
+    feedbackNeedId: 'N-OTHER-1',
     threadId: THREAD_ID,
     createdAt: '2026-07-10T00:00:02.000Z',
     traceSummary: {
@@ -339,6 +342,49 @@ function testServerIssuesResultIdForMatchResponse() {
   assert.strictEqual(db.assistantTraceLogs.length, 1, '服务端匹配结果必须持久化一条结果 trace')
   assert.strictEqual(response.feedbackMessageId, db.assistantTraceLogs[0].id, '反馈结果 ID 必须等于持久 trace ID')
   assert.strictEqual(response.threadId, db.assistantTraceLogs[0].threadId, '响应 threadId 必须与持久 trace 一致')
+  assert.strictEqual(db.assistantTraceLogs[0].feedbackNeedId, NEED_ID, '结果 trace 必须固化服务端验证后的 needId')
+}
+
+function testResultSigningRequiresOwnedPersistentNeed() {
+  resetThread()
+  const invalidCases = [
+    { userId: USER_ID, needId: 'N-NOT-FOUND', message: '不存在需求不得签发结果 ID' },
+    { userId: USER_ID, needId: 'N-OTHER-1', message: '其他中介需求不得签发结果 ID' },
+    { userId: '', needId: NEED_ID, message: '游客不得签发结果 ID' }
+  ]
+
+  invalidCases.forEach(({ userId, needId, message }) => {
+    const db = makeDb()
+    const beforeCount = db.assistantTraceLogs.length
+    const response = assistantService.recordFeedbackResult(db, {
+      threadId: THREAD_ID,
+      needId,
+      needTemporary: false
+    }, { reply: '合成找房结果', listings: [] }, { userId })
+    assert.strictEqual(response.feedbackMessageId || '', '', message)
+    assert.strictEqual(db.assistantTraceLogs.length, beforeCount, `${message}，且不得写结果 trace`)
+  })
+}
+
+function testResultCannotRebindToAnotherOwnedNeed() {
+  resetThread()
+  const db = makeDb()
+  expectStatus(
+    () => createStrict(db, { needId: 'N-OWN-2' }),
+    400,
+    '需求 A 的服务端结果不得改绑到本人需求 B'
+  )
+  assert.strictEqual(db.assistantFeedbacks.length, 0, '需求改绑被拒后不得落库')
+}
+
+function testGuestFallbackDoesNotExposeResultId() {
+  resetThread()
+  const db = makeDb()
+  const response = assistantService.fallbackChat(db, {
+    needId: NEED_ID,
+    text: '游客合成找房请求'
+  }, { userId: '' }, { code: 'test_guest_fallback' })
+  assert.strictEqual(response.feedbackMessageId || '', '', '游客 fallback 不得返回服务端结果 ID')
 }
 
 function testPaddedPhoneThreadIsNotPersisted() {
@@ -349,6 +395,7 @@ function testPaddedPhoneThreadIsNotPersisted() {
   db.assistantTraceLogs.unshift({
     id: paddedResultId,
     userId: USER_ID,
+    feedbackNeedId: NEED_ID,
     threadId: paddedThreadId,
     createdAt: '2026-07-10T00:00:01.000Z',
     traceSummary: {
@@ -489,7 +536,9 @@ function testMatchRouteIssuesResultId() {
 
   assert(start >= 0 && end > start, '找不到 /mini/llm/match 路由')
   assert(routeBlock.includes('assistantService.recordFeedbackResult'), '持久需求的确认匹配结果必须签发服务端结果 ID')
-  assert(routeBlock.includes('!guest') && routeBlock.includes('resultBody.needId') && routeBlock.includes('!resultBody.needTemporary'), '游客或临时需求不得签发可写严格反馈的结果 ID')
+  assert(routeBlock.includes('delete response.feedbackMessageId'), '未签发分支必须剥离上游同名结果 ID')
+  assert(routeBlock.includes('!guest') && routeBlock.includes('resultBody.needId'), '游客或缺少 needId 的结果不得进入签发路径')
+  assert.strictEqual(routeBlock.includes('!resultBody.needTemporary'), false, '签发不得信任客户端 needTemporary，必须由服务端验证持久需求')
 }
 
 testStrictRecordAndPiiBoundary()
@@ -501,6 +550,9 @@ testIdempotencySurvivesLegacyRetentionLimit()
 testIdempotencySurvivesTraceRetentionLimit()
 testServerResultIdSelectsOwnedTrace()
 testServerIssuesResultIdForMatchResponse()
+testResultSigningRequiresOwnedPersistentNeed()
+testResultCannotRebindToAnotherOwnedNeed()
+testGuestFallbackDoesNotExposeResultId()
 testPaddedPhoneThreadIsNotPersisted()
 testStrictReviewKeepsUserFeedbackImmutable()
 testStrictFeedbackEvalRequiresExplicitText()

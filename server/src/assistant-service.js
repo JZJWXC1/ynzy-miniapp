@@ -9,6 +9,28 @@ const {
   scrubSensitiveText
 } = require('./assistant/safety')
 
+function ownedPersistentNeedId(db, userId, needId) {
+  const normalizedUserId = String(userId || '').trim()
+  const normalizedNeedId = String(needId || '').trim()
+  if (!normalizedUserId || !normalizedNeedId) return ''
+  const needs = Array.isArray(db.rentalNeeds)
+    ? db.rentalNeeds
+    : (Array.isArray(db.clientNeeds) ? db.clientNeeds : [])
+  const need = needs.find((item) => (
+    item &&
+    item.id === normalizedNeedId &&
+    String(item.brokerId || '').trim() === normalizedUserId
+  ))
+  return need ? normalizedNeedId : ''
+}
+
+function responseWithFeedbackMessageId(response, feedbackMessageId) {
+  const next = { ...response }
+  delete next.feedbackMessageId
+  if (feedbackMessageId) next.feedbackMessageId = feedbackMessageId
+  return next
+}
+
 async function chat(db, payload = {}, context = {}) {
   const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
   const previous = threadStore.getThread(threadId) || {}
@@ -27,7 +49,8 @@ async function chat(db, payload = {}, context = {}) {
 
   const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, result.response, {
     threadId,
-    traceSummary: result.traceSummary
+    traceSummary: result.traceSummary,
+    feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
   })
   // 慢速 LLM 调用已在只读快照上跑完，留痕交由调用方在同步写事务里落到最新 db，
   // 避免 await 期间的并发写入被旧快照整库回写覆盖（见 db.js 写窗口竞态）。
@@ -36,10 +59,7 @@ async function chat(db, payload = {}, context = {}) {
     ? context.persistTrace(writeTraceLog)
     : writeTraceLog(db)
 
-  return {
-    ...result.response,
-    feedbackMessageId: traceLog && traceLog.id ? traceLog.id : ''
-  }
+  return responseWithFeedbackMessageId(result.response, traceLog && traceLog.feedbackNeedId && traceLog.id)
 }
 
 function fallbackChat(db, payload = {}, context = {}, options = {}) {
@@ -73,32 +93,32 @@ function fallbackChat(db, payload = {}, context = {}, options = {}) {
 
   const writeTraceLog = (targetDb) => assistantFeedback.createAssistantTraceLog(targetDb, context.userId, payload, response, {
     threadId,
-    traceSummary: null
+    traceSummary: null,
+    feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
   })
   const traceLog = typeof context.persistTrace === 'function'
     ? context.persistTrace(writeTraceLog)
     : writeTraceLog(db)
 
-  return {
-    ...response,
-    feedbackMessageId: traceLog && traceLog.id ? traceLog.id : ''
-  }
+  return responseWithFeedbackMessageId(response, traceLog && traceLog.feedbackNeedId && traceLog.id)
 }
 
 function recordFeedbackResult(db, payload = {}, response = {}, context = {}) {
+  const feedbackNeedId = ownedPersistentNeedId(db, context.userId, payload.needId)
+  if (!feedbackNeedId) return responseWithFeedbackMessageId(response, '')
   const threadId = String(response.threadId || payload.threadId || '').trim() || threadStore.resolveThreadId('')
   const traceLog = assistantFeedback.createAssistantTraceLog(db, context.userId, payload, {
     ...response,
     threadId
   }, {
     threadId,
-    traceSummary: context.traceSummary || null
+    traceSummary: context.traceSummary || null,
+    feedbackNeedId
   })
-  return {
+  return responseWithFeedbackMessageId({
     ...response,
-    threadId: traceLog.threadId || threadId,
-    feedbackMessageId: traceLog.id
-  }
+    threadId: traceLog.threadId || threadId
+  }, traceLog.id)
 }
 
 function feedback(db, payload = {}, context = {}) {

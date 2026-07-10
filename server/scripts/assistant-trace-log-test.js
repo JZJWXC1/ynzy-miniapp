@@ -6,8 +6,10 @@ const { containsSensitiveText } = require('../src/assistant/safety')
 async function main() {
   assistantService._internal.threadStore._internal.resetForTest()
   const db = evalRunner.makeDb()
+  db.rentalNeeds = [{ id: 'N-TRACE-1', brokerId: 'U001' }]
 
   const result = await assistantService.chat(db, {
+    needId: 'N-TRACE-1',
     text: '客户13812345678想看新天地3公里内整租两室，微信wxid_secret12345，1栋2单元301室'
   }, {
     userId: 'U001'
@@ -20,6 +22,7 @@ async function main() {
 
   const log = db.assistantTraceLogs[0]
   assert.strictEqual(result.feedbackMessageId, log.id, '普通聊天响应必须返回持久 trace 的服务端结果 ID')
+  assert.strictEqual(log.feedbackNeedId, 'N-TRACE-1', '结果 trace 必须绑定服务端验证后的持久 needId')
   assert.strictEqual(log.threadId, result.threadId, 'trace log 应关联 threadId')
   assert.strictEqual(log.userId, 'U001', 'trace log 应记录用户')
   assert.strictEqual(log.intent, 'rental_match', 'trace log 应记录意图')

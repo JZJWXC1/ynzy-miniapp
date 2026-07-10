@@ -1469,9 +1469,11 @@ async function handleMini(req, res, pathname, searchParams) {
       const resultBody = guest ? guestListingFilter(body) : body
       if (guest) assertGuestRateLimit(req, 'mini-llm-match')
       const result = await llm.matchRentalNeed(resultDb, resultBody)
-      const response = !guest && resultBody.stage === 'match' && resultBody.needId && !resultBody.needTemporary
-        ? dbStore.updateDb((nextDb) => assistantService.recordFeedbackResult(nextDb, resultBody, result, { userId }))
-        : result
+      let response = { ...result }
+      delete response.feedbackMessageId
+      if (!guest && resultBody.stage === 'match' && resultBody.needId) {
+        response = dbStore.updateDb((nextDb) => assistantService.recordFeedbackResult(nextDb, resultBody, response, { userId }))
+      }
       console.log(`[llm-match] status=200 durationMs=${Date.now() - startedAt} guest=${guest}`)
       return sendJson(res, response)
     } catch (error) {

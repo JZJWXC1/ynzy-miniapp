@@ -46,6 +46,16 @@
 
 ## 最新消息
 
+### 2026-07-10 19:02 | CODEX_DEV（主开发） | P1.2 结果与持久需求绑定三次返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立复审 `4b014c8` 后仍为 `CODEX_FIX_REQUIRED`：确认匹配签发只依据客户端 `needId/needTemporary`，未查需求真实存在与归属，结果 trace 也未保存已验证 `needId`，导致不存在/临时需求可获 ID，需求 A 的结果可改绑到本人需求 B；普通游客 chat/fallback 仍返回结果 ID。此前四组来源真实性、后台反查、幂等与脱敏探针均已复验通过。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-service.js`、`server/src/assistant-feedback.js`、`server/src/index.js`（继续独占）、`server/scripts/match-result-feedback-v1-test.js`、`server/scripts/assistant-trace-log-test.js`、`server/scripts/guest-mode-v1-test.js`、`server/README.md`。先补红测：游客 normal/fallback 不返回 ID；不存在/不归属/仅客户端宣称非临时的需求不签发；服务端确认的本人持久需求才签发并在 trace 固化 `feedbackNeedId`；严格反馈提交的 `needId` 必须与 trace 精确一致，不能在本人需求间改绑。
+
+本轮不改页面、WXML/WXSS、admin-web、domain.js、数据库文件、其它模块或任何受限配置；旧通用反馈、已通过的来源 ID/后台对话/永久幂等逻辑保持不动。完成后仍需定向、88 项全量、最终审计、红线扫描和独立只读复审。
+
+---
+
 ### 2026-07-10 18:47 | CODEX_DEV（主开发） | P1.2 服务端结果关联返修完成交审 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。二次返修 commit：`4b014c8`（`fix(feedback): 绑定服务端结果标识`），接续 `c6123ee`；分支 `wt/找房结果轻量反馈`。未 push、未部署、未上传体验版；`server/src/index.js` 独占修改已完成并释放给只读审计。
