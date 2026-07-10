@@ -46,6 +46,26 @@
 
 ## 最新消息
 
+### 2026-07-11 01:02 | CODEX_DEV（主开发） | 上传单元/板块/联系方式前后端对齐完成 | CODEX_DOING
+
+状态：`CODEX_DOING`。发现项 11 已先红后绿完成：真实上传 Page 门禁在旧实现稳定失败于“无单元楼栋必须允许上传（false !== true）”。小程序已将单元明确为可选，新增独立可选板块输入并去除首尾空格提交，不再用行政区冒充板块；服务端 `normalizeListingForm` 统一规范化板块，新建/编辑均使用服务端规范值，按板块筛选可命中。合作房源显式选择“联系房东”时前后端均校验 11 位大陆手机号；钥匙/密码方式不强制手机号，公司房源继续兼容飞书“公司统一维护”占位并由 `COMPANY_CONTACT_PHONES` 提供公开电话。客户端提交体仍不含管理员身份、上传人或分佣比例字段。
+
+**定向回归**：`upload-field-parity-v1-test.js`、`listing-viewing-method-test.js`、`community-library-parity-test.js`、`upload-commission-sync-v1-test.js`、`backend-contract-v1-test.js`、`listing-source-structure-test.js`、`map-v1-test.js` 共 **7/7 通过**；上传页与 domain 语法检查、`git diff --check` 通过。`server/README.md` 与 `docs/交接报告-20260704.md` 已同步单元、板块、手机号及公司占位兼容口径。本模块仅修改先前声明的 7 个文件；`server/src/domain.js` 独占期间无并行修改。暂不交 Claude、不 push、不部署，继续完成全量静态/动态自审与最终回归。
+
+---
+
+### 2026-07-11 00:58 | CODEX_DEV（主开发） | 全产品自审发现项 11：上传页单元/板块/房东手机号与服务端口径不一致 | CODEX_DOING
+
+状态：`CODEX_DOING`。上传表单与 `domain.validateListingFields`、筛选参数逐字段对照确认：服务端必填字段不含单元，飞书公司房源也存在合法空单元，但小程序 `validateForm` 强制“几单元”，导致无单元楼栋无法上传；上传页没有板块输入，`buildSubmitPayload` 却把行政区 `form.area` 写入 `block`，因此手工上传房源无法命中“东新园/闸弄口”等板块筛选；看房方式为“联系房东”时前后端都只校验手机号非空，任意短文本可入库并让电话联系失效。
+
+**独占资源声明**：本模块将修改 `server/src/domain.js`，本工作树独占该领域文件；当前没有其它并行工作树修改该文件。
+
+**本模块拟修改文件**：`docs/AI协作会话.md`、`pages/upload/upload.js`、`pages/upload/upload.wxml`、`server/src/domain.js`、新增 `server/scripts/upload-field-parity-v1-test.js`、`server/README.md`、`docs/交接报告-20260704.md`。不修改 `server/src/index.js`、数据库结构/数据、后台、`smoke-test.js` 或其它页面。
+
+**修复目标与先红后绿**：先加载真实 Upload Page 并调用真实 domain，固化“单元可选、板块按用户输入原样规范化落库并可被筛选、联系房东必须为 11 位大陆手机号、钥匙/密码方式不强制手机号、客户端提交仍不含权限/分佣字段”的失败契约；再补板块输入、前后端手机号校验和字段规范化，并同步接口与交接文档。
+
+---
+
 ### 2026-07-11 00:56 | CODEX_DEV（主开发） | “我的”页真实资料门禁与恢复态修复完成 | CODEX_DOING
 
 状态：`CODEX_DOING`。发现项 10 已先红后绿完成：真实 Profile Page 门禁在旧实现稳定失败于“资料成功前不得展示示例提醒”。页面初始化不再放入示例提醒和报备/签单假零统计；资料、足迹、报备、签单四接口同批成功后才展示账号与业务区。初次网络失败只显示可重试故障态；已有可信页面刷新失败时保留账号、提醒和统计并显示错误条；401/403 会清除旧账号业务区并显示明确登录入口。请求序号守卫确保快速切换账号时过期响应不会覆盖最新账号。

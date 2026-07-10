@@ -4389,6 +4389,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     'city',
     'district',
     'area',
+    'block',
     'communityName',
     'community',
     'building',
@@ -4420,6 +4421,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const hasLayoutInput = hasAnyOwn(form, layoutFields)
   const city = firstText(form.city, current.city, '杭州')
   const area = normalizeDistrict(firstText(form.district, form.area, current.district, current.area, guessArea(form.address || current.address)))
+  const block = firstText(form.block, current.block, area)
   const rawCommunity = firstText(form.communityName, form.community, current.community)
   const community = rawCommunity || '待补充'
   const building = firstText(form.building, form.buildingNo, form.buildingNumber, current.building)
@@ -4569,6 +4571,7 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   return {
     city,
     area,
+    block,
     rawCommunity,
     community,
     building,
@@ -4684,6 +4687,11 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
+  if (!fields.companyListing && fields.viewingMethod === VIEWING_METHOD_LANDLORD && !/^1[3-9]\d{9}$/.test(fields.contact)) {
+    const error = new Error('请输入 11 位房东手机号')
+    error.statusCode = 400
+    throw error
+  }
   if (!fields.viewingMethod && !fields.contact) {
     const error = new Error('请选择看房方式（钥匙/密码/联系房东）并填写对应信息')
     error.statusCode = 400
@@ -4778,7 +4786,7 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     city: fields.city,
     district: fields.area,
     area: fields.area,
-    block: form.block || fields.area || '待板块',
+    block: fields.block || fields.area || '待板块',
     community: fields.community,
     building: fields.building,
     unit: fields.unit,
@@ -4946,7 +4954,7 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.city = fields.city
   listing.district = fields.area
   listing.area = fields.area
-  listing.block = Object.prototype.hasOwnProperty.call(form, 'block') ? form.block : (listing.block || fields.area || '待板块')
+  listing.block = fields.block || fields.area || '待板块'
   listing.community = fields.community
   listing.building = fields.building
   listing.unit = fields.unit

@@ -48,6 +48,11 @@
           </view>
         </view>
 
+        <view class="field">
+          <view class="label">板块（可选）</view>
+          <input value="{{form.block}}" data-field="block" bindinput="updateField" placeholder="如 东新园 / 闸弄口" />
+        </view>
+
         <view class="field community-field">
           <view class="label">小区名称</view>
           <input value="{{form.community}}" bindfocus="showCommunityPanel" bindinput="updateCommunity" placeholder="输入小区名，自动匹配拱墅小区库" />
@@ -65,7 +70,7 @@
             <input value="{{form.building}}" data-field="building" bindinput="updateField" placeholder="如 3" />
           </view>
           <view>
-            <view class="label">几单元</view>
+            <view class="label">几单元（可选）</view>
             <input value="{{form.unit}}" data-field="unit" bindinput="updateField" placeholder="如 1" />
           </view>
           <view>
@@ -117,7 +122,7 @@
         </view>
         <view wx:if="{{form.viewingMethod === '联系房东'}}" class="field">
           <view class="label">房东手机号</view>
-          <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="房东手机号" />
+          <input value="{{form.contact}}" data-field="contact" type="number" maxlength="11" bindinput="updateField" placeholder="11 位房东手机号" />
         </view>
         <view class="hint">选钥匙填钥匙在哪，选密码填看房密码；房东手机号仅在「联系房东」时必填。</view>
       </view>

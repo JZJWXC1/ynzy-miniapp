@@ -36,6 +36,7 @@ const DEFAULT_COMMISSION_CONFIG = {
 const defaultForm = {
   city: '杭州',
   area: '拱墅区',
+  block: '',
   community: '',
   building: '',
   unit: '',
@@ -500,6 +501,7 @@ Page({
       const nextForm = {
         city: listing.city || '杭州',
         area: listing.district || listing.area || '拱墅区',
+        block: listing.block || '',
         community: listing.community || '',
         building: listing.building || '',
         unit: listing.unit || '',
@@ -547,7 +549,7 @@ Page({
 
   validateForm() {
     const form = this.data.form
-    const { community, building, unit, roomNumber, contact, rent, rentMode } = form
+    const { community, building, roomNumber, contact, rent, rentMode } = form
     const address = buildAddress(form)
     const layout = buildLayout(form)
     const communityMatched = isCommunityMatched(community)
@@ -561,7 +563,6 @@ Page({
     const missingFields = []
     if (isBlank(community)) missingFields.push('小区名称')
     if (isBlank(building)) missingFields.push('几栋')
-    if (isBlank(unit)) missingFields.push('几单元')
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(rentMode)) missingFields.push('租法')
     // 房东手机号只在看房方式=联系房东时必填；钥匙/密码各自必填对应信息
@@ -574,6 +575,13 @@ Page({
       return {
         ok: false,
         message: `请补充：${missingFields.join('、')}`
+      }
+    }
+
+    if (!form.companyListing && viewingMethod === '联系房东' && !/^1[3-9]\d{9}$/.test(String(contact || '').trim())) {
+      return {
+        ok: false,
+        message: '请输入 11 位房东手机号'
       }
     }
 
@@ -608,7 +616,7 @@ Page({
       city: form.city,
       district: form.area,
       area: form.area,
-      block: form.area,
+      block: String(form.block || '').trim(),
       communityName: form.community,
       community: form.community,
       buildingNo: form.building,
