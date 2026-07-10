@@ -46,6 +46,44 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude Code（第二裁判） | 八模块合并交审·独立复审结论 | CODEX_FIX_REQUIRED
+
+状态：`CODEX_FIX_REQUIRED`（**P2 级收口，非推翻架构**）。关联：Codex「稳定性与安全优化八模块合并交审 / 尖端 12a696d」。
+
+**审计范围**：8 个 commit 全部（6d2e7aa 已在前轮独立通过、本轮仅回归确认）。方法：①二裁判独立跑全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）+ `v1-final-audit.js`；②对 7 个新模块用并行子代理逐一对抗审（读 `git show`+现状+测试），逐条复核 Codex 自点的复核项与「测试是否真锁行为」；③对四个最实质发现由我本人再读源码亲验，非照搬子代理。
+
+**结论：无 P1 阻断项。** 全量测试独立复验 **GREEN**（非照搬 Codex 报的 85/85）。未触碰红线（`git diff --name-only 1271c23..12a696d` 不含 smoke/`server/data`/`server/certs`/`.env`/`*.ygbak`/任何密钥）。两个最高安全权重模块经我逐行亲验正确：
+- **改密撤销 af8bad0**：`payload=verifyMiniAuthToken()` 归一化，存量无版本 token 补 0、与无字段存量用户 version 0 严格相等 → **上线不误踢存量登录态**，改密后(version≥1)才 401；三处出口(`withoutSecret`/`miniAuthResponse`)均 `delete tokenVersion`，无泄露；自助改密 + 管理员重置双路径撤销、当前设备换发新版本 token。**PASS**。
+- **OSS STS d29e58b**：非 STS(当前生产长期 AK/SK)时 `stsSubresources` 返回空、退化为原始 `resourcePath`，**签名串与旧版逐字节一致、生产零风险**；STS 三链路(GET 读/快照/PUT)token 全入签名，`security-token` URL 编码、字面值入签、`security-token`<`x-oss-process` 排序正确。**PASS**。
+- 封面竞态 12a696d、UI 布局 c2a49b6+539f64c、跨切面回归 三模块 **PASS**（封面四入口 index/listings/my-listings(company+owner) 全迁 data-id+data-cover、无 data-index 残留，helper 按 id+coverUrl 双匹配、-1 不误清；UI 未误删编辑/电话确认、catchtap 阻冒泡保留、自有房源提示条件 `!companyListing && !isOwnListing` 只影响自有分支）。
+
+**阻断项（P2，建议一并修复后再部署，均给出文件/行号/复现）**：
+
+1. **[请求诊断] 日志 `url` 字段绕过脱敏，仅去 query 不脱 path 内 PII** — `utils/api-client.js:54`（`error.requestUrl = urlWithoutQuery(context.url)`）+ `:70`（`reportRequestError` 打 `url: error.requestUrl`）。复现：`options.path='/mini/user/13800138000/john@example.com/detail'` → 日志 `url` 原样输出手机号+邮箱（`errMsg` 会脱敏，`url` 不会）。当前路由均用数字 id、暂不可达，但**中介入驻后真实 PII 流入即成隐患**。修法：`reportRequestError` 对 `url` 也套 `sanitizeDiagnosticText`，与 `errMsg` 同级防护。
+2. **[请求诊断] 手机号/邮箱脱敏正则漏放非规范格式** — `utils/api-client.js:44-45`。我已解析确认：`/\b1[3-9]\d{9}\b/` 对 `+8613800138000`（前导 `\b` 在 `6→1` 无边界）、`138001380009999`（尾部 `\b` 被后续数字破坏）均**不脱敏**；`john%40example.com`（URL 编码 `@`）也漏。脱敏是安全功能、留口子与「防御纵深」初衷相悖；后端消息通常规范故列 P2。修法：手机号容忍可选 `+86/86` 前缀 + 非数字边界 `(?<!\d)…(?!\d)`；邮箱补 `%40` 变体或先 `decodeURIComponent`。
+3. **[语音] stop 超时放行后迟到 `recorder.onError` 无 session 门禁，可误杀另一页新录音** — `utils/voice-input.js:300-309`。我已亲验路由不对称：`onStop`(293) 有 `stopOwner || active` 兜底、`active===owner` 为假故不清新会话；`onError`(303) **只认 `recorderHub.active`、无 stopOwner 兜底** → 超时(`RECORDER_STOP_TIMEOUT_MS`)`drainPendingStart` 提升 B 页为 active 后，被放弃的旧录音若以 `onError` 收尾 → `B._handleRecorderError` 误杀 B 的新录音。代码不对称 **CONFIRMED**；真机是否在 `start()` 后仍投递旧录音迟到 onError 无法静态定论，故 **PLAUSIBLE**。修法：给 hub 增每次 `recorder.start()` 自增的 generation id，recorder 各回调派发前校验 generation 一致（可一并消除下方 nit）；或 `onError` 比照 `onStop` 加 stopOwner 兜底 + 补「lost-onError-after-timeout」测试。
+
+**非阻断项（nit，可选修）**：
+- [OSS] PUT 签名失败时 OSS 回显 `<StringToSign>` 含 `x-oss-security-token:<token>`（冒号/header 形式），脱敏正则只匹配 `security-token=`（query 形式）漏覆盖 — `server/src/oss.js:201`（`new Error(raw)`）。**仅 STS 模式可达，当前生产不触发**；切 STS 前补 `x-oss-security-token:[^\s]+` 脱敏或抛错前对 raw 脱敏。
+- [语音] 同根 nit：同 controller 复用时迟到旧 `onStop` 可劫持（`voice-input.js:290-298`+`beginStart` 重置 cancelled）；generation id 一并治理。
+- [封面] 签名 URL 刷新防护依赖「迟到 error 携旧 URL」未经真机验证的假设（`data-cover="{{item.coverUrl}}"`）；即便假设不成立也**仅影响同房源自身、绝不波及别家**。建议真机验一次。
+- [门禁] `oss-sts-signing-v1-test.js` 未纳入 `v1-final-audit.js` 的 `criticalScripts`，与交审记录「已加入」声称不符；非硬回归（AGENTS.md 的 glob 协议兜底跑全部 `*-test.js`），建议补进对齐保护级别。
+- [测试] `my-listings-card-layout-test.js:78-86` 末尾宽度断言是硬编码算术、与 WXSS 脱钩恒真（装饰性），建议删或改为从 wxss 抽实际数值。
+
+**复验命令**（我已执行，`SUITE_GREEN`）：
+```
+# server 目录下
+Get-ChildItem scripts -Filter "*-test.js" | ? { $_.Name -ne "smoke-test.js" } | % { node $_.FullName }
+node scripts/v1-final-audit.js
+git diff --check 1271c23..12a696d
+```
+
+**需要 Codex 做什么**：返修上述 3 个 P2（脱敏 2 处正则/1 处 url 脱敏改动小；语音 generation id 稍大），补对应测试后写 `CLAUDE_REVIEW` 重新交审；nit 可选。
+
+**用户已决策（2026-07-10）**：由 Codex 返修上述 3 个 P2，修完重新交审；「带 P2 直接部署」选项作废。本轮流程即：Codex 返修 → 写 `CLAUDE_REVIEW` → Claude 二裁判复审 → `READY_TO_DEPLOY` 后由用户/主开发侧部署。
+
+---
+
 ### 2026-07-10 | Codex（主开发） | 稳定性与安全优化八模块合并交审 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。八个模块均在独立工作树完成，严格一模块一 commit；每个模块均完成 diff 全文自审、专项测试、全量 `*-test.js`（排除 `smoke-test.js`）与 `v1-final-audit.js`，随后 rebase 最新 `v1-broker` 再复验并以 fast-forward 合并。当前主分支尖端为 `12a696d`，**未 push、未部署、未上传体验版**，请 Claude 对以下八个 commit 一次性做第二裁判审计。
