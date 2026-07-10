@@ -171,7 +171,7 @@
       </view>
       <view wx:for="{{listings}}" wx:key="id" class="listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
         <view class="listing-photo">
-          <image wx:if="{{item.coverUrl}}" class="listing-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-index="{{index}}" binderror="onCoverError"></image>
+          <image wx:if="{{item.coverUrl}}" class="listing-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
           <view wx:if="{{item.hasVideo}}" class="video-badge">视频</view>
           <view wx:if="{{!item.coverUrl}}" class="photo-window"></view>
         </view>

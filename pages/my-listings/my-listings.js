@@ -1,4 +1,5 @@
 const apiService = require('../../utils/api-service')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
@@ -210,8 +211,9 @@ Page({
 
   // 视频首帧封面加载失败时清掉该项 coverUrl，退回占位图。
   onCoverError(event) {
-    const index = event.currentTarget.dataset.index
-    if (index === undefined || index === null) return
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {}
+    const index = findFailedCoverIndex(this.data.listings, dataset.id, dataset.cover)
+    if (index < 0) return
     this.setData({ [`listings[${index}].coverUrl`]: '' })
   },
 

@@ -1,4 +1,5 @@
 const apiService = require('../../utils/api-service')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
@@ -232,8 +233,9 @@ Page({
 
   // 视频首帧封面加载失败时清掉该项 coverUrl，退回占位图，避免裂图。
   onCoverError(event) {
-    const index = event.currentTarget.dataset.index
-    if (index === undefined || index === null) return
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {}
+    const index = findFailedCoverIndex(this.data.listings, dataset.id, dataset.cover)
+    if (index < 0) return
     this.setData({ [`listings[${index}].coverUrl`]: '' })
   }
 })

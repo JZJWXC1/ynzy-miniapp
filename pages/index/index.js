@@ -1,6 +1,7 @@
 // index.js
 const apiService = require('../../utils/api-service')
 const voiceInput = require('../../utils/voice-input')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
@@ -1090,8 +1091,9 @@ Page({
 
   // 视频首帧封面加载失败（如 OSS 未开通媒体处理/编码不支持）时清掉该项 coverUrl，退回占位图，避免裂图。
   onCoverError(event) {
-    const index = event.currentTarget.dataset.index;
-    if (index === undefined || index === null) return;
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {};
+    const index = findFailedCoverIndex(this.data.listings, dataset.id, dataset.cover);
+    if (index < 0) return;
     this.setData({ [`listings[${index}].coverUrl`]: '' });
   }
 })

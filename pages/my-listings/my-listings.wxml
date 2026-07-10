@@ -51,7 +51,7 @@
       <block wx:if="{{isCompanyMode}}">
         <view wx:for="{{listings}}" wx:key="id" class="company-listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
           <view class="company-listing-media">
-            <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-index="{{index}}" binderror="onCoverError"></image>
+            <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
             <view wx:else class="company-media-window"></view>
             <view wx:if="{{item.hasVideo}}" class="company-video-badge">视频</view>
           </view>
@@ -77,7 +77,7 @@
         <view wx:for="{{listings}}" wx:key="id" class="owner-listing-shell soft-card">
           <view class="company-listing-card owner-listing-card" bindtap="openListing" data-id="{{item.id}}">
             <view class="company-listing-media">
-              <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-index="{{index}}" binderror="onCoverError"></image>
+              <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
               <view wx:else class="company-media-window"></view>
               <view wx:if="{{item.hasVideo}}" class="company-video-badge">视频</view>
             </view>
