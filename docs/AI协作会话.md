@@ -1,6 +1,6 @@
 # AI 协作会话
 
-> 用途：减少用户在 Claude Code 与 Codex 之间手动传话。Claude Code 作为主开发，Codex 作为第二裁判；双方通过本文件进行任务交接、审计意见、返修确认。需要第三裁判或用户决策时，在本文件标记并停止推进。
+> 用途：减少用户在 Claude Code 与 Codex 之间手动传话。当前由 Codex 作为主开发，Claude Code 作为第二裁判；双方通过本文件进行任务开工、开发交接、审计意见和返修确认。需要第三裁判或用户决策时，在本文件标记并停止推进。
 
 ## 总目标
 
@@ -25,7 +25,7 @@
 1. 本文件只记录协作过程、审计结论、待决问题，不记录任何密钥、密码、token、真实生产数据、证书内容或可复用凭据。
 2. 采用追加式记录，新消息写在“最新消息”顶部，不删除旧记录；需要作废时写“已作废/原因”，不要静默改历史。
 3. 每条消息必须包含：时间、角色、关联任务、状态、需要对方做什么。
-4. Claude Code 修改代码前先写“拟修改文件清单”；Codex 审计时写“审计范围、结论、阻断项/非阻断项、复验命令”。
+4. Codex 修改代码前先写“拟修改文件清单”；Claude Code 审计时写“审计范围、结论、阻断项/非阻断项、复验命令”。
 5. 若出现以下情况，立即停止自动推进，在“第三裁判/用户介入”里写明原因，并通知用户：
    - 涉及真实生产数据恢复、删除、迁移、批量覆盖。
    - 涉及密钥、证书、root 密码、微信/飞书/OSS 凭据轮换。
@@ -35,15 +35,26 @@
 
 ## 状态枚举
 
-- `CLAUDE_DOING`：Claude 正在开发或返修。
-- `CODEX_REVIEW`：等待 Codex 审计。
-- `CLAUDE_FIX_REQUIRED`：Codex 发现阻断项，等待 Claude 返修。
+- `CODEX_DOING`：Codex 正在开发或返修。
+- `CLAUDE_REVIEW`：等待 Claude Code 审计。
+- `CODEX_FIX_REQUIRED`：Claude Code 发现阻断项，等待 Codex 返修。
 - `THIRD_JUDGE_REQUIRED`：需要第三裁判或用户介入。
 - `READY_TO_DEPLOY`：代码与审计通过，可进入部署准备。
 - `DEPLOYED_VERIFYING`：已部署，等待生产验证。
 - `DONE`：本轮完成。
+- 历史记录中的 `CLAUDE_DOING`、`CODEX_REVIEW`、`CLAUDE_FIX_REQUIRED` 保留原义，不回写旧记录；自本次角色互换后只使用上述新状态。
 
 ## 最新消息
+
+### 2026-07-10 08:34 | 用户确认 / Codex 记录 | AI 协作角色互换 | DONE
+
+状态：`DONE`。自本条起，协作分工正式调整为：**Codex 主开发、Claude Code 第二裁判、第三裁判独立复核**，直到用户再次明确调整。
+
+执行规则：
+- Codex 负责声明开发文件集、创建独立工作树、实现代码、补测试、运行全量测试和提交本地 commit；未经用户明确要求不 push。
+- Claude Code 负责对 Codex 的 commit/diff 做只读审计，发现阻断项时写入本文件并转 `CODEX_FIX_REQUIRED`；Codex 前向返修后重新转 `CLAUDE_REVIEW`。
+- 所有开工、完成、审计、返修和部署验证记录只写入本文件，不再另建 `.agents` 或其他协作记录。
+- 上一条“新注册申请飞书提醒”的两项 P1 阻断内容继续有效，但执行人从 Claude Code 改为 Codex；Codex 正式开工时另写 `CODEX_DOING` 文件清单，完成后交 Claude Code 审计。
 
 ### 2026-07-10 | Codex | 新注册申请飞书提醒二裁复审纠偏 | CLAUDE_FIX_REQUIRED
 
