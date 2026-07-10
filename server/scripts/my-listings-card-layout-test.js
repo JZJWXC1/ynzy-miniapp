@@ -6,6 +6,31 @@ const path = require('path')
 const root = path.resolve(__dirname, '..', '..')
 const wxml = fs.readFileSync(path.join(root, 'pages', 'my-listings', 'my-listings.wxml'), 'utf8')
 const wxss = fs.readFileSync(path.join(root, 'pages', 'my-listings', 'my-listings.wxss'), 'utf8')
+const appWxss = fs.readFileSync(path.join(root, 'app.wxss'), 'utf8')
+
+function cssRule(source, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 's'))
+  assert(match, `缺少 CSS 规则：${selector}`)
+  return match[1]
+}
+
+function rpxValue(rule, property) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = rule.match(new RegExp(`(?:^|;)\\s*${escaped}\\s*:\\s*(\\d+)rpx`, 'i'))
+  assert(match, `${property} 必须使用可计算的 rpx 数值`)
+  return Number(match[1])
+}
+
+function horizontalPaddingTotal(rule) {
+  const match = rule.match(/(?:^|;)\s*padding\s*:\s*([^;]+)/i)
+  assert(match, '参与宽度计算的规则必须声明 padding')
+  const values = (match[1].match(/\d+(?:\.\d+)?rpx/g) || []).map((value) => Number.parseFloat(value))
+  assert(values.length >= 1 && values.length <= 4, 'padding 必须是 1-4 个 rpx 值')
+  if (values.length === 1) return values[0] * 2
+  if (values.length === 2 || values.length === 3) return values[1] * 2
+  return values[1] + values[3]
+}
 
 const ownerShellAt = wxml.indexOf('class="owner-listing-shell soft-card"')
 const ownerCardAt = wxml.indexOf('class="company-listing-card owner-listing-card"', ownerShellAt)
@@ -75,11 +100,22 @@ assert.match(
   '两个操作按钮应允许等宽收缩且计入内边距，防止窄屏溢出'
 )
 
-// rpx 以 750 宽设计稿等比缩放：页面横向 padding 28*2，卡片上半区 padding 18*2、封面 190、gap 18。
-// 在任意手机宽度下比例恒定，因此正文约 450rpx、底部按钮各约 323rpx，不会因 320px 窄屏改变相对边界。
-const cardWidth = 750 - (28 * 2)
-const summaryTextWidth = cardWidth - (18 * 2) - 190 - 18
-const actionButtonWidth = (cardWidth - (18 * 2) - 12) / 2
+// 从真实 WXSS 读取布局数值，防止测试用自写常量“自己证明自己”。rpx 以 750 宽设计稿等比缩放，
+// 因此计算出的相对边界同样适用于 320-375px 窄屏。
+const pagePaddingTotal = horizontalPaddingTotal(cssRule(appWxss, '.page-shell'))
+const summaryRule = cssRule(wxss, '.company-listing-card')
+const summaryPaddingTotal = horizontalPaddingTotal(summaryRule)
+const summaryGap = rpxValue(summaryRule, 'gap')
+const mediaRule = cssRule(wxss, '.company-listing-media')
+const mediaBasisMatch = mediaRule.match(/(?:^|;)\s*flex\s*:\s*0\s+0\s+(\d+)rpx/i)
+assert(mediaBasisMatch, '封面宽度必须由 company-listing-media 的 flex-basis 固定')
+const mediaWidth = Number(mediaBasisMatch[1])
+const managementPaddingTotal = horizontalPaddingTotal(cssRule(wxss, '.owner-management'))
+const actionGap = rpxValue(cssRule(wxss, '.owner-card-actions'), 'gap')
+
+const cardWidth = 750 - pagePaddingTotal
+const summaryTextWidth = cardWidth - summaryPaddingTotal - mediaWidth - summaryGap
+const actionButtonWidth = (cardWidth - managementPaddingTotal - actionGap) / 2
 assert.ok(summaryTextWidth >= 440, `摘要正文宽度不足：${summaryTextWidth}rpx`)
 assert.ok(actionButtonWidth >= 300, `底部按钮宽度不足：${actionButtonWidth}rpx`)
 
