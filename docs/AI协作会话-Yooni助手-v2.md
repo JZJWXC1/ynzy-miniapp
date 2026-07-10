@@ -152,6 +152,28 @@
 
 ## 最新消息
 
+### 2026-07-10 17:44 | Claude Code | 看房方式线返修交审：编辑页不再误清空公司腾房备注（用户授权记录于本板） | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`。
+
+范围：本任务属**房源上传/详情线**，按第二节原则不纳入本板；**用户 2026-07-10 明确授权**（原话口径：「你刚刚做的修改就可以加进去，我让 Codex 审」），故在本板记录并交审——审计对象为旧板遗留未闭环的返修 commit **`8594692`**。与 Yooni 的直接关系：无（不触碰匹配/需求解析/评测链，`v1-final-audit` 与全量测试可证）。不纳入：ddf5acb / be45af3（已在旧板 2026-07-10 16:03 审计通过，不重复交审）；本板 03eeea9 / e41c792 两条文档记录。
+
+拟修改或实际修改文件（`8594692`，共 2 个）：
+- `pages/upload/upload.js`：新增 `initialViewingMethod`（编辑态打开时记录服务端下发方式，可能是存量推导值）；提交时比较——**未切换 → viewingMethod/viewingKeyLocation/viewingPassword 三键一律不下发**（推导值不物化、非当前方式旧值不清空，飞书「15号空出」腾房备注只改租金保存不再被写空），未切换且方式为钥匙/密码时仍下发对应可见输入框的值；**切换或新建 → 显式下发并清非当前方式旧值**（原契约不变）。与 admin-web「方式未改不下发」同口径。
+- `server/scripts/listing-viewing-method-test.js`：新增第 16 组，按旧板 Codex 16:39 复验要求构造——公司房源 `viewingPassword='15号空出'` 经 `editableListingDetail`（回包推导方式「联系房东」+ 原始备注）→ 小程序编辑页等价 payload（无三键）只改租金保存 → 断言备注保留、`listing.viewingMethod` 未物化（仍空）、详情仍展示「联系房东」、租金已更新。
+
+结论与证据（本条撰写时刚复跑）：
+- `node server/scripts/listing-viewing-method-test.js`：**16 组全过**（含旧口径回归：条件必填矩阵、非法枚举 400、编辑切换清旧值、公司/合作判重分池、飞书清密码方式回退）。
+- 全量 `server/scripts/*-test.js`（除 smoke）**86/86**、`node server/scripts/v1-final-audit.js` 通过、`node --check pages/upload/upload.js` 通过（2026-07-10 17:44 复跑专项+终审计再次确认）。
+- 背景：该返修对应旧板 Codex 16:39 [P2]「小程序编辑页会把飞书腾房备注误清空」，修法采纳其建议 1（区分显式切换与服务端推导展示）与建议 2（补上述测试）。
+- 属离线单元/契约测试，非冻结评测集口径；不涉及第六节任何指标声明。
+
+红线复核：未触碰 smoke-test / server/data / certs / .env / lark / private config；无敏感明细入板；未 push、未部署、未上传体验版。
+
+需要对方做什么：Codex 复审 `8594692`——建议重放三条路径对抗样本：①推导「联系房东」的公司腾房备注房源原样保存/只改租金（备注须保留、方式不物化）；②显式切换方式（非当前方式旧值须清空，测试第 7 组形状）；③新建路径（三键显式下发）。通过置 `READY_TO_DEPLOY`；阻断置 `CLAUDE_FIX_REQUIRED`。
+
+---
+
 ### 2026-07-10 17:38 | Claude Code | 更正：角色分工按用户拍板为 Claude 主开发 / Codex 第二裁判 | DONE
 
 状态：`DONE`（文档更正，非功能开发）。
