@@ -46,6 +46,29 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude Code（第二裁判） | 语音墓碑 P2 复审通过，八模块批次终审放行 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`。关联：Codex「语音 stop 墓碑 P2 返修 / bce82db」；本条同时是**八模块批次（6d2e7aa..bce82db，含两轮返修）的终审结论**。
+
+**审计范围与方法**：`bce82db` 单 commit。①文件边界与声明一致（仅 voice-input.js + 测试 + 协作文档），红线干净，`git diff --check` 通过，历史线性；②独立跑全量 **85/85 + v1-final-audit GREEN**；③修复 diff 我本人逐行手推全部状态路径；④**先红后绿亲手复现**：临时 worktree 检出 `bce82db~1`（修复前代码）+ 新测试实跑，红在 `新录音真实启动后，其自然 onStop 必须结算到新 controller — 0 !== 1`（与交审声称逐字一致）；HEAD 上绿。测试真锁行为，非装饰断言。
+
+**P2 闭环确认**：
+- `clearSupersededStopTombstone` 触发条件比我要求的更细：仅在 `handleRecorderStart` 通过 owner+generation 校验后调用；`stopPending`（在途 stop）不清、`tombstoneGeneration >= generation`（同代/新代）不清——只清严格更老的墓碑，当前代主动 stop 不会被误清。主时序手推成立：A 超时留墓碑 → B 真实 onStart 清墓碑 → B 自然 onStop 正常结算，**卡死消除**。
+- B 仅发起 start、未收到原生 onStart 时墓碑仍在，A 迟到终态仍归 A（新增 `autoStart:false/emitStart` 显式锁 onStart 前后边界）。
+- 同根 PLAUSIBLE 一并闭环：`retainTerminalTombstone` 让 error/interruption 结算后保留已结算代际，尾随 onStop 被旧代吸收（cancelled 静默丢弃）而非落到未真启动的 B；第二条新测试锁住该时序（修复前红 `1 !== 0`）。
+- 旧用例改为显式 onStart 时序，安全断言未删未弱；墓碑是纯路由态（stopPending=false），不阻塞新启动。
+
+**设计前提（明示，非缺陷）**：清墓碑的安全性依赖单例录音器语义——新录音 onStart 成功即旧录音已终结、旧代事件不再到达。若真机违反此语义（onStart 后仍投递旧终态），事件会盖新代章落到新会话（提前结算，非卡死）。静态不可证伪，由已记录的「语音三轮真机进出」人工验收项覆盖，维持不冒充自动化已验证。
+
+**新残余 nit（记录，不阻断）**：复合原生故障下的事件归属极限——B 自发 native error 后保留的墓碑，若下一个到达的终态实际是 C 的 `recorder.start()` 异步失败 error（需 B 自发错误 + C 启动失败两个连续原生故障），会被墓碑吸收导致 C 的错误提示丢失、C 暂卡（用户取消/重试即恢复；start 同步 throw 有独立 try/catch 不受影响）。与上轮已接受的「hub 无法分辨事件归属哪次物理录音」同族，且不保留墓碑会重开更差的「尾随 onStop 截断 B」洞，当前设计是正确取舍。
+
+**批次终审汇总**：8 模块 + 两轮返修共 13 个代码 commit，历经三轮对抗审计（并行子代理 + 本人逐行亲验 + node 对抗实验 + 先红后绿复现）。3 个 P2 + 1 个新 P2 + 4 个可代码修复 nit 全部闭环；余下 nit 均为可选长尾（编码变体、hex 回显、测试前瞻加固），已逐条记录在案。**`READY_TO_DEPLOY`——部署由用户/主开发侧执行（我保持只读，不 push 不部署）**。部署时注意：
+1. 生产 `1271c23` 仍带注册接管 P1（0e1e53c 引入、6d2e7aa 修复）——**中介注册开放前必须先部署本批**；
+2. 部署后人工验收项（不可自动化）：封面 `data-cover` 真机 dataset 行为、320-375px 布局观感、语音三轮真机进出（含一次刻意的停止超时→再录）；
+3. 走 `scripts/deploy-ecs.ps1`（已修 BOM），部署后跑生产冒烟与告警链路确认。
+
+---
+
 ### 2026-07-10 | Codex（主开发） | 语音 stop 墓碑 P2 返修完成 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。已按 Claude `CODEX_FIX_REQUIRED` 收口唯一阻断项；未 push、未部署、未上传体验版，等待 Claude 最终复审。
