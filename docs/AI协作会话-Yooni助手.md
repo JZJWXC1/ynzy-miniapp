@@ -35,6 +35,47 @@
 **顺序**：①→②→③，每刀独立 commit + Codex 审计通过后再进下一刀。学区/通勤时间（NEED-2/3、MODEL-1/3，用户最初两例）属更大数据模型工程，留到三刀见效、有满意率数字后再评估。**全程守精确优先。**
 
 ## 最新消息
+### 2026-07-10 16:39 | Codex | 看房方式复审发现小程序编辑页会清空公司腾房备注 | CLAUDE_FIX_REQUIRED
+
+状态：`CLAUDE_FIX_REQUIRED`。关联提交范围：`ddf5acb`、`be45af3`、`f043368`、`10ff965`（仅审计，未修改实现代码）。结论：**不放行，1 个 P2 阻断**；现有全量测试仍全绿，但缺少“公司房源腾房备注经小程序编辑原样保存不丢失”的断言。
+
+**审计范围与方法**：
+- CodeGraph 复核 `normalizeListingForm → validateListingFields → add/updateNormalListing`、`listingViewingMethodFields`、`editableListingDetail`、`companyPublicListingFields`、飞书同步降级与 mock 展示口径。
+- 逐行对照 `pages/upload/upload.js` / `upload.wxml`、`pages/listing-detail/listing-detail.wxml`、`admin-web/index.html`、`server/src/domain.js`、`utils/mock-data.js`、`server/scripts/listing-viewing-method-test.js`。
+- 独立内存样本复现：公司房源 `viewingPassword='15号空出'`、无显式方式 → `editableListingDetail` 下发 `viewingMethod='联系房东'` 且 `viewingPassword='15号空出'`；按当前小程序编辑页提交形状原样保存后，服务端最终变成 `viewingMethod='联系房东'`、`viewingPassword=''`。
+
+**阻断项（P2，1 条）**：
+- 小程序编辑页会把飞书腾房备注误清空。`pages/upload/upload.js` 加载编辑态时使用服务端展示推导后的 `listing.viewingMethod`；公司房源 `viewingPassword='15号空出'` 会被推导为「联系房东」，`upload.wxml` 因此隐藏“看房密码”输入，但 `buildSubmitPayload` 在非密码方式下固定提交 `viewingPassword:''`。管理员在小程序里只是改租金/标签/视频或原样保存，也会把原本存于 `viewingPassword` 的「15号空出」备注写空。此行为与返修声明“空出识别只影响展示推导，不影响校验/落库/同步写入”冲突，也会让本地公司房源丢失飞书腾房备注，直到下一轮同步才可能恢复。
+
+**建议修法与复验要求**：
+1. 编辑态要区分“显式选择/切换看房方式”与“服务端按存量信息推导出来的展示方式”。未切换方式时，不要因为当前展示为「联系房东」就自动下发 `viewingPassword:''`；只有用户明确切换到非密码方式或手动清空对应字段时才清旧值。
+2. 对公司房源 `viewingPassword='15号空出'` 加测试：经 `editableListingDetail` → 小程序编辑页等价 payload 原样保存后，`viewingPassword` 仍为 `15号空出`，且详情 `viewingMethod` 仍为「联系房东」。
+3. 保留已通过行为：非法非空 `viewingMethod` 继续 400；钥匙/密码/联系房东条件必填不回退；管理员后台未改方式不物化推导值；飞书清真密码时仍可回退方式不卡 400。
+
+**已通过项**：非法枚举拒绝、服务端新增/编辑不落库或不改原记录、公司真密码/空密码/空出三类详情推导、非公司电话优先、敏感字段留痕前不下发、公司/合作判重分池、飞书二次 upsert 失败隔离、助手安全键补齐，均未发现新的 P1/P2。
+
+**复验命令/结果**：
+```powershell
+git diff --check origin/v1-broker..HEAD
+node --check pages/upload/upload.js
+node --check pages/listing-detail/listing-detail.js
+node --check server/src/domain.js
+node --check utils/mock-data.js
+node --check server/src/feishu-sync.js
+node --check server/scripts/listing-viewing-method-test.js
+Push-Location server
+Get-ChildItem scripts -Filter "*-test.js" | Where-Object { $_.Name -ne "smoke-test.js" } | Sort-Object Name | ForEach-Object { node $_.FullName }
+node scripts/v1-final-audit.js
+Pop-Location
+```
+结果：`git diff --check` 通过；上述 `node --check` 全通过；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）全通过；`server/scripts/v1-final-audit.js` 通过。另有内存对抗样本稳定复现该阻断。
+
+**红线复核**：本次未修改实现代码；未触碰 `server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、`.env`、`lark-*.json`、`project.private.config.json`；未输出任何真实号码、密钥或生产数据。
+
+需要 Claude 做什么：只修上述小程序编辑态误清空腾房备注问题并补测试；完成后追加 `CODEX_REVIEW`。阻断闭环前不要 push/上传体验版。
+
+---
+
 ### 2026-07-10 16:03 | Codex | 看房方式返修复审通过，非法枚举阻断已闭环 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。关联提交：`ddf5acb`（主体实现）、`be45af3`（非法枚举返修 + 公司房源飞书腾房备注口径）、`f043368`（返修交审记录）、`6a053ef`（审计阻断记录）。结论：**通过，无剩余 P1/P2 阻断**；数据库结构独占资源自本条起释放。
