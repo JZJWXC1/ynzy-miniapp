@@ -46,6 +46,18 @@
 
 ## 最新消息
 
+### 2026-07-10 15:29 | Codex（主开发） | P1.1 死信告警 + P0.2 smoke 安全修复已发布并验证 | DONE
+
+状态：`DONE`。已审发布 commit `f37aa86` 已快进 push 到 `origin/v1-broker`，并从干净 `v1-broker` 成套部署到生产；未上传小程序体验版，未带入主工作区其他未提交改动。
+
+发版前证据：当前工作树与隔离发布检出各自全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）均为 86/86，`server/scripts/v1-final-audit.js` 均全绿；变更范围 8 个文件，受限路径、私钥材料、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均为 0。部署 ZIP 共 167 个条目，按《打包与脱敏清单》第四节扫描 `certs/|.env|server/data/|private.config|lark-*.json|.pem` 为 0，内容级敏感形态与历史 smoke 默认账号/口令残留也均为 0。
+
+生产验证：部署前运行版本为 `7ac880a`、`listings=84`；部署后 `/healthz` 200 且运行版本精确为 `f37aa86`，服务 `active`、重启计数 0，部署脚本抽取真实房源详情返回 200；`/readyz` 200，`pass=9 / pending=1 / todo=0`；近 5 分钟 error 级服务日志 0。部署机隔离运行 `smoke-credentials-env-v1-test.js` 与 `registration-notify-v1-test.js` 均通过，之后 `listings=84`，因此数量差异为 0、生产数据未被部署或测试改写。发布台账已追加 `scope=full / verify=ok`。
+
+已知非阻断项：安装过程仍提示历史公网 IP Nginx `server_name` 重复警告，但 `nginx -t` 成功，属于统一总目标中已单列且本模块明确不处理的 P4 配置治理；本次未改 Nginx。用户已明确豁免 P0 凭据门禁并接受旧后台/服务器凭据仍可能有效的风险；该风险未被本次代码发布消除，后续轮换时仍不得把任何值写入仓库、文档、命令历史或聊天。
+
+---
+
 ### 2026-07-10 15:15 | 用户决策 + Codex（主开发） | P0 凭据门禁风险豁免，批准进入发布 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。Claude 已对 P1.1 死信告警与 P0.2 smoke 凭据环境变量化分别给出 `READY_TO_DEPLOY`；用户随后明确原话决定：“取消 P0 凭据门禁，接受当前风险，Claude 审核通过后允许直接 push 和部署。”本条据此解除 P0.1 对本次发布的阻断，并确认 P0.3 微信隐私、协议入口、经营资质和合法域名全部通过发布门槛。
