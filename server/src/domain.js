@@ -1955,6 +1955,8 @@ function buildListingDetail(db, listing) {
     areaText: `${location.city} · ${location.area}`,
     address: companyPublic.address || '确认留痕后可查看',
     sensitiveLocked: !display.companyListing,
+    // 看房方式名不属敏感，直接下发；钥匙位置/密码/电话等敏感值仍走公司公开或留痕后 sensitive 下发
+    ...listingViewingMethodFields(listing),
     commissionRate: display.noCommission ? 0 : commissionRateForListing(listing, db),
     commissionText: display.commissionText,
     noCommission: display.noCommission,
@@ -2767,6 +2769,8 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
     viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+    ...listingViewingMethodFields(listing),
+    viewingKeyLocation: listingViewingKeyLocation(listing),
     videoLabel: listing.videoLabel || (hasListingVideo(listing) ? '房源视频' : ''),
     hasVideo: hasListingVideo(listing),
     missingVideoMaterial: Boolean(listing.missingVideoMaterial),
@@ -3172,6 +3176,9 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
         areaText: `${ownLocation.city} · ${ownLocation.area}`,
         address: listing.address,
         landlordPhone: listing.landlordPhone,
+        ...listingViewingMethodFields(listing),
+        viewingKeyLocation: listingViewingKeyLocation(listing),
+        viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
         sensitiveLocked: false,
         ownListing: true
       }
@@ -3203,6 +3210,9 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
       areaText: `${location.city} · ${location.area}`,
       address: listing.address,
       landlordPhone: listing.landlordPhone,
+      ...listingViewingMethodFields(listing),
+      viewingKeyLocation: listingViewingKeyLocation(listing),
+      viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
       sensitiveLocked: false
     }
   }
@@ -4148,6 +4158,51 @@ function publicListingLocationFields(listing = {}) {
   }
 }
 
+// 看房方式：钥匙 / 密码 / 联系房东；空 = 存量房源未显式指定（展示口径按已有信息推导）。
+const VIEWING_METHOD_KEY = '钥匙'
+const VIEWING_METHOD_PASSWORD = '密码'
+const VIEWING_METHOD_LANDLORD = '联系房东'
+const VIEWING_METHODS = [VIEWING_METHOD_KEY, VIEWING_METHOD_PASSWORD, VIEWING_METHOD_LANDLORD]
+
+function normalizeViewingMethod(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (VIEWING_METHODS.indexOf(text) !== -1) return text
+  if (/^key$/i.test(text)) return VIEWING_METHOD_KEY
+  if (/^password$/i.test(text)) return VIEWING_METHOD_PASSWORD
+  if (/^(landlord|contact)$/i.test(text)) return VIEWING_METHOD_LANDLORD
+  return ''
+}
+
+// 存量兼容：未显式指定看房方式的老房源按已有信息推导。
+// 公司房源密码优先（飞书「看房方式密码」列是公司口径权威）；
+// 非公司房源电话优先（旧详情页只展示房东电话、密码仅后台记录——电话+密码并存的存量必须继续展示电话）。
+function effectiveViewingMethod(listing = {}) {
+  const explicit = normalizeViewingMethod(firstText(listing.viewingMethod, listing.showingMethod))
+  if (explicit) return explicit
+  const hasPassword = Boolean(firstText(listing.viewingPassword, listing.showingPassword, listing.password))
+  const hasPhone = Boolean(firstText(listing.landlordPhone, listing.contact))
+  if (isCompanyListing(listing)) {
+    return hasPassword ? VIEWING_METHOD_PASSWORD : (hasPhone ? VIEWING_METHOD_LANDLORD : '')
+  }
+  return hasPhone ? VIEWING_METHOD_LANDLORD : (hasPassword ? VIEWING_METHOD_PASSWORD : '')
+}
+
+// 详情/编辑展示口径：只含方式名与文案，不含钥匙位置/密码/电话等敏感值本身。
+function listingViewingMethodFields(listing = {}) {
+  const method = effectiveViewingMethod(listing)
+  const company = isCompanyListing(listing)
+  const landlordText = company ? '联系公司' : VIEWING_METHOD_LANDLORD
+  return {
+    viewingMethod: method,
+    viewingMethodText: method === VIEWING_METHOD_LANDLORD ? landlordText : (method || landlordText)
+  }
+}
+
+function listingViewingKeyLocation(listing = {}) {
+  return firstText(listing.viewingKeyLocation, listing.keyLocation)
+}
+
 function companyPublicListingFields(listing = {}) {
   if (!isCompanyListing(listing)) return {}
   const location = listingLocationFields(listing)
@@ -4172,6 +4227,7 @@ function companyPublicListingFields(listing = {}) {
     companyContactPhoneText: contact,
     viewingPassword,
     showingPassword: viewingPassword,
+    viewingKeyLocation: listingViewingKeyLocation(listing),
     remark
   }
 }
@@ -4259,6 +4315,21 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const viewingPassword = viewingPasswordInput !== undefined
     ? String(viewingPasswordInput || '').trim()
     : firstText(current.viewingPassword, current.showingPassword)
+  // 看房方式与钥匙位置同密码语义：显式传空串表示清空，不传才沿用现值
+  const viewingMethodInput = firstOwnValue(form, ['viewingMethod', 'showingMethod'])
+  let viewingMethod = viewingMethodInput !== undefined
+    ? normalizeViewingMethod(viewingMethodInput)
+    : normalizeViewingMethod(firstText(current.viewingMethod, current.showingMethod))
+  const viewingKeyLocationInput = firstOwnValue(form, ['viewingKeyLocation', 'keyLocation'])
+  const viewingKeyLocation = viewingKeyLocationInput !== undefined
+    ? String(viewingKeyLocationInput || '').trim()
+    : firstText(current.viewingKeyLocation, current.keyLocation)
+  // 调用方（如飞书同步、旧后台）只清空密码/钥匙位置而不带看房方式时，沿用的旧方式随之退掉，
+  // 否则「方式=密码但密码已被清空」会把第三方全量更新卡成 400（回归：飞书表清空密码列 → 整行同步失败）
+  if (viewingMethodInput === undefined) {
+    if (viewingMethod === VIEWING_METHOD_PASSWORD && viewingPasswordInput !== undefined && !viewingPassword) viewingMethod = ''
+    if (viewingMethod === VIEWING_METHOD_KEY && viewingKeyLocationInput !== undefined && !viewingKeyLocation) viewingMethod = ''
+  }
   const companyFlagInput = firstOwnValue(form, ['companyListing', 'isCompanyListing', 'companyOwned'])
   const ownerTypeInput = firstText(form.ownerType, form.houseSourceType, form.landlordType, current.ownerType, current.houseSourceType)
   const normalizedOwnerType = normalizeOwnerType(ownerTypeInput, current.ownerType || SECOND_LANDLORD_SOURCE)
@@ -4377,6 +4448,8 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     videoUrl,
     videoKey,
     viewingPassword,
+    viewingMethod,
+    viewingKeyLocation,
     commissionRate: rate,
     features,
     hasFeatureInput: featureInputCount > 0 || noCommission,
@@ -4447,14 +4520,35 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
 function validateListingFields(fields, user = {}, options = {}) {
   if (
     !fields.address ||
-    !fields.contact ||
     !fields.rent ||
     !fields.layout ||
     !fields.rawCommunity ||
     !fields.building ||
     !fields.roomNumber
   ) {
-    const error = new Error('城市、区域、小区、几栋、房间号、联系方式、租金和户型必填')
+    const error = new Error('城市、区域、小区、几栋、房间号、租金和户型必填')
+    error.statusCode = 400
+    throw error
+  }
+  // 看房方式条件必填：钥匙→钥匙位置、密码→看房密码、联系房东→房东手机号。
+  // 房东手机号不再无条件必填；未选方式的旧客户端/存量编辑仍要求联系方式，保证房源至少有一种可看房途径。
+  if (fields.viewingMethod === VIEWING_METHOD_KEY && !fields.viewingKeyLocation) {
+    const error = new Error('看房方式为钥匙时，请填写钥匙在哪')
+    error.statusCode = 400
+    throw error
+  }
+  if (fields.viewingMethod === VIEWING_METHOD_PASSWORD && !fields.viewingPassword) {
+    const error = new Error('看房方式为密码时，请填写看房密码')
+    error.statusCode = 400
+    throw error
+  }
+  if (fields.viewingMethod === VIEWING_METHOD_LANDLORD && !fields.contact) {
+    const error = new Error('看房方式为联系房东时，请填写房东手机号')
+    error.statusCode = 400
+    throw error
+  }
+  if (!fields.viewingMethod && !fields.contact) {
+    const error = new Error('请选择看房方式（钥匙/密码/联系房东）并填写对应信息')
     error.statusCode = 400
     throw error
   }
@@ -4502,6 +4596,9 @@ function duplicateListingPhone(value) {
 
 function duplicateListingKey(fields = {}) {
   return [
+    // 公司房源与合作房源分池判重：飞书公司房源电话是「公司统一维护」占位（无数字），
+    // 若不分池，无手机号的钥匙/密码合作房源会与同房间公司房源互撞 409
+    isCompanyListing(fields) ? '公司' : '合作',
     duplicateListingValue(fields.community),
     duplicateListingValue(fields.building),
     duplicateListingValue(fields.unit),
@@ -4517,7 +4614,10 @@ function assertNoDuplicateActiveListing(db, fields, currentListingId = '') {
     duplicateListingKey(listing) === targetKey
   ))
   if (!duplicate) return
-  const error = new Error(`已存在同一小区、楼栋、单元、房号和房东手机号的有效房源，请勿重复上传（房东手机号 ${maskPhone(fields.contact)}）`)
+  const phoneDigits = duplicateListingPhone(fields.contact)
+  const error = new Error(phoneDigits
+    ? `已存在同一小区、楼栋、单元、房号和房东手机号的有效房源，请勿重复上传（房东手机号 ${maskPhone(fields.contact)}）`
+    : '已存在同一小区、楼栋、单元、房号的有效房源，请勿重复上传')
   error.statusCode = 409
   throw error
 }
@@ -4548,6 +4648,10 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     roomNumber: fields.roomNumber,
     address: fields.address,
     landlordPhone: fields.contact,
+    viewingMethod: fields.viewingMethod,
+    viewingKeyLocation: fields.viewingKeyLocation,
+    viewingPassword: fields.viewingPassword,
+    showingPassword: fields.viewingPassword,
     commissionRate: fields.commissionRate,
     videoLabel: '新上传房源视频',
     videoUrl: fields.videoUrl,
@@ -4633,6 +4737,8 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
     viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+    ...listingViewingMethodFields(listing),
+    viewingKeyLocation: listingViewingKeyLocation(listing),
     status: listing.status || '',
     reviewStatus: listing.reviewStatus || '',
     communityMatched: listing.communityMatched !== undefined ? truthyFlag(listing.communityMatched) : listing.communityMatchStatus !== '未匹配',
@@ -4715,6 +4821,8 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.videoKey = fields.videoKey || ''
   listing.viewingPassword = fields.viewingPassword
   listing.showingPassword = fields.viewingPassword
+  listing.viewingMethod = fields.viewingMethod
+  listing.viewingKeyLocation = fields.viewingKeyLocation
   listing.ownerType = fields.ownerType
   listing.houseSourceType = fields.ownerType
   listing.type = fields.rentMode

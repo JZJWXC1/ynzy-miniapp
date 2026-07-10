@@ -1201,18 +1201,26 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       if (material) {
         const failureReason = shortError(error)
         const video = { videoKey: '', videoUrl: '', materialUrl: material.url || material.videoUrl || material.sourcePath || material.name || '' }
-        const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, failureReason)
-        if (upsert.action === 'updated') {
-          result.updated += 1
-        } else {
-          result.created += 1
+        // 降级重试也可能因校验/判重（400/409）再次失败——必须自行兜住，
+        // 否则异常穿出 applySync：整轮同步中断、后续行不处理、自动下架与同步日志全部丢失
+        try {
+          const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, failureReason)
+          if (upsert.action === 'updated') {
+            result.updated += 1
+          } else {
+            result.created += 1
+          }
+          result.materialTransferFailed += 1
+          result.missingVideoMaterial += 1
+          if (result.messages.length < 20) {
+            result.messages.push(`第 ${row.rowNumber} 行素材匹配但搬运失败，已降级上架并标记缺视频素材：${failureReason}`)
+          }
+          result.auditRows.push(buildAuditRow(row, material, '上架-素材失败降级缺视频素材', failureReason))
+        } catch (retryError) {
+          result.failed += 1
+          result.messages.push(`第 ${row.rowNumber} 行同步失败：${retryError.message}`)
+          result.auditRows.push(buildAuditRow(row, material, '失败', shortError(retryError)))
         }
-        result.materialTransferFailed += 1
-        result.missingVideoMaterial += 1
-        if (result.messages.length < 20) {
-          result.messages.push(`第 ${row.rowNumber} 行素材匹配但搬运失败，已降级上架并标记缺视频素材：${failureReason}`)
-        }
-        result.auditRows.push(buildAuditRow(row, material, '上架-素材失败降级缺视频素材', failureReason))
       } else {
         result.failed += 1
         result.messages.push(`第 ${row.rowNumber} 行同步失败：${error.message}`)

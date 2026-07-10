@@ -1074,6 +1074,28 @@
     }, display);
   }
 
+  // 看房方式展示口径（与 server/src/domain.js 的 listingViewingMethodFields 同步）：
+  // 公司房源密码优先，非公司房源电话优先；只含方式名，不含密码/钥匙位置等敏感值本身
+  function listingViewingMethodFields(listing) {
+    var item = listing || {};
+    var method = firstText(item.viewingMethod, item.showingMethod);
+    var hasPassword = Boolean(firstText(item.viewingPassword, item.showingPassword, item.password));
+    var hasPhone = Boolean(firstText(item.landlordPhone, item.contact));
+    var company = isCompanyListing(item);
+    if (!method) {
+      if (company) {
+        method = hasPassword ? '密码' : (hasPhone ? '联系房东' : '');
+      } else {
+        method = hasPhone ? '联系房东' : (hasPassword ? '密码' : '');
+      }
+    }
+    var landlordText = company ? '联系公司' : '联系房东';
+    return {
+      viewingMethod: method,
+      viewingMethodText: method === '联系房东' ? landlordText : (method || landlordText)
+    };
+  }
+
   function getListingDetail(id) {
     autoExpireOverdueListings();
     var listing = getListing(id);
@@ -1117,7 +1139,10 @@
       hall: listing.hall || '',
       bath: listing.bath || '',
       status: listing.status
-    }, listingDisplayFields(listing));
+    }, listingViewingMethodFields(listing), companyListing ? {
+      viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+      viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation)
+    } : {}, listingDisplayFields(listing));
   }
 
   function getListingLogs(listingId) {
@@ -2013,6 +2038,10 @@
           roomAddress: ownLoc.roomAddress,
           address: listing.address,
           landlordPhone: listing.landlordPhone,
+          viewingMethod: listingViewingMethodFields(listing).viewingMethod,
+          viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
+          viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
+          viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
           sensitiveLocked: false,
           ownListing: true
         }
@@ -2052,6 +2081,10 @@
         roomAddress: location.roomAddress,
         address: listing.address,
         landlordPhone: listing.landlordPhone,
+        viewingMethod: listingViewingMethodFields(listing).viewingMethod,
+        viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
+        viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
+        viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
         sensitiveLocked: false
       } : {},
       quota: brokerSensitiveUsage(state.currentUserId)
@@ -2270,8 +2303,24 @@
     var communityReview = normalizeCommunityReviewState(form, {});
     var needsReview = sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview;
     var mapCoordinate = listingMapCoordinateFields(community, form, {});
-    if (!address || !form.contact || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
-      throw new Error('城市、区域、小区、几栋、房间号、联系方式、租金、户型和视频必填');
+    var viewingMethod = firstText(form.viewingMethod, form.showingMethod);
+    var viewingKeyLocation = String(form.viewingKeyLocation || '').trim();
+    var viewingPassword = String(form.viewingPassword || form.showingPassword || '').trim();
+    if (!address || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
+      throw new Error('城市、区域、小区、几栋、房间号、租金、户型和视频必填');
+    }
+    // 与生产后端同口径：房东手机号仅在看房方式=联系房东时必填
+    if (viewingMethod === '钥匙' && !viewingKeyLocation) {
+      throw new Error('看房方式为钥匙时，请填写钥匙在哪');
+    }
+    if (viewingMethod === '密码' && !viewingPassword) {
+      throw new Error('看房方式为密码时，请填写看房密码');
+    }
+    if (viewingMethod === '联系房东' && !firstText(form.contact)) {
+      throw new Error('看房方式为联系房东时，请填写房东手机号');
+    }
+    if (!viewingMethod && !firstText(form.contact)) {
+      throw new Error('请选择看房方式（钥匙/密码/联系房东）并填写对应信息');
     }
     if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 100) {
       throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
@@ -2301,7 +2350,11 @@
       unit: unit,
       roomNumber: roomNumber,
       address: address,
-      landlordPhone: form.contact,
+      landlordPhone: firstText(form.contact),
+      viewingMethod: viewingMethod,
+      viewingKeyLocation: viewingKeyLocation,
+      viewingPassword: viewingPassword,
+      showingPassword: viewingPassword,
       commissionRate: sourceState.commissionRate,
       videoLabel: '新上传房源视频',
       videoUrl: form.videoUrl || '',
@@ -2368,6 +2421,10 @@
       address: listing.address || '',
       contact: listing.landlordPhone || '',
       landlordPhone: listing.landlordPhone || '',
+      viewingMethod: listingViewingMethodFields(listing).viewingMethod,
+      viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
+      viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
+      viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
       commissionRate: listing.commissionRate,
       videoLabel: listing.videoLabel || '房源实拍视频',
       videoUrl: listing.videoUrl || '',
@@ -2431,6 +2488,13 @@
     listing.roomNumber = roomNumber;
     listing.address = address;
     listing.landlordPhone = firstText(form.contact, form.landlordPhone, listing.landlordPhone);
+    // 显式传空串=清空、不传=沿用（与生产后端 normalizeListingForm 同语义）
+    if (Object.prototype.hasOwnProperty.call(form, 'viewingMethod')) listing.viewingMethod = firstText(form.viewingMethod);
+    if (Object.prototype.hasOwnProperty.call(form, 'viewingKeyLocation')) listing.viewingKeyLocation = String(form.viewingKeyLocation || '').trim();
+    if (Object.prototype.hasOwnProperty.call(form, 'viewingPassword')) {
+      listing.viewingPassword = String(form.viewingPassword || '').trim();
+      listing.showingPassword = listing.viewingPassword;
+    }
     listing.commissionRate = sourceState.commissionRate;
     listing.videoUrl = firstText(form.videoUrl, listing.videoUrl);
     listing.videoKey = firstText(form.videoKey, listing.videoKey);

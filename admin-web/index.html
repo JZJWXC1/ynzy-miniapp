@@ -1701,12 +1701,25 @@
           <input id="editRent" type="number" min="1" placeholder="如：3500">
         </label>
         <label class="form-item">
+          <span>看房方式</span>
+          <select id="editViewingMethod">
+            <option value="">按已有信息（有密码按密码，否则联系房东）</option>
+            <option value="钥匙">钥匙</option>
+            <option value="密码">密码</option>
+            <option value="联系房东">联系房东</option>
+          </select>
+        </label>
+        <label class="form-item">
           <span>房东电话</span>
-          <input id="editContact" placeholder="房东联系电话">
+          <input id="editContact" placeholder="看房方式为联系房东时必填">
         </label>
         <label class="form-item">
           <span>看房密码</span>
-          <input id="editViewingPassword" placeholder="清空表示无密码">
+          <input id="editViewingPassword" placeholder="看房方式为密码时必填，清空表示无密码">
+        </label>
+        <label class="form-item">
+          <span>钥匙位置</span>
+          <input id="editViewingKeyLocation" placeholder="看房方式为钥匙时必填，如 前台领取">
         </label>
         <label class="form-item">
           <span>状态</span>
@@ -3575,6 +3588,7 @@
     // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
     const LISTING_EDIT_FEATURE_OPTIONS = ['近地铁', '电梯', '燃气', '独卫', '朝南', '带阳台', '带露台（阁楼）', '可短租', '可月付', '干湿分离', '采光好', '首次出租', '民水民电', '无'];
     let editingListingItem = null;
+    let editingListingInitialViewingMethod = '';
 
     function renderEditFeatureOptions(selected) {
       const tags = uniqueTextList(selected);
@@ -3601,6 +3615,11 @@
       document.getElementById('editRent').value = item.rentValue || '';
       document.getElementById('editContact').value = item.landlordPhone || item.contact || '';
       document.getElementById('editViewingPassword').value = item.viewingPassword || '';
+      // item.viewingMethod 是展示推导值（存量可能库里并无显式方式）；记录初值，保存时未改动就不下发，
+      // 避免把推导值物化成显式方式（否则飞书表清空密码列后该行同步会被条件必填卡死）
+      document.getElementById('editViewingMethod').value = item.viewingMethod || '';
+      editingListingInitialViewingMethod = item.viewingMethod || '';
+      document.getElementById('editViewingKeyLocation').value = item.viewingKeyLocation || '';
       document.getElementById('editStatus').value = '';
       document.getElementById('editOwnerType').value = item.ownerType === '业主房源' ? '业主房源' : '二房东房源';
       document.getElementById('editCompanyListing').checked = Boolean(item.companyListing || item.isCompanyListing);
@@ -3650,12 +3669,21 @@
         rent,
         contact: document.getElementById('editContact').value.trim(),
         viewingPassword: document.getElementById('editViewingPassword').value.trim(),
+        viewingKeyLocation: document.getElementById('editViewingKeyLocation').value.trim(),
         ownerType: document.getElementById('editOwnerType').value,
         companyListing: document.getElementById('editCompanyListing').checked,
         features
       };
       const videoUrl = document.getElementById('editVideoUrl').value.trim();
       if (videoUrl) payload.videoUrl = videoUrl;
+      // 看房方式与打开弹窗时一致就不下发（推导值不物化落库）；管理员改动后才显式下发，
+      // 并与小程序端同口径：切到某方式时清空非该方式的旧敏感值
+      const viewingMethod = document.getElementById('editViewingMethod').value;
+      if (viewingMethod !== editingListingInitialViewingMethod) {
+        payload.viewingMethod = viewingMethod;
+        if (viewingMethod && viewingMethod !== '密码') payload.viewingPassword = '';
+        if (viewingMethod && viewingMethod !== '钥匙') payload.viewingKeyLocation = '';
+      }
       const status = document.getElementById('editStatus').value;
       if (status) payload.status = status;
 
