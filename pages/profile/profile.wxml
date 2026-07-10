@@ -2,6 +2,38 @@
 <navigation-bar title="我的" back="{{false}}" color="#2E6B4E" background="#FBF5EA"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell profile-page">
+    <view wx:if="{{profileLoading && !profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">正在加载账号资料</view>
+        <view class="user-role">房源、足迹、报备和签单会以本次服务端结果为准。</view>
+      </view>
+    </view>
+
+    <view wx:elif="{{profileAccessRequired}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">登录后进入我的</view>
+        <view class="user-role">内部工作台只对已开通的中介账号开放。</view>
+      </view>
+      <button class="brand-button" bindtap="goLogin">去登录</button>
+    </view>
+
+    <view wx:elif="{{profileLoadFailed && !profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">账号资料加载失败</view>
+        <view class="user-role">暂时无法读取工作台，请检查网络后重试。</view>
+      </view>
+      <button class="brand-button" bindtap="retryProfile">重新加载</button>
+    </view>
+
+    <view wx:if="{{profileLoadFailed && profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">工作台刷新失败</view>
+        <view class="user-role">当前保留上次可信结果，请检查网络后重试。</view>
+      </view>
+      <button class="brand-button" bindtap="retryProfile">重新加载</button>
+    </view>
+
+    <block wx:if="{{profileReady}}">
     <view class="user-card">
       <view class="avatar-wrap">
         <image class="avatar-logo" src="/assets/logo.png" mode="aspectFit"></image>
@@ -64,5 +96,6 @@
         </view>
       </view>
     </view>
+    </block>
   </view>
 </scroll-view>

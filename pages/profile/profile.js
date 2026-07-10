@@ -2,6 +2,11 @@
 const apiService = require('../../utils/api-service')
 
 const hiddenV1EntryKeywords = ['房源群', '换群', '积分', '充值', '微信支付']
+const defaultReminders = [
+  { title: '敏感信息查看', value: '今天有人查看了你上传房源的电话' },
+  { title: '待确认分佣', value: '有成交单待确认，签单后按配置快照结算' },
+  { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新自动失效' }
+]
 
 function isV1VisibleText(value) {
   const text = String(value || '')
@@ -49,14 +54,14 @@ Page({
   data: {
     user: {},
     workbench: [],
-    dealWorkbench: buildDealWorkbench(),
-    reminders: [
-      { title: '敏感信息查看', value: '今天有人查看了你上传房源的电话' },
-      { title: '待确认分佣', value: '有成交单待确认，签单后按配置快照结算' },
-      { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新自动失效' }
-    ],
+    dealWorkbench: [],
+    reminders: [],
     sourceStats: [],
-    footprintCount: 0
+    footprintCount: 0,
+    profileReady: false,
+    profileLoading: false,
+    profileLoadFailed: false,
+    profileAccessRequired: false
   },
 
   onShow() {
@@ -82,27 +87,65 @@ Page({
   },
 
   refreshProfile() {
+    this._profileRequestSeq = (this._profileRequestSeq || 0) + 1
+    const requestSeq = this._profileRequestSeq
+    this.setData({
+      profileLoading: true,
+      profileLoadFailed: false,
+      profileAccessRequired: false
+    })
     Promise.all([
       apiService.getProfileState(),
       apiService.getFootprintRecords(),
       apiService.getClientReports(),
       apiService.getDealRecords()
     ]).then(([profile, footprints, reports, deals]) => {
+      if (requestSeq !== this._profileRequestSeq) return
       this.setData({
+        profileReady: true,
+        profileLoading: false,
+        profileLoadFailed: false,
+        profileAccessRequired: false,
         user: profile.user,
         sourceStats: filterVisibleStats(profile.sourceStats || []),
         footprintCount: footprints.length,
-        reminders: filterVisibleReminders(profile.reminders || this.data.reminders),
+        reminders: filterVisibleReminders(profile.reminders || defaultReminders),
         workbench: this.buildWorkbench(profile, footprints.length),
         dealWorkbench: buildDealWorkbench((reports || []).length, (deals || []).length)
       });
     }).catch((error) => {
+      if (requestSeq !== this._profileRequestSeq) return
       if (isAuthError(error)) {
+        this.setData({
+          user: {},
+          workbench: [],
+          dealWorkbench: [],
+          reminders: [],
+          sourceStats: [],
+          footprintCount: 0,
+          profileReady: false,
+          profileLoading: false,
+          profileLoadFailed: false,
+          profileAccessRequired: true
+        })
         this.promptLoginGuide()
         return
       }
+      this.setData({
+        profileLoading: false,
+        profileLoadFailed: true,
+        profileAccessRequired: false
+      })
       wx.showToast({ title: '我的信息加载失败', icon: 'none' })
     });
+  },
+
+  retryProfile() {
+    this.refreshProfile()
+  },
+
+  goLogin() {
+    wx.navigateTo({ url: '/pages/auth/auth' })
   },
 
   promptLoginGuide() {
