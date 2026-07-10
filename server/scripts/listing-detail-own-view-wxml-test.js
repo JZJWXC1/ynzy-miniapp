@@ -22,4 +22,14 @@ assert.ok(/自己上传·免留痕直接展示/.test(wxml), '自查按钮文案�
 assert.ok(/wx:if="\{\{!listing\.companyListing && isOwnListing\}\}"/.test(wxml), '存在 isOwnListing 自查分支（wx:if 优先命中）')
 assert.ok(/wx:elif="\{\{!listing\.companyListing\}\}"/.test(wxml), '"已记录足迹"通用文案改为 wx:elif 分支（不覆盖上传人自查）')
 
+// 5) 需求单绑定只属于普通合作房源；上传人自查已经服务端确认身份，不应再显示“未绑定需求单”。
+assert.ok(
+  /wx:if="\{\{!listing\.companyListing && !isOwnListing\}\}" class="need-bind-row/.test(wxml),
+  '需求单提示必须排除上传人自己的房源，同时保留普通合作房源分支'
+)
+assert.ok(
+  !/wx:if="\{\{!listing\.companyListing\}\}" class="need-bind-row/.test(wxml),
+  '禁止恢复为所有非公司房源都显示需求单提示的旧条件'
+)
+
 console.log('listing-detail-own-view-wxml-test passed')

@@ -378,7 +378,10 @@ function checkAdminReportDealContract() {
   assertOk(configSource.includes('COMPANY_CONTACT_PHONES'), '公司看房电话必须来自服务端配置')
   assertOk(domainSource.includes('companyContactPhones') && domainSource.includes('companyContactPhoneText'), '公司房源详情必须下发公司看房电话')
   assertOk(domainSource.includes('sensitiveLocked: !display.companyListing'), '公司房源详情必须直接公开地址电话')
-  assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="need-bind-row'), '公司房源详情必须隐藏需求单提示')
+  assertOk(
+    detailWxml.includes('wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row'),
+    '公司房源与上传人自查详情必须隐藏需求单提示'
+  )
   // 查看地址电话按钮须由 !listing.companyListing 守卫（公司房源隐藏）。上传人自查分支加入后，
   // reveal 按钮由 wx:if 变为 wx:elif（前置 isOwnListing 自查 wx:if），两种形式都满足"公司房源隐藏"。
   assertOk(

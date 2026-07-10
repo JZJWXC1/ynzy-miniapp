@@ -88,7 +88,7 @@
         <view class="hidden-label">{{listing.companyListing ? '公司看房电话' : '房东电话'}}</view>
         <view class="hidden-value">{{sensitiveVisible ? (listing.companyContactPhoneText || listing.landlordPhone) : '完成确认后可查看'}}</view>
       </view>
-      <view wx:if="{{!listing.companyListing}}" class="need-bind-row {{needId ? 'bound' : ''}}">
+      <view wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row {{needId ? 'bound' : ''}}">
         <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>
         <view class="need-bind-desc">{{needId ? needId : '从找房助手进入会自动带入，也可用当前房源创建最小需求。'}}</view>
       </view>
