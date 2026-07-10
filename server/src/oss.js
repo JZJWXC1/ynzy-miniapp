@@ -52,6 +52,32 @@ function signOssString(text) {
   return crypto.createHmac('sha1', config.oss.accessKeySecret).update(text).digest('base64')
 }
 
+function canonicalizedResource(objectKey, subresources = {}) {
+  const resourcePath = `/${config.oss.bucket}/${objectKey}`
+  const query = Object.keys(subresources)
+    .filter((key) => subresources[key] !== undefined && subresources[key] !== null && subresources[key] !== '')
+    .sort()
+    .map((key) => `${key}=${subresources[key]}`)
+    .join('&')
+  return query ? `${resourcePath}?${query}` : resourcePath
+}
+
+function canonicalizedOssHeaders(headers = {}) {
+  return Object.keys(headers)
+    .filter((key) => /^x-oss-/i.test(key))
+    .sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()))
+    .map((key) => `${key.toLowerCase()}:${String(headers[key]).trim()}\n`)
+    .join('')
+}
+
+function stsSubresources(subresources = {}) {
+  if (!config.oss.securityToken) return { ...subresources }
+  return {
+    ...subresources,
+    'security-token': config.oss.securityToken
+  }
+}
+
 function missingConfigKeys() {
   const missing = []
   if (!config.oss.bucket) missing.push('ALI_OSS_BUCKET')
@@ -67,7 +93,9 @@ function createSignedReadUrl(objectKey, expiresInSeconds) {
   }
 
   const expires = Math.floor(Date.now() / 1000) + (expiresInSeconds || config.oss.readUrlExpireSeconds)
-  const resourcePath = `/${config.oss.bucket}/${objectKey}`
+  // STS token 不只是 URL 参数，也是 OSS V1 CanonicalizedResource 的 subresource。
+  // 仅拼到 URL 而不参与签名会被私有桶判为 SignatureDoesNotMatch。
+  const resourcePath = canonicalizedResource(objectKey, stsSubresources())
   const stringToSign = ['GET', '', '', String(expires), resourcePath].join('\n')
   const params = {
     OSSAccessKeyId: config.oss.accessKeyId,
@@ -97,8 +125,10 @@ function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
   if (!objectKey || missingConfigKeys().length || !looksLikeVideoPath(objectKey)) return ''
 
   const expires = Math.floor(Date.now() / 1000) + (expiresInSeconds || config.oss.readUrlExpireSeconds)
-  // 签名串里 x-oss-process 用字面值（不 URL 编码），与下方 query 中同样字面的 x-oss-process 一致，避免签名不匹配。
-  const resourcePath = `/${config.oss.bucket}/${objectKey}?x-oss-process=${VIDEO_SNAPSHOT_PROCESS}`
+  // subresource 必须按名称排序后以字面值进入签名；STS 下顺序为 security-token、x-oss-process。
+  const resourcePath = canonicalizedResource(objectKey, stsSubresources({
+    'x-oss-process': VIDEO_SNAPSHOT_PROCESS
+  }))
   const stringToSign = ['GET', '', '', String(expires), resourcePath].join('\n')
   const signature = signOssString(stringToSign)
 
@@ -132,8 +162,23 @@ function putObjectBuffer(objectKey, buffer, contentType) {
   const type = contentType || 'application/octet-stream'
   const date = new Date().toUTCString()
   const resourcePath = `/${config.oss.bucket}/${objectKey}`
-  const stringToSign = ['PUT', '', type, date, resourcePath].join('\n')
+  const headers = {
+    Date: date,
+    'Content-Type': type,
+    'Content-Length': body.length
+  }
+  if (config.oss.securityToken) {
+    headers['x-oss-security-token'] = config.oss.securityToken
+  }
+  const stringToSign = [
+    'PUT',
+    '',
+    type,
+    date,
+    `${canonicalizedOssHeaders(headers)}${resourcePath}`
+  ].join('\n')
   const signature = signOssString(stringToSign)
+  headers.Authorization = `OSS ${config.oss.accessKeyId}:${signature}`
   const encodedPath = `/${encodeObjectPath(objectKey)}`
 
   return new Promise((resolve, reject) => {
@@ -141,12 +186,7 @@ function putObjectBuffer(objectKey, buffer, contentType) {
       method: 'PUT',
       hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
       path: encodedPath,
-      headers: {
-        Authorization: `OSS ${config.oss.accessKeyId}:${signature}`,
-        Date: date,
-        'Content-Type': type,
-        'Content-Length': body.length
-      }
+      headers
     }, (res) => {
       let raw = ''
       res.setEncoding('utf8')
