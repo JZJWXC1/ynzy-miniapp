@@ -151,31 +151,49 @@
             </view>
           </view>
           <view wx:if="{{message.canFeedback}}" class="assistant-feedback">
-            <view wx:if="{{!message.feedbackSent}}" class="feedback-actions">
-              <button
-                class="feedback-button useful"
-                size="mini"
-                loading="{{message.feedbackLoading}}"
-                disabled="{{message.feedbackLoading}}"
-                catchtap="submitAssistantFeedback"
-                data-message-id="{{message.id}}"
-                data-type="helpful"
-              >
-                有用
-              </button>
-              <button
-                class="feedback-button"
-                size="mini"
-                loading="{{message.feedbackLoading}}"
-                disabled="{{message.feedbackLoading}}"
-                catchtap="submitAssistantFeedback"
-                data-message-id="{{message.id}}"
-                data-type="bad_recommendation"
-              >
-                不准
-              </button>
+            <view wx:if="{{!message.feedbackSent}}">
+              <view class="feedback-actions">
+                <button
+                  class="feedback-button useful {{message.feedbackType === 'helpful' ? 'selected' : ''}}"
+                  size="mini"
+                  disabled="{{message.feedbackLoading}}"
+                  catchtap="selectAssistantFeedbackType"
+                  data-message-id="{{message.id}}"
+                  data-type="helpful"
+                >
+                  有用
+                </button>
+                <button
+                  class="feedback-button {{message.feedbackType === 'bad_recommendation' ? 'selected' : ''}}"
+                  size="mini"
+                  disabled="{{message.feedbackLoading}}"
+                  catchtap="selectAssistantFeedbackType"
+                  data-message-id="{{message.id}}"
+                  data-type="bad_recommendation"
+                >
+                  没用
+                </button>
+              </view>
+              <view wx:if="{{message.feedbackType}}" class="feedback-reasons">
+                <view class="feedback-reason-title">主要原因</view>
+                <view class="feedback-reason-list">
+                  <button
+                    wx:for="{{message.feedbackReasonOptions}}"
+                    wx:key="code"
+                    class="feedback-reason-button {{message.feedbackReasonCode === item.code ? 'selected' : ''}}"
+                    size="mini"
+                    loading="{{message.feedbackLoading && message.feedbackReasonCode === item.code}}"
+                    disabled="{{message.feedbackLoading}}"
+                    catchtap="submitAssistantFeedback"
+                    data-message-id="{{message.id}}"
+                    data-reason-code="{{item.code}}"
+                  >
+                    {{item.label}}
+                  </button>
+                </view>
+              </view>
             </view>
-            <view wx:else class="feedback-done">已收到反馈</view>
+            <view wx:else class="feedback-done">已收到反馈 · {{message.feedbackReasonLabel}}</view>
           </view>
         </view>
         <view wx:if="{{message.role === 'user'}}" class="avatar user-avatar">我</view>

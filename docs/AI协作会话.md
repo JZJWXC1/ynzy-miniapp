@@ -46,6 +46,402 @@
 
 ## 最新消息
 
+### 2026-07-10 19:27 | 独立只读审计（第二裁判） | P1.2 第三轮返修复验通过 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`。审计精确范围为功能 commit `a4e3e93`（交接 commit `f6ae100` 仅作上下文），基线 `origin/v1-broker@16d388e`；审计前后工作树均洁净，未修改、创建、暂存或提交文件，未 push、部署、上传体验版或运行真实 smoke。
+
+**审计结论**：不存在 P1/P2 或可利用阻断项。独立重放确认不存在、他人、游客及伪临时需求均不签发可写结果 ID；本人持久需求正确固化 `feedbackNeedId`；需求 A 的结果改绑需求 B 返回 400；游客 normal/fallback 与上游同名字段均不会形成可写反馈结果；LLM 等待后按最新数据库重新验证；trace 淘汰后相同重试仍幂等、冲突仍为 409。服务端结果 ID、线程、用户与需求四项绑定成立，后台对话在切片前按用户隔离，旧反馈兼容路径未回归。
+
+**复验与红线**：8 项定向回归全部通过；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）为 **88/88**；`server/scripts/v1-final-audit.js` 全绿。受限路径、私钥/云密钥/JWT 形态、新增裸 `innerHTML`、客户端权限/分佣字段均为 0，完整任务 13 个文件无范围外改动。
+
+**非阻断风险**：超时 fallback 返回后，原异步请求可能追加一条客户端拿不到 ID 的孤立 trace。其 ID 为加密随机值，严格反馈还必须同时精确匹配当前用户、持久需求、线程和结果 ID，因此不能被客户端利用提交反馈；本轮作为诊断存储噪声记录，不阻断发布，后续若治理 trace 容量应另立任务且不得夹入本模块。
+
+需要主开发做什么：同步最新 `v1-broker`，重跑全量测试、最终审计和红线扫描；仅从干净合并后的 `v1-broker` 出包，核对生产 `listings` 部署前后数量、版本与健康状态后，按用户既有授权直接 push 和部署。
+
+---
+
+### 2026-07-10 19:20 | CODEX_DEV（主开发） | P1.2 结果与持久需求绑定返修完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。三次返修 commit：`a4e3e93`（`fix(feedback): 绑定结果与持久需求`），接续服务端结果 ID commit `4b014c8`；分支 `wt/找房结果轻量反馈`。未 push、未部署、未上传体验版。
+
+**返修结论**：
+1. 签发端新增服务端 `ownedPersistentNeedId` 校验，只认数据库中真实存在且 `brokerId` 等于当前登录用户的需求；不读取客户端 `needTemporary` 作为信任依据。普通 chat/fallback 在真正落盘的最新数据库事务中重新校验，避免 LLM 等待窗口内需求删除/归属变化后仍签发。
+2. 通过校验的结果 trace 固化 `feedbackNeedId`；严格反馈必须以 `messageId + threadId + userId + needId` 精确命中同一 trace。需求 A 的结果改绑本人需求 B、他人需求、不存在/临时需求均不能落库。
+3. 游客 normal/fallback 不返回 `feedbackMessageId`；无效签发分支显式剥离任何上游同名字段，也不新增结果 trace。游客内部普通 trace 仍可用于既有诊断，但没有 `feedbackNeedId`，不是可写反馈结果。
+4. `/mini/llm/match` 对登录持久需求进入签发事务，服务端验证失败只返回普通匹配结果；客户端伪造 `needTemporary=false` 无效，真实持久需求即使客户端标志错误也以服务端事实为准。
+
+**先红后绿与验证**：`match-result-feedback-v1-test` 先红于结果 trace 缺 `feedbackNeedId`，`assistant-trace-log-test` 同样先红于未绑定需求，真实 `guest-mode-v1-test` 先红于游客响应仍含 `ATL*`。修复后新增覆盖：有效本人需求签发并固化绑定，不存在/他人/游客需求不签发且不写结果 trace，需求 A/B 改绑 400，游客 fallback 无 ID，上游同名字段剥离。定向 11 项、语法与差异检查全绿；最终代码态全量非 smoke **88/88**，`v1-final-audit.js` 全绿。
+
+**红线与风险**：相对 `origin/v1-broker` 完整任务共 13 个文件；受限路径、私钥/真实 webhook/访问密钥形态、新增裸 `innerHTML`、运行时代码手机号字面量、客户端权限/分佣字段均为 0。未运行真实 smoke，未读取或修改 data/certs/env/lark/private config。已成功反馈的永久幂等、trace 淘汰降级、旧通用反馈兼容、后台用户隔离保持不变。
+
+需要只读审计员做什么：精确复审 `a4e3e93`，重点重放“无效/他人/临时需求签发”“需求 A 结果改绑需求 B”“游客 normal/fallback”“LLM 等待后最新库再校验”四组探针，并回归此前所有来源 ID、后台对话、幂等、版本与原型键路径；无阻断写 `FINAL_VERDICT: READY_TO_DEPLOY`。
+
+---
+
+### 2026-07-10 19:02 | CODEX_DEV（主开发） | P1.2 结果与持久需求绑定三次返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立复审 `4b014c8` 后仍为 `CODEX_FIX_REQUIRED`：确认匹配签发只依据客户端 `needId/needTemporary`，未查需求真实存在与归属，结果 trace 也未保存已验证 `needId`，导致不存在/临时需求可获 ID，需求 A 的结果可改绑到本人需求 B；普通游客 chat/fallback 仍返回结果 ID。此前四组来源真实性、后台反查、幂等与脱敏探针均已复验通过。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-service.js`、`server/src/assistant-feedback.js`、`server/src/index.js`（继续独占）、`server/scripts/match-result-feedback-v1-test.js`、`server/scripts/assistant-trace-log-test.js`、`server/scripts/guest-mode-v1-test.js`、`server/README.md`。先补红测：游客 normal/fallback 不返回 ID；不存在/不归属/仅客户端宣称非临时的需求不签发；服务端确认的本人持久需求才签发并在 trace 固化 `feedbackNeedId`；严格反馈提交的 `needId` 必须与 trace 精确一致，不能在本人需求间改绑。
+
+本轮不改页面、WXML/WXSS、admin-web、domain.js、数据库文件、其它模块或任何受限配置；旧通用反馈、已通过的来源 ID/后台对话/永久幂等逻辑保持不动。完成后仍需定向、88 项全量、最终审计、红线扫描和独立只读复审。
+
+---
+
+### 2026-07-10 18:47 | CODEX_DEV（主开发） | P1.2 服务端结果关联返修完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。二次返修 commit：`4b014c8`（`fix(feedback): 绑定服务端结果标识`），接续 `c6123ee`；分支 `wt/找房结果轻量反馈`。未 push、未部署、未上传体验版；`server/src/index.js` 独占修改已完成并释放给只读审计。
+
+**返修结论**：
+1. 每次 `/mini/assistant/chat` 结果将持久 trace 的加密随机 `ATL*` ID 作为 `feedbackMessageId` 返回；登录中介的持久 `needId` 确认匹配 `/mini/llm/match` 也同步写结果 trace 并签发同类 ID。游客、临时需求和识别阶段不签发可写严格反馈的结果 ID。
+2. 前端页面消息 ID 只用于本地交互；6 字段严格载荷中的 `messageId` 改为服务端 `feedbackMessageId`。没有服务端结果 ID 时不显示反馈入口。
+3. 服务端新反馈必须以 `messageId + threadId + 当前用户` 精确命中同一持久 trace，并直接使用该本人 trace 压缩摘要；同 thread 存在他人记录也不会误取。严格记录不再保存客户端 `threadId`，13 位填充号码即使出现在预置 trace/thread 中也不会进入结构化反馈。
+4. 幂等唯一口径改为当前用户 + 服务端结果 ID；同一结果不能靠更换客户端页面消息 ID 重复落库。已有严格记录即使结果 trace 后续被 500 条上限清理，相同重试仍返回原记录、关联或分类冲突仍返回 409。
+5. 后台完整对话用服务端结果 ID 反查所属用户 trace/thread，再在查询切片前按 userId 隔离；结果 trace 已滚动清理时返回 0 轮并明确 `truncated=true`。旧反馈仍按原 `threadId` 路径兼容。
+
+**先红后绿与验证**：普通聊天测试先红于响应缺少服务端结果 ID；P1.2 测试先红于 `ATL*` 被旧客户端时间戳格式拒绝；trace 淘汰幂等测试先红于重试返回 400。实现后新增/扩展测试覆盖正常聊天签发、确认匹配签发、前端只提交服务端 ID、伪 ID 拒绝、本人精确摘要、13 位填充线程不落严格记录、trace 淘汰后幂等/冲突、后台真实 HTTP 反查与同线程用户隔离。定向 10 项及后台 HTTP 复验通过；最终代码态全量非 smoke **88/88**、`v1-final-audit.js` 全绿，4 个语法检查与 `git diff --check` 通过。
+
+**红线与风险**：相对 `origin/v1-broker` 共 12 个本任务文件；受限路径、私钥/真实 webhook/访问密钥形态、新增裸 `innerHTML`、运行时代码手机号字面量、客户端权限/分佣字段均为 0。未读取/修改 data、certs、env、lark/private config，未运行真实 smoke。残余容量取舍不变：首次反馈前若对应结果 trace 已被 500 条上限清理会 fail-closed；已成功反馈不受影响。结构化反馈为永久幂等持续保留最小固定记录，后续迁库必须保留服务端结果 ID 唯一约束。
+
+需要只读审计员做什么：精确复审 `4b014c8`，重放“13 位填充 + 预置 trace”“同 thread 跨用户摘要”“换客户端消息 ID 重复提交”“trace 淘汰后已有反馈重试”四组探针，并亲跑定向、88 项全量、最终审计和红线扫描；无阻断写 `FINAL_VERDICT: READY_TO_DEPLOY`，有阻断写 `CODEX_FIX_REQUIRED`。
+
+---
+
+### 2026-07-10 18:24 | CODEX_DEV（主开发） | P1.2 服务端结果关联二次返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立复审 `c6123ee` 后仍给出 `CODEX_FIX_REQUIRED`：11 位号码补两位可伪装成合法历史毫秒时间，并在预置当前用户 trace 后让客户端线程/消息 ID 原样进入严格记录；同一线程同时存在本人和他人 trace 时，归属检查命中本人，但摘要选择仍可能取到他人记录。其余原型键、200 条后幂等、显式版本、严格分诊与评估边界已复验闭合；全量 88/88 和最终审计虽绿，不能抵消这两项来源真实性缺口。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-service.js`、`server/src/assistant-feedback.js`、`server/src/index.js`（独占资源）、`pages/match-chat/match-chat.js`、`server/scripts/match-result-feedback-v1-test.js`、`server/scripts/assistant-trace-log-test.js`、`server/scripts/admin-feedback-conversation-v1-test.js`、`server/README.md`。先补红测，再把持久化 trace 的服务端 ID 随助手结果返回；前端仍发送 6 字段严格载荷，但 `messageId` 改用服务端结果 ID。服务端按 `messageId + 当前用户 + 请求 threadId` 精确查找同一 trace，直接使用该本人摘要；严格记录不再保存原始 `threadId`，只保留服务端结果 ID。后台完整对话由结果 ID 反查真实 trace/thread，并补真实 HTTP 回归锁定同线程用户隔离与 trace 淘汰降级，不破坏既有查看链路。
+
+明确不改 `domain.js`、数据库文件、WXML/WXSS、其它页面、`smoke-test.js`、data/certs/env/lark/private config，不处理 Yooni 文档或其它分支。`server/src/index.js` 自本条起由本工作树独占，完成提交并交审前不允许其它任务并行修改。
+
+---
+
+### 2026-07-10 18:06 | CODEX_DEV（主开发） | P1.2 审计阻断项返修完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。返修 commit：`c6123ee`（`fix(feedback): 收紧找房结果反馈边界`），基于 P1.2 功能 commit `689d9c5`，分支 `wt/找房结果轻量反馈`。未 push、未部署、未上传体验版；Yooni 文档与看房方式分支未参与本线。
+
+**返修结果**：
+1. 固定反馈类型与原因码均改为对象自有键读取，`__proto__` / `constructor` / `toString` 等原型链组合统一 400，不再落非字符串原因。
+2. 线程/消息 ID 除格式外必须含有效系统毫秒时间；`threadId` 还必须命中当前登录用户的服务端 trace，伪系统外壳与跨用户/无追踪线程均拒绝。严格记录仍只保存关联 ID、固定分类和最小 trace；后台只可流转状态，不能改写用户反馈类型/原因或追加自由备注、结论、期望对象。
+3. 旧通用反馈保留最新 200 条，`match-result-v1` 固定结构记录不再被该上限淘汰，因此超过 200 条后相同重试仍幂等、冲突仍返回 409。
+4. 只有请求体完全不存在 `feedbackVersion` 时才进入旧兼容通道；显式空白、`null`、`undefined`、数字、布尔值及未知版本全部 400。
+5. 严格反馈缺少原始问题时不得把固定原因直接提升为评估样本；后台会要求填写明确脱敏评估问题，服务端再次脱敏后才生成评估用例。旧通用反馈提升流程保持兼容。
+
+**先红后绿**：新增对抗断言先连续两次稳定红于 `__proto__` 未被拒绝；后台评估契约先红于按钮未携带版本；严格记录最小化先红于仍含 `operatorNote`。实现后 `match-result-feedback-v1-test.js` 全绿，覆盖原型链键、手机号形态 ID、当前用户 trace 归属、显式非法版本、200 条后持久幂等、严格评估文本、后台分诊不可改写和服务端二次脱敏。
+
+**验证与红线**：定向 7 项及补充后台链路全部通过；全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）**88/88**，`server/scripts/v1-final-audit.js` 全绿，`node --check` 与 `git diff --check` 通过。相对 `origin/v1-broker` 共 8 个任务文件；受限路径、私钥/真实 webhook/访问密钥形态、新增裸 `innerHTML`、运行时代码手机号字面量、客户端权限/分佣字段均为 0。23 个手机号形态字面量全部只在合成对抗测试。
+
+**残余风险与复审重点**：结构化反馈为维持永久幂等会按最小固定结构持续增长，不再受旧通道 200 条淘汰；当前量级可接受，后续若按生产指标迁库需保留唯一约束。严格反馈要求当前用户 trace 仍在最近 500 条内，正常页面即时反馈满足；极晚提交且 trace 已滚动清理会 fail-closed 返回 400。请只读复审精确 commit `c6123ee`，重点亲测 5 个原始阻断项、严格后台分诊/评估、旧兼容链路与全量测试；无阻断写 `READY_TO_DEPLOY`，有阻断写 `CODEX_FIX_REQUIRED`。
+
+---
+
+### 2026-07-10 17:32 | CODEX_DEV（主开发） | P1.2 独立审计阻断项返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。独立只读审计对功能 commit `689d9c5` 给出 `CODEX_FIX_REQUIRED`：固定原因映射存在原型链键绕过；仅按格式校验的线程/消息 ID 可夹带手机号形态值；全局 200 条滚动上限会淘汰严格记录并破坏持久幂等；显式空白/假值版本会降级旧自由文本通道；严格记录缺少原始问题时可被错误提升为无效评估样本。审计实跑全量非 smoke 测试 88/88 与 `v1-final-audit.js` 均通过，但现有测试未覆盖上述对抗路径，因此不得发布。
+
+**拟修改文件**：`docs/AI协作会话.md`、`server/src/assistant-feedback.js`、`server/scripts/match-result-feedback-v1-test.js`、`server/README.md`。先在现有 P1.2 测试补稳定失败断言，再做最小实现：原因码只认自有白名单键；系统时间型 ID 拒绝手机号形态且校验真实时间范围；仅“请求中完全不存在 feedbackVersion”兼容旧通道；结构化反馈记录不被旧通道 200 条保留上限淘汰；严格记录无明确脱敏评估文本时禁止提升。后端红测转绿后确认既有后台按钮没有提交评估文本，会让严格反馈操作恒定失败，因此在业务修改前补充声明 `admin-web/index.html`：仅对 `match-result-v1` 要求管理员填写明确脱敏评估问题，旧反馈提升流程不变；对应静态契约继续固化在同一 P1.2 测试。
+
+红线不变：不修改 `domain.js`、`index.js`、`smoke-test.js`、前端页面、数据库文件、data/certs/env/lark/private config；不读取或输出真实凭据/生产数据；不处理 Yooni 文档与看房方式分支。完成后全文自审、全量非 smoke 测试、最终审计和敏感扫描，再提交返修并交回只读复审。
+
+---
+
+### 2026-07-10 16:28 | CODEX_DEV（主开发） | P1.2 找房结果轻量反馈完成交审 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。关联 commit：`689d9c51ad14ca6ddc4eeb08253ffcf8fff19e02`（`feat(feedback): 找房结果反馈绑定需求与固定原因`），分支 `wt/找房结果轻量反馈`，基于最新已发布文档头 `origin/v1-broker@16d388e`。未 push、未部署、未上传体验版。
+
+**实际文件清单（7 个）**：
+- `pages/match-chat/match-chat.js` / `.wxml` / `.wxss`
+- `server/src/assistant-feedback.js`
+- `server/scripts/match-result-feedback-v1-test.js`（新增）
+- `server/README.md`
+- `docs/AI协作会话.md`
+
+**实现结论**：
+1. 找房结果只在真实持久 `needId`、非临时需求且推荐请求成功时展示两步反馈：“有用/没用”→固定原因；没有自由文本输入。原因覆盖价格、位置、户型、房态、结果太少/太多（有用侧另有数量合适）。
+2. 前端只发送 `feedbackVersion/needId/threadId/messageId/feedbackType/reasonCode`，不发送原始需求、回复、房源、期望或地点对象。
+3. `match-result-v1` 服务端要求登录、需求属于当前中介、线程/消息为系统生成格式、有用性与原因码组合合法；请求体伪造 `userId` 无效。服务端生成固定中文原因；相同反馈重试幂等，冲突反馈 409。
+4. 严格记录只含关联 ID、固定分类、时间和最小 trace 元数据；客户端夹带姓名、电话、地址及其它自由内容全部不落库，trace 的 timeline/readable/audit 和非代码式/手机号样式节点也不落库。
+5. 非空未知版本直接 400，不能降级到旧自由文本通道；完全不带版本的历史通用助手反馈继续兼容，但不计入 P1.2 结构化反馈口径。既有后台分诊、完整对话和转评估链路未改。
+
+**先红后绿证据**：
+- 新测试在旧实现上连续两次稳定红于“严格反馈应记录 `match-result-v1` 契约版本”（actual `undefined`）；严格分流实现后转绿。
+- 对抗加固先红于“threadId 夹带自由文本未被拒绝”，系统 ID 格式校验后转绿；未知版本回退同批锁定。
+- trace 最小化加固先红并实际显示纯数字手机号样式节点被保存；新增代码式节点过滤后转绿。
+
+**测试与自审**：全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）**88/88** 通过；`node server/scripts/v1-final-audit.js` 全绿；`node --check`、`git diff --check` 通过。声明文件 7/7，无额外文件。受限路径、smoke/data/certs/env/lark/private config、私钥、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均 0。测试里的手机号、地址和姓名为专门验证不落库的合成探针，不是生产数据。
+
+**风险与复审重点**：
+- 重点手推 `match-result-v1` 与无版本旧通道分界，确认未知版本无法绕回自由文本；旧通道兼容是显式取舍，不应被误计为结构化反馈。
+- 重点核对线程 ID 两类格式（服务端 `AST-*`、本地回退 `LOCAL-AST-*`）与前端 `assistant-时间戳-随机数` 消息 ID，不应误拒真请求，也不应接受自由 PII。
+- 重点核对 `needId` 归属、同结果幂等/冲突 409、200 条上限，以及最小 trace 不含正文/审计对象。
+- 重点核对 WXML 两步交互在加载/失败重试/成功态下不重复提交，原因按钮在窄屏可换行且无输入框。
+- 看房方式模块的 `COMPANY_CONTACT_PHONES=0 条` 与体验版未上传属于上一模块已记录外部项，不在本 commit 内夹带处理。
+
+需要 Claude Code 做什么：对 `689d9c5` 做独立只读审计并亲跑新测试、全量测试与最终审计；通过写 `READY_TO_DEPLOY`，有阻断写 `CODEX_FIX_REQUIRED`。审核前不得 push/部署/上传体验版。
+
+---
+
+### 2026-07-10 16:21 | CODEX_DEV（主开发） | P1.2 严格反馈契约与前端交互完成，进入全量验证 | CODEX_DOING
+
+状态：`CODEX_DOING`。看房方式任务已双审、推送并完成后端部署，协作看板明确释放数据库结构；本分支已带未提交改动通过 `--autostash` 无冲突 rebase 到最新 `origin/v1-broker@16d388e`，现由 P1.2 独占 `assistantFeedbacks` 结构。
+
+**先红后绿证据**：
+- 第一轮新测试在旧实现上连续两次稳定红在“严格反馈应记录 `match-result-v1` 契约版本”（actual `undefined`）；实现严格分流后转绿。
+- 绿测后对抗审查新增“系统 ID 格式”和“未知非空版本不得回退旧通道”断言，先稳定红在“threadId 夹带自由文本未被拒绝”，补校验后转绿。
+
+**当前实现**：
+- 找房结果消息仅在存在真实 `needId`、非临时需求且服务端推荐成功时展示反馈；交互为先选“有用/没用”，再点一个固定原因，原因覆盖价格、位置、户型、房态、结果太少/太多，不提供输入框。
+- 前端严格载荷只含版本、`needId`、线程/消息标识、有用性和原因码，不再上传原始需求、助手回复、房源、期望或地点对象。
+- 服务端校验登录身份、需求存在与归属、系统生成的线程/消息 ID 格式、有用性与原因码组合；中文原因由服务端白名单生成。相同结果相同反馈重试幂等，不同反馈 409。
+- 严格记录只保存关联 ID、固定分类和最小 trace 元数据；客户端额外夹带的姓名、电话、地址和所有自由内容均丢弃。未知非空反馈版本 400；无版本的历史通用反馈继续兼容且不计入结构化口径。
+
+**实修改文件清单**：`docs/AI协作会话.md`、`server/README.md`、`server/src/assistant-feedback.js`、新增 `server/scripts/match-result-feedback-v1-test.js`、`pages/match-chat/match-chat.js`、`pages/match-chat/match-chat.wxml`、`pages/match-chat/match-chat.wxss`。未修改 `domain.js`、`index.js`、admin-web、smoke/data/certs/env/lark/private config。
+
+**已通过定向验证**：`match-result-feedback-v1-test`、`assistant-feedback-test`、`assistant-trace-log-test`、`admin-feedback-conversation-v1-test`、后端/前端 `node --check` 与 `git diff --check`。下一步：全文 diff 自审、全量测试、最终审计、红线扫描、单模块 commit 后转 `CLAUDE_REVIEW`。
+
+需要 Claude Code 做什么：暂不审；等待本模块提交后的 `CLAUDE_REVIEW` 交接条目。
+
+---
+
+### 2026-07-10 15:41 | CODEX_DEV（主开发） | P1.2 找房结果轻量反馈：基线完成，先写红测，独占资源待释放 | CODEX_DOING
+
+状态：`CODEX_DOING`（当前仅做不冲突的测试准备，尚未修改数据库结构或实现代码）。关联：「上线后闭环优化统一总目标 / PROGRAM_ALIGNED」P1.2。独立分支/工作树：`wt/找房结果轻量反馈` / `C:\Users\吴志坚\.codex\worktrees\p12-feedback`，基于已发布并推送的 `origin/v1-broker@16c2da4`。
+
+**基线证据**：全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）实跑 **86/86** 通过；`node server/scripts/v1-final-audit.js` 通过。首次运行因新工作树未携带被 Git 忽略的 `node_modules` 而在业务代码加载前缺 `ws`，复用发布工作树同一依赖目录后从头重跑全绿，不计为产品基线失败。
+
+**目标契约**：
+1. 沿用现有 `/mini/assistant/feedback` 与后台反馈闭环，为找房结果反馈增加严格 `match-result-v1` 契约；前端展示“有用/没用”，随后只允许选择固定原因，不提供自由文本输入。
+2. 固定原因至少覆盖价格、位置、户型、房态、结果太少、结果太多；服务端只接受白名单原因码并生成固定中文标签，不信任客户端自由文本。
+3. `needId` 必填且必须属于当前登录中介；同一用户、需求、线程和结果消息的相同反馈重复提交幂等，冲突提交不得生成第二条记录。
+4. 严格反馈记录只保留 `needId`、有用性、固定原因码/标签和最小追踪元数据；丢弃客户端上传的姓名、电话、地址、原始需求、回复、房源、期望与地点等自由内容，追踪摘要不保存可读文本或 audit 正文。
+5. 旧版通用助手反馈契约继续兼容，既有反馈分诊、转评估与后台链路不得回归。
+
+**拟修改文件清单（分阶段串行）**：
+- 当前准备阶段（不占独占资源）：`docs/AI协作会话.md`、新增 `server/scripts/match-result-feedback-v1-test.js`。
+- 待“上传房源看房方式”任务释放数据库结构后：`server/src/assistant-feedback.js`、`pages/match-chat/match-chat.js`、`pages/match-chat/match-chat.wxml`、`pages/match-chat/match-chat.wxss`。
+- 待该任务完成其文档修改后再串行更新：`server/README.md`。
+
+**明确不修改**：`server/src/domain.js`、`server/src/index.js`、`admin-web/index.html`、`server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、任何 `.env`/lark/private config。当前主工作区的房源清单、交接报告、`.claude/`、看房方式实现及其它未提交改动均不夹带、不回滚。
+
+**独占资源状态**：主工作区另一任务“上传房源增加看房方式”仍为 `CLAUDE_DOING`，正在修改 `server/src/domain.js`、房源字段结构与 `server/README.md`；本任务在其提交/交审并明确释放前，只补失败测试，不修改 `assistantFeedbacks` 数据结构或 README。
+
+需要 Claude Code 做什么：先完成正在进行的看房方式任务并释放数据库结构；本任务绿测提交后再按 `CLAUDE_REVIEW` 条目做只读审计。
+
+---
+
+### 2026-07-10 15:29 | Codex（主开发） | P1.1 死信告警 + P0.2 smoke 安全修复已发布并验证 | DONE
+
+状态：`DONE`。已审发布 commit `f37aa86` 已快进 push 到 `origin/v1-broker`，并从干净 `v1-broker` 成套部署到生产；未上传小程序体验版，未带入主工作区其他未提交改动。
+
+发版前证据：当前工作树与隔离发布检出各自全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）均为 86/86，`server/scripts/v1-final-audit.js` 均全绿；变更范围 8 个文件，受限路径、私钥材料、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均为 0。部署 ZIP 共 167 个条目，按《打包与脱敏清单》第四节扫描 `certs/|.env|server/data/|private.config|lark-*.json|.pem` 为 0，内容级敏感形态与历史 smoke 默认账号/口令残留也均为 0。
+
+生产验证：部署前运行版本为 `7ac880a`、`listings=84`；部署后 `/healthz` 200 且运行版本精确为 `f37aa86`，服务 `active`、重启计数 0，部署脚本抽取真实房源详情返回 200；`/readyz` 200，`pass=9 / pending=1 / todo=0`；近 5 分钟 error 级服务日志 0。部署机隔离运行 `smoke-credentials-env-v1-test.js` 与 `registration-notify-v1-test.js` 均通过，之后 `listings=84`，因此数量差异为 0、生产数据未被部署或测试改写。发布台账已追加 `scope=full / verify=ok`。
+
+已知非阻断项：安装过程仍提示历史公网 IP Nginx `server_name` 重复警告，但 `nginx -t` 成功，属于统一总目标中已单列且本模块明确不处理的 P4 配置治理；本次未改 Nginx。用户已明确豁免 P0 凭据门禁并接受旧后台/服务器凭据仍可能有效的风险；该风险未被本次代码发布消除，后续轮换时仍不得把任何值写入仓库、文档、命令历史或聊天。
+
+---
+
+### 2026-07-10 15:15 | 用户决策 + Codex（主开发） | P0 凭据门禁风险豁免，批准进入发布 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`。Claude 已对 P1.1 死信告警与 P0.2 smoke 凭据环境变量化分别给出 `READY_TO_DEPLOY`；用户随后明确原话决定：“取消 P0 凭据门禁，接受当前风险，Claude 审核通过后允许直接 push 和部署。”本条据此解除 P0.1 对本次发布的阻断，并确认 P0.3 微信隐私、协议入口、经营资质和合法域名全部通过发布门槛。
+
+风险保留：该豁免不等于旧凭据已失效。用户已确认旧后台密码仍可登录；Codex 只读核验也确认现有后台会话有效、服务器仍允许密码与密钥登录。未轮换后台密码、`ADMIN_TOKEN_SECRET` 或服务器凭据的风险由用户明确接受，本次不执行任何凭据读取、轮换或输出，也不把任何新旧值写入仓库、文档、命令历史或聊天。
+
+发布授权：不再就本次 push 与后端部署向用户二次确认。主开发仍须完成最新本地 `v1-broker` 基线核对、全量测试（排除真实 `smoke-test.js`）、`v1-final-audit.js`、部署包脱敏扫描、生产 `listings` 数量部署前后核对与版本/健康端点验证；任一失败、数量差异无法解释或出现敏感文件命中时立即停止并回填。
+
+---
+
+### 2026-07-10 | Claude Code（审核裁判） | P0.2 smoke 凭据环境变量化复审通过 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（P0.2 模块过审；push/部署/开放注册仍等 P0.1 轮换验证与 P0.3 用户明确结论）。关联：主开发「P0.2 smoke 凭据环境变量化 / `abc2368`」。
+
+**授权确认**：开工条目已记录用户原话授权「授权修改 smoke-test.js 删除默认凭据」，红线解除程序合规；改动范围严格限于授权内容（删默认值改 env-only），未顺带改其它 smoke 行为——`require.main` 守卫与 `loadSmokeConfig` 导出属可测性所需的行为中性改动，认可。
+
+**审核证据**：
+- smoke-test.js：三个硬编码默认值（地址/账号/口令）全部删除，当前树凭据字面量残留 **0**；`loadSmokeConfig()` 为 `main()` 第一条语句，**早于读 db.json、启动服务、任何网络请求** fail-closed；错误只报变量名（`SMOKE_ENV_REQUIRED`），不打印、不改写原值；密码不 trim 有注释说明（首尾空格属密码合法场景）。
+- 门禁升级正确：`checkSmokeTestUnchanged` → `checkSmokeTestEnvOnly`——存在性 + 三变量入口 + **禁止 `process.env.X || '字面量'` / `?? '字面量'` 回退的正则** + `SMOKE_ENV_REQUIRED` 存在 + 无未提交 smoke 改动；**绝不运行真实 smoke**（注释明示）。防止任何人未来把默认值加回去。
+- 新测试为行为级：`loadSmokeConfig` 单测（逐变量缺失 → 抛 `SMOKE_ENV_REQUIRED` 且指名）+ 真实 CLI spawn + 本机探针计数断言「缺密码时非零退出、错误指名变量、**0 网络请求**」。
+- **先红后绿我亲手复现**：旧 smoke-test.js + 新测试实跑，红在「SMOKE_BASE_URL 不得保留字面量默认值」，与交审声称逐字一致。
+- 我在本工作树独立跑全量（排除真实 smoke）**86/86** + `v1-final-audit.js` 全绿（输出含「凭据仅来自环境变量」新口径）；文件集与开工声明一致，`git diff --check` 通过，无其它红线触碰。
+- **历史残留已核实**：`git log --all -S` 确认旧口令仍存在于 `3c57068`（init）等历史提交——按既定路线不重写历史，**P0.1 轮换因此是硬性必须、不可跳过**。
+
+**主开发对 P0.1 的补充口径我确认正确并采纳**：仅改后台密码不会撤销已签发的后台 token（HMAC + 最长 8 小时 TTL，后台无 tokenVersion 机制）；要立即失效必须同时在服务器安全环境轮换 `ADMIN_TOKEN_SECRET` 并重启服务，然后验证旧 token 请求 `/admin/auth/me` 返回 401、新密码可登录；服务器旧凭据用全新 SSH 会话验证失败才算数。任何新旧值不得进入文档/命令行历史/聊天。
+
+**当前 P0 记分板**：P0.1 未闭环（等用户轮换 + 按上述口径验证后在文档记「已轮换」）；P0.2 ✅ 本条过审；P0.3 用户已核对各项、**待用户写明「全部通过发布门槛」的最终结论**。三项齐前不 push、不部署、不上传体验版、不开放真实注册。P1.2（找房反馈）可与用户操作并行开发，按协议先声明文件集。
+
+---
+
+### 2026-07-10 14:49 | Codex（主开发 / CODEX_DEV） | P0.2 smoke 凭据环境变量化完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。关联提交为本分支 HEAD「`fix(security): 冒烟凭据改为环境变量必填`」，本模块等待 Claude 只读审计；未 push、未部署、未运行真实综合 smoke。
+
+实际改动：`smoke-test.js` 删除地址、后台账号和后台密码三个硬编码默认值，新增 `loadSmokeConfig`；缺任一变量时只报告变量名并以 `SMOKE_ENV_REQUIRED` 在读取 `dataFile`、启动服务或发送请求前退出，密码原值不被改写或打印。新增 `smoke-credentials-env-v1-test.js` 锁定三项缺失均 fail-closed、校验早于数据读取、CLI 缺密码时本机探针 0 请求、三项齐备才返回配置；`v1-final-audit.js` 已将该测试纳入关键脚本并把旧“smoke 未修改”门禁升级为 env-only 门禁。`server/README.md` 已同步 PowerShell 7 无示例凭据的受控运行方式。
+
+测试证据：改动前同一代码树全量 85/85（排除真实 `smoke-test.js`）与旧 `v1-final-audit.js` 通过；新增测试先在旧实现红于“`SMOKE_BASE_URL` 不得保留字面量默认值”；修复后脚本语法检查与新测试通过，全量变为 86/86；提交后新版 `v1-final-audit.js` 全项通过，并明确输出“smoke-test.js 凭据仅来自环境变量”。
+
+红线与自审：实际文件仅协作文档、`server/README.md`、`smoke-test.js`、新门禁测试、`v1-final-audit.js`；受限路径、私钥材料、真实 webhook、访问密钥形态、非回环公网 IP、手机号字面量、新增裸 `innerHTML`、客户端权限/分佣字段均为 0 命中，`git diff --check` 通过；原 smoke 默认后台账号与口令字面量在当前工作树残留为 0。历史提交仍保留旧值，按统一目标不做破坏性历史重写，必须靠实际轮换使其失效。
+
+P0 状态与失效核验口径：
+1. P0.2 代码修复完成，待 Claude 放行。
+2. P0.3 用户已确认微信隐私、协议入口、经营资质和合法域名均已核对；仍请用户明确结论是否“全部通过发布门槛”。
+3. P0.1 尚未闭环。后台旧密码必须在全新无登录态会话中登录返回 403；仅改密码不会撤销已签发的后台 token（当前有效期最长 8 小时），要立即失效还需在服务器安全环境中轮换 `ADMIN_TOKEN_SECRET` 并重启，再确认旧 token 请求 `/admin/auth/me` 返回 401、新密码可正常登录。服务器旧密码/旧 SSH key 必须用全新 SSH 会话验证失败，同时新凭据验证成功；已有连接继续存活不构成轮换失败。任何核验均不得把旧值或新值写入本文档、命令行历史或聊天。
+
+请 Claude 复审：配置校验是否确定早于数据读取/网络；三个变量是否无任何 fallback；测试是否真能在回退时红灯；最终审计是否不运行真实 smoke；README 是否不诱导凭据进入历史记录。通过后写 `READY_TO_DEPLOY`，但 P0.1 与 P0.3 最终结论未闭环前仍不得 push、部署或开放真实注册。
+
+---
+
+### 2026-07-10 14:40 | Codex（主开发 / CODEX_DEV） | P0.2 smoke 凭据环境变量化开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。用户已明确授权“授权修改 smoke-test.js 删除默认凭据”。本模块只删除历史综合冒烟脚本中的账号/口令/地址默认值，改为环境变量缺失即在任何网络请求和数据操作前安全失败；不顺带修复 smoke 脚本与当前邀请制注册等既有行为分歧。
+
+P0 人工项记录：P0.1 后台管理员及服务器旧凭据是否已失效尚待按“全新会话使用旧凭据必须失败”的口径验证，不在文档记录任何旧值或新值；P0.3 用户已确认微信隐私、协议入口、经营资质和合法域名均已核对，是否全部通过发布门槛仍待用户明确结论。
+
+拟修改文件：
+- `docs/AI协作会话.md`：记录授权、开工、测试、自审与交审结果。
+- `server/scripts/smoke-test.js`：移除 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD` 的所有硬编码默认值，缺失时 fail-closed。
+- `server/scripts/smoke-credentials-env-v1-test.js`：先红后绿锁定缺任一凭据时零网络请求、三项齐备时才允许进入现有冒烟流程，并禁止重新引入字面量 fallback。
+- `server/scripts/v1-final-audit.js`：把旧“smoke 未修改”检查升级为“凭据 env-only 且工作区无未提交 smoke 改动”。
+- `server/README.md`：同步历史 smoke 的风险、必需环境变量和不记录/不传递凭据值的运行方式。
+
+红线：不运行真实综合 smoke，不连接生产、不创建或改写生产数据；测试仅用本机随机端口与假值；不提交 `.env`、data/certs、lark/private config、任何凭据；本模块独立 commit，完成后全量测试（仍排除真实 `smoke-test.js`）与 `v1-final-audit.js`，再交 Claude 只读审计。P0.1 未验证与 P0.3 未明确“通过”前仍不得 push、部署或开放真实注册。
+
+---
+
+### 2026-07-10 14:31 | Codex（主开发） | P1.1 发布前自审通过，P0 人工门禁未闭环 | THIRD_JUDGE_REQUIRED
+
+状态：`THIRD_JUDGE_REQUIRED`。P1.1 注册通知死信告警代码与 Claude 复审均已通过，但发布门禁仍明确阻断；本条不改变下方 Claude 对模块的 `READY_TO_DEPLOY` 结论，只记录整体验证与停止原因。
+
+自审与复验：分支已基于最新本地 `v1-broker@921e507`，远端引用刷新后确认本地基线领先 `origin/v1-broker` 1 个总目标文档提交；全量 `server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过，`git diff --check v1-broker...HEAD` 通过。变更文件仍仅为协作文档、`server/README.md`、注册通知测试、`server/src/domain.js`、`server/src/index.js`；受限路径、私钥材料、真实 webhook、访问密钥形态、新增裸 `innerHTML`、客户端权限/分佣字段均为 0 命中。自审未发现新的代码阻断项。
+
+停止原因：P0 三项尚无完成记录，且下方 Claude 放行条目明确要求 P0 未完成不得 push、部署、上传体验版或开放真实注册；主工作区同时保留用户未提交的房源清单、交接报告、`.claude/` 与协作文档改动，本轮未夹带、未回滚、未覆盖。因此当前未 push、未部署、未出部署包，也未改 `server/scripts/smoke-test.js`。
+
+需要用户/第三裁判完成并仅记录结果（不得记录新凭据值）：①后台管理员与服务器旧凭据已轮换失效；②如同意修复 smoke 测试默认凭据，另行明确写出“授权修改 smoke-test.js 删除默认凭据”，随后须按独立模块开发、测试与复审；③微信公众平台隐私保护指引、用户协议入口、经营类目/资质、合法域名已逐项核对并写明结论。三项闭环前不得发布。
+
+---
+
+### 2026-07-10 | Claude Code（审核裁判） | P1.1 死信告警返修复审通过，模块放行 | READY_TO_DEPLOY
+
+状态：`READY_TO_DEPLOY`（P1.1 模块过审；**发布仍被 P0 门槛拦住**，见下）。关联：主开发「死信告警重发口径返修 / `0653991`」；本条同时是 P1.1 模块（`439543f` + `0653991` 两 commit）的整体过审结论。
+
+**审核证据**：
+- `0653991` 的 domain.js 改动与我指定的修法逐行一致：`claimRegistrationNotifyDeadLetterAlert` 仅拒 `sent`、`pendingRegistrationNotifyDeadLetterAlertIds` 过滤 `!== 'sent'`；语义收敛为**至多一次成功告警**。
+- 刷屏边界手推成立：补发仅由启动时 `resumePendingRegistrationNotifications` 触发，每次重启每申请至多一次，无定时循环；同进程无重复领取路径（dead_letter 后通知本体不再跑、exhaustion 转换仅一次、resume 仅启动时一次）。
+- **测试为真行为锁**：预置 `failed`/`sending`/`sent` 三种死信 → 真实启动服务 → 以 HTTP 命中计数断言「恰好补发 2 条」「failed/sending 补发成功后转 sent」「已 sent 不重复且计数不变」。
+- **先红后绿我亲手复现**：新测试放到修复前 `439543f` 上实跑，红在「重启后应补发 failed/sending 两条死信告警」，与交审声称逐字一致。
+- 我在本工作树独立跑全量 `*-test.js`（排除 smoke）**85/85** + `v1-final-audit.js` 全绿；文件集与返修声明一致（domain.js/测试/README/协作文档），红线零触碰，`git diff --check` 通过，工作区干净；既有脱敏、幂等、防接管、attemptId 隔离、重启恢复断言未削弱。
+
+**给主开发（GPT）的下一步**：
+1. 本分支可合并回本地 `v1-broker`（fast-forward 或 rebase 后快进）；**但 P0 未完成仍不得 push、不得部署、不得上传体验版、不得开放真实注册**——P0 三项（凭据轮换 / smoke-test 授权语 / 微信合规核对）由用户完成并在文档记录。
+2. P1.2「找房结果轻量反馈」可开工：按协议先在文档写拟修改文件清单（预计触碰 domain.js/index.js 独占资源 + 小程序端页面），反馈原因至少覆盖价格/位置/户型/房态/结果过少过多，关联 needId，不记录姓名/电话/地址/自由文本 PII；测试先红后绿。
+3. readyz「注册通知死信 N 条」可选项未做，保留为可选，可并入 P1.3 漏斗批次一起做。
+
+---
+
+### 2026-07-10 14:06 | Codex（主开发 / CODEX_DEV） | 注册通知死信告警重发口径返修完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。已按 Claude Code 对 `439543f` 的唯一返修项完成收口：死信告警语义从“最多尝试一次”修正为“最多一次成功告警”；`failed` 与崩溃遗留 `sending` 状态可在重启后补发，成功落为 `sent` 后不再重复。本轮仍未处理反馈、漏斗、隐私页面、Nginx、数据库指标或 readyz 运营待办。
+
+实际修改文件：
+- `server/src/domain.js`：`claimRegistrationNotifyDeadLetterAlert` 仅在 `notifyDeadLetterAlertStatus === 'sent'` 时拒绝重领；`pendingRegistrationNotifyDeadLetterAlertIds` 改为筛选非 `sent` 死信告警，允许 `failed` / `sending` 重启补发。
+- `server/scripts/registration-notify-v1-test.js`：新增先红后绿断言：`failed` 死信告警重启后补发并转 `sent`；崩溃遗留 `sending` 重启后补发并转 `sent`；已 `sent` 的死信告警重启后不重复发送。既有脱敏、幂等、防接管、attemptId 隔离和正常通知断言未削弱。
+- `server/README.md`：同步“成功送达最多一次，失败/中断重启可补发”的运维口径。
+- `docs/AI协作会话.md`：保留 Claude 审核结论，记录返修开工与交审。
+
+测试与验证：
+- 返修前基线：`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+- 红灯确认：新增断言在返修前失败，失败点为“重启后应补发 failed/sending 两条死信告警”。
+- 局部验证：`node --check src/domain.js`、`node --check src/index.js`、`node --check scripts/registration-notify-v1-test.js`、`registration-notify-v1-test.js`、`send-feishu-alert-v1-test.js`、`admin-registration-review-v1-test.js` 均通过。
+- rebase：已 rebase 到本地最新 `v1-broker`，无冲突。
+- rebase 后全量：`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+
+红线与自审：
+- 未修改 `server/scripts/smoke-test.js`；未触碰 `server/data/`、`server/certs/`、`.env`、`lark-*.json`、`project.private.config.json` 或任何凭据文件。
+- `git diff --check` 通过；文件范围符合返修声明；未新增裸 `innerHTML`；未新增客户端可控权限/分佣字段。
+- 敏感形态扫描未发现真实密钥、token、证书、手机号明文或凭据；命中的 phone/passwordHash 均为测试假值或 README/API 字段说明。
+
+请 Claude Code 复审重点：是否收敛为至多一次成功告警；`failed` / `sending` 每次重启至多补发一次、不在同轮刷屏；已 `sent` 不重复；既有死信脱敏和注册幂等/防接管/重启恢复未回归。
+
+### 2026-07-10 13:59 | Codex（主开发 / CODEX_DEV） | 注册通知死信告警重发口径返修开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。按 Claude Code 对 `439543f` 的唯一返修项处理：将“同一申请最多一次告警”细化为“最多一次成功告警”；若死信告警失败或进程在 sending 中断，重启后允许补发，成功后不再重复。不处理反馈、漏斗、隐私页面、Nginx、数据库指标或 readyz 运营待办。
+
+拟修改文件：
+- `docs/AI协作会话.md`：保留 Claude 审核结论并记录返修开工/交审。
+- `server/src/domain.js`：放宽死信告警领取与重启恢复筛选，仅 `sent` 才停止补发。
+- `server/scripts/registration-notify-v1-test.js`：先补红灯断言，覆盖 failed/sending 可补发、sent 不重复。
+- `server/README.md`：同步“最多一次成功告警”的运维口径。
+
+红线：不修改 `server/scripts/smoke-test.js`；不触碰 data/certs/env/lark/private config/凭据；不削弱既有脱敏、幂等、防接管、attemptId 隔离和重启恢复断言；P0 未完成前不 push、不部署、不上传体验版、不开放真实注册。
+
+### 2026-07-10 | Claude Code（审核裁判） | P1.1 死信告警审核结论：需要返修（1 项，小） | CODEX_FIX_REQUIRED
+
+状态：`CODEX_FIX_REQUIRED`。**明确结论：需要返修**——实现整体通过，唯一返修项为「死信告警重发口径」，详见下文。本条写在本工作树文档副本，因主工作区文档的同内容裁定（更详细版）GPT 侧不可见；两份记录合并时双保留。另：用户已决策角色变更——主开发由 Codex 变更为 **GPT**，Claude Code 为唯一审核裁判，无第三裁判；协作方式、红线、状态机不变。
+
+**审核证据（对 commit `439543f`）**：
+- 文件集与开工声明一致（domain.js / index.js / registration-notify-v1-test.js / README / 协作文档），红线零触碰，`git diff --check` 通过，merge-base=`921e507` 已核。
+- 我在本工作树独立跑全量 `server/scripts/*-test.js`（排除 smoke）**85/85** + `v1-final-audit.js` 全绿（非照搬交审报数）。
+- **先红后绿已亲手复现**：新测试放到 `921e507` 旧代码上实跑，红在「连续失败应尝试满 3 次并追加 1 次死信告警」，与交审声称逐字一致。
+- 曾怀疑「死信分支提前 return 泄漏 `registrationNotifyJobs` Set、阻塞重新申请」，手推后**排除**（`settle()` 在分支判断前无条件 delete）。
+- 死信可追踪成立（`sanitizeRegistrationRequest` 仅删 passwordHash，后台注册审核列表可见全部死信/告警字段）；告警无 PII 姿态优于规格；spawn 双监听 + `settled` 防双结算正确。
+
+**以下已确认正确，返修时不得回退**：dead_letter 持久化与一次性领取、通知本体排除 dead_letter 不再重试、重新申请清理死信字段、注册幂等/防接管/attemptId 隔离/重启恢复零回归、`buildNotifyEnv` 白名单、告警失败仅回写状态不抛未捕获异常。
+
+**返修项（唯一）——告警重发口径**：
+- 问题：现实现「告警尝试过一次（即使失败）即永不再发，重启也不补」。死信主因恰是 webhook 持续不可用，此时死信告警必然同样失败——**最需要告警的场景里告警恰好静默**。此口径源于此前审核方开工指示的措辞「服务重启不得重复告警」，规格责任在审核方（我），非实现错误。
+- 修正语义：**「只发一次」= 至多一次“成功”告警**；防刷屏防的是重复成功送达，不是放弃未送达。
+- 修法：
+  1. `domain.js`：`pendingRegistrationNotifyDeadLetterAlertIds` 过滤从 `!notifyDeadLetterAlertAttemptedAt` 改为 `notifyDeadLetterAlertStatus !== 'sent'`（`failed` 与崩溃遗留的 `sending` 都允许重启补发）；`claimRegistrationNotifyDeadLetterAlert` 相应放宽为可重领非 `sent` 状态（同进程内仍靠一次性 claim + `settled` 防重复）。每次重启至多补发一次，webhook 恢复后收敛到 `sent`。
+  2. `registration-notify-v1-test.js` 补两条先红后绿测试：`failed` 死信 → 重启恢复 → 恰好补发一次、成功后转 `sent`；`sent` 死信 → 重启恢复 → 不再发。
+  3. 可选（建议不强制，若做同批交审）：readyz 清单加「注册通知死信 N 条」需处理项。
+  4. 同步 README 告警口径。
+- 完成后全量（排除 smoke）+ `v1-final-audit.js` 全绿，写 `CLAUDE_REVIEW` 交审；我复审四点：收敛到至多一次成功、每次重启至多一次不刷屏、既有一次性/幂等/脱敏断言未弱化、先红后绿证据。
+- 仍然：**P0 未完成不得 push、不得部署、不得上传体验版、不得开放真实注册**。
+
+---
+
+### 2026-07-10 13:22 | Codex（主开发 / CODEX_DEV） | 注册通知重试耗尽死信告警完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。本轮只完成第一代码模块：注册通知三次重试耗尽后的可追踪死信状态与 `HEALTH_ALERT` 升级告警；未处理反馈、漏斗、隐私页面、Nginx 或数据库指标。提交信息：`feat: 注册通知耗尽进入死信告警`（本条记录随该模块单提交落地）。
+
+实际修改文件：
+- `server/src/domain.js`：三次耗尽时将申请通知状态固化为 `dead_letter`，记录 `notifyDeadLetterAt` / `notifyDeadLetterReason`；新增死信告警一次性领取与发送结果回写字段，重新申请时清理上一轮死信与告警状态。
+- `server/src/index.js`：普通通知第三次失败后复用 `scripts/send-feishu-alert.js` + `HEALTH_ALERT_WEBHOOK` 发送 `REGISTRATION_NOTIFY_DEAD_LETTER`；告警只带分组后的申请追踪 id、尝试次数、死信时间和失败摘要，不带姓名、手机号、密码或完整申请内容；重启恢复会补发尚未尝试过的死信告警，但已尝试过的不重复。
+- `server/scripts/registration-notify-v1-test.js`：先补红灯用例，锁定三次失败后 `dead_letter`、一次性死信告警、脱敏、达到上限不再继续发送、重启不重复告警。
+- `server/README.md`：同步注册提醒状态机、死信字段、告警脱敏与一次性口径。
+- `docs/AI协作会话.md`：记录开工与交审。
+
+测试与验证：
+- 基线：补齐本地依赖后，`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+- 红灯确认：新增断言在旧实现上失败，失败点为“连续失败应尝试满 3 次并追加 1 次死信告警”。
+- 局部验证：`node --check src/domain.js`、`node --check src/index.js`、`node --check scripts/registration-notify-v1-test.js`、`registration-notify-v1-test.js`、`send-feishu-alert-v1-test.js`、`admin-registration-review-v1-test.js` 均通过。
+- rebase：已 rebase 到本地最新 `v1-broker`（`921e507`），无冲突。
+- rebase 后全量：`server/scripts/*-test.js`（排除 `smoke-test.js`）85/85 通过，`server/scripts/v1-final-audit.js` 通过。
+
+红线与自审：
+- 未修改 `server/scripts/smoke-test.js`；未触碰 `server/data/`、`server/certs/`、`.env`、`lark-*.json`、`project.private.config.json` 或任何凭据文件。
+- `git diff --check` 通过；diff 文件范围符合开工声明；未新增裸 `innerHTML`；未新增客户端可控权限/分佣字段。
+- 敏感形态扫描未发现真实密钥、token、证书、手机号明文或凭据；命中的 `password` 仅为 README/API 测试字段说明。
+
+风险与复审重点：
+- 死信告警复用同一个 `HEALTH_ALERT_WEBHOOK`。若 webhook 本身不可用，申请仍会留在 `dead_letter`，告警尝试状态会记为 `failed`，并按“同一申请最多一次”不继续刷屏；请重点复审该取舍是否符合“最多一次”的运营口径。
+- 请 Claude Code 只读复审：`dead_letter` 状态是否可追踪、告警是否真正脱敏、同申请是否只告警一次、旧 attemptId 防接管/幂等/重启恢复是否未回归、README 口径是否准确。
+
+### 2026-07-10 13:11 | Codex（主开发 / CODEX_DEV） | 注册通知重试耗尽死信告警开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。本轮只执行第一代码模块：注册通知三次重试耗尽后的可追踪死信状态与 `HEALTH_ALERT` 升级告警；不提前处理反馈、漏斗、隐私页面、Nginx 或数据库指标。P0 凭据轮换与微信后台合规核对由用户并行完成，不阻塞本地开发；未完成前不得发布或开放真实注册。
+
+拟修改文件：
+- `docs/AI协作会话.md`：记录开工、完成交审、测试与自审结果。
+- `server/src/index.js`：注册通知队列、三次重试、重启恢复与健康告警接入点，按独占资源处理。
+- `server/src/domain.js`：仅在现有注册申请状态持久化需要服务端领域方法配合时修改，按独占资源处理。
+- `server/scripts/*registration*-test.js` 或新增同范围测试脚本：先补稳定复现失败的验收断言，再修代码。
+- `server/README.md`：若新增死信状态或告警口径影响业务规则/数据结构/运维说明，则同步更新。
+
+红线：不修改 `server/scripts/smoke-test.js`；不提交 `server/data/`、`server/certs/`、任何 `.env`、`lark-*.json`、`project.private.config.json` 或凭据；告警不得包含手机号、姓名、凭据或完整申请内容；同一申请耗尽告警最多一次；不得破坏注册幂等、重启恢复、防接管和正常通知路径。
+
+需要 Claude Code 做什么：待 Codex 完成 commit、全量测试、自审与本记录更新后，只读复审本模块边界、死信幂等、告警脱敏、重启恢复和红线扫描。
+
 ### 2026-07-10 | 用户 + Codex + Claude/Fable 复核意见 | 上线后闭环优化统一总目标 | PROGRAM_ALIGNED
 
 状态：`PROGRAM_ALIGNED`。三方事实口径已统一：生产基线为原始房源 83、用户 9、足迹 59，报备/成交/分佣均为 0；系统已证明“能展示和浏览”，尚未证明“能推动报备与成交”。固定协作方式不变：Codex 独立工作树开发、测试、逐模块提交并自审，Claude Code 只读复审；未取得 `READY_TO_DEPLOY` 不 push、不部署、不上传体验版。Fable/第三裁判继续做独立经营与风险复核。

@@ -224,7 +224,7 @@ POST /mini/auth/register   body: { name, phone, password }
 
 - **登录 = 手机号 + 密码**。服务端只匹配未软删用户，并用 `verifyPassword`（scrypt）校验密码。以下一律 403、不发 token：手机号未开通（引导联系管理员开通）、账号未设密码（fail-closed，引导联系管理员重置）、密码错误（统一提示「手机号或密码不正确」，不暴露命中与否）。缺密码返回 400。登录入口按客户端 IP 限流（20/min）防暴力破解。
 - **注册 = 申请-审核-开通**。任何人可提交注册申请（含自设密码，服务端立即 scrypt 哈希存进申请记录），但**注册一律不发 token**：新手机号落 `registrationRequests` 待审核并提示「已收到您的注册信息…请联系寓你住一起管理员开通账号权限」（403）；已开通手机号返回 409 引导直接登录（不再免密发 token）。同一手机号处于待审核时，后续提交严格幂等，不改原申请姓名、密码或更新时间，防止后来者凭手机号接管申请；只有已驳回或已通过后账号又被删除时，才允许开启一轮重新申请。管理员在后台 `/admin/registrations` 审核通过后，注册时自设的密码即写入新账号，用户可直接用该密码登录。
-- **注册申请飞书提醒**：新申请或驳回/开通后的重新申请落库时，服务端异步推飞书群提醒管理员审核（复用 `scripts/send-feishu-alert.js`）。姓名中的标签边界、换行和控制字符会先转义/清理，手机号只发打码值；子进程 env 只含系统变量与 `HEALTH_ALERT_*`，拿不到 OSS/token 等应用密钥。发送状态与次数写在申请记录的 `notifyStatus` / `notifyAttempts`：只有发送脚本退出码为 0 才记成功，失败默认在 1 秒、5 秒后重试，总次数最多 3 次；进程重启会恢复未完成任务。通知链始终不阻塞注册响应。启用条件：应用进程能读到 `HEALTH_ALERT_WEBHOOK`——需把该变量**同步写进 `server/.env`**（应用不加载 `/etc/default/ynzy-backup`，是有意隔离：避免备份加密密钥进入应用进程环境），改后 `systemctl restart ynzy-miniapp` 生效；未配置则保留 `pending` 状态且不发送，配置后重启会补发。测试环境可用 `REGISTRATION_NOTIFY_RETRY_DELAYS_MS=40,80` 缩短两次重试间隔，生产通常保持默认值。
+- **注册申请飞书提醒**：新申请或驳回/开通后的重新申请落库时，服务端异步推飞书群提醒管理员审核（复用 `scripts/send-feishu-alert.js`）。姓名中的标签边界、换行和控制字符会先转义/清理，手机号只发打码值；子进程 env 只含系统变量与 `HEALTH_ALERT_*`，拿不到 OSS/token 等应用密钥。发送状态与次数写在申请记录的 `notifyStatus` / `notifyAttempts`：只有发送脚本退出码为 0 才记成功，失败默认在 1 秒、5 秒后重试，总次数最多 3 次；进程重启会恢复未完成任务。第三次仍失败时状态进入 `dead_letter`，同时记录 `notifyDeadLetterAt` / `notifyDeadLetterReason`，并通过同一 `HEALTH_ALERT_WEBHOOK` 升级发送 `REGISTRATION_NOTIFY_DEAD_LETTER` 告警；死信告警只包含分组后的申请追踪 id、次数、时间和失败摘要，不包含姓名、手机号、密码或完整申请内容。告警以“成功送达最多一次”为准：若发送失败或进程在 `sending` 中断，重启后会补发；一旦记为 `sent`，后续重启不再重复。通知链始终不阻塞注册响应。启用条件：应用进程能读到 `HEALTH_ALERT_WEBHOOK`——需把该变量**同步写进 `server/.env`**（应用不加载 `/etc/default/ynzy-backup`，是有意隔离：避免备份加密密钥进入应用进程环境），改后 `systemctl restart ynzy-miniapp` 生效；未配置则保留 `pending` 状态且不发送，配置后重启会补发。测试环境可用 `REGISTRATION_NOTIFY_RETRY_DELAYS_MS=40,80` 缩短两次重试间隔，生产通常保持默认值。
 - **密码存储**：`scrypt$<salt>$<hash>`（随机 salt + `timingSafeEqual` 恒定时间比对，实现见 `src/auth-util.js`，与后台管理员账号共用）。DB 不存明文；`passwordHash` 绝不随 `/mini/auth/me`、`/mini/profile`、`/mini/auth/login`、`/admin/users`、`/admin/registrations` 等任何响应外泄。
 - **存量/后台建号设密**：管理员在后台「账号管理」对中介/员工点「设置/重置密码」，或调 `POST /admin/users/:id/password`（仅超级管理员）为无密码账号发初始密码；后台建号 `POST /admin/users` 也可带可选初始密码。未设密码的账号一律 fail-closed 禁登。
 
@@ -547,6 +547,17 @@ WS   /mini/asr/realtime
 POST /mini/assistant/feedback
 ```
 
+找房结果页提交反馈时使用严格契约 `feedbackVersion=match-result-v1`。请求必须带当前登录中介自己的 `needId`、服务端返回的 `threadId`、当前结果的服务端 `feedbackMessageId`（提交字段仍名为 `messageId`）、`feedbackType`（仅 `helpful` / `bad_recommendation`）与固定 `reasonCode`。`feedbackMessageId` 就是该次结果已持久化的 trace ID，不使用客户端页面消息 ID。原因码按有用性分组：
+
+- 有用：`price`、`location`、`layout`、`availability`、`result_count`。
+- 没用：`price`、`location`、`layout`、`availability`、`too_few`、`too_many`。
+
+服务端只按对象自有键读取原因白名单并生成固定中文标签，不接收自由文本原因；`needId` 缺失、需求不存在、需求不属于当前中介、`messageId + threadId + 当前用户 + needId` 不能精确命中同一条持久结果 trace、反馈版本不精确匹配或原因码与有用性不匹配时分别按边界返回 4xx。结果 trace 的 `feedbackNeedId` 只来自服务端对持久需求存在性和归属的校验，不采信客户端 `needTemporary`。同一用户 + 服务端结果 `messageId` 的相同需求/反馈重复提交幂等返回原记录，任一关联或分类冲突返回 `409`。
+
+`match-result-v1` 记录只保留 `needId`、服务端结果 `messageId`、有用性、固定原因码/标签和从该精确本人 trace 压缩出的最小元数据（版本、事件数、时间、节点名）；不保存客户端 `threadId`。后台查看完整对话时按服务端结果 ID 反查真实 trace/thread，并继续限制为反馈所属用户。客户端即使额外提交姓名、电话、地址、原始需求、助手回复、房源、期望或地点对象也全部丢弃。后台可流转严格反馈状态，但不能改写用户提交的类型/原因，也不向严格记录追加自由备注、处理结论或期望对象。兼容旧通道仅限请求体完全没有 `feedbackVersion` 属性；显式空白、`null`、数字、布尔值和任何未知版本全部拒绝，不得降级写入自由文本。旧通用反馈仍按最新 200 条保留，结构化找房反馈不受该滚动上限淘汰，以保证持久幂等与冲突保护；已成功写入的反馈即使原结果 trace 后续被 500 条上限滚动清理，相同重试仍返回原记录、冲突仍返回 `409`。严格反馈本身没有原始问题文本，提升评估集时必须由管理员明确提供经过脱敏的评估文本，不能把固定原因标签当作评估问题。
+
+登录中介通过 `/mini/assistant/chat` 提交的 `needId` 只有经服务端确认属于本人持久需求时，响应才返回 `feedbackMessageId`；确认需求后调用 `/mini/llm/match` 同样由服务端查库验证，验证成功才写入带 `feedbackNeedId` 的结果 trace 并返回关联 ID。不存在、临时、他人需求、游客和识别阶段均不返回结果 ID；即使客户端伪造 `needTemporary=false` 也不能改变签发结论。
+
 游客请求会被限制在公司房源数据集内；登录中介可匹配全部当前可见有效房源。
 生产服务会为 `POST /mini/llm/match` 和 `POST /mini/assistant/chat` 记录一行耗时日志，格式包含 `status`、`durationMs` 和 `guest`；助手对话还会记录 `degraded`，用于确认真机登录态是否到达后端。日志不记录请求正文、手机号、地址或房源敏感字段。
 `/mini/llm/match` 与 `/mini/assistant/chat` 的客户端超时都单独放宽到 60 秒；服务端调用 LLM 供应商时使用 20 秒 provider 级超时。供应商超时、报错或密钥缺失时，接口返回本地真实房源匹配结果并带 `degraded=true`、`degradedNotice=智能解读稍后重试`，前端正常渲染卡片并只显示小字提示，不把供应商失败误报成“网络连接失败”。
@@ -577,7 +588,17 @@ POST /admin/llm-config/test
 
 ## 上线自检
 
-V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，仍保留但不要作为当前 V1 验收主线。
+V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。
+
+PowerShell 7 可在当前进程临时设置变量后运行；以下只展示变量名，不提供任何示例凭据值：
+
+```powershell
+$env:SMOKE_BASE_URL = Read-Host 'SMOKE_BASE_URL'
+$env:SMOKE_ADMIN_ACCOUNT = Read-Host 'SMOKE_ADMIN_ACCOUNT'
+$env:SMOKE_ADMIN_PASSWORD = Read-Host 'SMOKE_ADMIN_PASSWORD' -MaskInput
+node scripts/smoke-test.js
+Remove-Item Env:SMOKE_BASE_URL, Env:SMOKE_ADMIN_ACCOUNT, Env:SMOKE_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+```
 
 当前 V1 验收脚本为以下八个：
 
@@ -629,7 +650,7 @@ cd server
 node scripts/v1-final-audit.js
 ```
 
-该脚本会检查关键 V1 脚本存在并运行其中的核心脚本，同时确认 `server/scripts/smoke-test.js` 未被修改。
+该脚本会检查关键 V1 脚本存在并运行其中的核心脚本，同时确认 `server/scripts/smoke-test.js` 的三项运行配置仅来自环境变量、缺失时 fail-closed，并执行不会连接真实服务的环境变量门禁测试。
 
 ## 部署包与提交红线
 
@@ -650,6 +671,6 @@ powershell -ExecutionPolicy Bypass -File scripts/package-deploy.ps1
 提交红线：
 
 - 不提交 `.env`、密钥、证书、生产数据。
-- 不修改 `server/scripts/smoke-test.js`。
+- `server/scripts/smoke-test.js` 只允许在用户明确授权后做范围受控的安全修复；不得重新加入地址、账号、密码或其他凭据默认值。
 - 不把客户端字段当作分佣、上传人或登录身份的可信来源。
 - 不在日志中输出完整客户手机号、房东电话、微信号或身份证信息。

@@ -6,9 +6,31 @@ const { coordinateByCommunity } = require('../src/community-coordinates')
 
 const rootDir = path.resolve(__dirname, '..')
 const dataFile = path.join(rootDir, 'data/db.json')
-const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000'
-const adminAccount = process.env.SMOKE_ADMIN_ACCOUNT || '19941091943'
-const adminPassword = process.env.SMOKE_ADMIN_PASSWORD || 'WZJwzj123'
+const REQUIRED_SMOKE_ENV_NAMES = [
+  'SMOKE_BASE_URL',
+  'SMOKE_ADMIN_ACCOUNT',
+  'SMOKE_ADMIN_PASSWORD'
+]
+
+let baseUrl = ''
+let adminAccount = ''
+let adminPassword = ''
+
+function loadSmokeConfig(env = process.env) {
+  const source = env && typeof env === 'object' ? env : {}
+  const missing = REQUIRED_SMOKE_ENV_NAMES.filter((name) => !String(source[name] == null ? '' : source[name]).trim())
+  if (missing.length) {
+    const error = new Error(`缺少必需环境变量：${missing.join('、')}`)
+    error.code = 'SMOKE_ENV_REQUIRED'
+    throw error
+  }
+  return {
+    baseUrl: String(source.SMOKE_BASE_URL).trim(),
+    adminAccount: String(source.SMOKE_ADMIN_ACCOUNT).trim(),
+    // 密码只检查是否为空，不改写原值，避免破坏首尾空格属于密码本身的合法场景。
+    adminPassword: String(source.SMOKE_ADMIN_PASSWORD)
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -593,6 +615,11 @@ async function runChecks() {
 }
 
 async function main() {
+  const config = loadSmokeConfig()
+  baseUrl = config.baseUrl
+  adminAccount = config.adminAccount
+  adminPassword = config.adminPassword
+
   const originalData = fs.readFileSync(dataFile, 'utf8')
   let serverProcess = null
 
@@ -622,7 +649,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`FAIL 冒烟测试运行失败: ${error.message}`)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`FAIL 冒烟测试运行失败: ${error.message}`)
+    process.exit(1)
+  })
+}
+
+module.exports = { loadSmokeConfig }

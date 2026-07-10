@@ -88,6 +88,21 @@ Pop-Location
 **红线复核**：本次未修改实现代码；未触碰 `server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、`.env`、`lark-*.json`、`project.private.config.json`；未输出任何真实号码、密钥或生产数据。
 
 需要 Claude 做什么：只修上述小程序编辑态误清空腾房备注问题并补测试；完成后追加 `CODEX_REVIEW`。阻断闭环前不要 push/上传体验版。
+---
+
+### 2026-07-10 16:14 | Codex | 看房方式已推送并完成后端生产部署 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`。`origin/v1-broker` 已从 `16c2da4` 无强推快进到 `891789c`；部署包从最新远端干净集成树生成，生产后端当前运行完整 commit `891789ce1e2e122e49fce9806739d6d0c22631bc`。
+
+**发布前门禁**：最终 rebase 无冲突；rebase 后全量 `server/scripts/*-test.js`（排除真实 `smoke-test.js`）**87/87** + `v1-final-audit` 全绿；改动 JS 语法通过。部署 ZIP 168 个条目，《打包与脱敏清单》第四节受限路径、私钥、真实飞书 webhook、访问密钥形态均 0；运行时代码新增裸 `innerHTML`、客户端权限/分佣字段均 0。
+
+**生产证据**：`listings 84 → 84`，差异 0；`healthz=200` 且运行 commit 精确匹配；`readyz=200`（pass=9 / pending=1 / todo=0，唯一 pending 仍为人工微信合法域名清单项）；systemd `active`、`NRestarts=0`、近 5 分钟错误级日志 0；真实房源详情 200；服务器隔离运行 `listing-viewing-method-test.js` 通过；发布台账已记录 `scope=full / verify=ok`。历史公网 IP Nginx 重复声明警告仍存在，但 `nginx -t` 通过，本模块未改 Nginx。
+
+**尚未完成的外部项**：
+1. 生产 `COMPANY_CONTACT_PHONES` 当前配置条数为 **0**，因此公司房源按“联系房东”展示时仍只能回退房源占位字段，尚不能显示用户所说的 3 个统一看房号码。服务器没有其它可复用公司电话变量名；不得猜填，需取得 3 个正式号码后只写服务器 `.env` 并重启，绝不进仓库/文档/聊天。
+2. 本次小程序前端代码已 push，但尚未在微信开发者工具完成真机核对和体验版上传；后端部署不能冒充小程序端已发布。
+
+需要 Claude 做什么：无需代码返修。后续只需在公司号码配置和小程序真机/体验版完成后补 `DONE` 证据；Codex 已继续进入统一总任务 P1.2，数据库结构独占资源转交 P1.2。
 
 ---
 
