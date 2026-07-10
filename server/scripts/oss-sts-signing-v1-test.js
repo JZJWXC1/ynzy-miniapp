@@ -105,6 +105,41 @@ async function assertPutObjectUsesSts() {
   }
 }
 
+async function assertPutErrorRedactsSts() {
+  const originalRequest = https.request
+  https.request = (options, onResponse) => {
+    const req = new EventEmitter()
+    req.end = () => {
+      process.nextTick(() => {
+        const response = new EventEmitter()
+        response.statusCode = 403
+        response.setEncoding = () => {}
+        onResponse(response)
+        response.emit('data', `<Error><StringToSign>PUT\nx-oss-security-token:${TOKEN}\n/${BUCKET}/fake.mp4</StringToSign>`)
+        response.emit('data', `<Message>security-token=${encodeURIComponent(TOKEN)} rejected</Message></Error>`)
+        response.emit('end')
+      })
+    }
+    return req
+  }
+
+  try {
+    let failure = null
+    try {
+      await oss.putObjectBuffer('fake.mp4', Buffer.from('fake'), 'video/mp4')
+    } catch (error) {
+      failure = error
+    }
+    assert(failure, 'OSS 非 2xx 响应必须拒绝 Promise')
+    assert.strictEqual(failure.statusCode, 403)
+    assert.ok(!failure.message.includes(TOKEN), 'OSS Error 不得泄露 STS token 原值')
+    assert.ok(!failure.message.includes(encodeURIComponent(TOKEN)), 'OSS Error 不得泄露 URL 编码 STS token')
+    assert.ok(failure.message.includes('[STS_TOKEN_REDACTED]'), 'OSS Error 应保留可诊断结构并标明已脱敏')
+  } finally {
+    https.request = originalRequest
+  }
+}
+
 async function main() {
   const readKey = 'house-videos/20260710/room 101.mp4'
   assertSignedUrl(oss.createSignedReadUrl(readKey, 900), readKey, {
@@ -123,6 +158,7 @@ async function main() {
   assert.strictEqual(screenshotPolicy.formData['x-oss-security-token'], TOKEN, '图片直传 POST 必须携带 STS token')
 
   await assertPutObjectUsesSts()
+  await assertPutErrorRedactsSts()
 
   // 长期 AK/SK 模式继续兼容：不配置 token 时，签名串和 URL 不应凭空增加 subresource。
   config.oss.securityToken = ''

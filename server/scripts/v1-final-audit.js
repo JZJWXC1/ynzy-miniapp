@@ -24,6 +24,8 @@ const criticalScripts = [
   'server/scripts/mini-pending-no-data-v1-test.js',
   // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
   'server/scripts/oss-video-snapshot-v1-test.js',
+  // STS 临时凭据：GET/快照/PUT 必须把 security token 纳入 V1 签名，错误正文不得回显 token。
+  'server/scripts/oss-sts-signing-v1-test.js',
   // 图片错误事件晚于列表刷新时，必须按房源 id + 当时 URL 定位，禁止旧 index 误清另一套房的封面。
   'server/scripts/listing-cover-error-race-test.js',
   // 告警到人：飞书 webhook 通知脚本的两条契约（HEALTH_ALERT_CMD 白名单 env / BACKUP_ALERT_CMD ALERT_*）、

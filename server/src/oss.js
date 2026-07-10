@@ -78,6 +78,15 @@ function stsSubresources(subresources = {}) {
   }
 }
 
+function sanitizeOssErrorText(value) {
+  let text = String(value || '')
+  const configuredToken = String(config.oss.securityToken || '')
+  if (configuredToken) text = text.split(configuredToken).join('[STS_TOKEN_REDACTED]')
+  return text
+    .replace(/(x-oss-security-token\s*[:=]\s*)[^\s<&"']+/ig, '$1[STS_TOKEN_REDACTED]')
+    .replace(/(security-token\s*=\s*)[^&\s<"']+/ig, '$1[STS_TOKEN_REDACTED]')
+}
+
 function missingConfigKeys() {
   const missing = []
   if (!config.oss.bucket) missing.push('ALI_OSS_BUCKET')
@@ -198,7 +207,7 @@ function putObjectBuffer(objectKey, buffer, contentType) {
           resolve({ objectKey, fileUrl: publicFileUrl(objectKey), statusCode: res.statusCode })
           return
         }
-        const error = new Error(raw || `OSS 上传失败：${res.statusCode}`)
+        const error = new Error(sanitizeOssErrorText(raw) || `OSS 上传失败：${res.statusCode}`)
         error.statusCode = res.statusCode || 502
         reject(error)
       })
@@ -352,5 +361,6 @@ module.exports = {
   createShowingPhotoUploadPolicy,
   createSignedReadUrl,
   createVideoSnapshotUrl,
-  putObjectBuffer
+  putObjectBuffer,
+  sanitizeOssErrorText
 }
