@@ -65,8 +65,11 @@ const routedRecorders = []
 const recorderHub = {
   recorder: null,
   active: null,
+  generationCounter: 0,
+  activeGeneration: 0,
   stopPending: false,
   stopOwner: null,
+  stopGeneration: 0,
   stopTimer: null,
   pendingStart: null
 }
@@ -223,7 +226,22 @@ function clearRecorderStopTimer() {
 function releaseRecorderOwner(controller) {
   if (recorderHub.active !== controller || recorderHub.stopPending) return
   recorderHub.active = null
+  recorderHub.activeGeneration = 0
   drainPendingStart()
+}
+
+function beginRecorderGeneration(controller) {
+  recorderHub.generationCounter += 1
+  recorderHub.activeGeneration = recorderHub.generationCounter
+  controller._setRecorderGeneration(recorderHub.activeGeneration)
+  return recorderHub.activeGeneration
+}
+
+function clearActiveRecorderRun(controller, generation) {
+  if (recorderHub.active !== controller || recorderHub.activeGeneration !== generation) return false
+  recorderHub.active = null
+  recorderHub.activeGeneration = 0
+  return true
 }
 
 function queueControllerStart(controller) {
@@ -235,15 +253,19 @@ function queueControllerStart(controller) {
 
 function requestRecorderStop(controller) {
   if (recorderHub.active !== controller || recorderHub.stopPending) return
+  const generation = recorderHub.activeGeneration
+  if (!generation) return
   recorderHub.stopPending = true
   recorderHub.stopOwner = controller
+  recorderHub.stopGeneration = generation
   clearRecorderStopTimer()
   recorderHub.stopTimer = setTimeout(() => {
-    if (recorderHub.stopOwner !== controller || !recorderHub.stopPending) return
+    if (recorderHub.stopOwner !== controller || recorderHub.stopGeneration !== generation || !recorderHub.stopPending) return
     recorderHub.stopTimer = null
     recorderHub.stopPending = false
-    controller._handleRecorderStopTimeout()
-    if (recorderHub.active === controller) recorderHub.active = null
+    controller._handleRecorderStopTimeout(generation)
+    clearActiveRecorderRun(controller, generation)
+    // stopOwner/stopGeneration 作为旧原生录音的终态墓碑保留；迟到 onStop/onError 只能结算这一代。
     drainPendingStart()
   }, RECORDER_STOP_TIMEOUT_MS)
   try {
@@ -252,8 +274,9 @@ function requestRecorderStop(controller) {
     clearRecorderStopTimer()
     recorderHub.stopPending = false
     recorderHub.stopOwner = null
-    controller._handleRecorderStopFailure(error)
-    if (recorderHub.active === controller) recorderHub.active = null
+    recorderHub.stopGeneration = 0
+    controller._handleRecorderStopFailure(error, generation)
+    clearActiveRecorderRun(controller, generation)
     drainPendingStart()
   }
 }
@@ -281,41 +304,47 @@ function bindRecorderRouter(recorder) {
 
   recorder.onStart(() => {
     if (recorderHub.recorder !== recorder || !recorderHub.active) return
-    recorderHub.active._handleRecorderStart()
+    recorderHub.active._handleRecorderStart(recorderHub.activeGeneration)
   })
   recorder.onFrameRecorded((res) => {
     if (recorderHub.recorder !== recorder || !recorderHub.active) return
-    recorderHub.active._handleRecorderFrame(res)
+    recorderHub.active._handleRecorderFrame(res, recorderHub.activeGeneration)
   })
   recorder.onStop((res) => {
     if (recorderHub.recorder !== recorder) return
     clearRecorderStopTimer()
     const owner = recorderHub.stopOwner || recorderHub.active
-    const keepOwner = owner ? owner._handleRecorderStop(res) === true : false
+    const generation = recorderHub.stopOwner ? recorderHub.stopGeneration : recorderHub.activeGeneration
+    const keepOwner = owner ? owner._handleRecorderStop(res, generation) === true : false
     recorderHub.stopPending = false
     recorderHub.stopOwner = null
-    if (owner && !keepOwner && recorderHub.active === owner) recorderHub.active = null
+    recorderHub.stopGeneration = 0
+    if (owner && !keepOwner) clearActiveRecorderRun(owner, generation)
     drainPendingStart()
   })
   recorder.onError((error) => {
     if (recorderHub.recorder !== recorder) return
     clearRecorderStopTimer()
-    const owner = recorderHub.active
+    const owner = recorderHub.stopOwner || recorderHub.active
+    const generation = recorderHub.stopOwner ? recorderHub.stopGeneration : recorderHub.activeGeneration
     recorderHub.stopPending = false
     recorderHub.stopOwner = null
-    if (owner) owner._handleRecorderError(error)
-    if (recorderHub.active === owner) recorderHub.active = null
+    recorderHub.stopGeneration = 0
+    if (owner) owner._handleRecorderError(error, generation)
+    clearActiveRecorderRun(owner, generation)
     drainPendingStart()
   })
   if (typeof recorder.onInterruptionBegin === 'function') {
     recorder.onInterruptionBegin(() => {
       if (recorderHub.recorder !== recorder) return
       clearRecorderStopTimer()
-      const owner = recorderHub.active
+      const owner = recorderHub.stopOwner || recorderHub.active
+      const generation = recorderHub.stopOwner ? recorderHub.stopGeneration : recorderHub.activeGeneration
       recorderHub.stopPending = false
       recorderHub.stopOwner = null
-      if (owner) owner._handleRecorderInterruption()
-      if (recorderHub.active === owner) recorderHub.active = null
+      recorderHub.stopGeneration = 0
+      if (owner) owner._handleRecorderInterruption(generation)
+      clearActiveRecorderRun(owner, generation)
       drainPendingStart()
     })
   }
@@ -328,8 +357,10 @@ function ensureRecorderRouter(recorder) {
   if (recorderHub.pendingStart) recorderHub.pendingStart._cancelQueued()
   recorderHub.recorder = recorder
   recorderHub.active = null
+  recorderHub.activeGeneration = 0
   recorderHub.stopPending = false
   recorderHub.stopOwner = null
+  recorderHub.stopGeneration = 0
   recorderHub.pendingStart = null
   bindRecorderRouter(recorder)
 }
@@ -343,6 +374,7 @@ function createController(handlers = {}) {
 
   const controllerId = `voice-${nextControllerId++}`
   let sessionId = 0
+  let recorderGeneration = 0
   let queued = false
   let starting = false
   let listening = false
@@ -603,8 +635,12 @@ function createController(handlers = {}) {
     return null
   }
 
-  function handleRecorderStart() {
-    if (!isOwner() || cancelled) return
+  function isCurrentRecorderGeneration(generation) {
+    return Number(generation) > 0 && recorderGeneration === generation
+  }
+
+  function handleRecorderStart(generation) {
+    if (!isOwner() || !isCurrentRecorderGeneration(generation) || cancelled) return
     starting = false
     listening = true
     stopping = false
@@ -619,12 +655,13 @@ function createController(handlers = {}) {
     safeCall(handlers.onStart)
   }
 
-  function handleRecorderFrame(res) {
-    if (!isOwner() || cancelled || !recorderStartIssued) return
+  function handleRecorderFrame(res, generation) {
+    if (!isOwner() || !isCurrentRecorderGeneration(generation) || cancelled || !recorderStartIssued) return
     if (res && res.frameBuffer) pushFrame(res.frameBuffer)
   }
 
-  function handleRecorderStop(res) {
+  function handleRecorderStop(res, generation) {
+    if (!isCurrentRecorderGeneration(generation)) return false
     recorderStartIssued = false
     listening = false
     stopping = false
@@ -641,7 +678,8 @@ function createController(handlers = {}) {
     return true
   }
 
-  function handleRecorderError(error) {
+  function handleRecorderError(error, generation) {
+    if (!isCurrentRecorderGeneration(generation)) return false
     const shouldNotify = !cancelled
     errored = shouldNotify
     recorderStartIssued = false
@@ -662,6 +700,7 @@ function createController(handlers = {}) {
         code
       ))
     }
+    return true
   }
 
   function cancelSession(notify = true) {
@@ -693,6 +732,7 @@ function createController(handlers = {}) {
 
   function beginStart() {
     sessionId += 1
+    recorderGeneration = 0
     queued = false
     starting = true
     listening = false
@@ -728,6 +768,7 @@ function createController(handlers = {}) {
         return
       }
       recorderStartIssued = true
+      const generation = beginRecorderGeneration(controller)
       try {
         recorder.start(RECORD_OPTIONS)
       } catch (error) {
@@ -735,7 +776,8 @@ function createController(handlers = {}) {
         errored = true
         starting = false
         closeRealtimeSocket()
-        releaseIfOwner()
+        clearActiveRecorderRun(controller, generation)
+        drainPendingStart()
         safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
       }
     })
@@ -744,6 +786,9 @@ function createController(handlers = {}) {
   const controller = {
     _recorder: recorder,
     _controllerId: controllerId,
+    _setRecorderGeneration(generation) {
+      recorderGeneration = generation
+    },
     _canRequestStart() {
       return !localBusy()
     },
@@ -776,10 +821,11 @@ function createController(handlers = {}) {
     _handleRecorderFrame: handleRecorderFrame,
     _handleRecorderStop: handleRecorderStop,
     _handleRecorderError: handleRecorderError,
-    _handleRecorderInterruption() {
-      handleRecorderError(createVoiceError('录音被系统中断，请稍后重试', '', 'recorder-interrupted'))
+    _handleRecorderInterruption(generation) {
+      handleRecorderError(createVoiceError('录音被系统中断，请稍后重试', '', 'recorder-interrupted'), generation)
     },
-    _handleRecorderStopFailure(error) {
+    _handleRecorderStopFailure(error, generation) {
+      if (!isCurrentRecorderGeneration(generation)) return
       recorderStartIssued = false
       listening = false
       stopping = false
@@ -791,7 +837,8 @@ function createController(handlers = {}) {
       safeCall(handlers.onError, createVoiceError('停止录音失败', errorMessage(error), 'recorder-stop-failed'))
     },
 
-    _handleRecorderStopTimeout() {
+    _handleRecorderStopTimeout(generation) {
+      if (!isCurrentRecorderGeneration(generation)) return
       const shouldNotify = !cancelled
       recorderStartIssued = false
       queued = false

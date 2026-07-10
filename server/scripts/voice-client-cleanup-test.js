@@ -279,6 +279,69 @@ try {
   assert.strictEqual(lostStopSecond.isBusy(), true, '迟到的旧 onStop 不得结束新页面会话')
   lostStopSecond.cancel()
   lostStopRecorder.emitStop()
+
+  // 同一竞态的 onError 路径：旧 stop 超时后 B 已启动，旧原生录音迟到 error 仍只能结算 A。
+  const lateErrorRecorder = makeRecorder({ autoStop: false })
+  const lateErrorSocket1 = makeSocket()
+  const lateErrorSocket2 = makeSocket()
+  currentRecorder = lateErrorRecorder
+  currentSocket = lateErrorSocket1
+  let lateOldErrors = 0
+  let lateNewErrors = 0
+  const lateErrorFirst = voiceInput.createController({ onError: () => { lateOldErrors += 1 } })
+  lateErrorFirst.start()
+  lateErrorSocket1.open()
+  lateErrorFirst.stop()
+  currentSocket = lateErrorSocket2
+  const lateErrorSecond = voiceInput.createController({ onError: () => { lateNewErrors += 1 } })
+  lateErrorSecond.start()
+  stopTimeoutCallback()
+  assert.strictEqual(lateErrorRecorder.startCount, 2, '旧 stop 超时后应启动排队的新 controller')
+  lateErrorRecorder.emitError({ errMsg: '旧录音迟到 error PCM record', errType: 1 })
+  assert.strictEqual(lateOldErrors, 0, '页面切换取消的旧 controller 不应因迟到 error 再弹错误')
+  assert.strictEqual(lateNewErrors, 0, '旧录音迟到 error 不得误报给新 controller')
+  assert.strictEqual(lateErrorSecond.isBusy(), true, '旧录音迟到 error 不得结束新 controller')
+  lateErrorSecond.cancel()
+  lateErrorRecorder.emitStop()
+
+  // controller 对象本身也会复用；仅比较 owner 引用不够，必须用每次 recorder.start 的 generation 隔离。
+  const generationRecorder = makeRecorder({ autoStop: false })
+  const generationSocket1 = makeSocket()
+  const generationSocket2 = makeSocket()
+  currentRecorder = generationRecorder
+  currentSocket = generationSocket1
+  let generationErrors = 0
+  const generationController = voiceInput.createController({ onError: () => { generationErrors += 1 } })
+  generationController.start()
+  generationSocket1.open()
+  generationController.stop()
+  stopTimeoutCallback()
+  assert.strictEqual(generationErrors, 1, '主动 stop 超时应只报告本轮一次错误')
+  currentSocket = generationSocket2
+  generationController.start()
+  generationSocket2.open()
+  generationRecorder.emitStop()
+  assert.strictEqual(generationController.isBusy(), true, '同 controller 上一代迟到 onStop 不得结束新 generation')
+  assert.strictEqual(generationErrors, 1, '同 controller 上一代迟到 onStop 不得新增错误')
+  generationController.cancel()
+  generationRecorder.emitStop()
+
+  const generationErrorSocket1 = makeSocket()
+  const generationErrorSocket2 = makeSocket()
+  currentSocket = generationErrorSocket1
+  generationController.start()
+  generationErrorSocket1.open()
+  generationController.stop()
+  stopTimeoutCallback()
+  assert.strictEqual(generationErrors, 2, '第二次主动 stop 超时应只增加一次本轮错误')
+  currentSocket = generationErrorSocket2
+  generationController.start()
+  generationErrorSocket2.open()
+  generationRecorder.emitError({ errMsg: '上一代迟到 error PCM record', errType: 1 })
+  assert.strictEqual(generationController.isBusy(), true, '同 controller 上一代迟到 onError 不得结束新 generation')
+  assert.strictEqual(generationErrors, 2, '同 controller 上一代迟到 onError 不得污染新 generation')
+  generationController.cancel()
+  generationRecorder.emitStop()
 } finally {
   global.setTimeout = nativeSetTimeoutForStop
   global.clearTimeout = nativeClearTimeoutForStop
