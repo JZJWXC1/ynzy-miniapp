@@ -175,6 +175,8 @@ Page({
     mapCenter: DEFAULT_CENTER,
     mapScale: 13,
     loading: false,
+    loadFailed: false,
+    loadErrorText: '',
     showSearchCurrentArea: false,
     emptyText: '当前区域暂无可上图的有效房源，可切换列表找房。',
     summaryText: '正在加载可上图房源',
@@ -187,9 +189,18 @@ Page({
 
   onShow() {
     this.setTabBarSelected()
-    const pending = parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
+    let pending = {}
+    try {
+      pending = parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
+    } catch (error) {
+      pending = {}
+    }
     if (Object.keys(pending).length) {
-      wx.removeStorageSync(PENDING_MAP_FILTERS_KEY)
+      try {
+        wx.removeStorageSync(PENDING_MAP_FILTERS_KEY)
+      } catch (error) {
+        // 清理失败不阻断本次筛选，下一次进入仍会按同一筛选重新读取。
+      }
       const filters = this.mergePendingFilters(this.data.filters, pending)
       this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
       this.loadCommunities({ recenter: true })
@@ -250,21 +261,36 @@ Page({
 
   loadCommunities(options) {
     const loadOptions = options || {}
+    this.lastMapLoadOptions = {
+      recenter: Boolean(loadOptions.recenter),
+      bounds: loadOptions.bounds ? Object.assign({}, loadOptions.bounds) : undefined
+    }
     // 请求竞态守卫：快速连续切换筛选时，只采纳最后一次请求的响应
     this._mapRequestSeq = (this._mapRequestSeq || 0) + 1
     const requestSeq = this._mapRequestSeq
-    this.setData({ loading: true })
+    this.setData({ loading: true, loadFailed: false, loadErrorText: '' })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
       if (requestSeq !== this._mapRequestSeq) return
       const communities = (items || []).map(normalizeCommunity).filter(validCommunity)
       this.applyCommunities(communities, loadOptions.recenter)
-      this.setData({ loading: false })
+      this.setData({ loading: false, loadFailed: false, loadErrorText: '' })
     }).catch(() => {
       if (requestSeq !== this._mapRequestSeq) return
       wx.showToast({ title: '地图房源加载失败', icon: 'none' })
-      this.applyCommunities([], false)
-      this.setData({ loading: false })
+      const patch = {
+        loading: false,
+        loadFailed: true,
+        loadErrorText: '地图房源加载失败，请检查网络后重试。'
+      }
+      if (!(this.data.communities || []).length) {
+        patch.summaryText = '地图房源加载失败，请重试'
+      }
+      this.setData(patch)
     })
+  },
+
+  retryMap() {
+    this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
   },
 
   buildMarkers(communities) {
