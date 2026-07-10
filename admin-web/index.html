@@ -1218,7 +1218,7 @@
           </label>
           <div class="status-box" id="maintenanceRuleStatus">正在读取规则状态...</div>
           <div class="inline-actions">
-            <button id="saveMaintenanceRule">保存规则开关</button>
+            <button id="saveMaintenanceRule" data-super="1">保存规则开关</button>
           </div>
         </div>
         <div class="config-card commission-config-card" data-super="1">
@@ -1952,6 +1952,10 @@
       return safeText(value, fallback).replace(/&lt;br&gt;/g, '<br>');
     }
 
+    function superOnlyActions(markup) {
+      return currentAdminIsSuper ? markup : '<span class="sub-cell">只读权限</span>';
+    }
+
     function showAdminToast(message) {
       const toast = document.getElementById('adminToast');
       if (!toast) return;
@@ -2257,7 +2261,7 @@
           <td><span class="pill">${safeText(item.video)}</span><span class="sub-cell">${safeText(videoSubText, '')}</span></td>
           <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(statusReviewText, '')}</span></td>
           <td><span class="${pillClass(item.verifyStatus)}">${safeText(item.verifyStatus || '正常')}</span><span class="sub-cell">${safeText(item.verifyTip || item.lastVerifiedAt || '', '')}</span>${needsCoordinateFix ? `<span class="coord-warn-pill">⚠ 坐标待修正</span>` : ''}<span class="sub-cell">${safeText(coordinateText)}</span></td>
-          <td>
+          <td>${superOnlyActions(`
             <div class="row-actions">
               <button class="table-action edit-listing-button" data-id="${safeAttr(item.id)}">编辑</button>
               <button class="table-action verify-listing-button" data-id="${safeAttr(item.id)}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
@@ -2265,7 +2269,7 @@
               <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
               <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
             </div>
-          </td>
+          `)}</td>
         </tr>
       `}).join('');
       listingEmpty.hidden = rows.length > 0;
@@ -2446,14 +2450,14 @@
     }
 
     function listingReviewActions(item) {
-      return `
+      return superOnlyActions(`
         <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve">审核通过</button>
         <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject">驳回</button>
-      `;
+      `);
     }
 
     function expiredListingActions(item) {
-      return `<button class="table-action restore-expired-listing-button" data-id="${safeAttr(item.id)}">重新上架</button>`;
+      return superOnlyActions(`<button class="table-action restore-expired-listing-button" data-id="${safeAttr(item.id)}">重新上架</button>`);
     }
 
     function renderDetailPage(item, type) {
@@ -2928,7 +2932,7 @@
             </td>
             <td><span class="${pillClass(item.status)}">${safeText(item.status || '待管理员确认')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
             <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
-            <td><button class="table-action confirm-deal-button" data-id="${safeAttr(item.id)}" ${confirmed ? 'disabled' : ''}>确认签单</button></td>
+            <td>${superOnlyActions(`<button class="table-action confirm-deal-button" data-id="${safeAttr(item.id)}" ${confirmed ? 'disabled' : ''}>确认签单</button>`)}</td>
           </tr>
         `;
       }).join('');
@@ -3144,12 +3148,12 @@
           <td>${safeText(item.locationText || '-')}<span class="sub-cell">${safeText(item.watermarkText || '待查看水印信息')}</span></td>
           <td>${safeText(item.reward)}</td>
           <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(item.reviewNote || '管理员核验水印照片真实性')}</span></td>
-          <td>
+          <td>${superOnlyActions(`
             <div class="row-actions">
               <button class="table-action showing-review-button" data-id="${safeAttr(item.id)}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
               <button class="table-action reject showing-review-button" data-id="${safeAttr(item.id)}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
             </div>
-          </td>
+          `)}</td>
         </tr>
       `).join('');
       empty.hidden = Boolean(rows.length);
