@@ -35,6 +35,62 @@
 **顺序**：①→②→③，每刀独立 commit + Codex 审计通过后再进下一刀。学区/通勤时间（NEED-2/3、MODEL-1/3，用户最初两例）属更大数据模型工程，留到三刀见效、有满意率数字后再评估。**全程守精确优先。**
 
 ## 最新消息
+### 2026-07-10 | Claude | 看房方式（钥匙/密码/联系房东）开发完成 + 多智能体对抗自审 6 条确认项已全修 | CODEX_REVIEW
+
+状态：`CODEX_REVIEW`（等待 Codex 第二裁判审计；未 push）。关联 commit：**`ddf5acb feat(listing): 上传房源增加看房方式（钥匙/密码/联系房东），房东手机号仅联系房东时必填`**（分支 v1-broker，仅本地）。
+
+**实修改文件清单**（与开工清单一致，另加两处自审返修新增）：
+- `pages/upload/upload.js` / `upload.wxml`：看房方式 chips（默认联系房东）+ 条件必填输入 + 校验/回填/提交；非当前方式字段显式传空串（编辑切换清旧值）。
+- `pages/listing-detail/listing-detail.wxml`：敏感卡新增「看房方式」行（方式名直接展示）；钥匙→钥匙在哪、密码→看房密码、联系房东/公司→电话行，敏感值留痕后可见。
+- `server/src/domain.js`：viewingMethod/viewingKeyLocation 归一（显式空串=清空，不传=沿用）、条件必填校验（无方式且无 contact→400 守旧契约）、落库、详情/编辑/后台/留痕各回包补字段、存量推导（**公司密码优先、非公司电话优先**）、判重**公司/合作分池** + 空手机号提示语修残缺、**清空依赖信息时沿用方式自动回退**。
+- `server/src/feishu-sync.js`（自审返修新增）：applySync 素材降级路径的二次 upsert 自行 try/catch，单行 4xx 不再中断整轮同步。
+- `admin-web/index.html`：编辑弹窗补看房方式下拉+钥匙位置输入；**方式与打开时一致不下发**（推导值不物化落库），改动后按新方式清空不匹配旧值。
+- `server/src/assistant/safety.js`、`trace-logger.js`：SENSITIVE_KEYS 补 viewingPassword/showingPassword/viewingKeyLocation/keyLocation（防御纵深，白名单输出本无泄漏路径）。
+- `utils/mock-data.js`（自审返修新增，C6）：mock 线同步条件必填与新字段，开发者工具 mock 演示不分叉。
+- `server/scripts/listing-viewing-method-test.js`（新增）：13 组用例——条件必填矩阵、存量兼容（旧客户端带 contact 不传方式仍通过）、留痕前不泄漏钥匙位置/密码、上传人自查直出、编辑切换清旧值、存量推导（含电话+密码并存电话优先、公司密码优先）、公司/合作分池判重、飞书形状清密码不 400、safety 脱敏。
+- `server/README.md`：字段口径说明。
+
+**多智能体自审（5 维审查 → 每条发现 3 独立怀疑者对抗验证，32 agents）**：确认 6 条（1×P1+5×P2）全部已修，驳回 3 条 nit：
+- **[P1·已修] 判重空手机号互撞**：钥匙/密码房源 contact 空、飞书公司房源电话是「公司统一维护」占位（无数字），电话段同为空→同房间互撞 409（双向实测复现，且飞书同步遇 409 会整轮中断）。修：duplicateListingKey 增加公司/合作分池段（改动前用户房源必有手机号数字、公司恒无数字，本就天然分池——分池段只是把旧语义显式化，不改变既有判重结果）；提示语按有无手机号分文案。
+- **[P2·已修] 飞书同步回归链**：后台列表下发的是推导方式，编辑弹窗保存会把「密码」物化成显式方式→之后飞书表清空该行密码列，同步 payload（恒带 viewingPassword:'' 且不带 viewingMethod）继承显式密码方式→400，素材行 catch 内二次 upsert 未兜住→整轮同步中断。修三层：①admin 方式未改不下发；②服务端「只清密码/钥匙位置不带方式→沿用方式自动回退」；③feishu-sync 二次 upsert 自行兜住。
+- **[P2·已修] 存量双信息房源丢电话展示**：电话+密码并存的非公司老房源被密码优先推导成「密码」，中介留痕耗额度后电话行不渲染（按钮口径还是「查看地址和电话」）。修：非公司推导改电话优先（旧详情页只展示电话、密码仅后台记录，展示口径回到老行为）；公司仍密码优先。
+- **[P2·已修] mock 校验未同步**（C6，虽当前 deploy-config 恒 prod、mock 实际不可达，仍同步以防演示分叉）。
+- 驳回 3 条：admin 切方式旧密码残留（改前既有契约、无渲染面）、「密码无电话无方式」编辑 400（改动前同样 400，非回归且新报错更可操作）、mock 公司文案不一致（不可达）。
+
+**自测（全绿）**：`listing-viewing-method-test` 13 组通过；全量 `server/scripts/*-test.js`（除 smoke）**86/86**；`v1-final-audit` 通过；`node --check` 全部改动 JS 通过；本地起后端 + 预览面板实测 admin-web 编辑弹窗新控件加载、无 console 报错；HTTP 实测存量飞书公司房源（密码 336699#、无显式方式）详情正确下发 `viewingMethod='密码'`。
+
+**红线自查**：未动 match-service/need-parser/FEATURE_RULES/评测脚本；钥匙位置与密码同地址电话敏感级（留痕后 sensitive 下发，公司公开口径沿用 README 既有约定）；未提交 `server/data`/`.env`/凭据；未混入另一条线在改的 `docs/AI协作会话.md`、`docs/company-listings-inventory.md`、`docs/交接报告-20260704.md`。
+
+**需要 Codex 做什么**：审计 `ddf5acb`。重点复核：①条件必填矩阵与「无方式且无 contact→400」的存量契约；②非公司房源留痕前详情不泄漏 viewingKeyLocation/viewingPassword（对抗样本欢迎）；③判重分池是否引入新的漏判/误判；④「清空依赖信息→方式回退」与 feishu-sync 二次 upsert 兜底是否有回归；⑤详情页 wxml 条件（公司/联系房东/存量无方式三种电话行路径）。通过置 `READY_TO_DEPLOY`，阻断项置 `CLAUDE_FIX_REQUIRED`。小程序端需经微信开发者工具真机验证后再上传体验版（不走服务器部署脚本）。
+
+### 2026-07-10 | Claude | 新任务开工：上传房源增加「看房方式」（钥匙/密码/联系房东）+ 详情页展示 | CLAUDE_DOING
+
+状态：`CLAUDE_DOING`（开发中，完成后转 `CODEX_REVIEW`）。本条属**房源上传/详情链**改动（非 Yooni 匹配链），用户指定沿用本看板协作：Claude 主开发，Codex 只读审计。**不触碰工作区里其他在改文件**（`docs/AI协作会话.md`、`docs/company-listings-inventory.md`、`docs/交接报告-20260704.md` 均为另一条线的未提交改动，本轮不 add、不改）。
+
+**用户需求（2026-07-10 拍板）**：
+1. 上传房源界面增加「看房方式」选项：钥匙 / 密码 / 联系房东。
+2. 选钥匙 → 必填「钥匙在哪」；选密码 → 必填「看房密码」；选联系房东 → 必填「房东手机号」。
+3. 房东手机号**不再是所有情况的必填项**，仅看房方式=联系房东时必填。
+4. 详情页（房源详情）相应展示看房方式与对应信息。
+
+**设计要点（开发前口径，供 Codex 对照审计）**：
+- 数据模型：新增 `viewingMethod`（'钥匙'|'密码'|'联系房东'，空=存量未指定）、`viewingKeyLocation`（钥匙位置）；复用既有 `viewingPassword`（飞书公司房源已有该字段）。存量兼容：无显式 method 时按 viewingPassword→'密码'、landlordPhone→'联系房东' 推导展示。
+- 服务端校验（`validateListingFields`）：去掉 contact 无条件必填；改为按 method 条件必填（钥匙→钥匙位置、密码→密码、联系房东→手机号）；**无 method 且无 contact → 400**（守住存量契约：房源必有至少一种可看房途径；旧调用方带 contact 不受影响）。
+- 敏感边界：钥匙位置/看房密码与地址、房东电话同级——非公司房源留痕（sensitive-view）后才下发；公司房源沿用公开口径（README 既有约定含看房密码）；上传人自查免留痕分支同步补齐。`viewingMethod` 本身（方式名）不属敏感，详情页直接展示。
+- 防泄漏加固（顺带）：`assistant/safety.js` 与 `assistant/trace-logger.js` 的 SENSITIVE_KEYS 现均**未含** viewingPassword/viewingKeyLocation，本轮补入（防御纵深，助手链路本就走白名单输出，未发现实际泄漏路径）。
+- 不改：Yooni 匹配/打分/need-parser/FEATURE_RULES、smoke-test、`utils/mock-data.js`（mock 线维持旧口径，同 Codex 既往非阻断观察）。
+
+**拟修改文件清单**：
+- `pages/upload/upload.js` / `upload.wxml`（+必要时 `upload.wxss`）：看房方式选项 chips + 条件必填输入 + 校验/回填/提交载荷。
+- `pages/listing-detail/listing-detail.wxml`：敏感卡新增「看房方式」行 + 按方式条件展示 钥匙位置/看房密码/房东电话。
+- `server/src/domain.js`：normalizeListingForm / validateListingFields / addNormalListing / updateNormalListing / buildListingDetail / companyPublicListingFields / addSensitiveFootprint / editableListingDetail / adminListingDetailFields。
+- `server/src/assistant/safety.js`、`server/src/assistant/trace-logger.js`：敏感键补漏。
+- `admin-web/index.html`：编辑弹窗补「看房方式」下拉 + 「钥匙位置」输入（否则后台无法维护新字段）。
+- `server/scripts/listing-viewing-method-test.js`（新增）：条件必填矩阵 + 存量兼容 + 敏感不泄漏固化。
+- `server/README.md`：字段口径简述。
+
+自测计划：新测试 + 全量 `server/scripts/*-test.js`（除 smoke）+ `v1-final-audit` + `node --check` 前端 JS + 多智能体对抗自审后再提交。
+
 ### 2026-07-08 13:36 | Codex | 首页+找房聊天页微信式「按住说话」第二裁判审计：通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`（只审 Yooni 找房助手语音输入线；未触碰 `docs/AI协作会话.md` 另一条线；未 push）。
