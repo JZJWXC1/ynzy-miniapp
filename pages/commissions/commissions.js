@@ -19,7 +19,9 @@ function normalizeCommission(item = {}) {
 Page({
   data: {
     records: [],
-    stats: []
+    stats: [],
+    loading: false,
+    loadFailed: false
   },
 
   onShow() {
@@ -27,12 +29,18 @@ Page({
   },
 
   refresh() {
+    this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
+    const requestSeq = this._recordsRequestSeq
+    this.setData({ loading: true, loadFailed: false })
     apiService.getCommissionRecords().then((records) => {
+      if (requestSeq !== this._recordsRequestSeq) return
       const displayRecords = (records || []).map(normalizeCommission)
       const uploadCount = displayRecords.filter((item) => item.role === '我是上传人').length
       const dealCount = displayRecords.filter((item) => item.role === '我是成交人').length
       const pendingCount = displayRecords.filter((item) => item.status !== '已确认').length
       this.setData({
+        loading: false,
+        loadFailed: false,
         records: displayRecords,
         stats: [
           { label: '我上传', value: String(uploadCount) },
@@ -41,8 +49,14 @@ Page({
         ]
       })
     }).catch(() => {
+      if (requestSeq !== this._recordsRequestSeq) return
+      this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '分佣记录加载失败', icon: 'none' })
     })
+  },
+
+  retryRecords() {
+    this.refresh()
   },
 
   openListing(event) {

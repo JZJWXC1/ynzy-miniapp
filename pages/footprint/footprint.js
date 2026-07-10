@@ -8,6 +8,8 @@ Page({
     activeFilter: '全部',
     records: [],
     allRecords: [],
+    loading: false,
+    loadFailed: false,
     tasks: [
       '敏感信息查看前必须实名确认留痕',
       '上传人可以查看自己房源的地址和电话访问记录',
@@ -23,12 +25,18 @@ Page({
   },
 
   refreshRecords() {
+    this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
+    const requestSeq = this._recordsRequestSeq
+    this.setData({ loading: true, loadFailed: false })
     apiService.getFootprintRecords().then((records) => {
+      if (requestSeq !== this._recordsRequestSeq) return
       const phoneCount = records.filter((item) => item.status.indexOf('电话') !== -1).length;
       const addressCount = records.filter((item) => item.status.indexOf('地址') !== -1).length;
       const myViewCount = records.filter((item) => item.direction === '我查看的').length;
       const viewMineCount = records.filter((item) => item.direction === '我的房源被查看').length;
       this.setData({
+        loading: false,
+        loadFailed: false,
         allRecords: records,
         stats: [
           { label: '我查看', value: String(myViewCount) },
@@ -39,8 +47,14 @@ Page({
       });
       this.applyFilter(this.data.activeFilter);
     }).catch(() => {
+      if (requestSeq !== this._recordsRequestSeq) return
+      this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '足迹加载失败', icon: 'none' })
     });
+  },
+
+  retryRecords() {
+    this.refreshRecords()
   },
 
   applyFilter(name) {

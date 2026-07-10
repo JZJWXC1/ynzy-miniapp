@@ -22,7 +22,17 @@
       <button class="section-title-action" bindtap="goReports">看报备</button>
     </view>
 
-    <view wx:if="{{!deals.length && !loading}}" class="empty-card soft-card">
+    <view wx:if="{{loadFailed}}" class="empty-card soft-card">
+      <view class="empty-title">签单记录加载失败</view>
+      <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+      <button class="primary-button" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!deals.length && loading}}" class="empty-card soft-card">
+      <view class="empty-title">正在加载签单记录</view>
+    </view>
+
+    <view wx:if="{{!deals.length && !loading && !loadFailed}}" class="empty-card soft-card">
       <view class="empty-title">暂无签单</view>
       <view class="empty-desc">从我的报备里发起签单后，这里会显示确认状态。</view>
       <button class="primary-button" bindtap="goReports">去报备记录</button>

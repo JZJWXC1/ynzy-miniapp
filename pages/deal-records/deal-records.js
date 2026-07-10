@@ -30,7 +30,8 @@ Page({
   data: {
     deals: [],
     stats: [],
-    loading: false
+    loading: false,
+    loadFailed: false
   },
 
   onShow() {
@@ -38,13 +39,17 @@ Page({
   },
 
   refresh() {
-    this.setData({ loading: true })
+    this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
+    const requestSeq = this._recordsRequestSeq
+    this.setData({ loading: true, loadFailed: false })
     apiService.getDealRecords().then((deals) => {
+      if (requestSeq !== this._recordsRequestSeq) return
       const displayDeals = (deals || []).map(normalizeDeal)
       const pendingCount = displayDeals.filter((item) => item.status !== '已确认').length
       const confirmedCount = displayDeals.length - pendingCount
       this.setData({
         loading: false,
+        loadFailed: false,
         deals: displayDeals,
         stats: [
           { label: '签单总数', value: String(displayDeals.length) },
@@ -53,9 +58,14 @@ Page({
         ]
       })
     }).catch(() => {
-      this.setData({ loading: false })
+      if (requestSeq !== this._recordsRequestSeq) return
+      this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '签单记录加载失败', icon: 'none' })
     })
+  },
+
+  retryRecords() {
+    this.refresh()
   },
 
   openListing(event) {

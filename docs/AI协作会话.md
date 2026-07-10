@@ -46,6 +46,24 @@
 
 ## 最新消息
 
+### 2026-07-11 00:52 | CODEX_DEV（主开发） | 业务记录页加载真值与空态修复完成 | CODEX_DOING
+
+状态：`CODEX_DOING`。发现项 9 已先红后绿完成：真实 Page 门禁在旧实现稳定失败于“报备失败必须进入持续故障态（undefined !== true）”。报备、签单、分佣和足迹四页现在均在完整请求周期显示加载态；失败时保留上次可信记录、显示持续故障与页面内重试，初次失败不再显示“暂无”或空白；服务端成功返回空数组才展示对应真实空态。四页均增加请求序号守卫，过期响应不会覆盖最新刷新；报备创建后和签单提交后的既有刷新流程继续复用同一状态机。
+
+**定向回归**：`mini-record-loading-state-v1-test.js`、`commission-model-v1-test.js`、`admin-footprints-filter-v1-test.js` 共 **3/3 通过**；四个页面脚本语法检查与 `git diff --check` 通过。新增门禁逐页覆盖加载周期、旧记录保留、失败后重试、真实空结果，并覆盖分佣记录请求竞态。本模块仅修改先前声明的 10 个文件；暂不交 Claude、不 push、不部署，继续完成剩余页面、接口字段和安全边界自审。
+
+---
+
+### 2026-07-11 00:48 | CODEX_DEV（主开发） | 全产品自审发现项 9：业务记录页故障显示假空态或空白 | CODEX_DOING
+
+状态：`CODEX_DOING`。报备、签单、分佣和足迹四个记录页核对确认：报备/签单已有 `loading`，但异常后立即置为 false 且没有失败状态，初次故障会显示“暂无报备/暂无签单”；分佣与足迹没有加载、失败或真实空态，故障和合法零记录都只显示空白。四页刷新失败虽未主动覆盖旧数组，但没有持续提示或页面内重试，用户无法分辨真实零业务与服务故障。
+
+**本模块拟修改文件**：`docs/AI协作会话.md`、`pages/client-reports/client-reports.js`、`pages/client-reports/client-reports.wxml`、`pages/deal-records/deal-records.js`、`pages/deal-records/deal-records.wxml`、`pages/commissions/commissions.js`、`pages/commissions/commissions.wxml`、`pages/footprint/footprint.js`、`pages/footprint/footprint.wxml`、新增 `server/scripts/mini-record-loading-state-v1-test.js`。不修改服务端写入、数据库、后台、`smoke-test.js`、报备/签单表单或分佣算法。
+
+**修复目标与先红后绿**：先加载四个真实 Page 固化“完整请求周期必须有加载态，初次失败显示可重试故障而非暂无/空白，刷新失败保留上次可信记录，成功空数组才显示真实空态，过期响应不得覆盖最新结果”的失败契约；再统一增加 `loadFailed`、请求序号守卫和页面内重试。
+
+---
+
 ### 2026-07-11 00:48 | CODEX_DEV（主开发） | 核心房源列表加载真值修复完成 | CODEX_DOING
 
 状态：`CODEX_DOING`。发现项 8 已先红后绿完成：真实 Page 门禁在旧实现稳定失败于“首页必须有独立可重试的房源加载方法（undefined !== function）”。首页推荐、全部房源、我的上传房源和公司房源现在均区分加载中、刷新失败、上次可信结果与服务端成功空数组；失败时保留旧数据并显示页面内重试，初次失败不再显示零库存，真实成功空数组才显示“暂无”。首页和我的房源补齐请求序号守卫，全部房源与公司房源沿用并验证原有守卫；“我的房源”的 `ownerLoading` 现覆盖完整请求周期，资料统计缺失也不会因直接索引抛错。

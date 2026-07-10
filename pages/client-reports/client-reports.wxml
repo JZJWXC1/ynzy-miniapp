@@ -22,7 +22,17 @@
       <button class="section-title-action" bindtap="goDealRecords">看签单</button>
     </view>
 
-    <view wx:if="{{!reports.length && !loading}}" class="empty-card soft-card">
+    <view wx:if="{{loadFailed}}" class="empty-card soft-card">
+      <view class="empty-title">报备记录加载失败</view>
+      <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+      <button class="primary-button" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!reports.length && loading}}" class="empty-card soft-card">
+      <view class="empty-title">正在加载报备记录</view>
+    </view>
+
+    <view wx:if="{{!reports.length && !loading && !loadFailed}}" class="empty-card soft-card">
       <view class="empty-title">暂无报备</view>
       <view class="empty-desc">先进入房源详情，报备客户后这里会自动沉淀记录。</view>
       <button class="primary-button" bindtap="goFindListings">去找房</button>

@@ -22,6 +22,21 @@
       <view class="section-title-action">{{records.length}} 单</view>
     </view>
 
+    <view wx:if="{{loadFailed}}" class="commission-card soft-card">
+      <view class="commission-title">分佣记录加载失败</view>
+      <view class="commission-meta">已保留上次结果，请检查网络后重试。</view>
+      <button class="brand-button" style="margin-top: 20rpx;" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!records.length && loading}}" class="commission-card soft-card">
+      <view class="commission-title">正在加载分佣记录</view>
+    </view>
+
+    <view wx:if="{{!records.length && !loading && !loadFailed}}" class="commission-card soft-card">
+      <view class="commission-title">暂无分佣记录</view>
+      <view class="commission-meta">管理员确认签单后，这里会显示对应的分佣快照。</view>
+    </view>
+
     <view class="commission-list">
       <view wx:for="{{records}}" wx:key="id" class="commission-card soft-card" bindtap="openListing" data-id="{{item.listingId}}">
         <view class="commission-head">
