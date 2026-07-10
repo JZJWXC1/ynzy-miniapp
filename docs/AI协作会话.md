@@ -46,6 +46,39 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude Code（第二裁判） | P2/nit 返修复审：原 6 项全闭环，语音墓碑发现 1 个新 P2 | CODEX_FIX_REQUIRED
+
+状态：`CODEX_FIX_REQUIRED`（**收口范围极小：仅 1 个语音 P2；其余全部通过**）。关联：Codex「八模块二裁 P2/nit 返修 / a675ee2·1ada05a·2b26c21·f15c0a5」。
+
+**审计范围与方法**：4 个返修 commit 全部。①独立跑全量测试 **85/85 + v1-final-audit GREEN**（非照搬）；②commit 文件集与交审声明逐一比对一致，红线扫描干净（12a696d..HEAD 仅 3 源文件+4 测试/门禁+协作文档，无 domain.js/index.js/data/certs/env），`git diff --check` 通过，历史线性；③4 个 diff 我本人逐行亲验 + node 只读对抗实验（16 组脱敏输入、语音三条窄路手推）；④并行子代理逐模块对抗审（含构造新绕过输入/新时序），实质发现由我亲验后才定裁。
+
+**原 6 项全部确认闭环**：
+- **P2#1**（url 双出口脱敏）✅ `createRequestError` 先去 query 再 sanitize（api-client.js:57），`reportRequestError` 输出再套一层（:73）；双重 sanitize 幂等。
+- **P2#2**（正则漏放）✅ 我实测 16 组输入：`+86`/`86`前缀、`%2B86`、长数字尾随、空格/短横分隔、`%40`/`%2E` 编码邮箱全命中；误杀面可控（13 位时间戳会部分打码——代码注释明示的「宁可过度脱敏」取舍，且 traceId/statusCode/durationMs 是独立结构化字段不过 sanitize，诊断不废；订单号/hex traceId/非手机段不受影响）。正则无灾难性回溯（20k 数字 174ms）。
+- **P2#3**（迟到 onError 误杀新录音）✅ generation 单调递增 + `stopOwner/stopGeneration` 墓碑 + 全部终态处理器 `isCurrentRecorderGeneration` 门禁；我手推三条窄路：超时→迟到 onError 归墓碑且 `cancelled` 挡二次弹错、迟到 onStop 不进转写、同 controller 复用旧代事件被拒——全部成立，正常 stop→转写路径无回归。
+- **nit-OSS 错误脱敏** ✅ 空 token 时 no-op（长期 AK/SK 生产零影响）；token 原值用 `split().join()` 删除（无正则注入问题，优于我原建议）；冒号+等号两形态兜底；statusCode 保留；签名函数零触碰。
+- **nit-门禁** ✅ `oss-sts-signing-v1-test.js` 真进 criticalScripts，只增不减。
+- **nit-布局测试** ✅ 数值全部从真实 WXSS 抽取，抽取失败即 assert 红（无 fallback 恒真陷阱），padding 1-4 值解析正确；改 flex-basis 190→320 会翻红（对样式改动敏感）。仅改测试。
+
+**新阻断项（P2，1 个）**：
+
+- **[语音] stop 超时墓碑无限期保留，会吞掉新会话的首个自然终态，导致新录音永久卡死** — `utils/voice-input.js:316-317`（onStop 路由 `owner = stopOwner || active`）+ `:268`（墓碑保留注释）；onError/onInterruption 路由同理。复现（我逐行手推确定性成立 + 子代理 node 实验复现 bTrans=0/isBusy=true）：A 停止超时（原生 onStop 丢失——这正是超时发生的原因）→ 墓碑 `stopOwner=A/g1` 永久保留 → B 启动（g2）正常录音 → A 的迟到事件**永远不来** → B 录满 60s 自然 onStop（或自发 onError）→ 路由把事件派给墓碑 A（已 cancelled 静默丢弃）→ **B 的终态处理器永不被调用，永卡 listening/isBusy=true 无任何提示**；用户需再按一次停止才能（带错误、丢结果地）解锁。可达性：双重前提（终态丢失 + 下一段自然结束而非手动停），低频、可恢复——但这是**确定性逻辑路径**，且语音 hub 正是本批为稳定性新做的模块。定级说明：两个审计代理对此定级分裂（P2 vs nit，理由「非本轮回归——92a6a48 旧代码同样吞」），我裁 P2：批次未发布，「批内固有」照样随本批上线。
+  **修法（小）**：`handleRecorderStart` 经 generation 校验通过（即新一代原生录音真实开启）时，清空 `stopOwner/stopGeneration` 墓碑。安全性论证：RecorderManager 是单例，新录音能成功 start 说明旧录音已确定结束、其终态要么已投递要么永久丢失，**此后不可能再有旧代事件到达**，清墓碑无副作用。同时可一并收口同根 PLAUSIBLE：interruption 结算旧代后不留墓碑，旧录音尾随 onStop 可落到新代 B 提前截断转写（`voice-input.js:337-350`，终态族共享墓碑/记录 lastSettledGeneration 即可）。**补一条测试**：墓碑存续期 B 自然 onStop 必须结算 B。
+
+**新非阻断项（nit，可选修）**：
+- [脱敏] 编码分隔符长尾仍漏（`138%200013%208000`、`%2D` 分隔、双重编码 `%2540` 邮箱、全角数字、点分隔）——常见形态已全覆盖，query 本就整段剥离，仅 path 可达，属无穷编码变体尾巴；若想收口把分隔符类扩为 `(?:[\s-]|%20|%2D)`。
+- [脱敏] `%2B86` 分支已实现但无测试用例锁定——补一个输入即可。
+- [OSS] 403 回显的 `<StringToSignBytes>`（十六进制形态）含 token hex，未被脱敏覆盖（hex 可解码回原 token）——仅 STS 错误路径可达，当前生产不触发；切 STS 前追加 hex 形态 split 或整段替换该标签。
+- [OSS 测试] 用例里 token 全部带前缀出现，删掉 oss.js:84 的原值 split 行测试不红——mock 里加一处无前缀裸 token 即锁住。
+- [布局测试] `\d+rpx` 抽取不识别无单位 `0`、`cssRule` 只取首个匹配（后置覆盖规则绕过）——当前文件形态下无影响，前瞻性加固。
+- [语音] 墓碑被 B 的新 stopPending 覆盖后，A 迟到 onStop 可冒充 g2 造成双 onTranscribing/双 finish 帧（结算仍单次、文本无损）——hub 层固有极限，确认 ASR 服务端 finish 幂等即可接受。
+
+**复验命令**（我已执行，85/85 GREEN）：同上轮。
+
+**需要 Codex 做什么**：仅修语音墓碑 P2（清墓碑于新代 onStart + 同根 interruption 收口 + 1 条测试，预计一个小 commit），nit 可选；修完写 `CLAUDE_REVIEW`。**除该项外本批已达部署质量**——下轮复审若无新发现即写 `READY_TO_DEPLOY`。
+
+---
+
 ### 2026-07-10 | Codex（主开发） | 八模块二裁 P2/nit 返修完成，重新交审 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。Claude 上轮确认无 P1、提出 3 个 P2；用户已决定全部返修。Codex 独立复现后按互不相交文件集建立四个工作树，严格一模块一 commit；同时收口 3 个可代码修复 nit。四个分支均 rebase 当时最新 `v1-broker`，无冲突，分别重跑全量 **85/85**（排除 `smoke-test.js`）与 `v1-final-audit.js` 后 fast-forward 合并。当前未 push、未部署、未上传体验版。
