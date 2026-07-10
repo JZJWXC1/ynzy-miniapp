@@ -57,8 +57,19 @@ const RECORD_OPTIONS = {
 }
 
 const FINAL_WAIT_MS = 2200
+const SOCKET_OPEN_TIMEOUT_MS = 8000
+const RECORDER_STOP_TIMEOUT_MS = 3000
+const MAX_PENDING_FRAMES = 80
 let nextControllerId = 1
-let activeControllerId = ''
+const routedRecorders = []
+const recorderHub = {
+  recorder: null,
+  active: null,
+  stopPending: false,
+  stopOwner: null,
+  stopTimer: null,
+  pendingStart: null
+}
 
 function createVoiceError(message, detail, code) {
   const cleanMessage = String(message || '语音识别失败').trim()
@@ -91,8 +102,10 @@ function getSupportStatus() {
   if (!recorder) {
     return { ok: false, message: 'wx.getRecorderManager 初始化失败' }
   }
-  if (typeof recorder.onFrameRecorded !== 'function') {
-    return { ok: false, message: '当前基础库不支持 onFrameRecorded 实时录音帧' }
+  const requiredMethods = ['start', 'stop', 'onStart', 'onStop', 'onError', 'onFrameRecorded']
+  const missingMethod = requiredMethods.find((name) => typeof recorder[name] !== 'function')
+  if (missingMethod) {
+    return { ok: false, message: `当前基础库缺少 RecorderManager.${missingMethod}` }
   }
   return { ok: true, message: 'wx.getRecorderManager 可用' }
 }
@@ -167,12 +180,18 @@ function safeCall(handler, ...args) {
   if (typeof handler === 'function') handler(...args)
 }
 
-function sendSocketMessage(socketTask, data) {
+function sendSocketMessage(socketTask, data, onFail) {
   if (!socketTask || !socketTask.send) return false
   try {
-    socketTask.send({ data })
+    socketTask.send({
+      data,
+      fail(error) {
+        safeCall(onFail, error)
+      }
+    })
     return true
   } catch (error) {
+    safeCall(onFail, error)
     return false
   }
 }
@@ -186,12 +205,133 @@ function closeSocket(socketTask) {
   }
 }
 
-function bindRecorderNoop(recorder) {
-  if (!recorder) return
-  if (typeof recorder.onStart === 'function') recorder.onStart(() => {})
-  if (typeof recorder.onFrameRecorded === 'function') recorder.onFrameRecorded(() => {})
-  if (typeof recorder.onStop === 'function') recorder.onStop(() => {})
-  if (typeof recorder.onError === 'function') recorder.onError(() => {})
+function drainPendingStart() {
+  if (recorderHub.stopPending || recorderHub.active || !recorderHub.pendingStart) return
+  const next = recorderHub.pendingStart
+  recorderHub.pendingStart = null
+  if (!next._isQueued()) return
+  recorderHub.active = next
+  next._beginStart()
+}
+
+function clearRecorderStopTimer() {
+  if (!recorderHub.stopTimer) return
+  clearTimeout(recorderHub.stopTimer)
+  recorderHub.stopTimer = null
+}
+
+function releaseRecorderOwner(controller) {
+  if (recorderHub.active !== controller || recorderHub.stopPending) return
+  recorderHub.active = null
+  drainPendingStart()
+}
+
+function queueControllerStart(controller) {
+  const previous = recorderHub.pendingStart
+  if (previous && previous !== controller) previous._cancelQueued()
+  recorderHub.pendingStart = controller
+  controller._markQueued()
+}
+
+function requestRecorderStop(controller) {
+  if (recorderHub.active !== controller || recorderHub.stopPending) return
+  recorderHub.stopPending = true
+  recorderHub.stopOwner = controller
+  clearRecorderStopTimer()
+  recorderHub.stopTimer = setTimeout(() => {
+    if (recorderHub.stopOwner !== controller || !recorderHub.stopPending) return
+    recorderHub.stopTimer = null
+    recorderHub.stopPending = false
+    controller._handleRecorderStopTimeout()
+    if (recorderHub.active === controller) recorderHub.active = null
+    drainPendingStart()
+  }, RECORDER_STOP_TIMEOUT_MS)
+  try {
+    recorderHub.recorder.stop()
+  } catch (error) {
+    clearRecorderStopTimer()
+    recorderHub.stopPending = false
+    recorderHub.stopOwner = null
+    controller._handleRecorderStopFailure(error)
+    if (recorderHub.active === controller) recorderHub.active = null
+    drainPendingStart()
+  }
+}
+
+function requestControllerStart(controller) {
+  if (!controller._canRequestStart()) return false
+  ensureRecorderRouter(controller._recorder)
+  const current = recorderHub.active
+  if (current && current !== controller) current._preempt()
+
+  if (recorderHub.stopPending || recorderHub.active) {
+    if (recorderHub.active === controller && !recorderHub.stopPending) return false
+    queueControllerStart(controller)
+    return true
+  }
+
+  recorderHub.active = controller
+  controller._beginStart()
+  return true
+}
+
+function bindRecorderRouter(recorder) {
+  if (routedRecorders.indexOf(recorder) !== -1) return
+  routedRecorders.push(recorder)
+
+  recorder.onStart(() => {
+    if (recorderHub.recorder !== recorder || !recorderHub.active) return
+    recorderHub.active._handleRecorderStart()
+  })
+  recorder.onFrameRecorded((res) => {
+    if (recorderHub.recorder !== recorder || !recorderHub.active) return
+    recorderHub.active._handleRecorderFrame(res)
+  })
+  recorder.onStop((res) => {
+    if (recorderHub.recorder !== recorder) return
+    clearRecorderStopTimer()
+    const owner = recorderHub.stopOwner || recorderHub.active
+    const keepOwner = owner ? owner._handleRecorderStop(res) === true : false
+    recorderHub.stopPending = false
+    recorderHub.stopOwner = null
+    if (owner && !keepOwner && recorderHub.active === owner) recorderHub.active = null
+    drainPendingStart()
+  })
+  recorder.onError((error) => {
+    if (recorderHub.recorder !== recorder) return
+    clearRecorderStopTimer()
+    const owner = recorderHub.active
+    recorderHub.stopPending = false
+    recorderHub.stopOwner = null
+    if (owner) owner._handleRecorderError(error)
+    if (recorderHub.active === owner) recorderHub.active = null
+    drainPendingStart()
+  })
+  if (typeof recorder.onInterruptionBegin === 'function') {
+    recorder.onInterruptionBegin(() => {
+      if (recorderHub.recorder !== recorder) return
+      clearRecorderStopTimer()
+      const owner = recorderHub.active
+      recorderHub.stopPending = false
+      recorderHub.stopOwner = null
+      if (owner) owner._handleRecorderInterruption()
+      if (recorderHub.active === owner) recorderHub.active = null
+      drainPendingStart()
+    })
+  }
+}
+
+function ensureRecorderRouter(recorder) {
+  if (recorderHub.recorder === recorder) return
+  clearRecorderStopTimer()
+  if (recorderHub.active) recorderHub.active._forceReset()
+  if (recorderHub.pendingStart) recorderHub.pendingStart._cancelQueued()
+  recorderHub.recorder = recorder
+  recorderHub.active = null
+  recorderHub.stopPending = false
+  recorderHub.stopOwner = null
+  recorderHub.pendingStart = null
+  bindRecorderRouter(recorder)
 }
 
 function createController(handlers = {}) {
@@ -199,30 +339,38 @@ function createController(handlers = {}) {
   if (!support.ok) return null
   const recorder = getRecorderManager()
   if (!recorder) return null
+  ensureRecorderRouter(recorder)
 
   const controllerId = `voice-${nextControllerId++}`
+  let sessionId = 0
+  let queued = false
   let starting = false
   let listening = false
+  let stopping = false
   let transcribing = false
+  let recorderStartIssued = false
   let socketTask = null
   let socketReady = false
   let socketFailed = false
   let cancelled = false
   let finalTimer = null
+  let socketOpenTimer = null
   let confirmedSegments = []
   let draftText = ''
   let pendingFrames = []
+  let finishPending = false
   let lastRecordResult = null
   let errored = false
   let lastCaptionText = ''
   let stopDelivered = false
+  let cancelDelivered = false
 
-  function isActive() {
-    return activeControllerId === controllerId
+  function isOwner() {
+    return recorderHub.recorder === recorder && recorderHub.active === controller
   }
 
   function localBusy() {
-    return Boolean(starting || listening || transcribing || socketTask || finalTimer)
+    return Boolean(queued || starting || listening || (!cancelled && stopping) || transcribing || socketTask || finalTimer)
   }
 
   function currentCaption() {
@@ -237,42 +385,49 @@ function createController(handlers = {}) {
     finalTimer = null
   }
 
+  function clearSocketOpenTimer() {
+    if (!socketOpenTimer) return
+    clearTimeout(socketOpenTimer)
+    socketOpenTimer = null
+  }
+
   function closeRealtimeSocket() {
     const task = socketTask
     socketTask = null
     socketReady = false
+    finishPending = false
     pendingFrames = []
+    clearSocketOpenTimer()
     closeSocket(task)
   }
 
-  function resetPreemptedSession() {
-    if (isActive() || !localBusy()) return false
-    cancelled = true
-    socketFailed = true
+  function resetSessionState() {
+    queued = false
     starting = false
     listening = false
+    stopping = false
     transcribing = false
+    recorderStartIssued = false
     clearFinalTimer()
     closeRealtimeSocket()
-    return true
   }
 
-  function stopRecorderQuietly() {
-    if (!listening) return
-    try {
-      recorder.stop()
-    } catch (error) {
-      listening = false
-    }
+  function releaseIfOwner() {
+    releaseRecorderOwner(controller)
   }
 
-  function finishWithCurrentCaption() {
-    if (!transcribing || cancelled || stopDelivered) return
+  function isCurrentSocket(task, targetSessionId) {
+    return isOwner() && sessionId === targetSessionId && socketTask === task && !cancelled
+  }
+
+  function finishWithCurrentCaption(targetSessionId = sessionId) {
+    if (targetSessionId !== sessionId || !transcribing || cancelled || stopDelivered) return
     stopDelivered = true
     clearFinalTimer()
     transcribing = false
     const text = currentCaption()
     closeRealtimeSocket()
+    releaseIfOwner()
     safeCall(handlers.onStop, text, Object.assign({}, lastRecordResult || {}, {
       asrResult: {
         text,
@@ -283,6 +438,7 @@ function createController(handlers = {}) {
   }
 
   function failRealtime(error) {
+    if (cancelled || !isOwner()) return
     // 转写等待期内出错：若已识别到文本，优先交付（与 onClose 一致），不丢弃用户已说内容。
     if (transcribing && !cancelled && !stopDelivered && currentCaption()) {
       finishWithCurrentCaption()
@@ -292,34 +448,48 @@ function createController(handlers = {}) {
     socketFailed = true
     cancelled = true
     starting = false
+    listening = false
+    stopping = false
     transcribing = false
     clearFinalTimer()
     closeRealtimeSocket()
-    stopRecorderQuietly()
+    const shouldStopRecorder = recorderStartIssued && !recorderHub.stopPending
+    if (shouldStopRecorder) requestRecorderStop(controller)
+    else releaseIfOwner()
     safeCall(handlers.onError, createVoiceError(errorMessage(error), '', error && error.code))
   }
 
-  function flushFrames() {
-    if (!socketReady || !socketTask) return
+  function sendCurrentSocket(data, targetSessionId, label) {
+    const task = socketTask
+    if (!task || targetSessionId !== sessionId) return false
+    return sendSocketMessage(task, data, (error) => {
+      if (!isCurrentSocket(task, targetSessionId)) return
+      failRealtime(createVoiceError(`${label || '语音数据'}发送失败`, errorMessage(error), 'asr-socket-send-failed'))
+    })
+  }
+
+  function flushFrames(targetSessionId) {
+    if (!socketReady || !socketTask || targetSessionId !== sessionId) return
     while (pendingFrames.length) {
-      sendSocketMessage(socketTask, pendingFrames.shift())
+      if (!sendCurrentSocket(pendingFrames.shift(), targetSessionId, '语音数据')) return
     }
   }
 
   function pushFrame(frameBuffer) {
     if (!frameBuffer || socketFailed) return
     if (socketReady && socketTask) {
-      sendSocketMessage(socketTask, frameBuffer)
+      sendCurrentSocket(frameBuffer, sessionId, '语音数据')
       return
     }
-    if (pendingFrames.length < 80) pendingFrames.push(frameBuffer)
+    if (pendingFrames.length >= MAX_PENDING_FRAMES) {
+      failRealtime(createVoiceError('语音连接较慢，录音数据积压，请重试', '', 'asr-frame-backlog'))
+      return
+    }
+    pendingFrames.push(frameBuffer)
   }
 
-  function handleSocketMessage(message) {
-    if (!isActive()) {
-      resetPreemptedSession()
-      return
-    }
+  function handleSocketMessage(message, task, targetSessionId) {
+    if (!isCurrentSocket(task, targetSessionId)) return
     let event = {}
     try {
       event = JSON.parse(message && message.data ? message.data : '{}')
@@ -329,7 +499,7 @@ function createController(handlers = {}) {
 
     if (event.type === 'connected' || event.type === 'ready') {
       socketReady = true
-      flushFrames()
+      flushFrames(targetSessionId)
       return
     }
 
@@ -349,7 +519,7 @@ function createController(handlers = {}) {
     }
 
     if (event.type === 'finished' || event.type === 'closed') {
-      finishWithCurrentCaption()
+      finishWithCurrentCaption(targetSessionId)
       return
     }
 
@@ -358,61 +528,86 @@ function createController(handlers = {}) {
     }
   }
 
-  function openRealtimeSocket() {
+  function sendFinish(targetSessionId) {
+    if (!socketReady || !socketTask) {
+      finishPending = true
+      return true
+    }
+    finishPending = false
+    const sent = sendCurrentSocket(JSON.stringify({ type: 'finish' }), targetSessionId, '语音结束信号')
+    if (sent) {
+      clearFinalTimer()
+      finalTimer = setTimeout(() => finishWithCurrentCaption(targetSessionId), FINAL_WAIT_MS)
+    }
+    return sent
+  }
+
+  function openRealtimeSocket(targetSessionId) {
     socketReady = false
     socketFailed = false
     cancelled = false
     pendingFrames = []
-    socketTask = apiService.createRealtimeAsrSocket()
-    if (!socketTask) return false
+    finishPending = false
+    let task = null
+    try {
+      task = apiService.createRealtimeAsrSocket()
+    } catch (error) {
+      return createVoiceError('实时语音连接启动失败', errorMessage(error), 'asr-socket-create-failed')
+    }
+    if (!task) return createVoiceError('当前环境暂不支持实时语音识别', '', 'asr-socket-unavailable')
+    if (!task.onOpen || !task.onMessage || !task.onError || !task.onClose) {
+      closeSocket(task)
+      return createVoiceError('当前环境的实时语音连接能力不完整', '', 'asr-socket-incomplete')
+    }
+    socketTask = task
+    socketOpenTimer = setTimeout(() => {
+      if (!isCurrentSocket(task, targetSessionId) || socketReady) return
+      failRealtime(createVoiceError('实时语音连接超时，请检查网络后重试', '', 'asr-socket-open-timeout'))
+    }, SOCKET_OPEN_TIMEOUT_MS)
 
-    socketTask.onOpen(() => {
-      if (!isActive()) {
-        resetPreemptedSession()
-        return
-      }
-      socketReady = true
-      sendSocketMessage(socketTask, JSON.stringify({
-        type: 'start',
-        format: 'pcm',
-        sampleRate: RECORD_OPTIONS.sampleRate
-      }))
-      flushFrames()
-    })
-    socketTask.onMessage(handleSocketMessage)
-    socketTask.onError((error) => {
-      if (!isActive()) {
-        resetPreemptedSession()
-        return
-      }
-      const url = socketTask && socketTask.realtimeAsrUrl ? `WebSocket ${socketTask.realtimeAsrUrl}` : 'WebSocket'
-      failRealtime(createVoiceError(`${url} 连接失败`, errorMessage(error), 'asr-socket-error'))
-    })
-    socketTask.onClose(() => {
-      if (!isActive()) {
-        resetPreemptedSession()
-        return
-      }
-      socketReady = false
-      if (listening && !socketFailed) {
-        failRealtime(new Error('实时语音识别连接已断开'))
-        return
-      }
-      if (transcribing) finishWithCurrentCaption()
-    })
-    return true
+    try {
+      task.onOpen(() => {
+        if (!isCurrentSocket(task, targetSessionId)) return
+        clearSocketOpenTimer()
+        socketReady = true
+        if (!sendCurrentSocket(JSON.stringify({
+          type: 'start',
+          format: 'pcm',
+          sampleRate: RECORD_OPTIONS.sampleRate
+        }), targetSessionId, '语音开始信号')) return
+        flushFrames(targetSessionId)
+        if (finishPending) sendFinish(targetSessionId)
+      })
+      task.onMessage((message) => handleSocketMessage(message, task, targetSessionId))
+      task.onError((error) => {
+        if (!isCurrentSocket(task, targetSessionId)) return
+        const url = task.realtimeAsrUrl ? `WebSocket ${task.realtimeAsrUrl}` : 'WebSocket'
+        failRealtime(createVoiceError(`${url} 连接失败`, errorMessage(error), 'asr-socket-error'))
+      })
+      task.onClose(() => {
+        if (!isCurrentSocket(task, targetSessionId)) return
+        clearSocketOpenTimer()
+        socketReady = false
+        if (listening && !socketFailed) {
+          failRealtime(new Error('实时语音识别连接已断开'))
+          return
+        }
+        if (transcribing) finishWithCurrentCaption(targetSessionId)
+      })
+    } catch (error) {
+      clearSocketOpenTimer()
+      socketTask = null
+      closeSocket(task)
+      return createVoiceError('实时语音事件绑定失败', errorMessage(error), 'asr-socket-bind-failed')
+    }
+    return null
   }
 
-  function bindRecorderHandlers() {
-    activeControllerId = controllerId
-
-  recorder.onStart(() => {
-    if (!isActive()) {
-      resetPreemptedSession()
-      return
-    }
+  function handleRecorderStart() {
+    if (!isOwner() || cancelled) return
     starting = false
     listening = true
+    stopping = false
     transcribing = false
     cancelled = false
     errored = false
@@ -422,130 +617,218 @@ function createController(handlers = {}) {
     stopDelivered = false
     lastRecordResult = null
     safeCall(handlers.onStart)
-  })
+  }
 
-  recorder.onFrameRecorded((res) => {
-    if (!isActive()) {
-      resetPreemptedSession()
-      return
-    }
+  function handleRecorderFrame(res) {
+    if (!isOwner() || cancelled || !recorderStartIssued) return
     if (res && res.frameBuffer) pushFrame(res.frameBuffer)
-  })
+  }
 
-  recorder.onStop((res) => {
-    if (!isActive()) {
-      resetPreemptedSession()
-      return
-    }
+  function handleRecorderStop(res) {
+    recorderStartIssued = false
     listening = false
+    stopping = false
     if (cancelled) {
+      starting = false
       transcribing = false
-      return
+      return false
     }
+    starting = false
     transcribing = true
     lastRecordResult = res || {}
     safeCall(handlers.onTranscribing, res)
-    sendSocketMessage(socketTask, JSON.stringify({ type: 'finish' }))
-    clearFinalTimer()
-    finalTimer = setTimeout(finishWithCurrentCaption, FINAL_WAIT_MS)
-  })
+    sendFinish(sessionId)
+    return true
+  }
 
-  recorder.onError((error) => {
-    if (!isActive()) {
-      resetPreemptedSession()
-      return
-    }
-    errored = true
+  function handleRecorderError(error) {
+    const shouldNotify = !cancelled
+    errored = shouldNotify
+    recorderStartIssued = false
+    queued = false
     starting = false
     listening = false
+    stopping = false
     transcribing = false
     cancelled = true
     clearFinalTimer()
     closeRealtimeSocket()
-    safeCall(handlers.onError, createVoiceError('录音器报错', errorMessage(error), 'recorder-error'))
-  })
+    if (shouldNotify) {
+      const code = (error && error.code) || 'recorder-error'
+      const interrupted = code === 'recorder-interrupted'
+      safeCall(handlers.onError, createVoiceError(
+        interrupted ? errorMessage(error) : '录音器报错',
+        interrupted ? '' : errorMessage(error),
+        code
+      ))
+    }
   }
 
-  bindRecorderHandlers()
+  function cancelSession(notify = true) {
+    const wasQueued = recorderHub.pendingStart === controller
+    const wasOwner = isOwner()
+    const wasBusy = localBusy() || wasQueued || wasOwner
+    if (!wasBusy) return
 
-  return {
-    start() {
-      resetPreemptedSession()
-      if (starting || listening || transcribing) return
-      starting = true
-      cancelled = false
-      errored = false
-      confirmedSegments = []
-      draftText = ''
-      lastCaptionText = ''
-      stopDelivered = false
-      lastRecordResult = null
-      pendingFrames = []
-      bindRecorderHandlers()
-      ensureRecordAuthorized((authError) => {
-        if (cancelled || !starting || !isActive()) return
-        if (authError) {
-          starting = false
-          safeCall(handlers.onError, authError)
-          return
-        }
-        if (!openRealtimeSocket()) {
-          starting = false
-          safeCall(handlers.onError, createVoiceError('当前环境暂不支持实时语音识别', '', 'asr-socket-unavailable'))
-          return
-        }
-        try {
-          recorder.start(RECORD_OPTIONS)
-        } catch (error) {
-          errored = true
-          starting = false
-          closeRealtimeSocket()
-          safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
-        }
-      })
-    },
-    stop() {
-      if (!isActive()) {
-        resetPreemptedSession()
+    if (wasQueued) recorderHub.pendingStart = null
+    const shouldStopRecorder = wasOwner && recorderStartIssued && !recorderHub.stopPending
+    queued = false
+    cancelled = true
+    socketFailed = true
+    starting = false
+    listening = false
+    stopping = false
+    transcribing = false
+    clearFinalTimer()
+    closeRealtimeSocket()
+
+    if (shouldStopRecorder) requestRecorderStop(controller)
+    else if (wasOwner) releaseIfOwner()
+
+    if (notify && !cancelDelivered) {
+      cancelDelivered = true
+      safeCall(handlers.onCancel)
+    }
+  }
+
+  function beginStart() {
+    sessionId += 1
+    queued = false
+    starting = true
+    listening = false
+    stopping = false
+    transcribing = false
+    recorderStartIssued = false
+    cancelled = false
+    errored = false
+    socketFailed = false
+    confirmedSegments = []
+    draftText = ''
+    lastCaptionText = ''
+    stopDelivered = false
+    cancelDelivered = false
+    lastRecordResult = null
+    pendingFrames = []
+    finishPending = false
+    const targetSessionId = sessionId
+
+    ensureRecordAuthorized((authError) => {
+      if (cancelled || !starting || !isOwner() || targetSessionId !== sessionId) return
+      if (authError) {
+        starting = false
+        releaseIfOwner()
+        safeCall(handlers.onError, authError)
         return
       }
-      if (!listening) return
-      recorder.stop()
+      const socketError = openRealtimeSocket(targetSessionId)
+      if (socketError) {
+        starting = false
+        releaseIfOwner()
+        safeCall(handlers.onError, socketError)
+        return
+      }
+      recorderStartIssued = true
+      try {
+        recorder.start(RECORD_OPTIONS)
+      } catch (error) {
+        recorderStartIssued = false
+        errored = true
+        starting = false
+        closeRealtimeSocket()
+        releaseIfOwner()
+        safeCall(handlers.onError, createVoiceError('语音输入启动失败', errorMessage(error), 'recorder-start-failed'))
+      }
+    })
+  }
+
+  const controller = {
+    _recorder: recorder,
+    _controllerId: controllerId,
+    _canRequestStart() {
+      return !localBusy()
     },
-    cancel() {
-      if (!localBusy() && !isActive()) return
-      const shouldReleaseRecorder = isActive()
-      const shouldStopRecorder = shouldReleaseRecorder && listening
+    _markQueued() {
+      queued = true
+    },
+    _isQueued() {
+      return queued
+    },
+    _cancelQueued() {
+      if (!queued) return
+      queued = false
+      cancelled = true
+      if (!cancelDelivered) {
+        cancelDelivered = true
+        safeCall(handlers.onCancel)
+      }
+    },
+    _beginStart: beginStart,
+    _preempt() {
+      cancelSession(true)
+    },
+    _forceReset() {
+      queued = false
       cancelled = true
       socketFailed = true
+      resetSessionState()
+    },
+    _handleRecorderStart: handleRecorderStart,
+    _handleRecorderFrame: handleRecorderFrame,
+    _handleRecorderStop: handleRecorderStop,
+    _handleRecorderError: handleRecorderError,
+    _handleRecorderInterruption() {
+      handleRecorderError(createVoiceError('录音被系统中断，请稍后重试', '', 'recorder-interrupted'))
+    },
+    _handleRecorderStopFailure(error) {
+      recorderStartIssued = false
+      listening = false
+      stopping = false
+      if (cancelled) return
+      errored = true
       starting = false
       transcribing = false
+      closeRealtimeSocket()
+      safeCall(handlers.onError, createVoiceError('停止录音失败', errorMessage(error), 'recorder-stop-failed'))
+    },
+
+    _handleRecorderStopTimeout() {
+      const shouldNotify = !cancelled
+      recorderStartIssued = false
+      queued = false
+      starting = false
+      listening = false
+      stopping = false
+      transcribing = false
+      cancelled = true
       clearFinalTimer()
       closeRealtimeSocket()
-      if (shouldStopRecorder) {
-        stopRecorderQuietly()
-      } else {
-        listening = false
+      if (shouldNotify) {
+        errored = true
+        safeCall(handlers.onError, createVoiceError('停止录音超时，请重试', '', 'recorder-stop-timeout'))
       }
-      if (shouldReleaseRecorder) {
-        activeControllerId = ''
-        bindRecorderNoop(recorder)
-      }
-      safeCall(handlers.onCancel)
+    },
+
+    start() {
+      requestControllerStart(controller)
+    },
+    stop() {
+      if (!isOwner() || recorderHub.stopPending || (!listening && !recorderStartIssued)) return
+      stopping = true
+      requestRecorderStop(controller)
+    },
+    cancel() {
+      cancelSession(true)
     },
     release() {
-      if (localBusy()) {
-        this.cancel()
+      if (localBusy() || isOwner() || recorderHub.pendingStart === controller) {
+        cancelSession(true)
         return
       }
       cancelled = true
       socketFailed = true
       clearFinalTimer()
       closeRealtimeSocket()
-      if (isActive()) {
-        activeControllerId = ''
-        bindRecorderNoop(recorder)
-      }
+      releaseIfOwner()
     },
     isBusy() {
       return localBusy()
@@ -554,6 +837,8 @@ function createController(handlers = {}) {
       return errored
     }
   }
+
+  return controller
 }
 
 module.exports = {
@@ -564,6 +849,9 @@ module.exports = {
   _internal: {
     RECORD_OPTIONS,
     FINAL_WAIT_MS,
+    SOCKET_OPEN_TIMEOUT_MS,
+    RECORDER_STOP_TIMEOUT_MS,
+    MAX_PENDING_FRAMES,
     ensureRecordAuthorized,
     createVoiceError
   }

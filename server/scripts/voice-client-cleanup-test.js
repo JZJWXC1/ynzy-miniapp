@@ -3,44 +3,63 @@ const fs = require('fs')
 const path = require('path')
 const apiService = require('../../utils/api-service')
 
-function makeRecorder() {
+function makeRecorder(options = {}) {
   const handlers = {}
+  const autoStop = options.autoStop !== false
   return {
     started: false,
+    startCount: 0,
     stopped: 0,
     options: null,
+    bindCounts: { start: 0, frame: 0, stop: 0, error: 0, interruptionBegin: 0 },
     onStart(handler) {
+      this.bindCounts.start += 1
       handlers.start = handler
     },
     onFrameRecorded(handler) {
+      this.bindCounts.frame += 1
       handlers.frame = handler
     },
     onStop(handler) {
+      this.bindCounts.stop += 1
       handlers.stop = handler
     },
     onError(handler) {
+      this.bindCounts.error += 1
       handlers.error = handler
+    },
+    onInterruptionBegin(handler) {
+      this.bindCounts.interruptionBegin += 1
+      handlers.interruptionBegin = handler
     },
     start(options) {
       this.started = true
+      this.startCount += 1
       this.options = options
       if (handlers.start) handlers.start()
     },
     stop() {
       this.stopped += 1
-      if (handlers.stop) handlers.stop({ tempFilePath: 'voice.pcm' })
+      if (autoStop) this.emitStop()
+    },
+    emitStop(result) {
+      if (handlers.stop) handlers.stop(result || { tempFilePath: 'voice.pcm' })
     },
     emitFrame(frameBuffer) {
       if (handlers.frame) handlers.frame({ frameBuffer })
     },
     emitError(error) {
       if (handlers.error) handlers.error(error)
+    },
+    emitInterruptionBegin() {
+      if (handlers.interruptionBegin) handlers.interruptionBegin()
     }
   }
 }
 
-function makeSocket() {
+function makeSocket(options = {}) {
   const handlers = {}
+  const autoCloseEvent = options.autoCloseEvent !== false
   return {
     closed: 0,
     sent: [],
@@ -61,13 +80,19 @@ function makeSocket() {
     },
     close() {
       this.closed += 1
-      if (handlers.close) handlers.close()
+      if (autoCloseEvent) this.emitClose()
     },
     open() {
       if (handlers.open) handlers.open()
     },
     message(data) {
       if (handlers.message) handlers.message({ data })
+    },
+    error(error) {
+      if (handlers.error) handlers.error(error || { errMsg: 'socket failed' })
+    },
+    emitClose() {
+      if (handlers.close) handlers.close()
     }
   }
 }
@@ -132,12 +157,13 @@ const secondController = voiceInput.createController({})
 assert(secondController, '应能创建第二个页面语音控制器')
 secondController.start()
 assert.strictEqual(secondController.isBusy(), true, '第二页抢占后应处于忙碌状态')
+assert.strictEqual(sharedRecorder.stopped, 1, '第二页接管前必须先停止第一页仍在进行的全局录音')
 firstController.release()
 assert.strictEqual(firstController.isBusy(), false, '被抢占的旧页面 release 后不得留下 transcribing/listening 悬空态')
-assert.strictEqual(sharedRecorder.stopped, 0, '被抢占的旧页面 release 不得误停当前页面录音器')
+assert.strictEqual(sharedRecorder.stopped, 1, '被抢占的旧页面 release 不得再次误停当前页面录音器')
 assert.strictEqual(secondController.isBusy(), true, '旧页面 release 不得破坏当前活跃页面会话')
 secondController.cancel()
-assert.strictEqual(sharedRecorder.stopped, 1, '当前活跃页面 cancel 才能停止录音器')
+assert.strictEqual(sharedRecorder.stopped, 2, '当前活跃页面 cancel 只停止自己的录音')
 
 const captionRecorder = makeRecorder()
 const captionSocket = makeSocket()
@@ -176,6 +202,230 @@ const rebuiltController = voiceInput.createController({})
 assert(rebuiltController, '错误态后点击语音入口应能重建控制器')
 rebuiltController.start()
 assert.strictEqual(goodRecorder.started, true, '重建后的控制器应能重新 start 录音器')
+
+// 真机 recorder.stop 的 onStop 是异步事件。取消时必须立刻清掉本页 busy，但新页面要等旧 stop
+// 事件真正到达后再 start，避免旧 stop 被误认成新会话的 stop（这类竞态会导致麦克风无反应或 PCM 错误）。
+const asyncRecorder = makeRecorder({ autoStop: false })
+const asyncSocket1 = makeSocket()
+const asyncSocket2 = makeSocket()
+currentRecorder = asyncRecorder
+currentSocket = asyncSocket1
+let secondStarted = 0
+const asyncFirst = voiceInput.createController({})
+asyncFirst.start()
+asyncFirst.cancel()
+assert.strictEqual(asyncFirst.isBusy(), false, '异步 stop 尚未回调时，已取消页面也必须立即退出 busy')
+currentSocket = asyncSocket2
+const asyncSecond = voiceInput.createController({ onStart: () => { secondStarted += 1 } })
+asyncSecond.start()
+assert.strictEqual(asyncRecorder.startCount, 1, '旧 stop 未回调前不得立即 start 新录音，避免 stop/start 交叉')
+asyncRecorder.emitStop()
+assert.strictEqual(asyncRecorder.startCount, 2, '旧 stop 回调后应自动启动排队的新页面录音')
+assert.strictEqual(secondStarted, 1, '排队的新页面录音只能启动一次')
+asyncSecond.cancel()
+asyncRecorder.emitStop()
+
+// 若微信没有回 recorder.onStop，不能让全局录音路由永久卡在 stopPending。
+// 超时后应放行下一页录音；迟到的旧 onStop 只能回到旧 controller，不能误停新会话。
+const lostStopRecorder = makeRecorder({ autoStop: false })
+const lostStopSocket1 = makeSocket()
+const lostStopSocket2 = makeSocket()
+currentRecorder = lostStopRecorder
+currentSocket = lostStopSocket1
+let stopTimeoutCallback = null
+let lostStopError = null
+const nativeSetTimeoutForStop = global.setTimeout
+const nativeClearTimeoutForStop = global.clearTimeout
+global.setTimeout = (handler, delay, ...args) => {
+  if (delay === voiceInput._internal.RECORDER_STOP_TIMEOUT_MS) {
+    stopTimeoutCallback = handler
+    return { voiceStopTimeout: true }
+  }
+  return nativeSetTimeoutForStop(handler, delay, ...args)
+}
+global.clearTimeout = (timer) => {
+  if (timer && timer.voiceStopTimeout) return
+  nativeClearTimeoutForStop(timer)
+}
+try {
+  const manualStop = voiceInput.createController({ onError: (error) => { lostStopError = error } })
+  manualStop.start()
+  lostStopSocket1.open()
+  manualStop.stop()
+  assert.strictEqual(typeof stopTimeoutCallback, 'function', '发出 recorder.stop 后必须设置停止回调超时保护')
+  stopTimeoutCallback()
+  assert(lostStopError, '用户主动停止时 recorder.stop 回调丢失，必须给页面稳定错误')
+  assert.strictEqual(lostStopError.code, 'recorder-stop-timeout', 'stop 回调丢失应返回稳定错误码')
+  assert.strictEqual(manualStop.isBusy(), false, 'stop 超时后旧 controller 必须退出 busy')
+  lostStopRecorder.emitStop()
+
+  stopTimeoutCallback = null
+  lostStopError = null
+  const lostStopFirst = voiceInput.createController({ onError: (error) => { lostStopError = error } })
+  lostStopFirst.start()
+  lostStopSocket1.open()
+  lostStopFirst.stop()
+  assert.strictEqual(typeof stopTimeoutCallback, 'function', '发出 recorder.stop 后必须设置停止回调超时保护')
+
+  currentSocket = lostStopSocket2
+  const lostStopSecond = voiceInput.createController({})
+  lostStopSecond.start()
+  assert.strictEqual(lostStopRecorder.startCount, 2, '旧 stop 未收口前，新页面录音必须排队，不能交叉 start')
+  stopTimeoutCallback()
+  assert.strictEqual(lostStopError, null, '页面切换抢占后的旧 stop 超时不应向旧页面弹错误')
+  assert.strictEqual(lostStopFirst.isBusy(), false, 'stop 超时后旧 controller 必须退出 busy')
+  assert.strictEqual(lostStopRecorder.startCount, 3, 'stop 超时收口后应自动启动排队的新页面录音')
+  lostStopRecorder.emitStop()
+  assert.strictEqual(lostStopSecond.isBusy(), true, '迟到的旧 onStop 不得结束新页面会话')
+  lostStopSecond.cancel()
+  lostStopRecorder.emitStop()
+} finally {
+  global.setTimeout = nativeSetTimeoutForStop
+  global.clearTimeout = nativeClearTimeoutForStop
+}
+
+// 同一 controller 可复用。上一轮 socket 的延迟 close/error/message 不能污染新一轮会话。
+const reuseRecorder = makeRecorder()
+const staleSocket = makeSocket({ autoCloseEvent: false })
+const freshSocket = makeSocket()
+currentRecorder = reuseRecorder
+currentSocket = staleSocket
+let reuseErrors = 0
+const reuseController = voiceInput.createController({ onError: () => { reuseErrors += 1 } })
+reuseController.start()
+staleSocket.open()
+reuseController.cancel()
+currentSocket = freshSocket
+reuseController.start()
+freshSocket.open()
+staleSocket.message(JSON.stringify({ type: 'error', message: '旧连接迟到错误' }))
+staleSocket.emitClose()
+assert.strictEqual(reuseErrors, 0, '旧 socket 延迟事件不得报到新会话')
+assert.strictEqual(reuseController.isBusy(), true, '旧 socket 延迟事件不得结束新会话')
+reuseController.cancel()
+
+// 用户很快松手时 WebSocket 可能尚未 open。finish 必须排队，在 open 后按 start→finish 顺序发出，
+// 否则服务端收不到 session.finish，只能等兜底超时并误报“没有识别到内容”。
+const earlyStopRecorder = makeRecorder()
+const lateOpenSocket = makeSocket()
+currentRecorder = earlyStopRecorder
+currentSocket = lateOpenSocket
+const earlyStopController = voiceInput.createController({})
+earlyStopController.start()
+earlyStopController.stop()
+lateOpenSocket.open()
+const controlMessages = lateOpenSocket.sent
+  .map((item) => item && item.data)
+  .filter((item) => typeof item === 'string')
+  .map((item) => JSON.parse(item).type)
+assert.deepStrictEqual(controlMessages, ['start', 'finish'], '晚开连接必须补发 start→finish 控制帧')
+earlyStopController.cancel()
+
+// RecorderManager 是全局单例且官方没有 offStart/offStop：同一实例只能绑定一套稳定路由。
+// 多次创建/开始/取消不得反复堆叠监听器。
+const bindingRecorder = makeRecorder()
+currentRecorder = bindingRecorder
+currentSocket = makeSocket()
+const bindingController = voiceInput.createController({})
+bindingController.start()
+bindingController.cancel()
+currentSocket = makeSocket()
+bindingController.start()
+bindingController.cancel()
+assert.deepStrictEqual(bindingRecorder.bindCounts, {
+  start: 1,
+  frame: 1,
+  stop: 1,
+  error: 1,
+  interruptionBegin: 1
+}, '全局录音器每类事件只能绑定一次稳定路由')
+
+// WebSocket 一直不开不能让录音器和麦克风指示灯无限挂住；到时必须主动收口并给出可诊断错误码。
+const timeoutRecorder = makeRecorder()
+const timeoutSocket = makeSocket()
+currentRecorder = timeoutRecorder
+currentSocket = timeoutSocket
+let timeoutCallback = null
+let timeoutError = null
+const nativeSetTimeout = global.setTimeout
+const nativeClearTimeout = global.clearTimeout
+global.setTimeout = (handler, delay, ...args) => {
+  if (delay === voiceInput._internal.SOCKET_OPEN_TIMEOUT_MS) {
+    timeoutCallback = handler
+    return { voiceOpenTimeout: true }
+  }
+  return nativeSetTimeout(handler, delay, ...args)
+}
+global.clearTimeout = (timer) => {
+  if (timer && timer.voiceOpenTimeout) return
+  nativeClearTimeout(timer)
+}
+try {
+  const timeoutController = voiceInput.createController({ onError: (error) => { timeoutError = error } })
+  timeoutController.start()
+  assert.strictEqual(typeof timeoutCallback, 'function', '启动语音后必须设置 WebSocket 开连超时')
+  timeoutCallback()
+  assert(timeoutError, 'WebSocket 开连超时必须回调错误')
+  assert.strictEqual(timeoutError.code, 'asr-socket-open-timeout', '开连超时应返回稳定错误码')
+  assert.strictEqual(timeoutController.isBusy(), false, '开连超时后控制器必须恢复空闲')
+  assert.strictEqual(timeoutRecorder.stopped, 1, '开连超时后必须停止仍在使用的麦克风')
+} finally {
+  global.setTimeout = nativeSetTimeout
+  global.clearTimeout = nativeClearTimeout
+}
+
+// 开连前积帧超过上限不能静默丢音频；应失败收口，让用户明确重试。
+const backlogRecorder = makeRecorder()
+const backlogSocket = makeSocket()
+currentRecorder = backlogRecorder
+currentSocket = backlogSocket
+let backlogError = null
+const backlogController = voiceInput.createController({ onError: (error) => { backlogError = error } })
+backlogController.start()
+for (let i = 0; i <= voiceInput._internal.MAX_PENDING_FRAMES; i += 1) {
+  backlogRecorder.emitFrame(Buffer.from([i % 255]))
+}
+assert(backlogError, '积帧超过上限必须回调错误，不能继续静默丢帧')
+assert.strictEqual(backlogError.code, 'asr-frame-backlog', '积帧错误应返回稳定错误码')
+assert.strictEqual(backlogController.isBusy(), false, '积帧失败后控制器必须恢复空闲')
+
+// 来电/微信通话等系统中断要立即释放本次会话；中断结束后下一页仍可重新创建并录音。
+const interruptedRecorder = makeRecorder()
+currentRecorder = interruptedRecorder
+currentSocket = makeSocket()
+let interruptionError = null
+const interruptedController = voiceInput.createController({ onError: (error) => { interruptionError = error } })
+interruptedController.start()
+interruptedRecorder.emitInterruptionBegin()
+assert(interruptionError, '系统中断录音必须通知页面')
+assert.strictEqual(interruptionError.code, 'recorder-interrupted', '系统中断应返回稳定错误码')
+assert.strictEqual(interruptedController.isBusy(), false, '系统中断后不得留下忙碌状态')
+currentSocket = makeSocket()
+const afterInterruption = voiceInput.createController({})
+afterInterruption.start()
+assert.strictEqual(interruptedRecorder.startCount, 2, '系统中断后下一页应能重新开始录音')
+afterInterruption.cancel()
+
+// wx.connectSocket 在授权回调内同步抛错也必须收敛成页面错误，不能逃逸成未捕获异常。
+const normalSocketFactory = apiService.createRealtimeAsrSocket
+const throwingRecorder = makeRecorder()
+currentRecorder = throwingRecorder
+apiService.createRealtimeAsrSocket = () => { throw new Error('connectSocket boom') }
+let createSocketError = null
+const throwingController = voiceInput.createController({ onError: (error) => { createSocketError = error } })
+assert.doesNotThrow(() => throwingController.start(), '连接创建异常不得逃出 controller.start')
+assert(createSocketError, '连接创建异常必须回调页面')
+assert.strictEqual(createSocketError.code, 'asr-socket-create-failed', '连接创建异常应返回稳定错误码')
+assert.strictEqual(throwingController.isBusy(), false, '连接创建异常后控制器必须恢复空闲')
+apiService.createRealtimeAsrSocket = normalSocketFactory
+
+// 支持探测要检查整套 RecorderManager 契约，避免缺 onStop/onError 时创建阶段直接抛 TypeError。
+const incompleteRecorder = makeRecorder()
+incompleteRecorder.onStop = undefined
+currentRecorder = incompleteRecorder
+const incompleteStatus = voiceInput.getSupportStatus()
+assert.strictEqual(incompleteStatus.ok, false, 'RecorderManager 缺关键方法时应明确判为不支持')
+assert.ok(incompleteStatus.message.includes('RecorderManager.onStop'), '不支持原因应指出缺失的方法')
 
 ;[
   'pages/index/index.js',
