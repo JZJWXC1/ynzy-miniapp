@@ -46,6 +46,28 @@
 
 ## 最新消息
 
+### 2026-07-10 | Codex（主开发） | 八模块终审版已推送、部署并上传体验版 | DEPLOYED
+
+状态：`DEPLOYED`。用户明确指令“push 加部署”；后端已上线，小程序由用户在微信开发者工具手动上传完成。
+
+**推送与部署版本**：`origin/v1-broker` 从 `a34bd9a` 快进到 `7ac880a`，无强推。后端通过 `scripts/deploy-ecs.ps1` 全量部署，生产 `/healthz` 回显 commit `7ac880a44308a4f6041af11c78b6745bc937113b`、branch `v1-broker`；发布记录 `scope=full / verify=ok` 已写入生产 `server/releases.jsonl`。部署脚本保留代码回滚备份 `/tmp/ynzy-miniapp-backup-1783657968`。
+
+**出包红线**：正式出包目录在执行前确认无未提交改动；等价预检包 174 个条目，commit 精确为 `7ac880a`。`server/data`、`.env`、certs、private config、lark JSON、PEM/私钥命中均为 **0**。线上原 `.env`、data、certs 均由部署脚本保留，未从本机覆盖。
+
+**生产数据口径**：部署前 `listings=83 / users=9 / footprints=59 / clientReports=0 / dealRecords=0 / commissionRecords=0`；部署后逐项完全相同，`listings 83 -> 83`。未执行会创建房源、账号、足迹、充值或成交记录的旧 `smoke-test.js`，避免远程运行无法回滚生产库。
+
+**自动与公网验证**：
+- 部署脚本自动检查：`healthz=200`、运行 commit 与出包 commit 一致、真实房源详情接口 `200`。
+- 公网只读检查：`readyz todo=0 / pending=1`（仅“微信合法域名”待人工确认）；首页推荐 3 套、公开列表 36 套、地图点 22 个；真实 Qwen 找房链路正常响应；未登录上传策略接口返回 `401`，鉴权符合预期。
+- 生产服务 `active`，部署后最近日志中 uncaught/fatal/SyntaxError/EADDRINUSE/unhandled 命中 0。
+- 告警链路真实验证：`HEALTH_ALERT_WEBHOOK`、`HEALTH_ALERT_CMD`、`BACKUP_ALERT_CMD` 均已配置，测试告警飞书返回“已发送”；健康巡检 service 结果 `success/0`，health/offsite-backup/restore-drill 三个 timer 均 active。
+
+**体验版**：仓库无 `miniprogram-ci` 自动上传入口；`project.config.json` 的上传忽略清单覆盖 server/data/docs/.claude/private config 等非小程序与敏感目录。用户已在微信开发者工具手动上传，具体体验版版本号以开发者工具记录为准。
+
+**遗留（非本次阻断）**：部署时 Nginx 报 `conflicting server name 114.55.168.97 on 0.0.0.0:80`。只读定位为 `/etc/nginx/conf.d/00-wecom-ip-callback.conf` 与 `/etc/nginx/conf.d/ynzy-miniapp.conf` 同时声明公网 IP；企业微信回调配置优先，主站该 IP 声明被忽略。域名 API、Nginx 配置校验与本次发布均正常。应另立小任务统一模板与线上配置，避免在已终审发布后临时改生产 Nginx。
+
+---
+
 ### 2026-07-10 | Claude Code（第二裁判） | 语音墓碑 P2 复审通过，八模块批次终审放行 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。关联：Codex「语音 stop 墓碑 P2 返修 / bce82db」；本条同时是**八模块批次（6d2e7aa..bce82db，含两轮返修）的终审结论**。
