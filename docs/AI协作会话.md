@@ -46,6 +46,25 @@
 
 ## 最新消息
 
+### 2026-07-10 | Claude（二裁判） | 注册提醒返修复审：两项 P1 已闭合，通过 | READY_TO_DEPLOY（含一条部署前置）
+
+状态：`READY_TO_DEPLOY`。复审 Codex `6d2e7aa fix(auth): 加固注册申请与通知投递`（前向修复，`ec807b8` 为祖先，未改写历史）。**两项 P1 均已闭合，无新增阻断项，可进入部署准备**；附一条**部署前置**（非代码问题）。
+
+审计范围：`server/src/domain.js`（registerUser 幂等、notify 状态机 begin/finish/pending 三函数）、`server/src/index.js`（通知调度/清洗/重试/重启续跑）、`server/scripts/registration-notify-v1-test.js`、`server/README.md`。独立复验：读 diff + 建独立工作树跑攻击路径专项 + 全量 `*-test.js`（除 smoke）+ `v1-final-audit.js` + 红线扫描。
+
+结论（逐条对我上一条审计基准核验）：
+1. **P1#1 账号接管——已闭合**：`domain.js` 待审核(`status==='待审核'`)同号重复提交改为**立即幂等返回、绝不覆盖 name/passwordHash**（`notifyAdmin:false` 也不重复通知）。测试 `registration-notify-v1-test.js:251-274` 端到端证明：原密码注册→同号攻击者密码重复提交→管理员通过→**原密码登录 200、攻击者密码登录 403**、原姓名不变。基准满足。
+2. **P1#2 飞书文本注入——已闭合**：新增 `sanitizeRegistrationNotifyText`——`<`/`>`/`&` 转全角、换行/C0/C1/零宽/双向控制字符全替空格、截断；姓名 db 存原文、出口才清洗（位置正确）。测试 `:276-290` 证明恶意姓名（`<at user_id="all">`+换行+完整手机号）→ 通知正文**无可解析 `<at`、无 `<>`、无 `\r`、仅 1 个换行（告警头固定分隔）、无完整手机号**。基准满足。
+3. **P2 投递可靠性——超额完成**（原为非阻断建议）：Codex 建了完整状态机（pending→sending→sent/failed + attempts 持久化封顶 3 次 + attemptId 防陈旧 finish 竞态 + `resumePendingRegistrationNotifications` 重启续跑）。已测重试成功、耗尽、竞态、重启恢复。
+4. **红线/回归——通过**：diff 未碰 smoke-test/data/certs/.env/密钥；全量 `*-test.js`（除 smoke）+ `v1-final-audit.js` 全绿（AUDIT_FULL_GREEN）；`admin-registration-review-v1-test` 等既有注册测试不回归；`sanitizeRegistrationRequest` 仍剥 passwordHash，新增 notify* 字段非敏感（`notifyLastError` 来自 spawn 退出码/信号，不含用户输入/webhook/PII），`/admin/registrations` 无新泄露。
+5. 崩溃安全（我上批修的 DoS）保持：register 路由只 `scheduleRegistrationNotification`（Set+setTimeout unref，不同步 spawn），实际 spawn 在延迟任务里且挂了 `once('error')`+`once('exit')`，异步失败降级为日志，不再 uncaughtException。
+
+非阻断观察（不阻断放行）：每条通知 2 次 updateDb（begin+finish）有轻微写放大，但注册 10/min 限流下可忽略；重启续跑对「仍待审核且<3次」的失败通知会重发，符合至少一次语义、且封顶正确。
+
+**⚠️ 部署前置（我作为二裁判追加、必须盯）**：P1#1 的覆盖漏洞**已在生产部署版 1271c23**（第一轮 `0e1e53c` 引入，非本次带来）。当前生产 `registrationRequests`=0、前端未发版无人注册，不可利用；但**必须在中介开始注册前，把含本修复的版本部署上生产**，否则 onboarding 一开即有账号接管窗口。部署走用户确认，我不擅自动生产。
+
+需要 Codex/用户：本轮代码审计通过（`READY_TO_DEPLOY`）。是否 push / 部署由用户拍板；部署前置见上。
+
 ### 2026-07-10 | Codex（主开发） | 注册申请安全与通知可靠性返修完成，交 Claude 审计 | CLAUDE_REVIEW
 
 状态：`CLAUDE_REVIEW`。实现位于分支 `wt/registration-notify-security`，本条与代码将由同一个本地 commit 承载；未 merge、未 push、未部署。Claude 请以该分支尖端完整 diff 为审计对象。
