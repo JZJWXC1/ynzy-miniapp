@@ -94,14 +94,28 @@ function normalizeCommissionConfig(config) {
   const source = config || {}
   const upRates = source.uploaderRates || {}
   const platRates = source.platformRates || {}
-  const pickRate = (value, fallback) => (value === undefined || value === null || value === '' ? fallback : Number(value))
-  return {
-    secondLandlordRate: pickRate(source.secondLandlordRate, upRates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordRate : upRates['二房东房源']),
-    ownerRate: pickRate(source.ownerRate, upRates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerRate : upRates['业主房源']),
-    secondLandlordPlatformRate: pickRate(source.secondLandlordPlatformRate, platRates['二房东房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.secondLandlordPlatformRate : platRates['二房东房源']),
-    ownerPlatformRate: pickRate(source.ownerPlatformRate, platRates['业主房源'] === undefined ? DEFAULT_COMMISSION_CONFIG.ownerPlatformRate : platRates['业主房源']),
+  const pickRate = (primary, mapped, label) => {
+    const raw = primary === undefined || primary === null || primary === '' ? mapped : primary
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      throw new Error(`${label}配置无效`)
+    }
+    return value
+  }
+  const normalized = {
+    secondLandlordRate: pickRate(source.secondLandlordRate, upRates['二房东房源'], '二房东上传人比例'),
+    ownerRate: pickRate(source.ownerRate, upRates['业主房源'], '业主上传人比例'),
+    secondLandlordPlatformRate: pickRate(source.secondLandlordPlatformRate, platRates['二房东房源'], '二房东平台比例'),
+    ownerPlatformRate: pickRate(source.ownerPlatformRate, platRates['业主房源'], '业主平台比例'),
     companyRate: 0
   }
+  if (normalized.secondLandlordRate + normalized.secondLandlordPlatformRate > 100) {
+    throw new Error('二房东分佣比例合计不能超过 100%')
+  }
+  if (normalized.ownerRate + normalized.ownerPlatformRate > 100) {
+    throw new Error('业主分佣比例合计不能超过 100%')
+  }
+  return normalized
 }
 
 function commissionRuleText(form = {}, config = DEFAULT_COMMISSION_CONFIG) {
@@ -188,8 +202,11 @@ Page({
     videoFile: null,
     existingVideoUrl: '',
     existingVideoKey: '',
-    commissionConfig: DEFAULT_COMMISSION_CONFIG,
-    commissionRuleText: commissionRuleText(defaultForm, DEFAULT_COMMISSION_CONFIG),
+    commissionConfig: null,
+    commissionConfigLoading: false,
+    commissionConfigReady: false,
+    commissionConfigFailed: false,
+    commissionRuleText: '正在同步分佣规则',
     submitting: false
   },
 
@@ -214,6 +231,7 @@ Page({
     if (nextToken === this.authTokenSnapshot) return
     this.authTokenSnapshot = nextToken
     this.loadCurrentUser()
+    if (this.data.commissionConfigFailed) this.loadCommissionConfig()
   },
 
   loadCurrentUser() {
@@ -247,26 +265,75 @@ Page({
   },
 
   loadCommissionConfig() {
+    const requestId = `commission-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+    this.activeCommissionRequestId = requestId
+    this.setData({
+      commissionConfigLoading: true,
+      commissionConfigReady: false,
+      commissionConfigFailed: false,
+      commissionRuleText: this.data.form.companyListing ? '公司房源成交不抽佣，带看中介全佣' : '正在同步分佣规则'
+    })
     apiService.getCommissionConfig().then((config) => {
+      if (this.activeCommissionRequestId !== requestId) return
       const normalized = normalizeCommissionConfig(config)
       this.setData({
         commissionConfig: normalized,
+        commissionConfigLoading: false,
+        commissionConfigReady: true,
+        commissionConfigFailed: false,
         commissionRuleText: commissionRuleText(this.data.form, normalized)
       })
     }).catch(() => {
+      if (this.activeCommissionRequestId !== requestId) return
       this.setData({
-        commissionConfig: DEFAULT_COMMISSION_CONFIG,
-        commissionRuleText: commissionRuleText(this.data.form, DEFAULT_COMMISSION_CONFIG)
+        commissionConfig: null,
+        commissionConfigLoading: false,
+        commissionConfigReady: false,
+        commissionConfigFailed: true,
+        commissionRuleText: this.data.form.companyListing ? '公司房源成交不抽佣，带看中介全佣' : '分佣规则加载失败，请重试'
       })
+      wx.showToast({ title: '分佣规则加载失败', icon: 'none' })
     })
+  },
+
+  retryCommissionConfig() {
+    if (!this.data.commissionConfigLoading) this.loadCommissionConfig()
+  },
+
+  ensureCommissionConfigReady() {
+    if (this.data.form.companyListing || this.data.commissionConfigReady) return true
+    if (this.data.commissionConfigLoading) {
+      wx.showToast({ title: '正在同步分佣规则，请稍候', icon: 'none' })
+      return false
+    }
+    wx.showModal({
+      title: '分佣规则尚未同步',
+      content: '为避免展示错误比例，请先重新读取后台当前分佣规则。',
+      cancelText: '暂不提交',
+      confirmText: '重新加载',
+      success: (res) => {
+        if (res.confirm) this.retryCommissionConfig()
+      }
+    })
+    return false
   },
 
   refreshPreview(nextForm) {
     const form = nextForm || this.data.form
+    let nextCommissionRuleText = this.data.commissionRuleText
+    if (form.companyListing) {
+      nextCommissionRuleText = '公司房源成交不抽佣，带看中介全佣'
+    } else if (this.data.commissionConfigReady && this.data.commissionConfig) {
+      nextCommissionRuleText = commissionRuleText(form, this.data.commissionConfig)
+    } else if (this.data.commissionConfigLoading) {
+      nextCommissionRuleText = '正在同步分佣规则'
+    } else if (this.data.commissionConfigFailed) {
+      nextCommissionRuleText = '分佣规则加载失败，请重试'
+    }
     this.setData({
       layoutPreview: buildLayout(form),
       addressPreview: buildAddress(form),
-      commissionRuleText: commissionRuleText(form, this.data.commissionConfig)
+      commissionRuleText: nextCommissionRuleText
     })
   },
 
@@ -693,6 +760,7 @@ Page({
   },
 
   submitListing() {
+    if (!this.ensureCommissionConfigReady()) return
     const validation = this.validateForm()
     if (!validation.ok) {
       wx.showModal({

@@ -130,6 +130,7 @@
       <view class="field">
         <view class="label">分佣规则</view>
         <view class="preview-line">{{commissionRuleText}}</view>
+        <button wx:if="{{!form.companyListing && commissionConfigFailed}}" class="brand-button" style="margin-top: 20rpx;" bindtap="retryCommissionConfig">重新加载分佣规则</button>
       </view>
 
       <view class="video-upload" bindtap="chooseVideo">
@@ -139,7 +140,7 @@
           <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : (form.companyListing ? '公司房源可不上传视频；上传后可用于转发。' : '合作房源必须上传视频，仅允许视频，不支持图片上传。'))}}</view>
         </view>
       </view>
-      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.companyListing ? '提交公司房源' : (form.ownerType === '业主房源' ? '提交审核' : '提交合作房源'))}}</button>
+      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting || (!form.companyListing && !commissionConfigReady)}}" bindtap="submitListing">{{!form.companyListing && commissionConfigLoading ? '正在同步分佣规则' : (!form.companyListing && commissionConfigFailed ? '请先同步分佣规则' : (mode === 'edit' ? '保存房源修改' : (form.companyListing ? '提交公司房源' : (form.ownerType === '业主房源' ? '提交审核' : '提交合作房源'))))}}</button>
     </view>
   </view>
 </scroll-view>
