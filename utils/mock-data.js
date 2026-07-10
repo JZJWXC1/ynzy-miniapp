@@ -1074,25 +1074,27 @@
     }, display);
   }
 
+  var VIEWING_METHOD_OPTIONS = ['钥匙', '密码', '联系房东'];
+
   // 看房方式展示口径（与 server/src/domain.js 的 listingViewingMethodFields 同步）：
-  // 公司房源密码优先，非公司房源电话优先；只含方式名，不含密码/钥匙位置等敏感值本身
+  // 公司房源跟飞书表走——密码列是真密码才算密码看房，「几号空出」腾房备注或空 → 联系房东（打公司看房电话）；
+  // 非公司房源电话优先。只含方式名，不含密码/钥匙位置等敏感值本身。
   function listingViewingMethodFields(listing) {
     var item = listing || {};
     var method = firstText(item.viewingMethod, item.showingMethod);
-    var hasPassword = Boolean(firstText(item.viewingPassword, item.showingPassword, item.password));
+    var rawPassword = firstText(item.viewingPassword, item.showingPassword, item.password);
+    var hasPassword = Boolean(rawPassword) && !/空出/.test(rawPassword);
     var hasPhone = Boolean(firstText(item.landlordPhone, item.contact));
-    var company = isCompanyListing(item);
     if (!method) {
-      if (company) {
-        method = hasPassword ? '密码' : (hasPhone ? '联系房东' : '');
+      if (isCompanyListing(item)) {
+        method = hasPassword ? '密码' : '联系房东';
       } else {
         method = hasPhone ? '联系房东' : (hasPassword ? '密码' : '');
       }
     }
-    var landlordText = company ? '联系公司' : '联系房东';
     return {
       viewingMethod: method,
-      viewingMethodText: method === '联系房东' ? landlordText : (method || landlordText)
+      viewingMethodText: method || '联系房东'
     };
   }
 
@@ -2306,6 +2308,9 @@
     var viewingMethod = firstText(form.viewingMethod, form.showingMethod);
     var viewingKeyLocation = String(form.viewingKeyLocation || '').trim();
     var viewingPassword = String(form.viewingPassword || form.showingPassword || '').trim();
+    if (viewingMethod && VIEWING_METHOD_OPTIONS.indexOf(viewingMethod) === -1) {
+      throw new Error('看房方式只能是钥匙、密码或联系房东');
+    }
     if (!address || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
       throw new Error('城市、区域、小区、几栋、房间号、租金、户型和视频必填');
     }
@@ -2473,6 +2478,12 @@
     }
     if (featureState.invalidFeatures.length) {
       throw new Error('房源特点标签无效：' + featureState.invalidFeatures.join('、'));
+    }
+    if (Object.prototype.hasOwnProperty.call(form, 'viewingMethod')) {
+      var nextViewingMethod = firstText(form.viewingMethod);
+      if (nextViewingMethod && VIEWING_METHOD_OPTIONS.indexOf(nextViewingMethod) === -1) {
+        throw new Error('看房方式只能是钥匙、密码或联系房东');
+      }
     }
     listing.title = address + ' · ' + layout;
     listing.shortTitle = community || address;
