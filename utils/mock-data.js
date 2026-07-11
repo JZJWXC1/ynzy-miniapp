@@ -23,6 +23,7 @@
   var PLATFORM_COMMISSION_RATE = 10;
   var BROKER_ROLE = '中介';
   var BROKER_AUTHED = '手机号登录';
+  var STAFF_LISTING_AUTO_APPROVAL_NOTE = '内部员工上传，按员工权限自动通过';
   var VERIFY_STALE_DAYS = 7;
   var OWNER_DAILY_VIEW_LIMIT = 3;
   var NORMAL_DAILY_VIEW_LIMIT = 15;
@@ -405,6 +406,45 @@
     return state.users.find(function (user) {
       return user.id === userId;
     });
+  }
+
+  function isStaffUser(user) {
+    if (!user || user.isAdmin) return false;
+    var accountTypeText = String(user.accountType || '').trim();
+    var accountType = accountTypeText === 'staff' || accountTypeText === '员工' || accountTypeText === '内部员工' || accountTypeText === '员工账号'
+      ? 'staff'
+      : (accountTypeText === 'broker' || accountTypeText === '中介' || accountTypeText === '中介账号' ? 'broker' : '');
+    var role = String(user.role || '').trim();
+    if (accountTypeText) {
+      if (accountType !== 'staff') return false;
+      return !role || role === '员工' || /^内部员工(?:\s*·.*)?$/.test(role);
+    }
+    return role === '员工' || /^内部员工(?:\s*·.*)?$/.test(role);
+  }
+
+  function shouldAutoApproveStaffListing(user, sourceState) {
+    return isStaffUser(user) &&
+      !sourceState.companyListing &&
+      (sourceState.ownerType === OWNER_SOURCE || sourceState.ownerType === SECOND_LANDLORD_SOURCE);
+  }
+
+  function isStaffAutoApprovedListing(listing) {
+    return listing && listing.reviewStatus === '已通过' && listing.reviewNote === STAFF_LISTING_AUTO_APPROVAL_NOTE;
+  }
+
+  function applyStaffListingAutoApproval(listing, userId) {
+    listing.reviewStatus = '已通过';
+    if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认';
+    listing.reviewedAt = '刚刚';
+    listing.reviewerId = userId;
+    listing.reviewNote = STAFF_LISTING_AUTO_APPROVAL_NOTE;
+  }
+
+  function clearStaffListingAutoApproval(listing) {
+    if (!listing || listing.reviewNote !== STAFF_LISTING_AUTO_APPROVAL_NOTE) return;
+    delete listing.reviewedAt;
+    delete listing.reviewerId;
+    delete listing.reviewNote;
   }
 
   function loginByPhone(phone) {
@@ -2314,7 +2354,9 @@
     var featureState = normalizeFormFeatures(form, {});
     var sourceState = prepareSourceFields(form, {}, featureState);
     var communityReview = normalizeCommunityReviewState(form, {});
-    var needsReview = sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview;
+    var currentUser = getUser();
+    var staffAutoApproved = shouldAutoApproveStaffListing(currentUser, sourceState);
+    var needsReview = !staffAutoApproved && (sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview);
     var mapCoordinate = listingMapCoordinateFields(community, form, {});
     var viewingMethod = firstText(form.viewingMethod, form.showingMethod);
     var viewingKeyLocation = String(form.viewingKeyLocation || '').trim();
@@ -2403,6 +2445,7 @@
       createdAt: '刚刚',
       lastVerifiedAt: '刚刚'
     };
+    if (staffAutoApproved) applyStaffListingAutoApproval(listing, state.currentUserId);
     state.listings.unshift(listing);
     syncListingRecommendationProfile(listing, needsReview ? 'pending_review' : '');
     state.pointLogs.unshift({
@@ -2545,11 +2588,21 @@
     listing.mapLatitude = mapCoordinate.mapLatitude;
     listing.mapLongitude = mapCoordinate.mapLongitude;
     listing.coordinateSource = mapCoordinate.coordinateSource;
-    var needsReview = sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview;
-    if (needsReview) {
+    var currentUser = getUser();
+    var staffAutoApproved = shouldAutoApproveStaffListing(currentUser, sourceState);
+    var preserveStaffAutoApproval = Boolean(currentUser && currentUser.isAdmin) && isStaffAutoApprovedListing(listing) && !sourceState.companyListing;
+    var autoApproved = staffAutoApproved || preserveStaffAutoApproval;
+    var needsReview = !autoApproved && (sourceState.ownerType === OWNER_SOURCE || communityReview.requiresManualReview);
+    if (autoApproved) {
+      if (staffAutoApproved) applyStaffListingAutoApproval(listing, state.currentUserId);
+      listing.reviewStatus = '已通过';
+      if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认';
+    } else if (needsReview) {
+      clearStaffListingAutoApproval(listing);
       listing.reviewStatus = listing.reviewStatus === '已通过' && !communityReview.requiresManualReview ? '已通过' : '待审核';
       if (listing.reviewStatus !== '已通过') listing.status = '待审核';
     } else {
+      clearStaffListingAutoApproval(listing);
       listing.reviewStatus = '无需审核';
       if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认';
     }

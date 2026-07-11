@@ -16,6 +16,8 @@ const criticalScripts = [
   'server/scripts/map-v1-test.js',
   'server/scripts/assistant-v1-test.js',
   'server/scripts/backend-contract-v1-test.js',
+  // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
+  'server/scripts/staff-listing-auto-approve-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',
   'server/scripts/auth-token-v1-test.js',
   // 小程序登录接入账号密码：正确/错误/缺密/存量无密码/待审核/软删登录口径 + passwordHash 不外泄 +

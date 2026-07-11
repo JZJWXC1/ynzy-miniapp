@@ -14,6 +14,27 @@ function isAuthError(error) {
   return Boolean(error) && Number(error.statusCode) === 401
 }
 
+function isStaffAccount(user) {
+  if (!user || user.isAdmin) return false
+  const accountTypeText = String(user.accountType || '').trim()
+  const accountType = accountTypeText === 'staff' || accountTypeText === '员工' || accountTypeText === '内部员工' || accountTypeText === '员工账号'
+    ? 'staff'
+    : (accountTypeText === 'broker' || accountTypeText === '中介' || accountTypeText === '中介账号' ? 'broker' : '')
+  const role = String(user.role || '').trim()
+  if (accountTypeText) {
+    if (accountType !== 'staff') return false
+    return !role || role === '员工' || /^内部员工(?:\s*·.*)?$/.test(role)
+  }
+  return role === '员工' || /^内部员工(?:\s*·.*)?$/.test(role)
+}
+
+function uploadSuccessMessage(listing) {
+  const reviewStatus = String((listing && listing.reviewStatus) || '').trim()
+  if (reviewStatus === '已通过') return '房源已直接通过并发布，可在我的房源中查看最新状态。'
+  if (reviewStatus === '待审核') return '房源已提交审核，通过后会展示给中介找房使用。'
+  return '房源已发布，可在我的房源中查看最新状态。'
+}
+
 function currentAuthToken() {
   try {
     const app = typeof getApp === 'function' ? getApp() : null
@@ -150,18 +171,28 @@ function isCommunityMatched(value) {
   return gongshuCommunities.some((name) => normalizeCommunityText(name) === normalizedValue)
 }
 
-function getCommunityReviewTip(keyword) {
+function getCommunityReviewTip(keyword, isStaff) {
   const text = String(keyword || '').trim()
   if (!text) return ''
+  if (isStaff) {
+    return isCommunityMatched(text)
+      ? '已匹配小区库，员工账号提交后直接通过'
+      : '未匹配小区库；员工账号仍会直接通过，地图坐标需后台补充'
+  }
   return isCommunityMatched(text)
     ? '已匹配小区库，上架无需因小区人工审核'
     : '未匹配小区库，提交后需管理员审核通过才上架'
 }
 
-function getCommunityMessage(keyword, suggestions) {
+function getCommunityMessage(keyword, suggestions, isStaff) {
   const text = String(keyword || '').trim()
   if (!text) return '热门小区，可输入关键字缩小范围'
   if (isCommunityMatched(text)) return '已匹配小区库，可继续填写楼栋房号'
+  if (isStaff) {
+    return suggestions.length
+      ? `匹配到 ${suggestions.length} 个小区，请点选确认；直接手填也会按员工权限通过`
+      : `未匹配到「${text}」，可直接提交；坐标后续由后台补充`
+  }
   return suggestions.length
     ? `匹配到 ${suggestions.length} 个小区，请点选确认；直接使用手填名称将进入人工审核`
     : `未匹配到「${text}」，提交后需管理员审核通过才上架`
@@ -175,6 +206,7 @@ Page({
     form: Object.assign({}, defaultForm),
     currentUser: null,
     isAdmin: false,
+    isStaff: false,
     cityOptions: ['杭州'],
     areaOptions: ['拱墅区', '上城区', '西湖区', '滨江区', '萧山区', '余杭区', '临平区', '钱塘区', '富阳区', '临安区'],
     rentModeOptions: ['整租', '合租'],
@@ -236,15 +268,22 @@ Page({
   },
 
   loadCurrentUser() {
-    apiService.getCurrentUser().then((user) => {
+    return apiService.getCurrentUser().then((user) => {
+      const isStaff = isStaffAccount(user)
+      const community = String(this.data.form.community || '').trim()
+      const suggestions = getCommunitySuggestions(community)
       this.setData({
         currentUser: user,
-        isAdmin: Boolean(user && user.isAdmin)
+        isAdmin: Boolean(user && user.isAdmin),
+        isStaff,
+        communityMatchMessage: getCommunityMessage(community, suggestions, isStaff),
+        communityReviewTip: getCommunityReviewTip(community, isStaff)
       })
     }).catch((error) => {
       this.setData({
         currentUser: null,
-        isAdmin: false
+        isAdmin: false,
+        isStaff: false
       })
       // 游客进入上传页即引导登录，别让其填完整张表单提交才失败。
       if (isAuthError(error)) {
@@ -355,8 +394,8 @@ Page({
       'form.community': value,
       communitySuggestions: suggestions,
       communityPanelVisible: true,
-      communityMatchMessage: getCommunityMessage(value, suggestions),
-      communityReviewTip: getCommunityReviewTip(value)
+      communityMatchMessage: getCommunityMessage(value, suggestions, this.data.isStaff),
+      communityReviewTip: getCommunityReviewTip(value, this.data.isStaff)
     }, () => this.refreshPreview())
   },
 
@@ -366,8 +405,8 @@ Page({
     this.setData({
       communitySuggestions: suggestions,
       communityPanelVisible: true,
-      communityMatchMessage: getCommunityMessage(value, suggestions),
-      communityReviewTip: getCommunityReviewTip(value)
+      communityMatchMessage: getCommunityMessage(value, suggestions, this.data.isStaff),
+      communityReviewTip: getCommunityReviewTip(value, this.data.isStaff)
     })
   },
 
@@ -378,7 +417,7 @@ Page({
       communitySuggestions: [],
       communityPanelVisible: false,
       communityMatchMessage: '已匹配小区库',
-      communityReviewTip: getCommunityReviewTip(name)
+      communityReviewTip: getCommunityReviewTip(name, this.data.isStaff)
     }, () => this.refreshPreview())
   },
 
@@ -389,8 +428,10 @@ Page({
       'form.community': name,
       communitySuggestions: [],
       communityPanelVisible: false,
-      communityMatchMessage: isCommunityMatched(name) ? '已匹配小区库' : '已使用手填小区，提交后需人工审核',
-      communityReviewTip: getCommunityReviewTip(name)
+      communityMatchMessage: isCommunityMatched(name)
+        ? '已匹配小区库'
+        : (this.data.isStaff ? '已使用手填小区，按员工权限直接通过' : '已使用手填小区，提交后需人工审核'),
+      communityReviewTip: getCommunityReviewTip(name, this.data.isStaff)
     }, () => this.refreshPreview())
   },
 
@@ -681,6 +722,7 @@ Page({
 
     try {
       let video = null
+      let savedListing = null
       if (this.data.videoPath && this.data.videoFile) {
         wx.showLoading({ title: '正在上传视频' })
         const policy = await apiService.createVideoUploadPolicy(this.data.videoFile)
@@ -704,9 +746,9 @@ Page({
       wx.showLoading({ title: this.data.mode === 'edit' ? '正在保存修改' : '正在提交房源' })
       const payload = this.buildSubmitPayload(validation, video)
       if (this.data.mode === 'edit') {
-        await apiService.updateNormalListing(this.data.listingId, payload)
+        savedListing = await apiService.updateNormalListing(this.data.listingId, payload)
       } else {
-        await apiService.addNormalListing(payload)
+        savedListing = await apiService.addNormalListing(payload)
       }
       wx.hideLoading()
       if (this.data.mode === 'edit') {
@@ -738,7 +780,7 @@ Page({
         })
         wx.showModal({
           title: '上传成功',
-          content: '房源已提交。若小区或业主合作房源需要审核，通过后会展示给中介找房使用。',
+          content: uploadSuccessMessage(savedListing),
           cancelText: '继续上传',
           confirmText: '查看房源',
           success: (res) => {

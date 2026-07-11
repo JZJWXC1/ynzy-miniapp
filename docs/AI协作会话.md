@@ -46,6 +46,34 @@
 
 ## 最新消息
 
+### 2026-07-11 12:58 | CODEX_DEV（主开发） | 内部员工上传合作房源自动通过完成 | CLAUDE_REVIEW
+
+状态：`CLAUDE_REVIEW`。本条与代码由同一个最终 commit 承载，以分支 `wt/员工房源自动通过` 的 HEAD 为准；当前未 push、未部署、未上传体验版，未读取或改写任何生产房源、账号、审核记录或凭据。
+
+**实际修改文件**：`server/src/domain.js`、`utils/mock-data.js`、`pages/upload/upload.js`、`pages/upload/upload.wxml`、新增 `server/scripts/staff-listing-auto-approve-v1-test.js`、`server/scripts/v1-final-audit.js`、`server/README.md`、`docs/交接报告-20260704.md`、本文件。与开工声明一致；未修改 `server/src/index.js`、数据库文件/结构、后台页面、Nginx、部署脚本、`server/scripts/smoke-test.js` 或任何受限配置。
+
+**实现结果**：服务端只按持久用户判定员工身份：新账号需 `accountType=staff` 且角色口径一致，存量无 `accountType` 账号兼容 `role=内部员工`；非空未知类型、`accountType=broker` 冲突账号、管理员和普通中介均不获得员工直通。员工新建或本人编辑业主/二房东房源直接落为 `reviewStatus=已通过`、`status=待确认`，复用 `reviewedAt/reviewerId/reviewNote` 留下自动通过原因；管理员编辑该房源不误退回待审。库外小区仍保留 `communityMatched=false`、`requiresManualReview=true` 和待补坐标事实，不伪造小区匹配或可靠坐标。普通中介原有业主/库外审核路径不变，历史待审核记录不在启动时批量改写，但员工本人后续编辑时会按新权限通过。
+
+**前后端同步与先红后绿**：专用测试先稳定红于“员工上传业主房源仍得到待审核”，再修复领域状态机；随后依次红到 Mock 与上传页员工态，最终全绿。上传页员工提示只作展示，不提交身份或审核字段；成功弹窗以新增接口真实回包的 `reviewStatus` 区分“已直接发布/等待审核”，账号权限在页面停留期间发生变化也不会用本地角色猜测最终状态。测试覆盖真实 `createManagedUser(type=staff)` 创建路径、存量员工、两类房源、库外小区、新建/编辑、管理员保持通过、普通中介、冲突/未知账号类型、请求体伪造、Mock 对齐及页面级服务端回包联动。
+
+**验证与红线**：基线 **102/102** + 最终审计通过；新增后两轮最终全量均为 **103/103**，`server/scripts/v1-final-audit.js` 全绿，定向 10 项相邻回归全绿，三份 JS 语法检查和 `git diff --check` 通过。最新 `origin/v1-broker` 仍为基线 `2dca6cf`，分支与远端 merge-base 精确一致，无需重放提交；主工作区已有的无关文档和 `.claude` 改动未触碰、未夹带。9 个变更文件中受限路径、私钥、Token 形态、新增裸 `innerHTML`、产品代码真实手机号和 `smoke-test.js` 改动均为 0；3 个手机号只在专用测试中且为合成夹具。客户端真实提交体不含 `role/accountType/isAdmin/uploaderId/status/reviewStatus/reviewNote`，既有分佣字段门禁仍通过。
+
+**残余风险与复审重点**：本轮不自动迁移生产历史待审核房源，避免未经确认批量改写真实业务状态；若需一次性处理历史记录，应另立带数量核对与回滚方案的数据任务。Claude 请重点复核：账号类型冲突是否严格 fail-closed；员工直通是否只覆盖业主/二房东且仍执行视频、字段、重复房源、小区事实与分佣校验；管理员编辑是否只保持带明确员工自动通过说明的房源；普通中介和客户端伪造是否确定无法越权；上传页成功提示是否始终以服务端回包为准。通过后标记 `READY_TO_DEPLOY`；当前停止等待只读审计。
+
+---
+
+### 2026-07-11 12:19 | CODEX_DEV（主开发） | 内部员工上传合作房源自动通过开工 | CODEX_DOING
+
+状态：`CODEX_DOING`。用户裁定修改员工权限：服务端确认的内部员工上传业主房源或二房东房源时无需人工审核，直接通过；普通中介的业主房源、库外小区或其他需人工确认房源仍按原规则进入审核。前端只负责展示服务端结果，不能通过请求体伪造员工身份、上传人、审核状态、权限或分佣字段绕过审核。
+
+**分支、基线与独占声明**：从最新远端 `origin/v1-broker@2dca6cf` 新建独立分支 `wt/员工房源自动通过`；安装锁文件依赖后，`server/scripts/*-test.js` 排除真实 `smoke-test.js` 共 **102/102 通过**，`server/scripts/v1-final-audit.js` 全绿。`server/src/domain.js` 为本任务独占资源；本轮不修改 `server/src/index.js`、数据库文件或结构、Nginx、部署脚本、后台页面、地图和审核视频模块。
+
+**拟修改文件**：`server/src/domain.js`、`utils/mock-data.js`、`pages/upload/upload.js`、`pages/upload/upload.wxml`、新增 `server/scripts/staff-listing-auto-approve-v1-test.js`、`server/scripts/v1-final-audit.js`、`server/README.md`、`docs/交接报告-20260704.md`、本文件。不会修改 `server/scripts/smoke-test.js`、`server/data/`、`server/certs/`、任何 `.env`、`lark-*.json`、`project.private.config.json` 或凭据。
+
+**先红后绿目标**：先固化员工新建/编辑业主与二房东房源直接写成“已通过 + 待确认”、不进入审核队列且立即进入前台有效池；同时锁定普通中介原审核路径不变、请求体伪造 `role/accountType/isAdmin/reviewStatus/uploaderId` 无效、管理员编辑员工自动通过房源不误退回待审。再同步 Mock 与上传页文案，成功提示以服务端回包审核状态为准。完成后执行全量测试、最终审计、全文 diff 与红线扫描，rebase 最新 `v1-broker`，单模块提交并转 `CLAUDE_REVIEW`。
+
+---
+
 ### 2026-07-11 01:59 | CODEX_DEV（主开发） | 后台改密同步与全产品使用闭环发布 | DEPLOYED_VERIFYING
 
 状态：`DEPLOYED_VERIFYING`。用户在当前会话确认 Claude 审核已完成，并明确指示直接 push 与部署；本轮已把 15 个提交无冲突快进到本地 `v1-broker`，将 `d17069d..5528c90` 推送到 `origin/v1-broker`，再从合并后的主发布工作区成套部署服务端与后台。生产运行代码版本精确为 `5528c90c551e3e650da98e5b5f19962770391f30`，发布台账已记录 `scope=full / verify=ok`。

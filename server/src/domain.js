@@ -1305,6 +1305,48 @@ function normalizeManagedType(type) {
   return ''
 }
 
+const STAFF_LISTING_AUTO_APPROVAL_NOTE = '内部员工上传，按员工权限自动通过'
+
+function isStaffUser(user = {}) {
+  if (!user || user.isAdmin) return false
+  const accountTypeText = String(user.accountType || '').trim()
+  const accountType = normalizeManagedType(accountTypeText)
+  const roleText = String(user.role || '').trim()
+  const roleType = normalizeManagedType(roleText)
+  const legacyStaffRole = /^内部员工(?:\s*·.*)?$/.test(roleText)
+
+  // 新账号以服务端 accountType 为主；若 accountType 与 role 冲突则收紧为非员工，避免脏数据放大权限。
+  if (accountTypeText) {
+    if (accountType !== 'staff') return false
+    return !roleText || roleType === 'staff' || legacyStaffRole
+  }
+  return roleType === 'staff' || legacyStaffRole
+}
+
+function shouldAutoApproveStaffListing(user = {}, fields = {}) {
+  if (!isStaffUser(user) || fields.companyListing) return false
+  return fields.ownerType === OWNER_SOURCE || fields.ownerType === SECOND_LANDLORD_SOURCE
+}
+
+function isStaffAutoApprovedListing(listing = {}) {
+  return listing.reviewStatus === '已通过' && listing.reviewNote === STAFF_LISTING_AUTO_APPROVAL_NOTE
+}
+
+function applyStaffListingAutoApproval(listing, userId, reviewedAt = nowText()) {
+  listing.reviewStatus = '已通过'
+  if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认'
+  listing.reviewedAt = reviewedAt
+  listing.reviewerId = userId
+  listing.reviewNote = STAFF_LISTING_AUTO_APPROVAL_NOTE
+}
+
+function clearStaffListingAutoApproval(listing) {
+  if (listing.reviewNote !== STAFF_LISTING_AUTO_APPROVAL_NOTE) return
+  delete listing.reviewedAt
+  delete listing.reviewerId
+  delete listing.reviewNote
+}
+
 // 创建中介/员工账号（db.users）。后台“新增账号”与“注册审核开通”共用同一条创建路径，口径一致。
 function createManagedUser(db, payload = {}) {
   const kind = normalizeManagedType(payload.type)
@@ -4774,8 +4816,10 @@ function addNormalListing(db, userId, form = {}, options = {}) {
   assertNoDuplicateActiveListing(db, fields)
 
   const listingId = id('L')
-  const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
+  const staffAutoApproved = shouldAutoApproveStaffListing(user, fields)
+  const needsReview = !staffAutoApproved && (fields.ownerType === OWNER_SOURCE || fields.requiresManualReview)
   const mapCoordinate = listingMapCoordinateFields(fields, form, {}, options)
+  const createdAt = nowText()
   const listing = {
     id: listingId,
     title: `${fields.address} · ${fields.layout}`,
@@ -4830,9 +4874,10 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     coordinateLevel: mapCoordinate.coordinateLevel,
     coordinateAccuracy: mapCoordinate.coordinateAccuracy,
     coordinateStatus: mapCoordinate.coordinateStatus,
-    createdAt: nowText(),
-    lastVerifiedAt: nowText()
+    createdAt,
+    lastVerifiedAt: createdAt
   }
+  if (staffAutoApproved) applyStaffListingAutoApproval(listing, userId, createdAt)
 
   db.listings = db.listings || []
   db.pointLogs = db.pointLogs || []
@@ -4997,11 +5042,20 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.coordinateLevel = mapCoordinate.coordinateLevel
   listing.coordinateAccuracy = mapCoordinate.coordinateAccuracy
   listing.coordinateStatus = mapCoordinate.coordinateStatus
-  const needsReview = fields.ownerType === OWNER_SOURCE || fields.requiresManualReview
-  if (needsReview) {
+  const staffAutoApproved = shouldAutoApproveStaffListing(user, fields)
+  const preserveStaffAutoApproval = Boolean(options.admin) && isStaffAutoApprovedListing(listing) && !fields.companyListing
+  const autoApproved = staffAutoApproved || preserveStaffAutoApproval
+  const needsReview = !autoApproved && (fields.ownerType === OWNER_SOURCE || fields.requiresManualReview)
+  if (autoApproved) {
+    if (staffAutoApproved) applyStaffListingAutoApproval(listing, userId)
+    listing.reviewStatus = '已通过'
+    if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认'
+  } else if (needsReview) {
+    clearStaffListingAutoApproval(listing)
     listing.reviewStatus = listing.reviewStatus === '已通过' && options.admin && !fields.requiresManualReview ? '已通过' : '待审核'
     if (listing.reviewStatus !== '已通过') listing.status = '待审核'
   } else {
+    clearStaffListingAutoApproval(listing)
     listing.reviewStatus = '无需审核'
     if (listing.status === '待审核' || listing.status === '已驳回') listing.status = '待确认'
   }

@@ -314,7 +314,9 @@ PUT /mini/my/listings/:id
 
 必填字段由服务端校验：城市、区域、小区、楼栋、房号、租金、户型和特点标签。非公司房源还必须有真实视频。`unit`（单元）与 `block`（板块/商圈）均可选：无单元楼栋允许留空；填写板块时会去除首尾空格后独立落库，不能用行政区值冒充板块，否则按板块筛选无法命中。
 
-小区匹配与人工审核：服务端已知小区 = `server/src/community-library.js` 的 `GONGSHU_COMMUNITIES` 名单 ∪ `server/src/community-coordinates.js` 的坐标表键（归一化去重后的并集）。匹配判定以服务端 `isKnownCommunity` 复核为权威——新建房源或把小区改为库外名称时，服务端判未匹配并进入人工审核、审核通过后才上架；小区名未变且历史已匹配（含兼容字段推导）的存量房源沿用历史判定，不因编辑重新进入审核；普通调用方的库外「已匹配」声明不被采信，申报只允许收紧（可主动申请人工审核，不能豁免）；管理员显式提交 `requiresManualReview=false` 时可豁免人工审核。客户端联想库 `utils/gongshu-communities.js` 由 `node server/scripts/sync-client-community-library.js` 从服务端库自动生成，请勿手改；新增小区只改服务端名单或坐标表后重跑该脚本，两端一致性由 `server/scripts/community-library-parity-test.js` 锁定（客户端缺库内小区会导致编辑/上传被误转人工审核）。
+小区匹配与人工审核：服务端已知小区 = `server/src/community-library.js` 的 `GONGSHU_COMMUNITIES` 名单 ∪ `server/src/community-coordinates.js` 的坐标表键（归一化去重后的并集）。匹配判定以服务端 `isKnownCommunity` 复核为权威——普通中介新建房源或把小区改为库外名称时，服务端判未匹配并进入人工审核、审核通过后才上架；小区名未变且历史已匹配（含兼容字段推导）的存量房源沿用历史判定，不因编辑重新进入审核；普通调用方的库外「已匹配」声明不被采信，申报只允许收紧（可主动申请人工审核，不能豁免）；管理员显式提交 `requiresManualReview=false` 时可豁免人工审核。客户端联想库 `utils/gongshu-communities.js` 由 `node server/scripts/sync-client-community-library.js` 从服务端库自动生成，请勿手改；新增小区只改服务端名单或坐标表后重跑该脚本，两端一致性由 `server/scripts/community-library-parity-test.js` 锁定（客户端缺库内小区会导致编辑/上传被误转人工审核）。
+
+内部员工上传免审：服务端数据库中账号类型确认为 `accountType=staff` 且角色口径一致，或存量角色为 `内部员工` 的非管理员用户，新建或本人编辑业主房源、二房东房源时直接写入 `reviewStatus=已通过`、`status=待确认`，并沿用 `reviewedAt`、`reviewerId`、`reviewNote` 记录“按员工权限自动通过”；即使小区未匹配，也不进入审核队列，但 `communityMatched=false`、`requiresManualReview=true` 和待补坐标事实必须保留，地图仍只按既有可靠坐标规则上图。管理员编辑该自动通过房源不会误退回待审。普通中介的业主房源、库外小区或其他人工审核路径不变；客户端提交的 `role`、`accountType`、`isAdmin`、`uploaderId`、`status`、`reviewStatus`、`reviewNote` 全部不能授予免审权限。该规则对员工新建和本人后续编辑生效，不在服务启动时批量改写历史待审核记录。
 
 看房方式（`viewingMethod`）为选项字段：`钥匙` / `密码` / `联系房东`，并按所选方式条件必填对应信息——钥匙必填 `viewingKeyLocation`（钥匙位置）、密码必填 `viewingPassword`（看房密码）、合作房源选择联系房东时必填 `contact`（11 位大陆手机号，前后端均校验）。**房东手机号不再无条件必填**，仅看房方式为联系房东时必填；公司房源继续兼容飞书“公司统一维护”等非手机号占位，详情电话以 `COMPANY_CONTACT_PHONES` 为准；不传看房方式的旧客户端仍要求联系方式（保证房源至少有一种可看房途径）。
 
