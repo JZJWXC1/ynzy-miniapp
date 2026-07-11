@@ -693,6 +693,65 @@ function assertCommissionRuleConserved(rule) {
   }
 }
 
+function commissionFenBreakdown(landlordCommissionFen, rule = {}) {
+  assertCommissionRuleConserved(rule)
+  const totalFen = Number(landlordCommissionFen)
+  if (!Number.isSafeInteger(totalFen) || totalFen < 0) {
+    const error = new Error('房东佣金金额异常，拒绝结算')
+    error.statusCode = 500
+    throw error
+  }
+  const distributedFen = Math.round(totalFen * Number(rule.rate) / 100)
+  const uploaderCommissionFen = Math.min(
+    distributedFen,
+    Math.round(totalFen * Number(rule.uploaderRate) / 100)
+  )
+  // 总可分金额只四舍五入一次，平台取剩余值，避免极小金额两边各自进位后超发。
+  const platformCommissionFen = distributedFen - uploaderCommissionFen
+  return { distributedFen, uploaderCommissionFen, platformCommissionFen }
+}
+
+function roundCommissionPercent(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100
+}
+
+// 将“房东总佣金占月租比例”换算为详情页和成交快照统一使用的月租占比。
+// 维护人就是房源服务端记录的 uploader；带看人就是当前已验签用户/报备 broker，均不接受客户端传值。
+function commissionBreakdownFromRule(landlordCommissionPercent, rule = {}) {
+  assertCommissionRuleConserved(rule)
+  const landlordPercentOfRent = Number(landlordCommissionPercent)
+  if (!Number.isInteger(landlordPercentOfRent) || landlordPercentOfRent < 0 || landlordPercentOfRent > 100) {
+    const error = new Error('房东佣金比例异常，无法计算分佣明细')
+    error.statusCode = 500
+    throw error
+  }
+  const maintainerRate = Number(rule.uploaderRate || 0)
+  const platformRate = Number(rule.platformRate || 0)
+  const viewingAgentRate = roundCommissionPercent(100 - maintainerRate - platformRate)
+  const maintainerPercentOfRent = roundCommissionPercent(landlordPercentOfRent * maintainerRate / 100)
+  const platformPercentOfRent = roundCommissionPercent(landlordPercentOfRent * platformRate / 100)
+  // 用减法锁定最后一项，避免三项分别四舍五入后与总比例出现 0.01 的漂移。
+  const viewingAgentPercentOfRent = roundCommissionPercent(
+    landlordPercentOfRent - maintainerPercentOfRent - platformPercentOfRent
+  )
+  return {
+    landlordPercentOfRent,
+    viewingAgentPercentOfRent,
+    maintainerPercentOfRent,
+    platformPercentOfRent,
+    split: {
+      viewingAgentRate,
+      maintainerRate,
+      platformRate
+    }
+  }
+}
+
+function commissionBreakdownForListing(listing = {}, db = {}, viewerId = '') {
+  const rule = commissionRuleForListing(listing, db, listing.uploaderId, viewerId)
+  return commissionBreakdownFromRule(storedLandlordCommissionPercent(listing), rule)
+}
+
 function isLegacyRentInventory(listing = {}) {
   const sourceText = [
     listing.status,
@@ -2093,15 +2152,18 @@ function matchListings(db, condition = {}) {
   }
 }
 
-function buildListingDetail(db, listing) {
-  const uploader = userById(db, listing.uploaderId) || {}
+function buildListingDetail(db, listing, viewerId = '') {
   const location = publicListingLocationFields(listing)
   const display = listingDisplayFields(listing, db)
+  const {
+    commissionText: _legacyCommissionText,
+    commissionBadge: _legacyCommissionBadge,
+    ...detailDisplay
+  } = display
   const companyPublic = companyPublicListingFields(listing)
   return {
     id: listing.id,
     title: publicListingTitle(listing, location),
-    uploader: uploader.name || '未知',
     rent: String(listing.rent),
     layout: listing.layout,
     ...location,
@@ -2110,10 +2172,9 @@ function buildListingDetail(db, listing) {
     sensitiveLocked: !display.companyListing,
     // 看房方式名不属敏感，直接下发；钥匙位置/密码/电话等敏感值仍走公司公开或留痕后 sensitive 下发
     ...listingViewingMethodFields(listing),
-    commissionRate: display.noCommission ? 0 : commissionRateForListing(listing, db),
     landlordCommissionPercent: storedLandlordCommissionPercent(listing),
+    commissionBreakdown: commissionBreakdownForListing(listing, db, viewerId),
     remark: safePublicListingRemark(listing),
-    commissionText: display.commissionText,
     noCommission: display.noCommission,
     companyListing: display.companyListing,
     sourceLabel: display.sourceLabel,
@@ -2128,7 +2189,7 @@ function buildListingDetail(db, listing) {
     hall: listing.hall || '',
     bath: listing.bath || '',
     status: listing.status,
-    ...display,
+    ...detailDisplay,
     ...companyPublic
   }
 }
@@ -2148,7 +2209,7 @@ function unavailableListingDetail(listing, listingId) {
   }
 }
 
-function listingDetailState(db, listingId) {
+function listingDetailState(db, listingId, viewerId = '') {
   autoExpireOverdueListings(db)
   const listing = listingById(db, listingId)
   if (!listing) {
@@ -2174,7 +2235,7 @@ function listingDetailState(db, listingId) {
     listingId,
     rawFound: true,
     listing,
-    detail: buildListingDetail(db, listing)
+    detail: buildListingDetail(db, listing, viewerId)
   }
 }
 
@@ -2185,8 +2246,8 @@ function isOwnListing(db, listingId, userId) {
   return Boolean(listing && listing.uploaderId && String(listing.uploaderId) === String(userId))
 }
 
-function listingDetail(db, listingId) {
-  const state = listingDetailState(db, listingId)
+function listingDetail(db, listingId, viewerId = '') {
+  const state = listingDetailState(db, listingId, viewerId)
   return state.status === 'available' ? state.detail : null
 }
 
@@ -2216,12 +2277,22 @@ function listingLogs(db, listingId, userId) {
       const user = userById(db, item.viewerId) || {}
       return {
         user: user.name || '未知',
-        action: item.action,
+        action: footprintActionText(item),
         needId: item.needId || '',
         purpose: item.purpose || '',
-        time: item.time
+        time: footprintOccurredAt(item)
       }
     })
+}
+
+function footprintActionText(record = {}) {
+  if (record.action) return record.action
+  if (record.actionType === 'phone_call_opened') return '电话查看（已打开系统拨号页）'
+  return String(record.actionType || '')
+}
+
+function footprintOccurredAt(record = {}) {
+  return record.time || record.occurredAt || ''
 }
 
 function footprintRecords(db, userId) {
@@ -2240,14 +2311,15 @@ function footprintRecords(db, userId) {
       const uploader = usersById.get(listing.uploaderId) || {}
       const location = publicListingLocationFields(listing)
       const isMine = record.viewerId === userId
+      const syncText = record.sync ? ` · ${record.sync}` : ''
       return {
         id: record.id,
         title: publicListingTitle(listing, location) || '未知房源',
-        status: record.action,
+        status: footprintActionText(record),
         customer: `查看人：${viewer.name || '未知'} · ${viewer.authed || '未实名'}`,
-        time: record.time,
+        time: footprintOccurredAt(record),
         price: listing.rent ? `¥${listing.rent}/月` : '',
-        meta: `上传人：${uploader.name || '未知'} · ${record.sync}`,
+        meta: `上传人：${uploader.name || '未知'}${syncText}`,
         needId: record.needId || '',
         purpose: record.purpose || '',
         direction: isMine ? '我查看的' : '我的房源被查看',
@@ -3163,12 +3235,12 @@ function adminLogs(db) {
     return {
       viewer: viewer.name,
       listing: listing.shortTitle,
-      action: item.action,
+      action: footprintActionText(item),
       needId: item.needId || '',
       purpose: item.purpose || '',
       uploader: uploader.name,
-      sync: item.sync,
-      time: item.time
+      sync: item.sync || '',
+      time: footprintOccurredAt(item)
     }
   })
 }
@@ -3374,6 +3446,86 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
       sensitiveLocked: false
     }
   }
+}
+
+function hasDialableListingPhone(listing = {}) {
+  if (isCompanyListing(listing)) {
+    return /^1[3-9]\d{9}$/.test(String(companyPublicListingFields(listing).landlordPhone || ''))
+  }
+  return /^1[3-9]\d{9}$/.test(String(listing.landlordPhone || '').trim())
+}
+
+function hasSensitiveListingAccess(db, userId, listing = {}) {
+  if (isCompanyListing(listing)) return true
+  if (listing.uploaderId && String(listing.uploaderId) === String(userId)) return true
+  return (db.footprints || []).some((item) => (
+    item &&
+    String(item.viewerId || '') === String(userId) &&
+    String(item.listingId || '') === String(listing.id || '') &&
+    (
+      Boolean(item.quotaCategory) ||
+      /查看地址和电话|敏感信息/.test(String(item.action || '')) ||
+      /sensitive_(?:view|info)/i.test(String(item.actionType || ''))
+    )
+  ))
+}
+
+function storeExactFootprint(db, record) {
+  db.footprints = db.footprints || []
+  db.footprints.unshift(record)
+  if (db.footprints.length > MAX_FOOTPRINT_ROWS) {
+    db.footprints = db.footprints.slice(0, MAX_FOOTPRINT_ROWS)
+  }
+  return record
+}
+
+// 只记录“系统拨号页已成功打开”。客户端只能提供不可读的幂等键；账号、房源、动作和时间全部由服务端决定。
+function recordPhoneCallOpened(db, userId, listingId, payload = {}) {
+  assertKnownUser(db, userId)
+  const idempotencyKey = String(payload && payload.idempotencyKey || '').trim()
+  if (!/^[A-Za-z0-9:_-]{8,128}$/.test(idempotencyKey)) {
+    const error = new Error('拨号记录幂等标识无效')
+    error.statusCode = 400
+    throw error
+  }
+  // 幂等重试优先于可变房态、电话和授权门禁：首次写入成功后，即使房源随后成交/下架，重试也应
+  // 返回原六字段记录并让客户端清空补发队列，不能把同一成功动作永久卡住。
+  const existing = (db.footprints || []).find((item) => (
+    item &&
+    item.actionType === 'phone_call_opened' &&
+    String(item.viewerId || '') === String(userId) &&
+    String(item.listingId || '') === String(listingId) &&
+    item.idempotencyKey === idempotencyKey
+  ))
+  if (existing) return clone(existing)
+
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  assertFrontendListingAvailable(listing)
+  if (!hasDialableListingPhone(listing)) {
+    const error = new Error('该房源暂无可拨打电话')
+    error.statusCode = 409
+    throw error
+  }
+  if (!hasSensitiveListingAccess(db, userId, listing)) {
+    const error = new Error('请先完成敏感信息查看确认')
+    error.statusCode = 403
+    throw error
+  }
+  const record = {
+    id: id('F'),
+    viewerId: String(userId),
+    listingId: String(listingId),
+    actionType: 'phone_call_opened',
+    occurredAt: new Date().toISOString(),
+    idempotencyKey
+  }
+  storeExactFootprint(db, record)
+  return clone(record)
 }
 
 function recordVideoShare(db, userId, listingId, payload = {}) {
@@ -3680,8 +3832,21 @@ function formatDealRecord(db, deal = {}) {
   const uploaderRate = Number(savedCommissionRule.uploaderRate ?? (rate ? (savedCommissionRule.rate ?? baseCommissionRule.uploaderRate) : 0))
   const platformRate = Number(savedCommissionRule.platformRate ?? Math.max(0, rate - uploaderRate))
   const commissionRule = { rate, uploaderRate, platformRate }
-  const expectedUploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * uploaderRate / 100)
-  const expectedPlatformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * platformRate / 100)
+  const savedLandlordCommissionPercent = Number(
+    deal.landlordCommissionPercent ??
+    (deal.dealSnapshot && deal.dealSnapshot.landlordCommissionPercent)
+  )
+  const landlordCommissionPercent = Number.isInteger(savedLandlordCommissionPercent) && savedLandlordCommissionPercent >= 0 && savedLandlordCommissionPercent <= 100
+    ? savedLandlordCommissionPercent
+    : storedLandlordCommissionPercent(listing)
+  const commissionBreakdown = clone(
+    deal.commissionBreakdown ||
+    (deal.dealSnapshot && deal.dealSnapshot.commissionBreakdown) ||
+    commissionBreakdownFromRule(landlordCommissionPercent, commissionRule)
+  )
+  const expectedCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
+  const expectedUploaderCommissionFen = expectedCommissionFen.uploaderCommissionFen
+  const expectedPlatformCommissionFen = expectedCommissionFen.platformCommissionFen
   return {
     id: deal.id,
     reportId: deal.reportId,
@@ -3697,6 +3862,8 @@ function formatDealRecord(db, deal = {}) {
     dealMonthlyRent: fenToYuanText(deal.dealMonthlyRentFen),
     landlordCommissionFen: deal.landlordCommissionFen,
     landlordCommission: fenToYuanText(deal.landlordCommissionFen),
+    landlordCommissionPercent,
+    commissionBreakdown,
     uploaderCommissionRate: rate,
     uploaderRate,
     platformRate,
@@ -3765,12 +3932,9 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
     ['dealMonthlyRentFen', 'monthlyRentFen', 'rentFen'],
     '成交月租'
   )
-  const landlordCommissionFen = amountFenFromPayload(
-    payload,
-    ['landlordCommission', 'landlordPaidCommission', 'landlordActualCommission', 'ownerCommission', 'commissionAmount'],
-    ['landlordCommissionFen', 'landlordPaidCommissionFen', 'landlordActualCommissionFen', 'ownerCommissionFen', 'commissionAmountFen'],
-    '房东实际支付佣金'
-  )
+  // 房东实付总佣金只由“成交月租 × 房源已存比例”计算。客户端即使提交同名金额/比例也不会参与结果。
+  const landlordCommissionPercent = storedLandlordCommissionPercent(listing)
+  const landlordCommissionFen = Math.round(dealMonthlyRentFen * landlordCommissionPercent / 100)
 
   const now = nowText()
   const location = publicListingLocationFields(listing)
@@ -3780,6 +3944,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
   const ownerType = sourceFields.ownerType
   const source = listing.source || sourceFields.sourceLabel || ''
   const commissionRule = commissionRuleForListing({ ...listing, ownerType, source }, db, listing.uploaderId, report.brokerId)
+  const commissionBreakdown = commissionBreakdownFromRule(landlordCommissionPercent, commissionRule)
   const dealSnapshot = {
     needId: report.needId || '',
     listingId: report.listingId,
@@ -3792,7 +3957,10 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
     rentFen,
     ownerType,
     source,
+    landlordCommissionPercent,
+    landlordCommissionFen,
     commissionRule,
+    commissionBreakdown,
     snapshotAt: now
   }
   const deal = {
@@ -3808,7 +3976,9 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
     rentFen,
     ownerType,
     source,
+    landlordCommissionPercent,
     commissionRule,
+    commissionBreakdown,
     snapshotAt: now,
     dealSnapshot,
     dealMonthlyRentFen,
@@ -3871,8 +4041,9 @@ function confirmDeal(db, adminId, dealId) {
   // 防止历史脏配置或异常冻结快照绕过 setCommissionConfig 入口后真实超发。
   assertCommissionRuleConserved(commissionRule)
   const now = nowText()
-  const uploaderCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.uploaderRate / 100)
-  const platformCommissionFen = Math.round(Number(deal.landlordCommissionFen || 0) * commissionRule.platformRate / 100)
+  const settledCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
+  const uploaderCommissionFen = settledCommissionFen.uploaderCommissionFen
+  const platformCommissionFen = settledCommissionFen.platformCommissionFen
   // 不再回写覆盖 deal.commissionRule / dealSnapshot.commissionRule：它们是签单时冻结的
   // 不可变证据。仅为缺失冻结值的历史签单补齐（不覆盖已有值）。
   if (!deal.commissionRule) {
@@ -4416,9 +4587,9 @@ function companyPublicListingFields(listing = {}) {
   const location = listingLocationFields(listing)
   const companyPhones = ((config.company && config.company.contactPhones) || [])
     .map((item) => String(item || '').trim())
-    .filter(Boolean)
-  const companyPhoneText = companyPhones.join('/')
-  const contact = companyPhoneText || firstText(listing.contact, listing.feishuContact, listing.landlordPhone)
+    .filter((item) => /^1[3-9]\d{9}$/.test(item))
+    .slice(0, 1)
+  const contact = companyPhones[0] || ''
   const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
   const remark = safePublicListingRemark(listing)
   const room = firstText(listing.roomAddress, location.roomAddress)
@@ -5279,6 +5450,7 @@ module.exports = {
   commissionConfig,
   setCommissionConfig,
   commissionRuleForListing,
+  commissionBreakdownForListing,
   commissionRateByOwnerType,
   platformRateByOwnerType,
   dashboardSummary,
@@ -5328,6 +5500,7 @@ module.exports = {
   markRechargePaid,
   syncWechatRechargeBill,
   addSensitiveFootprint,
+  recordPhoneCallOpened,
   recordShowing,
   registerDeal,
   rechargePoints,

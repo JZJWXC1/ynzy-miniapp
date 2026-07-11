@@ -13,7 +13,8 @@
   var COMPANY_SOURCE = '公司房源';
   var V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
-  var COMPANY_CONTACT_PHONES = ['10000000001', '10000000002'];
+  // 开发者工具预览专用明显假值；生产号码只从服务端环境配置读取。
+  var COMPANY_CONTACT_PHONES = ['19900000001'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var OWNER_SOURCE_ALIASES = [OWNER_SOURCE, '业主'];
@@ -629,6 +630,36 @@
     return commissionRateByOwnerType(ownerType) + platformRateByOwnerType(ownerType);
   }
 
+  function commissionRuleForListing(listing, viewerId) {
+    var item = listing || {};
+    if (isCompanyListing(item) || (item.uploaderId && String(item.uploaderId) === String(viewerId || ''))) {
+      return { rate: 0, uploaderRate: 0, platformRate: 0 };
+    }
+    var uploader = getUser(item.uploaderId) || {};
+    var ownerType = item.ownerType || item.houseSourceType || item.source || SECOND_LANDLORD_SOURCE;
+    var uploaderRate = uploader.isAdmin ? 0 : commissionRateByOwnerType(ownerType);
+    var platformRate = platformRateByOwnerType(ownerType);
+    return { rate: uploaderRate + platformRate, uploaderRate: uploaderRate, platformRate: platformRate };
+  }
+
+  function commissionBreakdownForListing(listing, viewerId) {
+    var landlordPercent = landlordCommissionPercentFrom({}, listing || {});
+    var rule = commissionRuleForListing(listing, viewerId);
+    var maintainerPercent = Math.round(landlordPercent * rule.uploaderRate) / 100;
+    var platformPercent = Math.round(landlordPercent * rule.platformRate) / 100;
+    return {
+      landlordPercentOfRent: landlordPercent,
+      viewingAgentPercentOfRent: Math.round((landlordPercent - maintainerPercent - platformPercent) * 100) / 100,
+      maintainerPercentOfRent: maintainerPercent,
+      platformPercentOfRent: platformPercent,
+      split: {
+        viewingAgentRate: 100 - rule.uploaderRate - rule.platformRate,
+        maintainerRate: rule.uploaderRate,
+        platformRate: rule.platformRate
+      }
+    };
+  }
+
   function isOwnerListing(listing) {
     var data = listing || {};
     var values = [data.ownerType, data.houseSourceType, data.source];
@@ -676,6 +707,18 @@
     });
   }
 
+  function footprintActionText(record) {
+    var item = record || {};
+    if (item.action) return item.action;
+    if (item.actionType === 'phone_call_opened') return '电话查看（已打开系统拨号页）';
+    return String(item.actionType || '');
+  }
+
+  function footprintOccurredAt(record) {
+    var item = record || {};
+    return item.time || item.occurredAt || '';
+  }
+
   function withListingNames(record) {
     var listing = getListing(record.listingId) || {};
     var viewer = getUser(record.viewerId) || {};
@@ -684,11 +727,11 @@
     return {
       id: record.id,
       title: listing.title || '未知房源',
-      status: record.action,
+      status: footprintActionText(record),
       customer: '查看人：' + (viewer.name || '未知') + ' · ' + (viewer.authed || '未实名'),
-      time: record.time,
+      time: footprintOccurredAt(record),
       price: listing.rent ? '¥' + listing.rent + '/月' : '',
-      meta: '上传人：' + (uploader.name || '未知') + ' · ' + record.sync,
+      meta: '上传人：' + (uploader.name || '未知') + (record.sync ? ' · ' + record.sync : ''),
       direction: isMine ? '我查看的' : '我的房源被查看',
       raw: clone(record)
     };
@@ -1184,14 +1227,12 @@
     var listing = getListing(id);
     if (!listing) return null;
     if (isExpiredListing(listing) || isPendingOwnerReview(listing)) return null;
-    var uploader = getUser(listing.uploaderId) || {};
     var location = listingLocationFields(listing);
     var companyListing = isCompanyListing(listing);
-    var companyContactText = COMPANY_CONTACT_PHONES.join('/');
-    return Object.assign({
+    var companyContactText = COMPANY_CONTACT_PHONES[0] || '';
+    var detail = Object.assign({
       id: listing.id,
       title: listing.title,
-      uploader: uploader.name,
       ownListing: Boolean(listing.uploaderId && String(listing.uploaderId) === String(state.currentUserId)),
       rent: String(listing.rent),
       layout: listing.layout,
@@ -1214,7 +1255,7 @@
       sensitiveLocked: !companyListing,
       remark: listingRemarkContainsContact(listing.remark) ? '' : normalizeListingRemark(listing.remark),
       landlordCommissionPercent: landlordCommissionPercentFrom({}, listing),
-      commissionRate: listing.commissionRate,
+      commissionBreakdown: commissionBreakdownForListing(listing, state.currentUserId),
       videoLabel: listing.videoLabel,
       videoUrl: listing.videoUrl || '',
       videoKey: listing.videoKey || '',
@@ -1228,6 +1269,11 @@
       viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
       viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation)
     } : {}, listingDisplayFields(listing));
+    delete detail.uploader;
+    delete detail.commissionRate;
+    delete detail.commissionText;
+    delete detail.commissionBadge;
+    return detail;
   }
 
   function getListingLogs(listingId) {
@@ -1237,10 +1283,10 @@
       var user = getUser(item.viewerId) || {};
       return {
         user: user.name || '未知',
-        action: item.action,
+        action: footprintActionText(item),
         needId: item.needId || '',
         purpose: item.purpose || '',
-        time: item.time
+        time: footprintOccurredAt(item)
       };
     });
   }
@@ -1740,10 +1786,10 @@
       return {
         viewer: viewer.name,
         listing: listing.shortTitle,
-        action: item.action,
+        action: footprintActionText(item),
         uploader: uploader.name,
-        sync: item.sync,
-        time: item.time
+        sync: item.sync || '',
+        time: footprintOccurredAt(item)
       };
     });
   }
@@ -2076,10 +2122,11 @@
     var listing = getListing(report.listingId);
     if (!listing) throw new Error('未找到该房源');
     var monthlyRentFen = yuanToFen(data.monthlyRent || data.dealMonthlyRent);
-    var landlordCommissionFen = yuanToFen(data.landlordCommission || data.landlordPaidCommission);
-    if (!monthlyRentFen || !landlordCommissionFen) {
-      throw new Error('成交月租和房东实际支付佣金必填');
-    }
+    if (!monthlyRentFen) throw new Error('成交月租必填');
+    var landlordCommissionPercent = landlordCommissionPercentFrom({}, listing);
+    var landlordCommissionFen = Math.round(monthlyRentFen * landlordCommissionPercent / 100);
+    var commissionRule = commissionRuleForListing(listing, state.currentUserId);
+    var commissionBreakdown = commissionBreakdownForListing(listing, state.currentUserId);
     state.dealRecords = state.dealRecords || [];
     var deal = {
       id: 'D' + Date.now(),
@@ -2091,6 +2138,19 @@
       uploaderId: listing.uploaderId,
       dealMonthlyRentFen: monthlyRentFen,
       landlordCommissionFen: landlordCommissionFen,
+      landlordCommissionPercent: landlordCommissionPercent,
+      commissionRule: commissionRule,
+      commissionBreakdown: commissionBreakdown,
+      dealSnapshot: {
+        listingId: report.listingId,
+        reportId: reportId,
+        brokerId: state.currentUserId,
+        uploaderId: listing.uploaderId,
+        landlordCommissionPercent: landlordCommissionPercent,
+        landlordCommissionFen: landlordCommissionFen,
+        commissionRule: commissionRule,
+        commissionBreakdown: commissionBreakdown
+      },
       remark: String(data.remark || '').trim(),
       status: '待管理员确认',
       createdAt: new Date().toLocaleString('zh-CN', { hour12: false })
@@ -2184,6 +2244,34 @@
       } : {},
       quota: brokerSensitiveUsage(state.currentUserId)
     };
+  }
+
+  function recordPhoneCallOpened(listingId, payload) {
+    if (!getUser()) throw new Error('请先登录内部中介账号');
+    var key = String(payload && payload.idempotencyKey || '').trim();
+    if (!/^[A-Za-z0-9:_-]{8,128}$/.test(key)) throw new Error('拨号记录幂等标识无效');
+    var existing = state.footprints.find(function (item) {
+      return item.actionType === 'phone_call_opened' && item.viewerId === state.currentUserId && item.listingId === listingId && item.idempotencyKey === key;
+    });
+    if (existing) return clone(existing);
+    var listing = getListing(listingId);
+    if (!listing || isExpiredListing(listing) || isPendingOwnerReview(listing)) throw new Error('该房源当前不可拨号');
+    var allowed = isCompanyListing(listing) ||
+      String(listing.uploaderId || '') === String(state.currentUserId || '') ||
+      state.footprints.some(function (item) {
+        return item.listingId === listingId && item.viewerId === state.currentUserId && Boolean(item.quotaCategory);
+      });
+    if (!allowed) throw new Error('请先完成敏感信息查看确认');
+    var record = {
+      id: 'F' + Date.now(),
+      viewerId: state.currentUserId,
+      listingId: listingId,
+      actionType: 'phone_call_opened',
+      occurredAt: new Date().toISOString(),
+      idempotencyKey: key
+    };
+    state.footprints.unshift(record);
+    return clone(record);
   }
 
   function recordVideoShare(listingId, payload) {
@@ -2866,6 +2954,7 @@
       });
     },
     addSensitiveFootprint: addSensitiveFootprint,
+    recordPhoneCallOpened: recordPhoneCallOpened,
     recordShowing: recordShowing,
     rechargePoints: rechargePoints,
     reviewRechargeBill: reviewRechargeBill,

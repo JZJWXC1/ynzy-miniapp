@@ -186,7 +186,6 @@ page {
   font-size: 24rpx;
 }
 
-.commission,
 .verify-tag {
   flex: 0 1 340rpx;
   padding: 10rpx 14rpx;
@@ -197,11 +196,6 @@ page {
   text-align: center;
   background: #C9A45D;
   border-radius: 18rpx;
-}
-
-.commission.no-commission {
-  color: #ffffff;
-  background: #2E514A;
 }
 
 .source-badges {
@@ -293,6 +287,125 @@ page {
   font-weight: 900;
   line-height: 1.35;
   word-break: break-all;
+}
+
+.location-compact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10rpx;
+  margin-top: 18rpx;
+}
+
+.location-compact-item {
+  min-width: 0;
+  padding: 13rpx 14rpx;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
+  border-radius: 16rpx;
+}
+
+.location-compact-item.community {
+  grid-column: span 1;
+}
+
+.location-compact-item text:first-child {
+  display: block;
+  color: #6A7671;
+  font-size: 19rpx;
+}
+
+.location-compact-item text:last-child {
+  display: block;
+  margin-top: 5rpx;
+  color: #182E2A;
+  font-size: 23rpx;
+  font-weight: 900;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.listing-remark,
+.commission-detail {
+  margin-top: 18rpx;
+  padding: 20rpx;
+  background: #F7FBF8;
+  border: 1rpx solid #D8E5DE;
+  border-radius: 20rpx;
+}
+
+.listing-remark-label {
+  color: #6A7671;
+  font-size: 21rpx;
+  font-weight: 800;
+}
+
+.listing-remark-value {
+  margin-top: 8rpx;
+  color: #182E2A;
+  font-size: 25rpx;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.commission-detail-head,
+.commission-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.commission-detail-head {
+  padding-bottom: 14rpx;
+  border-bottom: 1rpx solid #D8E5DE;
+}
+
+.commission-detail-head text:first-child {
+  color: #182E2A;
+  font-size: 27rpx;
+  font-weight: 900;
+}
+
+.commission-detail-head text:last-child {
+  color: #6A7671;
+  font-size: 20rpx;
+}
+
+.commission-detail-row {
+  padding-top: 14rpx;
+  color: #49615B;
+  font-size: 23rpx;
+}
+
+.commission-detail-row text:last-child {
+  color: #182E2A;
+  font-size: 25rpx;
+  font-weight: 900;
+}
+
+.commission-detail-row.total text {
+  color: #7A572D;
+  font-weight: 900;
+}
+
+.phone-call-button {
+  min-height: 82rpx;
+  margin-top: 20rpx;
+  color: #ffffff;
+  font-size: 28rpx;
+  font-weight: 900;
+  line-height: 82rpx;
+  background: #2E514A;
+  border-radius: 22rpx;
+}
+
+.phone-call-button[disabled] {
+  color: #6A7671;
+  background: #DDE8E2;
+}
+
+.phone-call-button::after {
+  border: 0;
 }
 
 .hidden-row {

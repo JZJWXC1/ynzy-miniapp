@@ -556,6 +556,15 @@ function addSensitiveFootprint(listingId, action) {
   })
 }
 
+function recordPhoneCallOpened(listingId, idempotencyKey) {
+  return apiClient.call({
+    path: `/mini/listings/${listingId}/phone-call-opened`,
+    method: 'POST',
+    data: { idempotencyKey },
+    mock: () => mockData.recordPhoneCallOpened(listingId, { idempotencyKey })
+  })
+}
+
 function recordVideoShare(listingId, payload) {
   return apiClient.call({
     path: `/mini/listings/${listingId}/video-share`,
@@ -961,6 +970,7 @@ module.exports = {
   getListingDetail,
   getListingLogs,
   addSensitiveFootprint,
+  recordPhoneCallOpened,
   recordVideoShare,
   recordShowing,
   getClientReports,

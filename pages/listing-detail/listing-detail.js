@@ -1,4 +1,5 @@
 const apiService = require('../../utils/api-service')
+const phoneFootprintOutbox = require('../../utils/footprint-outbox')
 
 const SHOWING_CANVAS_WIDTH = 900
 const SHOWING_CANVAS_HEIGHT = 1200
@@ -151,7 +152,9 @@ Page({
       landlordCommission: '',
       remark: ''
     },
-    currentReportId: ''
+    currentReportId: '',
+    currentUserId: '',
+    phoneCallBusy: false
   },
 
   onLoad(options) {
@@ -179,9 +182,13 @@ Page({
       this.authTokenSnapshot = nextToken
       return
     }
-    if (nextToken === this.authTokenSnapshot || !this.listingId) return
-    this.authTokenSnapshot = nextToken
-    this.loadListing(this.listingId)
+    if (nextToken !== this.authTokenSnapshot) {
+      // 换号后先以新 token 重新读取可信 profile；禁止用旧 currentUserId 队列配新 token 补发，避免串账号归属。
+      this.authTokenSnapshot = nextToken
+      if (this.listingId) this.loadListing(this.listingId)
+      return
+    }
+    if (this.data.currentUserId) this.flushPhoneFootprints(this.data.currentUserId)
   },
 
   hideNativeShareMenu() {
@@ -193,6 +200,12 @@ Page({
 
   loadListing(id) {
     this.listingId = id
+    const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
+    const requestToken = currentAuthToken()
+    this.listingLoadGeneration = requestGeneration
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration && currentAuthToken() === requestToken
+    )
     this.setData({
       listing: {},
       unavailableListing: {},
@@ -206,7 +219,7 @@ Page({
       ownSensitiveLoading: false,
       ownSensitiveLoadFailed: false
     })
-    Promise.all([
+    return Promise.all([
       apiService.getListingDetail(id),
       apiService.getListingLogs(id).catch(() => []),
       // profile 只影响“可查看敏感信息”按钮态，属辅助请求：任何失败（鉴权或网络/5xx）都降级为
@@ -216,6 +229,8 @@ Page({
         .then((profile) => ({ profile }))
         .catch(() => ({ profile: { user: {} } }))
     ]).then(([listing, logs, profileState]) => {
+      // 同页重载或换号后，较早请求即使更晚返回也不得覆盖新账号状态或触发旧账号队列补发。
+      if (!isCurrentRequest()) return
       if (listing && listing.unavailable) {
         this.setData({
           listing: {},
@@ -232,6 +247,8 @@ Page({
           ownSensitiveLoadFailed: false,
           canShareVideo: false,
           shareBrokerName: '',
+          currentUserId: '',
+          phoneCallBusy: false,
           shareStateText: '这套房源已更新，请重新找房。'
         })
         return
@@ -265,15 +282,19 @@ Page({
         sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
         shareBrokerName: user.name || '',
+        currentUserId: user.id || '',
+        phoneCallBusy: false,
         shareStateText: canShareVideo
           ? '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
           : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
+      if (user.id) this.flushPhoneFootprints(user.id)
       // 上传人自查自己上传的房源：直接拉取地址/房东电话填充（后端免留痕分支，不需 needId/用途弹窗）。
       if (ownListing && !companyListing) {
-        this.loadOwnSensitive(listing.id)
+        this.loadOwnSensitive(listing.id, { requestGeneration, requestToken })
       }
     }).catch((error) => {
+      if (!isCurrentRequest()) return
       if (isAuthError(error)) {
         this.setData({
           listing: {},
@@ -512,15 +533,25 @@ Page({
   },
 
   // 上传人自查：调后端免留痕分支（空 body）直接取地址/房东电话填充，不需 needId/用途、不留痕、不耗额度。
-  loadOwnSensitive(listingId) {
+  loadOwnSensitive(listingId, requestContext = {}) {
     if (!listingId) return
+    const requestGeneration = requestContext.requestGeneration === undefined
+      ? this.listingLoadGeneration
+      : requestContext.requestGeneration
+    const requestToken = requestContext.requestToken === undefined
+      ? currentAuthToken()
+      : requestContext.requestToken
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration && currentAuthToken() === requestToken
+    )
     this.setData({
       ownSensitiveLoading: true,
       ownSensitiveLoadFailed: false,
       sensitiveVisible: false,
       sensitivePlaceholder: '正在读取'
     })
-    apiService.addSensitiveFootprint(listingId, {}).then((result) => {
+    return apiService.addSensitiveFootprint(listingId, {}).then((result) => {
+      if (!isCurrentRequest()) return
       const sensitive = result && result.sensitive ? result.sensitive : {}
       this.setData({
         listing: Object.assign({}, this.data.listing, sensitive),
@@ -530,6 +561,7 @@ Page({
         ownSensitiveLoadFailed: false
       })
     }).catch(() => {
+      if (!isCurrentRequest()) return
       this.setData({
         sensitiveVisible: false,
         sensitivePlaceholder: '读取失败，请重试',
@@ -543,6 +575,58 @@ Page({
   retryOwnSensitive() {
     const listing = this.data.listing || {}
     if (!this.data.ownSensitiveLoading && listing.id) this.loadOwnSensitive(listing.id)
+  },
+
+  flushPhoneFootprints(accountId) {
+    const flushToken = currentAuthToken()
+    if (!accountId || !flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
+    return phoneFootprintOutbox.flushPhoneCalls(
+      accountId,
+      (listingId, idempotencyKey) => {
+        if (currentAuthToken() !== flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) {
+          const error = new Error('账号已变化，停止本轮拨号足迹补发')
+          error.stopOutboxFlush = true
+          return Promise.reject(error)
+        }
+        return apiService.recordPhoneCallOpened(listingId, idempotencyKey)
+      }
+    )
+  },
+
+  callLandlord() {
+    const listing = this.data.listing || {}
+    const accountId = safeText(this.data.currentUserId)
+    if (!accountId) {
+      this.promptLoginGuide('登录后联系房东', '打开系统拨号页需要记录本人操作，请先登录内部中介账号。')
+      return
+    }
+    if (!this.data.sensitiveVisible) {
+      wx.showToast({ title: '请先查看地址和电话', icon: 'none' })
+      return
+    }
+    const phoneNumber = safeText(listing.companyContactPhoneText || listing.landlordPhone)
+    if (!/^1[3-9]\d{9}$/.test(phoneNumber)) {
+      wx.showToast({ title: '电话待补充，暂不能拨号', icon: 'none' })
+      return
+    }
+    if (this.data.phoneCallBusy) return
+    this.setData({ phoneCallBusy: true })
+    wx.makePhoneCall({
+      phoneNumber,
+      success: () => {
+        try {
+          const idempotencyKey = phoneFootprintOutbox.createPhoneCallIdempotencyKey()
+          phoneFootprintOutbox.enqueuePhoneCall({
+            accountId,
+            listingId: listing.id,
+            idempotencyKey
+          })
+          this.flushPhoneFootprints(accountId)
+        } catch (error) {}
+      },
+      fail: () => {},
+      complete: () => this.setData({ phoneCallBusy: false })
+    })
   },
 
   revealSensitive() {

@@ -1734,7 +1734,7 @@ async function handleMini(req, res, pathname, searchParams) {
   const listingMatch = pathname.match(/^\/mini\/listings\/([^/]+)$/)
   if (method === 'GET' && listingMatch) {
     const listingId = listingMatch[1]
-    const detailState = domain.listingDetailState(db, listingId)
+    const detailState = domain.listingDetailState(db, listingId, userId)
     if (detailState.status === 'not-found') {
       logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
       const error = new Error('房源不存在')
@@ -1816,6 +1816,18 @@ async function handleMini(req, res, pathname, searchParams) {
       scene: body.scene,
       reason: body.reason
     })))
+  }
+
+  const phoneCallOpenedMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/phone-call-opened$/)
+  if (method === 'POST' && phoneCallOpenedMatch) {
+    assertMiniLogin(userId)
+    const body = await parseBody(req)
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.recordPhoneCallOpened(
+      nextDb,
+      userId,
+      phoneCallOpenedMatch[1],
+      { idempotencyKey: body.idempotencyKey }
+    )))
   }
 
   const error = new Error(`接口不存在：${method} ${pathname}`)

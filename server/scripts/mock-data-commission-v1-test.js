@@ -72,7 +72,15 @@ function run() {
 
   const detail = mockData.getListingDetail(company.id)
   assert.strictEqual(detail.noCommission, false, 'mock detail should expose commission-enabled state')
-  assert.strictEqual(detail.commissionRate, 20, 'mock detail should expose recomputed second-landlord rate')
+  assert.ok(!Object.prototype.hasOwnProperty.call(detail, 'commissionRate'), 'mock detail should remove legacy commissionRate')
+  assert.ok(!Object.prototype.hasOwnProperty.call(detail, 'commissionText'), 'mock detail should remove legacy commissionText')
+  assert.deepStrictEqual(detail.commissionBreakdown, {
+    landlordPercentOfRent: 50,
+    viewingAgentPercentOfRent: 50,
+    maintainerPercentOfRent: 0,
+    platformPercentOfRent: 0,
+    split: { viewingAgentRate: 100, maintainerRate: 0, platformRate: 0 }
+  }, 'mock detail should use the same server-computed breakdown contract for self viewing')
   assert.strictEqual(detail.features.indexOf(TEXT.noCommission), -1, 'mock detail should not expose no-commission feature')
 
   const owner = mockData.updateNormalListing(company.id, listingPayload({

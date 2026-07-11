@@ -192,7 +192,7 @@ function normalizeListing(listing, options) {
   const relevanceSource = data.relevancePercent || data.matchScore || data.relevanceScore || (/匹配|相关性/.test(tagText) ? tagText : '')
   const relevance = formatRelevance(relevanceSource)
   const commissionText = companyListing ? COMPANY_COMMISSION_TEXT : (data.commissionText || V1_COMMISSION_TEXT)
-  return {
+  const normalized = {
     ...data,
     features,
     maintenanceText: maintenanceText(data),
@@ -207,6 +207,15 @@ function normalizeListing(listing, options) {
     matchScore: data.matchScore || relevance,
     tag: relevance && /匹配|相关性/.test(String(data.tag || '')) ? `相关性 ${relevance}` : data.tag
   }
+  // 详情接口出现可信 commissionBreakdown 时进入新契约：不在客户端补回旧佣金条或上传人字段。
+  if (data.commissionBreakdown) {
+    delete normalized.uploader
+    delete normalized.commissionRate
+    delete normalized.commissionText
+    delete normalized.commission
+    delete normalized.commissionBadge
+  }
+  return normalized
 }
 
 function normalizeListings(listings, options) {

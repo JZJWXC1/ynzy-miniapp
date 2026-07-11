@@ -76,7 +76,6 @@
           <view class="listing-title">{{listing.title}}</view>
           <view class="listing-area">{{listing.areaText || listing.area}} · {{listing.status}}</view>
         </view>
-        <view class="commission {{listing.noCommission ? 'no-commission' : ''}}">{{listing.commissionText || '成交总比例按成交总佣金的 30% 计算'}}</view>
       </view>
       <view class="source-badges">
         <text wx:if="{{listing.companyListing}}" class="company-badge">公司房源</text>
@@ -88,15 +87,28 @@
       <view class="facts">
         <view class="fact"><text>¥{{listing.rent}}/月</text><text>租金</text></view>
         <view class="fact"><text>{{listing.layout}}</text><text>户型</text></view>
-        <view class="fact"><text>{{listing.uploader}}</text><text>上传人</text></view>
       </view>
-      <view class="location-grid">
-        <view class="location-item"><text>城市</text><text>{{listing.city || '杭州'}}</text></view>
-        <view class="location-item"><text>区域</text><text>{{listing.district || listing.area}}</text></view>
-        <view class="location-item wide"><text>小区名称</text><text>{{listing.community}}</text></view>
-        <view class="location-item"><text>几栋</text><text>{{listing.building || '-'}}</text></view>
-        <view class="location-item"><text>几单元</text><text>{{listing.unit || '-'}}</text></view>
-        <view class="location-item"><text>房间号</text><text>{{listing.roomNumber || '-'}}</text></view>
+      <view class="location-compact-grid">
+        <view class="location-compact-item"><text>城市</text><text>{{listing.city || '杭州'}}</text></view>
+        <view class="location-compact-item"><text>区域</text><text>{{listing.district || listing.area}}</text></view>
+        <view class="location-compact-item community"><text>小区</text><text>{{listing.community}}</text></view>
+        <view class="location-compact-item"><text>楼栋</text><text>{{listing.building || '-'}}</text></view>
+        <view class="location-compact-item"><text>单元</text><text>{{listing.unit || '-'}}</text></view>
+        <view class="location-compact-item"><text>房间</text><text>{{listing.roomNumber || '-'}}</text></view>
+      </view>
+      <view wx:if="{{listing.remark}}" class="listing-remark">
+        <view class="listing-remark-label">房源备注</view>
+        <view class="listing-remark-value">{{listing.remark}}</view>
+      </view>
+      <view wx:if="{{listing.commissionBreakdown}}" class="commission-detail">
+        <view class="commission-detail-head">
+          <text>佣金明细</text>
+          <text>均为占月租比例</text>
+        </view>
+        <view class="commission-detail-row total"><text>房东总佣金</text><text>{{listing.commissionBreakdown.landlordPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>带看人</text><text>{{listing.commissionBreakdown.viewingAgentPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>房源维护人</text><text>{{listing.commissionBreakdown.maintainerPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>平台服务费</text><text>{{listing.commissionBreakdown.platformPercentOfRent}}%</text></view>
       </view>
     </view>
 
@@ -125,10 +137,17 @@
         <view class="hidden-label">看房密码</view>
         <view class="hidden-value">{{sensitiveVisible ? (listing.viewingPassword || '待补充') : sensitivePlaceholder}}</view>
       </view>
-      <view wx:if="{{listing.companyListing || listing.viewingMethod === '联系房东' || !listing.viewingMethod}}" class="hidden-row">
+      <view class="hidden-row">
         <view class="hidden-label">{{listing.companyListing ? '公司看房电话' : '房东电话'}}</view>
         <view class="hidden-value">{{sensitiveVisible ? (listing.companyContactPhoneText || listing.landlordPhone || '待补充') : sensitivePlaceholder}}</view>
       </view>
+      <button
+        wx:if="{{sensitiveVisible && (listing.companyContactPhoneText || listing.landlordPhone)}}"
+        class="phone-call-button"
+        loading="{{phoneCallBusy}}"
+        disabled="{{phoneCallBusy}}"
+        bindtap="callLandlord"
+      >联系房东</button>
       <view wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row {{needId ? 'bound' : ''}}">
         <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>
         <view class="need-bind-desc">{{needId ? needId : '从找房助手进入会自动带入，也可用当前房源创建最小需求。'}}</view>

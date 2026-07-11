@@ -358,7 +358,8 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   })
   const deal = db.dealRecords.find((item) => item.id === dealResult.deal.id)
   assert.strictEqual(deal.dealMonthlyRentFen, 350000, '成交月租必须按分存储')
-  assert.strictEqual(deal.landlordCommissionFen, 500000, '房东实际支付佣金必须按分存储')
+  assert.strictEqual(deal.landlordCommissionPercent, 50, '签单必须冻结房源佣金占月租比例')
+  assert.strictEqual(deal.landlordCommissionFen, 175000, '房东佣金必须由成交月租 3500 × 房源比例 50% 自动计算')
   assert.strictEqual(db.commissionRecords.length, 0, '管理员确认前不能生成正式分佣记录')
 
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
@@ -366,8 +367,8 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   assert.strictEqual(confirmResult.commissionRecord.rate, 30, '二房东房源成交总分出必须固定 30%')
   assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 20, '二房东房源上传人到手比例必须固定 20%')
   assert.strictEqual(confirmResult.commissionRecord.platformRate, 10, '二房东房源平台留存比例必须固定 10%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 100000, '二房东房源上传人分佣必须等于成交总佣金的 20%')
-  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 50000, '二房东房源平台留存必须等于成交总佣金的 10%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 35000, '二房东房源维护人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 17500, '二房东房源平台留存必须等于自动计算总佣金的 10%')
 
   const ownerListing = domain.addNormalListing(db, 'U1', listingPayload({
     communityName: '京漾东韵府',
@@ -400,8 +401,8 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   assert.strictEqual(ownerConfirm.commissionRecord.rate, 30, '业主房源成交总分出必须固定 30%')
   assert.strictEqual(ownerConfirm.commissionRecord.uploaderRate, 20, '业主房源上传人到手比例必须固定 20%')
   assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 10, '业主房源平台留存比例必须固定 10%')
-  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于成交总佣金的 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 50000, '业主房源平台留存必须等于成交总佣金的 10%')
+  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 35000, '业主房源维护人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 17500, '业主房源平台留存必须等于自动计算总佣金的 10%')
 
   const beforeCompanyCommissionCount = db.commissionRecords.length
   const companyReportResult = domain.createClientReport(db, 'U2', companyNoVideo.id, {

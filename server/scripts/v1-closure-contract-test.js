@@ -182,6 +182,8 @@ function run() {
   assert.strictEqual(deal.commissionRule.rate, 30, '二房东签单快照必须保存成交总分出 30% 规则')
   assert.strictEqual(deal.commissionRule.uploaderRate, 20, '二房东签单快照必须保存上传人 20% 规则')
   assert.strictEqual(deal.commissionRule.platformRate, 10, '二房东签单快照必须保存平台 10% 规则')
+  assert.strictEqual(deal.landlordCommissionPercent, 50, '签单必须冻结房源佣金占月租比例')
+  assert.strictEqual(deal.landlordCommissionFen, 210000, '签单总佣金必须由成交月租 4200 × 50% 自动计算')
   assert.ok(deal.snapshotAt, '签单必须保存快照时间')
   assert.deepStrictEqual(deal.dealSnapshot.commissionRule, { rate: 30, uploaderRate: 20, platformRate: 10 }, '签单必须保存不可变快照对象')
 
@@ -195,8 +197,8 @@ function run() {
   assert.strictEqual(confirmResult.commissionRecord.rate, 30, '二房东成交总分出必须固定 30%')
   assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 20, '二房东上传人到手比例必须固定 20%')
   assert.strictEqual(confirmResult.commissionRecord.platformRate, 10, '二房东平台留存比例必须固定 10%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 120000, '二房东上传人分佣必须按成交总佣金 20% 计算')
-  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 60000, '二房东平台留存必须按成交总佣金 10% 计算')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 42000, '二房东上传人分佣必须按服务端自动计算总佣金的 20% 计算')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 21000, '二房东平台留存必须按服务端自动计算总佣金的 10% 计算')
   assert.strictEqual(confirmResult.commissionRecord.needId, need.id, '正式分佣记录应保留 needId')
   assert.deepStrictEqual(confirmResult.deal.dealSnapshot.commissionRule, { rate: 30, uploaderRate: 20, platformRate: 10 }, '确认签单不得用确认时刻重算值覆盖签单冻结的分佣快照')
   // 展示层（formatDealRecord）也必须按冻结快照给出一致比例：房源被改公司房源后，成交展示不能

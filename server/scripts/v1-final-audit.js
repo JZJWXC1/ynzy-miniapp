@@ -16,6 +16,9 @@ const criticalScripts = [
   'server/scripts/map-v1-test.js',
   'server/scripts/assistant-v1-test.js',
   'server/scripts/backend-contract-v1-test.js',
+  // 详情佣金、自动成交金额与拨号成功最小足迹是房源体验闭环资金/隐私红线。
+  'server/scripts/listing-detail-commission-v1-test.js',
+  'server/scripts/listing-phone-footprint-v1-test.js',
   // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
   'server/scripts/staff-listing-auto-approve-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',
@@ -393,8 +396,13 @@ function checkAdminReportDealContract() {
   assertOk(domainSource.includes('公司房源成交不抽佣，带看中介全佣'), '后端必须提供公司房源带看中介全佣文案')
   assertOk(domainSource.includes('commissionRule.rate <= 0'), 'confirmDeal 必须保留 no-commission 分支')
   assertOk(domainSource.includes('commissionRecord: null'), '公司房源确认签单必须返回空分佣记录')
-  assertOk(listingDisplaySource.includes('COMPANY_COMMISSION_TEXT'), '前端房源归一化必须保留公司房源分佣文案')
-  assertOk(detailWxml.includes("listing.noCommission ? 'no-commission' : ''"), '详情页黄条必须按 noCommission 区分样式')
+  assertOk(listingDisplaySource.includes('COMPANY_COMMISSION_TEXT'), '非详情房源卡归一化必须保留公司房源分佣文案')
+  assertOk(detailWxml.includes('listing.commissionBreakdown.landlordPercentOfRent'), '详情页必须展示服务端房东总佣金月租占比')
+  assertOk(detailWxml.includes('listing.commissionBreakdown.viewingAgentPercentOfRent'), '详情页必须展示服务端带看人月租占比')
+  assertOk(detailWxml.includes('listing.commissionBreakdown.maintainerPercentOfRent'), '详情页必须展示服务端维护人月租占比')
+  assertOk(detailWxml.includes('listing.commissionBreakdown.platformPercentOfRent'), '详情页必须展示服务端平台月租占比')
+  assertOk(!detailWxml.includes('listing.commissionText') && !detailWxml.includes('listing.uploader'), '详情页不得恢复旧佣金黄条或上传人显示')
+  assertOk(detailWxml.includes('bindtap="callLandlord"'), '详情页必须提供统一联系房东按钮')
   assertOk(configSource.includes('COMPANY_CONTACT_PHONES'), '公司看房电话必须来自服务端配置')
   assertOk(domainSource.includes('companyContactPhones') && domainSource.includes('companyContactPhoneText'), '公司房源详情必须下发公司看房电话')
   assertOk(domainSource.includes('sensitiveLocked: !display.companyListing'), '公司房源详情必须直接公开地址电话')
@@ -410,7 +418,7 @@ function checkAdminReportDealContract() {
     '公司房源详情必须隐藏查看地址电话按钮（查看按钮须由 !companyListing 守卫，含自查 wx:if/wx:elif 分支）'
   )
   assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="showing-action-card'), '公司房源详情必须隐藏水印拍照区块')
-  return '报备、签单、后台确认与总 20%/上传人平台拆分分佣契约存在，公司房源不生成分佣记录'
+  return '报备、签单、后台确认与服务端佣金拆分契约存在，详情使用可信明细，公司房源不生成额外分佣记录'
 }
 
 function checkMapCoordinateGrading() {
