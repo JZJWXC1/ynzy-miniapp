@@ -146,6 +146,10 @@ module.exports = {
     readUrlExpireSeconds: numberFromEnv('ALI_OSS_READ_URL_EXPIRE_SECONDS', 900)
   },
   rechargePaymentMode: process.env.RECHARGE_PAYMENT_MODE || 'manual',
+  features: {
+    // 报备/签单第一版暂停：仅允许服务器环境显式恢复，客户端正文与查询参数不能改变该开关。
+    reportDealWritesEnabled: boolFromEnv('REPORT_DEAL_WRITES_ENABLED', false)
+  },
   // 第一版历史接口下线开关：默认开启（积分充值、房源群等历史路由统一 404）
   // 如需临时恢复历史功能，显式设置 V1_DISABLE_LEGACY_ROUTES=0
   disableLegacyRoutes: boolFromEnv('V1_DISABLE_LEGACY_ROUTES', true),

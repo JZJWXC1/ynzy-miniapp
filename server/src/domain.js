@@ -25,8 +25,11 @@ const {
 const VERIFY_REMINDER_DAYS = [3, 5]
 const VERIFY_STALE_DAYS = 7
 const V1_MAP_STALE_DAYS = VERIFY_STALE_DAYS
-// 足迹留痕保留上限：可用环境变量 FOOTPRINT_MAX_ROWS 按审计留存要求调整；生产长期运行建议迁移真实数据库
-const MAX_FOOTPRINT_ROWS = Math.max(1000, Number(process.env.FOOTPRINT_MAX_ROWS) || 5000)
+const DAY_MS = 24 * 60 * 60 * 1000
+const BROKER_FOOTPRINT_RETENTION_MS = 7 * DAY_MS
+const ADMIN_FOOTPRINT_RETENTION_MS = 90 * DAY_MS
+const CLIENT_FOOTPRINT_RATE_WINDOW_MS = 60 * 1000
+const CLIENT_FOOTPRINT_RATE_LIMIT = 30
 // 分佣默认比例（均可后台系统配置覆盖）。基数 = 成交总佣金 deal.landlordCommissionFen（带看中介实赚那笔）。
 // 业主/二房东：上传人分 uploaderRate% + 平台抽 platformRate%，带看成交中介净留其余（默认 70%）；
 // 公司房源恒 0（带看中介全佣）；自传自带（成交人 == 上传人）全免、带看中介 100%、不生成分佣记录。
@@ -90,18 +93,114 @@ function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
 }
 
-// 统一的足迹写入入口：unshift 后按上限截断，防止 db.json 无限膨胀
-function pushFootprint(db, record) {
-  // 统一补 dateKey：dashboardSummary 与敏感查看额度判定均以 dateKey 为准，仅在缺失时才回退
-  // 到 time 文本。历史上部分足迹（如房态核验）只写 time:'刚刚' 不写 dateKey，会被日期匹配
-  // 逻辑永久判定为“今天”，导致今日统计与额度计数长期失真；写入时补当天 dateKey 从源头消除。
-  const normalized = record.dateKey ? record : { ...record, dateKey: todayKey() }
+const FOOTPRINT_ACTION_TYPE_BY_TEXT = new Map([
+  ['查看地址和电话', 'sensitive_view'],
+  ['查看敏感信息', 'sensitive_view'],
+  ['记录带看', 'showing_verified'],
+  ['转发房间视频给租客', 'video_shared'],
+  ['自动下架', 'listing_expired'],
+  ['管理员下架', 'listing_expired'],
+  ['重新上架', 'listing_restored'],
+  ['修正地图坐标', 'listing_coordinate_updated'],
+  ['调整分佣配置', 'commission_config_updated'],
+  ['管理员调整状态', 'listing_status_updated'],
+  ['房态核验', 'listing_verified']
+])
+const SYSTEM_FOOTPRINT_ACTION_TYPES = new Set(['listing_feishu_removed'])
+
+function footprintTimestampMs(record = {}) {
+  const legacyTime = String(record.time || '').trim()
+  const raw = String(record.occurredAt || (legacyTime && legacyTime !== '刚刚' ? legacyTime : record.dateKey) || '').trim()
+  if (!raw) return null
+  const parsed = Date.parse(raw)
+  if (Number.isFinite(parsed)) return parsed
+  const normalized = raw.replace(/年|月/g, '/').replace(/日/g, '').replace(/-/g, '/')
+  const fallback = new Date(normalized).getTime()
+  return Number.isFinite(fallback) ? fallback : null
+}
+
+function footprintWithinRetention(record, retentionMs, nowMs = Date.now()) {
+  const occurredAtMs = footprintTimestampMs(record)
+  // 无法解析的历史记录不物理删除，后台继续保守可读；中介端无法证明其在最近 7 天内，故不下发。
+  if (occurredAtMs === null) return retentionMs >= ADMIN_FOOTPRINT_RETENTION_MS
+  return occurredAtMs <= nowMs && nowMs - occurredAtMs <= retentionMs
+}
+
+function pruneExpiredFootprints(db, nowMs = Date.now()) {
+  const rows = Array.isArray(db.footprints) ? db.footprints : []
+  const kept = rows.filter((record) => {
+    const occurredAtMs = footprintTimestampMs(record)
+    return occurredAtMs === null || occurredAtMs > nowMs || nowMs - occurredAtMs <= ADMIN_FOOTPRINT_RETENTION_MS
+  })
+  const removed = rows.length - kept.length
+  if (removed > 0) db.footprints = kept
+  else if (!Array.isArray(db.footprints)) db.footprints = []
+  return removed
+}
+
+function expiredFootprintCount(db, nowMs = Date.now()) {
+  return (Array.isArray(db.footprints) ? db.footprints : []).filter((record) => {
+    const occurredAtMs = footprintTimestampMs(record)
+    return occurredAtMs !== null && occurredAtMs <= nowMs && nowMs - occurredAtMs > ADMIN_FOOTPRINT_RETENTION_MS
+  }).length
+}
+
+function assertClientFootprintRateLimit(db, viewerId, actionType, nowMs = Date.now()) {
+  const recentCount = (Array.isArray(db.footprints) ? db.footprints : []).filter((record) => {
+    if (String(record.viewerId || '') !== String(viewerId || '')) return false
+    if (String(record.actionType || '') !== String(actionType || '')) return false
+    const occurredAtMs = footprintTimestampMs(record)
+    return occurredAtMs !== null && occurredAtMs <= nowMs && nowMs - occurredAtMs < CLIENT_FOOTPRINT_RATE_WINDOW_MS
+  }).length
+  if (recentCount < CLIENT_FOOTPRINT_RATE_LIMIT) return
+  const error = new Error('操作过于频繁，请稍后再试')
+  error.statusCode = 429
+  error.data = {
+    reason: 'FOOTPRINT_RATE_LIMITED',
+    retryAfterSeconds: Math.ceil(CLIENT_FOOTPRINT_RATE_WINDOW_MS / 1000)
+  }
+  throw error
+}
+
+function footprintActionType(record = {}) {
+  const explicit = String(record.actionType || '').trim()
+  if (/^[a-z][a-z0-9_]{2,63}$/.test(explicit)) return explicit
+  const actionText = String(record.action || '').trim()
+  if (/下架|已出租|不租了/.test(actionText)) return 'listing_expired'
+  return FOOTPRINT_ACTION_TYPE_BY_TEXT.get(actionText) || 'listing_activity'
+}
+
+// 所有新足迹统一收敛为六字段。客户端永远不能写操作者、动作、发生时间或敏感正文；
+// 90 天内不再按数量截断，避免高访问量时提前销毁仍在审计期内的证据。
+function pushFootprint(db, record = {}) {
+  pruneExpiredFootprints(db)
+  const footprintId = String(record.id || id('F'))
+  const candidateKey = String(record.idempotencyKey || footprintId).trim()
+  const normalized = {
+    id: footprintId,
+    viewerId: String(record.viewerId || 'system'),
+    listingId: String(record.listingId || ''),
+    actionType: footprintActionType(record),
+    occurredAt: new Date().toISOString(),
+    idempotencyKey: /^[A-Za-z0-9:_-]{8,128}$/.test(candidateKey) ? candidateKey : footprintId
+  }
   db.footprints = db.footprints || []
   db.footprints.unshift(normalized)
-  if (db.footprints.length > MAX_FOOTPRINT_ROWS) {
-    db.footprints = db.footprints.slice(0, MAX_FOOTPRINT_ROWS)
-  }
   return normalized
+}
+
+function recordSystemFootprint(db, viewerId, listingId, actionType) {
+  if (!SYSTEM_FOOTPRINT_ACTION_TYPES.has(actionType)) {
+    const error = new Error('系统足迹动作类型无效')
+    error.statusCode = 500
+    throw error
+  }
+  return pushFootprint(db, {
+    id: id('F'),
+    viewerId: viewerId || 'system',
+    listingId,
+    actionType
+  })
 }
 
 function id(prefix) {
@@ -1818,17 +1917,34 @@ function dashboardSummary(db) {
     unlockedGroupCount: groups.filter((group) => group.unlocked).length,
     userCount: users.length,
     authedUsers: users.filter((user) => user.authed === '已实名').length,
-    todaySensitiveViews: (db.footprints || []).filter((item) => {
-      if (item.action === '记录带看') return false
-      if (item.dateKey) return item.dateKey === today
-      return item.time === '刚刚' || String(item.time || '').indexOf(today) !== -1
-    }).length,
+    todaySensitiveViews: (db.footprints || []).filter((item) => (
+      isSensitiveViewFootprint(item) && footprintDateKey(item) === today
+    )).length,
     pendingShowingUploadCount: (db.showingUploads || []).filter((item) => item.status === '待审核').length
   }
 }
 
 function todayKey() {
   return new Date().toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
+}
+
+function footprintDateKey(record = {}) {
+  if (record.dateKey) return String(record.dateKey)
+  if (record.time === '刚刚') return todayKey()
+  const occurredAtMs = footprintTimestampMs(record)
+  return occurredAtMs === null
+    ? ''
+    : new Date(occurredAtMs).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
+}
+
+function isSensitiveViewFootprint(record = {}) {
+  if (/^sensitive_(?:view|info)$/i.test(String(record.actionType || ''))) return true
+  if (record.quotaCategory) return true
+  return /查看地址和电话|查看敏感信息/.test(String(record.action || ''))
+}
+
+function isPhoneViewFootprint(record = {}) {
+  return String(record.actionType || '') === 'phone_call_opened' || /电话查看/.test(String(record.action || ''))
 }
 
 function isBrokerUser(user = {}) {
@@ -1845,9 +1961,8 @@ function brokerSensitiveUsage(db, userId, date = todayKey()) {
   const normalIds = new Set()
   ;(db.footprints || []).forEach((record) => {
     if (record.viewerId !== userId) return
-    if (record.action === '记录带看') return
-    if (record.dateKey && record.dateKey !== date) return
-    if (!record.dateKey && record.time && record.time !== '刚刚' && String(record.time).indexOf(date) === -1) return
+    if (!isSensitiveViewFootprint(record)) return
+    if (footprintDateKey(record) !== date) return
     const category = record.quotaCategory || sensitiveQuotaCategory(listingById(db, record.listingId) || {}, userId)
     if (category === 'owner') ownerIds.add(record.listingId)
     if (category === 'normal') normalIds.add(record.listingId)
@@ -1900,29 +2015,22 @@ function assertUserNeed(db, userId, needId, fieldName = 'needId') {
   return need
 }
 
-function assertSensitiveViewAllowed(db, userId, listing, payload = {}) {
-  const viewer = userById(db, userId) || {}
-  const category = sensitiveQuotaCategory(listing, userId)
+function assertSensitiveViewerEligible(db, userId) {
+  const viewer = assertKnownUser(db, userId)
   if (!isBrokerUser(viewer) && viewer.authed !== '已实名') {
     const error = new Error('查看地址和房东联系方式前需要先完成实名认证')
     error.statusCode = 403
     throw error
   }
+  return viewer
+}
 
-  const purpose = normalizePurposePayload(payload)
-  assertUserNeed(db, userId, purpose.needId)
-  if (!purpose.purpose) {
-    const error = new Error('查看房源敏感信息必须填写查看用途')
-    error.statusCode = 400
-    throw error
-  }
-
+function assertSensitiveViewQuotaAllowed(db, userId, listing) {
+  const category = sensitiveQuotaCategory(listing, userId)
   const date = todayKey()
   const alreadyViewed = (db.footprints || []).some((record) => {
     if (record.viewerId !== userId || record.listingId !== listing.id) return false
-    if (record.action === '记录带看') return false
-    if (record.dateKey) return record.dateKey === date
-    return record.time === '刚刚' || String(record.time || '').indexOf(date) !== -1
+    return isSensitiveViewFootprint(record) && footprintDateKey(record) === date
   })
   if (alreadyViewed) return { category, quota: brokerSensitiveUsage(db, userId, date) }
 
@@ -1940,6 +2048,11 @@ function assertSensitiveViewAllowed(db, userId, listing, payload = {}) {
     throw error
   }
   return { category, quota }
+}
+
+function assertSensitiveViewAllowed(db, userId, listing) {
+  assertSensitiveViewerEligible(db, userId)
+  return assertSensitiveViewQuotaAllowed(db, userId, listing)
 }
 
 function adminUsers(db) {
@@ -2261,7 +2374,7 @@ function assertListingLogsReadable(db, userId, listing) {
   throw error
 }
 
-function listingLogs(db, listingId, userId) {
+function listingLogs(db, listingId, userId, nowMs = Date.now()) {
   const listing = listingById(db, listingId)
   if (userId !== undefined) {
     if (!listing) {
@@ -2272,7 +2385,7 @@ function listingLogs(db, listingId, userId) {
     assertListingLogsReadable(db, userId, listing)
   }
   return (db.footprints || [])
-    .filter((item) => item.listingId === listingId)
+    .filter((item) => item.listingId === listingId && footprintWithinRetention(item, BROKER_FOOTPRINT_RETENTION_MS, nowMs))
     .map((item) => {
       const user = userById(db, item.viewerId) || {}
       return {
@@ -2288,14 +2401,27 @@ function listingLogs(db, listingId, userId) {
 function footprintActionText(record = {}) {
   if (record.action) return record.action
   if (record.actionType === 'phone_call_opened') return '电话查看（已打开系统拨号页）'
-  return String(record.actionType || '')
+  const labels = {
+    sensitive_view: '查看地址和电话',
+    showing_verified: '记录带看',
+    video_shared: '转发房间视频给租客',
+    listing_expired: '自动下架',
+    listing_restored: '重新上架',
+    listing_coordinate_updated: '修正地图坐标',
+    commission_config_updated: '调整分佣配置',
+    listing_status_updated: '管理员调整状态',
+    listing_verified: '房态核验',
+    listing_feishu_removed: '飞书同步下架',
+    listing_activity: '房源操作'
+  }
+  return labels[record.actionType] || String(record.actionType || '')
 }
 
 function footprintOccurredAt(record = {}) {
   return record.time || record.occurredAt || ''
 }
 
-function footprintRecords(db, userId) {
+function footprintRecords(db, userId, nowMs = Date.now()) {
   // 预建 id→实体索引，避免对每条足迹重复线性扫描 listings/users（原实现 filter+map 阶段
   // 各做一次 listingById、两次 userById，足迹量大时接近 O(n×listings)）。
   const listingsById = new Map((db.listings || []).map((listing) => [listing.id, listing]))
@@ -2303,7 +2429,9 @@ function footprintRecords(db, userId) {
   return (db.footprints || [])
     .filter((record) => {
       const listing = listingsById.get(record.listingId) || {}
-      return record.viewerId === userId || listing.uploaderId === userId
+      const related = record.viewerId === userId || listing.uploaderId === userId
+      const visibleAction = isSensitiveViewFootprint(record) || isPhoneViewFootprint(record)
+      return related && visibleAction && footprintWithinRetention(record, BROKER_FOOTPRINT_RETENTION_MS, nowMs)
     })
     .map((record) => {
       const listing = listingsById.get(record.listingId) || {}
@@ -2434,8 +2562,8 @@ function profileState(db, userId) {
       staleOwned.length
         ? { title: '房态核验', value: `${staleOwned.length} 套房源已到 3/5/${VERIFY_STALE_DAYS} 天电话核验提醒` }
         : { title: '房态核验', value: '你上传的房源近期已核验' },
-      { title: '敏感信息查看', value: `${(db.footprints || []).filter((item) => (listingById(db, item.listingId) || {}).uploaderId === userId).length} 条地址或电话查看足迹` },
-      { title: '待确认分佣', value: `${pendingCommission} 单成交分佣待确认` }
+      { title: '敏感信息查看', value: `${footprintRecords(db, userId).filter((item) => item.direction === '我的房源被查看').length} 条最近 7 天地址或电话查看足迹` },
+      { title: '历史分佣', value: `${pendingCommission} 单历史分佣待核对；报备与签单写入已暂停` }
     ],
     rechargeBills: (db.rechargeBills || [])
       .filter((bill) => bill.userId === userId)
@@ -2461,12 +2589,8 @@ function todayTasks(db, userId) {
     const freshness = listingFreshness(listing)
     return freshness.reminderStage === 'day5' || freshness.reminderStage === 'expire'
   })
-  const reports = userReportRows(db, userId)
-  const deals = userDealRows(db, userId)
   const commissions = userCommissionRows(db, userId)
   const footprints = footprintRecords(db, userId)
-  const pendingReports = reports.filter((report) => !report.dealId && !/失效|取消/.test(String(report.status || ''))).length
-  const pendingDeals = deals.filter((deal) => !/已确认|已驳回/.test(String(deal.status || ''))).length
   const pendingCommissions = commissions.filter((record) => !/已确认/.test(String(record.status || ''))).length
   const confirmedCommissions = commissions.filter((record) => /已确认/.test(String(record.status || ''))).length
   const tasks = [
@@ -2487,24 +2611,6 @@ function todayTasks(db, userId) {
       expiringOwned.length ? `第 ${VERIFY_STALE_DAYS} 天未更新会自动失效，先处理临期房源。` : '暂无临期失效房源。',
       '/pages/my-listings/my-listings',
       'orange'
-    ),
-    todayTaskItem(
-      'reports',
-      '待跟进报备',
-      pendingReports,
-      '条',
-      pendingReports ? '从报备记录继续发起签单或补充跟进。' : '暂无待跟进报备。',
-      '/pages/client-reports/client-reports',
-      'blue'
-    ),
-    todayTaskItem(
-      'deals',
-      '待确认签单',
-      pendingDeals,
-      '单',
-      pendingDeals ? '已提交签单等待管理员确认分佣。' : '暂无待确认签单。',
-      '/pages/deal-records/deal-records',
-      'red'
     ),
     todayTaskItem(
       'commissions',
@@ -3223,16 +3329,19 @@ function updateListingCoordinate(db, adminId, listingId, payload = {}) {
   return editableListingDetail(db, adminId, listingId, { admin: true })
 }
 
-function adminLogs(db) {
+function adminLogs(db, nowMs = Date.now()) {
   // 预建 id→实体索引，避免对每条足迹重复线性扫描 listings/users（后台足迹页无分页，
-  // 足迹上限可达 30000，原实现每行三次线性查找造成数百万次比较）。
+  // 90 天内记录不按行数截断，原实现每行三次线性查找会在高访问量时造成大量重复比较）。
   const listingsById = new Map((db.listings || []).map((listing) => [listing.id, listing]))
   const usersById = new Map((db.users || []).map((user) => [user.id, user]))
-  return (db.footprints || []).map((item) => {
+  return (db.footprints || [])
+    .filter((item) => footprintWithinRetention(item, ADMIN_FOOTPRINT_RETENTION_MS, nowMs))
+    .map((item) => {
     const listing = listingsById.get(item.listingId) || {}
     const viewer = usersById.get(item.viewerId) || {}
     const uploader = usersById.get(listing.uploaderId) || {}
     return {
+      id: item.id,
       viewer: viewer.name,
       listing: listing.shortTitle,
       action: footprintActionText(item),
@@ -3242,7 +3351,7 @@ function adminLogs(db) {
       sync: item.sync || '',
       time: footprintOccurredAt(item)
     }
-  })
+    })
 }
 
 function commissionRows(db) {
@@ -3386,6 +3495,7 @@ function showingUploadRows(db) {
 }
 
 function addSensitiveFootprint(db, userId, listingId, payload = {}) {
+  assertKnownUser(db, userId)
   const listing = listingById(db, listingId)
   if (!listing) {
     const error = new Error('未找到该房源')
@@ -3413,23 +3523,43 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
       }
     }
   }
-  const purposePayload = normalizePurposePayload(payload)
-  const access = assertSensitiveViewAllowed(db, userId, listing, purposePayload)
-
-  pushFootprint(db, {
-    id: id('F'),
-    listingId,
-    viewerId: userId,
-    action: purposePayload.action || '查看地址和电话',
-    needId: purposePayload.needId || '',
-    purpose: purposePayload.purpose || '',
-    time: '刚刚',
-    dateKey: todayKey(),
-    quotaCategory: access.category,
-    sync: '已同步上传人和管理员'
-  })
-  needFunnel.markMilestone(db, userId, purposePayload.needId, 'l1')
-  listing.sensitiveViews = Number(listing.sensitiveViews || 0) + 1
+  const suppliedKey = String(payload && payload.idempotencyKey || '').trim()
+  if (suppliedKey && (!/^[A-Za-z0-9:_-]{8,128}$/.test(suppliedKey) || /1[3-9]\d{9}/.test(suppliedKey))) {
+    const error = new Error('敏感查看幂等标识无效')
+    error.statusCode = 400
+    throw error
+  }
+  const idempotencyKey = suppliedKey || id('SV')
+  const date = todayKey()
+  const sameKeyExisting = (db.footprints || []).find((item) => (
+    item &&
+    isSensitiveViewFootprint(item) &&
+    String(item.viewerId || '') === String(userId) &&
+    String(item.listingId || '') === String(listingId) &&
+    item.idempotencyKey === idempotencyKey
+  ))
+  const dailyExisting = sameKeyExisting || (db.footprints || []).find((item) => (
+    item &&
+    isSensitiveViewFootprint(item) &&
+    String(item.viewerId || '') === String(userId) &&
+    String(item.listingId || '') === String(listingId) &&
+    footprintDateKey(item) === date
+  ))
+  // 同一幂等键表示服务端此前已完成同一次确认。账号和房源可用性已在本函数前部重验，
+  // 此时应优先返回原成功，不能因响应跨午夜丢失而重新扣额度、命中限流或重复写入。
+  assertSensitiveViewerEligible(db, userId)
+  if (!sameKeyExisting) assertSensitiveViewQuotaAllowed(db, userId, listing)
+  if (!dailyExisting) {
+    assertClientFootprintRateLimit(db, userId, 'sensitive_view')
+    pushFootprint(db, {
+      id: id('F'),
+      listingId,
+      viewerId: userId,
+      actionType: 'sensitive_view',
+      idempotencyKey
+    })
+    listing.sensitiveViews = Number(listing.sensitiveViews || 0) + 1
+  }
   const location = listingLocationFields(listing)
   const quota = brokerSensitiveUsage(db, userId)
   return {
@@ -3471,19 +3601,14 @@ function hasSensitiveListingAccess(db, userId, listing = {}) {
 }
 
 function storeExactFootprint(db, record) {
-  db.footprints = db.footprints || []
-  db.footprints.unshift(record)
-  if (db.footprints.length > MAX_FOOTPRINT_ROWS) {
-    db.footprints = db.footprints.slice(0, MAX_FOOTPRINT_ROWS)
-  }
-  return record
+  return pushFootprint(db, record)
 }
 
 // 只记录“系统拨号页已成功打开”。客户端只能提供不可读的幂等键；账号、房源、动作和时间全部由服务端决定。
 function recordPhoneCallOpened(db, userId, listingId, payload = {}) {
   assertKnownUser(db, userId)
   const idempotencyKey = String(payload && payload.idempotencyKey || '').trim()
-  if (!/^[A-Za-z0-9:_-]{8,128}$/.test(idempotencyKey)) {
+  if (!/^[A-Za-z0-9:_-]{8,128}$/.test(idempotencyKey) || /1[3-9]\d{9}/.test(idempotencyKey)) {
     const error = new Error('拨号记录幂等标识无效')
     error.statusCode = 400
     throw error
@@ -3516,6 +3641,7 @@ function recordPhoneCallOpened(db, userId, listingId, payload = {}) {
     error.statusCode = 403
     throw error
   }
+  assertClientFootprintRateLimit(db, userId, 'phone_call_opened')
   const record = {
     id: id('F'),
     viewerId: String(userId),
@@ -3524,8 +3650,7 @@ function recordPhoneCallOpened(db, userId, listingId, payload = {}) {
     occurredAt: new Date().toISOString(),
     idempotencyKey
   }
-  storeExactFootprint(db, record)
-  return clone(record)
+  return clone(storeExactFootprint(db, record))
 }
 
 function recordVideoShare(db, userId, listingId, payload = {}) {
@@ -3542,6 +3667,8 @@ function recordVideoShare(db, userId, listingId, payload = {}) {
     error.statusCode = 400
     throw error
   }
+
+  assertClientFootprintRateLimit(db, userId, 'video_shared')
 
   const now = nowText()
   const location = publicListingLocationFields(listing)
@@ -3753,7 +3880,16 @@ function adminReportRows(db) {
   return (db.clientReports || []).map((report) => formatClientReport(db, report))
 }
 
+function assertReportDealWritesEnabled() {
+  if (config.features && config.features.reportDealWritesEnabled === true) return
+  const error = new Error('客户报备与签单功能已暂停')
+  error.statusCode = 410
+  error.data = { reason: 'REPORT_DEAL_PAUSED' }
+  throw error
+}
+
 function createClientReport(db, userId, listingId, payload = {}) {
+  assertReportDealWritesEnabled()
   const listing = listingById(db, listingId)
   if (!listing) {
     const error = new Error('未找到该房源')
@@ -3901,6 +4037,7 @@ function adminDealRows(db) {
 }
 
 function createDealFromReport(db, userId, reportId, payload = {}) {
+  assertReportDealWritesEnabled()
   const report = reportById(db, reportId)
   if (!report) {
     const error = new Error('未找到报备记录')
@@ -4006,6 +4143,7 @@ function createDealFromReport(db, userId, reportId, payload = {}) {
 }
 
 function confirmDeal(db, adminId, dealId) {
+  assertReportDealWritesEnabled()
   const deal = dealById(db, dealId)
   if (!deal) {
     const error = new Error('未找到签单记录')
@@ -4138,6 +4276,7 @@ function confirmDeal(db, adminId, dealId) {
 }
 
 function registerDeal(db, userId, listingId) {
+  assertReportDealWritesEnabled()
   const error = new Error('签单只能从报备记录发起，请先创建报备后从报备记录提交签单')
   error.statusCode = 400
   throw error
@@ -5375,6 +5514,8 @@ function verifyListingAvailability(db, userId, listingId, options = {}) {
     throw error
   }
 
+  if (!options.admin) assertClientFootprintRateLimit(db, userId, 'listing_verified')
+
   listing.status = options.status || '在租'
   listing.lifecycleStatus = 'active'
   listing.lastVerifiedAt = nowText()
@@ -5414,10 +5555,12 @@ function submitListingVerification(db, userId, listingId, outcome, options = {})
   }
   assertListingActive(listing)
   if (normalized === '已出租' || normalized === 'rented') {
+    if (!options.admin) assertClientFootprintRateLimit(db, userId, 'listing_expired')
     expireListing(db, listing, '房东反馈已出租', { by: userId, action: '上传人下架·已出租' })
     return { outcome: 'rented', status: listing.status, expiredReason: listing.expiredReason }
   }
   if (normalized === '不租了' || normalized === '不租' || normalized === 'withdrawn') {
+    if (!options.admin) assertClientFootprintRateLimit(db, userId, 'listing_expired')
     expireListing(db, listing, '房东反馈不租了', { by: userId, action: '上传人下架·不租了' })
     return { outcome: 'withdrawn', status: listing.status, expiredReason: listing.expiredReason }
   }
@@ -5465,6 +5608,9 @@ module.exports = {
   listingLogs,
   recordVideoShare,
   footprintRecords,
+  pruneExpiredFootprints,
+  expiredFootprintCount,
+  recordSystemFootprint,
   userRentalNeeds,
   createRentalNeed,
   ownedListings,

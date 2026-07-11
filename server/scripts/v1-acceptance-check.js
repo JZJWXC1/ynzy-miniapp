@@ -2,6 +2,7 @@ const assert = require('assert')
 const fs = require('fs')
 const path = require('path')
 
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 旧成交金额回归在恢复模式验证；默认暂停由 M3 专项测试锁定。
 const domain = require('../src/domain')
 const { NO_FEATURE } = require('../src/listing-features')
 const matchService = require('../src/match-service')
@@ -278,7 +279,7 @@ check('地图只展示确认小区坐标并显示筛选后套数', () => {
   assertNoPublicSensitiveFields(realPin, '地图小区点')
 })
 
-check('报备、签单、管理员确认和总比例拆分分佣契约正确', () => {
+check('显式恢复模式下历史成交快照与分佣契约正确', () => {
   const db = createDb()
   assertRejects(
     () => domain.addNormalListing(db, 'U1', listingPayload({
@@ -429,18 +430,25 @@ check('首页公司房源表按房源行展示套数', () => {
   assert.ok(!indexWxml.includes('companySheetSnapshot.rowCount || 0}} 行内容'), '首页不能用原始快照行数展示公司房源数量')
 })
 
-check('接口路径覆盖第一版验收闭环', () => {
+check('活动接口与报备暂停兼容边界完整', () => {
   const apiService = readFile('utils/api-service.js')
   const serverIndex = readFile('server/src/index.js')
+  const app = JSON.parse(readFile('app.json'))
+  const detailSurface = `${readFile('pages/listing-detail/listing-detail.js')}\n${readFile('pages/listing-detail/listing-detail.wxml')}`
+  const profileSurface = `${readFile('pages/profile/profile.js')}\n${readFile('pages/profile/profile.wxml')}`
   assertIncludes(apiService, '/mini/uploads/video-policy', '前端必须调用视频上传策略接口')
   assertIncludes(apiService, '/mini/map/communities', '前端必须调用地图小区聚合接口')
-  assertIncludes(apiService, '/mini/listings/${listingId}/reports', '前端必须从房源创建报备')
-  assertIncludes(apiService, '/mini/reports/${reportId}/deals', '前端必须从报备创建签单')
   assertIncludes(serverIndex, "pathname === '/mini/uploads/video-policy'", '后端必须提供视频上传策略接口')
   assertIncludes(serverIndex, "pathname === '/mini/map/communities'", '后端必须提供地图小区聚合接口')
-  assertIncludes(serverIndex, 'domain.createClientReport', '后端必须创建报备')
-  assertIncludes(serverIndex, 'domain.createDealFromReport', '后端必须从报备创建签单')
-  assertIncludes(serverIndex, 'domain.confirmDeal', '后端必须支持管理员确认签单')
+  assertIncludes(serverIndex, "pathname === '/mini/reports'", '历史报备查询必须继续可读')
+  assertIncludes(serverIndex, "pathname === '/mini/deals'", '历史签单查询必须继续可读')
+  ;['reportMatch', 'reportDealMatch', 'dealMatch', 'adminDealConfirmMatch'].forEach((routeName) => {
+    const start = serverIndex.indexOf(`if (method === 'POST' && ${routeName})`)
+    assert.ok(start >= 0 && serverIndex.slice(start, start + 700).includes('assertReportDealWritesEnabled()'), `${routeName} 必须保留兼容路由并默认暂停`)
+  })
+  assert.ok(!app.pages.includes('pages/client-reports/client-reports') && !app.pages.includes('pages/deal-records/deal-records'), '报备/签单历史页不得注册到活动小程序')
+  assert.ok(!/startReportDeal|submitClientReport|submitDealFromReport|客户报备|提交签单/.test(detailSurface), '详情页不得保留报备/签单入口')
+  assert.ok(!/client-reports|deal-records|我的报备|我的签单/.test(profileSurface), '我的页不得保留报备/签单入口')
 })
 
 check('敏感信息脱敏和提示词约束存在', () => {

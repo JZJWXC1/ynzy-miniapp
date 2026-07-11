@@ -148,10 +148,6 @@
         disabled="{{phoneCallBusy}}"
         bindtap="callLandlord"
       >联系房东</button>
-      <view wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row {{needId ? 'bound' : ''}}">
-        <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>
-        <view class="need-bind-desc">{{needId ? needId : '从找房助手进入会自动带入，也可用当前房源创建最小需求。'}}</view>
-      </view>
       <button
         wx:if="{{!listing.companyListing && isOwnListing}}"
         class="primary-button own"
@@ -184,73 +180,16 @@
       </view>
     </view>
 
-    <button class="deal-button" bindtap="startReportDeal">先报备客户，再从报备发起签单</button>
     </block>
   </view>
 </scroll-view>
-<view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal" catchtouchmove="noop">
+<view wx:if="{{sensitiveConfirmVisible}}" class="v1-modal-mask" catchtap="closeSensitiveConfirm" catchtouchmove="noop">
   <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">客户报备</view>
-    <view class="v1-field">
-      <text>客户称呼</text>
-      <input value="{{reportForm.customerName}}" data-field="customerName" bindinput="updateReportField" placeholder="可选" />
-    </view>
-    <view class="v1-field">
-      <text>客户手机号</text>
-      <input value="{{reportForm.customerPhone}}" data-field="customerPhone" bindinput="updateReportField" type="number" maxlength="11" placeholder="必填" />
-    </view>
+    <view class="v1-modal-title">确认查看地址和电话</view>
+    <view class="modal-sub">确认后将记录本次查看足迹，并同步给房源维护人和管理员。</view>
     <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeReportModal">取消</button>
-      <button class="primary-button" loading="{{reportSubmitting}}" bindtap="submitClientReport">提交报备</button>
-    </view>
-  </view>
-</view>
-
-<view wx:if="{{sensitivePurposeModalVisible}}" class="v1-modal-mask" catchtap="closeSensitivePurposeModal" catchtouchmove="noop">
-  <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">查看用途</view>
-    <view class="modal-sub">查看地址和房东电话前，请选择本次用途并绑定需求单。</view>
-    <view class="purpose-options">
-      <button
-        wx:for="{{sensitivePurposeOptions}}"
-        wx:key="*this"
-        class="purpose-option {{sensitivePurpose === item ? 'active' : ''}}"
-        data-purpose="{{item}}"
-        bindtap="chooseSensitivePurpose"
-      >
-        <text>{{item}}</text>
-      </button>
-    </view>
-    <view class="v1-field">
-      <text>补充用途</text>
-      <input value="{{sensitivePurposeCustom}}" bindinput="updateSensitivePurposeCustom" placeholder="可选，填写后优先使用" />
-    </view>
-    <view class="need-modal-note">{{needTemporary ? '当前为临时需求单，可继续验证。' : '需求单会随足迹、报备和签单一起提交。'}}</view>
-    <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeSensitivePurposeModal">取消</button>
-      <button class="primary-button" loading="{{sensitiveSubmitting}}" bindtap="confirmRevealSensitive">确认查看</button>
-    </view>
-  </view>
-</view>
-
-<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal" catchtouchmove="noop">
-  <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">提交签单</view>
-    <view class="v1-field">
-      <text>成交月租</text>
-      <input value="{{dealForm.monthlyRent}}" data-field="monthlyRent" bindinput="updateDealField" type="digit" placeholder="必填" />
-    </view>
-    <view class="v1-field">
-      <text>房东实付佣金</text>
-      <input value="{{dealForm.landlordCommission}}" data-field="landlordCommission" bindinput="updateDealField" type="digit" placeholder="必填" />
-    </view>
-    <view class="v1-field">
-      <text>备注</text>
-      <textarea value="{{dealForm.remark}}" data-field="remark" bindinput="updateDealField" maxlength="120" placeholder="可选" />
-    </view>
-    <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeDealModal">取消</button>
-      <button class="primary-button" loading="{{dealSubmitting}}" bindtap="submitDealFromReport">提交签单</button>
+      <button class="ghost-button" disabled="{{sensitiveSubmitting}}" bindtap="closeSensitiveConfirm">取消</button>
+      <button class="primary-button" loading="{{sensitiveSubmitting}}" disabled="{{sensitiveSubmitting}}" bindtap="confirmRevealSensitive">确认查看</button>
     </view>
   </view>
 </view>

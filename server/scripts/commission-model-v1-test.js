@@ -4,6 +4,7 @@
 // 业主/二房东：上传20%+平台10%（分出30%），带看成交中介净留70%；公司0；自传自带全免。
 
 const assert = require('assert')
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 结算模型测试显式进入历史恢复模式。
 const domain = require('../src/domain')
 
 const OWNER = '业主房源'

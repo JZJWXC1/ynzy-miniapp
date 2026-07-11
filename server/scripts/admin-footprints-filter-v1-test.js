@@ -3,6 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const http = require('http')
+const net = require('net')
 const { spawn } = require('child_process')
 
 // 需求4：敏感查看足迹加筛选（查看人/房源关键词/内容类型/时间范围）+ 分页。
@@ -11,8 +12,33 @@ const { spawn } = require('child_process')
 const serverDir = path.resolve(__dirname, '..')
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-fp-filter-'))
 const dataFile = path.join(tempDir, 'db.json')
-const port = 44000 + Math.floor(Math.random() * 1000)
-const baseUrl = `http://127.0.0.1:${port}`
+const baseNow = new Date()
+let baseUrl = ''
+
+function localDateTimeDaysAgo(days, hour) {
+  const date = new Date(baseNow.getTime())
+  date.setDate(date.getDate() - days)
+  date.setHours(hour, 0, 0, 0)
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function dateParamDaysAgo(days) {
+  const date = new Date(baseNow.getTime())
+  date.setDate(date.getDate() - days)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer()
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const port = probe.address().port
+      probe.close((error) => error ? reject(error) : resolve(port))
+    })
+  })
+}
 
 function seedDb() {
   const db = {
@@ -26,13 +52,13 @@ function seedDb() {
       { id: 'L2', shortTitle: '月亮花园', uploaderId: 'U3' }
     ],
     footprints: [
-      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: '2026/7/1 10:00:00', needId: 'N1', purpose: '带看', sync: '已同步' },
-      { viewerId: 'U2', listingId: 'L2', action: '转发视频', time: '2026/7/3 11:00:00', sync: '未同步' },
-      { viewerId: 'U1', listingId: 'L2', action: '飞书同步下架', time: '2026/7/5 09:00:00', sync: '已同步' },
-      { viewerId: 'U2', listingId: 'L1', action: '自动下架', time: '2026/7/6 08:00:00', sync: '已同步' },
-      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: '2026/7/7 07:00:00', sync: '已同步' },
-      { viewerId: 'U2', listingId: 'L2', action: '转发视频', time: '2026/7/8 06:00:00', sync: '未同步' },
-      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: '2026/7/9 05:00:00', sync: '已同步' }
+      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: localDateTimeDaysAgo(10, 10), needId: 'N1', purpose: '带看', sync: '已同步' },
+      { viewerId: 'U2', listingId: 'L2', action: '转发视频', time: localDateTimeDaysAgo(8, 11), sync: '未同步' },
+      { viewerId: 'U1', listingId: 'L2', action: '飞书同步下架', time: localDateTimeDaysAgo(6, 9), sync: '已同步' },
+      { viewerId: 'U2', listingId: 'L1', action: '自动下架', time: localDateTimeDaysAgo(5, 8), sync: '已同步' },
+      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: localDateTimeDaysAgo(4, 7), sync: '已同步' },
+      { viewerId: 'U2', listingId: 'L2', action: '转发视频', time: localDateTimeDaysAgo(3, 6), sync: '未同步' },
+      { viewerId: 'U1', listingId: 'L1', action: '查看地址和电话', time: localDateTimeDaysAgo(2, 5), sync: '已同步' }
     ],
     adminAccounts: [
       { id: 'A-SUPER', account: 'superadmin', password: 'superpass123', name: '超管', userId: 'U1', permission: '全部后台权限', status: '启用' }
@@ -84,9 +110,11 @@ async function login(account, password) {
 
 async function run() {
   seedDb()
+  const port = await freePort()
+  baseUrl = `http://127.0.0.1:${port}`
   const server = spawn(process.execPath, ['src/index.js'], {
     cwd: serverDir,
-    env: { ...process.env, PORT: String(port), DATA_FILE: dataFile, ADMIN_TOKEN_SECRET: 'fp-filter-secret', AUTH_TOKEN_SECRET: 'fp-filter-mini', V1_DISABLE_LEGACY_ROUTES: '1' },
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_FILE: dataFile, ADMIN_TOKEN_SECRET: 'fp-filter-secret', AUTH_TOKEN_SECRET: 'fp-filter-mini', V1_DISABLE_LEGACY_ROUTES: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   })
@@ -121,9 +149,10 @@ async function run() {
     assert.strictEqual(byKeyword.body.data.total, 3, '月亮花园相关应 3 条')
 
     // 时间范围筛选（闭区间）
-    const byDate = await request('GET', '/admin/footprints?startDate=2026-07-02&endDate=2026-07-04', null, superAuth)
-    assert.strictEqual(byDate.body.data.total, 1, '7/2~7/4 只应命中 7/3 一条')
-    assert.strictEqual(byDate.body.data.rows[0].action, '转发视频', '命中的应是 7/3 转发视频')
+    const byDatePath = `/admin/footprints?startDate=${dateParamDaysAgo(9)}&endDate=${dateParamDaysAgo(7)}`
+    const byDate = await request('GET', byDatePath, null, superAuth)
+    assert.strictEqual(byDate.body.data.total, 1, '动态日期闭区间只应命中 8 天前一条')
+    assert.strictEqual(byDate.body.data.rows[0].action, '转发视频', '命中的应是 8 天前转发视频')
 
     // 分页
     const page1 = await request('GET', '/admin/footprints?pageSize=2&page=1', null, superAuth)

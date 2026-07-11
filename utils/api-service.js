@@ -41,6 +41,13 @@ function makeTempThreadId() {
   return `LOCAL-AST-${Date.now()}-${Math.floor(Math.random() * 10000)}`
 }
 
+function createSensitiveViewIdempotencyKey() {
+  const random = [Math.random(), Math.random(), Math.random()]
+    .map((value) => value.toString(36).slice(2, 12))
+    .join('')
+  return `sensitive_${Date.now().toString(36)}_${random}`.slice(0, 128)
+}
+
 function normalizeNeedResponse(result, payload, temporary) {
   const data = result || {}
   const need = data.need || data.rentalNeed || payload || {}
@@ -80,19 +87,9 @@ function findSourceStatCount(profile, patterns) {
 }
 
 function buildTodayTasksFromProfile(profile) {
-  const reports = listFromProfile(profile, ['reports', 'clientReports'])
-  const deals = listFromProfile(profile, ['deals', 'dealRecords'])
   const commissions = listFromProfile(profile, ['commissions', 'commissionRecords'])
   const footprints = listFromProfile(profile, ['footprints', 'sensitiveFootprints'])
 
-  const pendingReports = reports.filter((item) => {
-    const status = String(item.status || '')
-    return !item.dealId && status.indexOf('失效') === -1 && status.indexOf('取消') === -1
-  }).length
-  const pendingDeals = deals.filter((item) => {
-    const status = String(item.status || '')
-    return status.indexOf('已确认') === -1 && status.indexOf('已驳回') === -1
-  }).length
   const pendingCommissions = commissions.filter((item) => String(item.status || '').indexOf('已确认') === -1).length ||
     findSourceStatCount(profile, [/待分佣/, /待确认分佣/])
   const confirmedCommissions = commissions.filter((item) => String(item.status || '').indexOf('已确认') !== -1).length
@@ -117,24 +114,6 @@ function buildTodayTasksFromProfile(profile) {
       desc: expiringCount ? '第 7 天未更新会自动失效，先处理临期房源。' : '暂无临期失效房源。',
       url: '/pages/my-listings/my-listings',
       tone: 'orange'
-    },
-    {
-      type: 'reports',
-      title: '待跟进报备',
-      count: pendingReports,
-      unit: '条',
-      desc: pendingReports ? '从报备记录继续发起签单或补充跟进。' : '暂无待跟进报备。',
-      url: '/pages/client-reports/client-reports',
-      tone: 'blue'
-    },
-    {
-      type: 'deals',
-      title: '待确认签单',
-      count: pendingDeals,
-      unit: '单',
-      desc: pendingDeals ? '已提交签单等待管理员确认分佣。' : '暂无待确认签单。',
-      url: '/pages/deal-records/deal-records',
-      tone: 'red'
     },
     {
       type: 'commissions',
@@ -544,10 +523,9 @@ function getListingLogs(id) {
   })
 }
 
-function addSensitiveFootprint(listingId, action) {
-  const payload = typeof action === 'object'
-    ? action
-    : { action }
+function addSensitiveFootprint(listingId, idempotencyKey) {
+  const key = String(idempotencyKey || '').trim() || createSensitiveViewIdempotencyKey()
+  const payload = { idempotencyKey: key }
   return apiClient.call({
     path: `/mini/listings/${listingId}/sensitive-view`,
     method: 'POST',
@@ -625,9 +603,12 @@ function registerDeal(listingId) {
     path: `/mini/listings/${listingId}/deals`,
     method: 'POST',
     data: {},
-    mock: () => ({
-      message: '成交已登记'
-    })
+    mock: () => {
+      const error = new Error('客户报备与签单功能已暂停')
+      error.statusCode = 410
+      error.data = { reason: 'REPORT_DEAL_PAUSED' }
+      throw error
+    }
   })
 }
 
@@ -969,6 +950,7 @@ module.exports = {
   getMapPins,
   getListingDetail,
   getListingLogs,
+  createSensitiveViewIdempotencyKey,
   addSensitiveFootprint,
   recordPhoneCallOpened,
   recordVideoShare,

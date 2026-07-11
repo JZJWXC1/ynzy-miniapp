@@ -1,4 +1,5 @@
 const assert = require('assert')
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 继续验证恢复模式下成交会下线推荐资料。
 const domain = require('../src/domain')
 const {
   buildRecommendationProfile

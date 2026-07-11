@@ -40,50 +40,78 @@ function checkDemandOrderContract() {
   return '需求单接口和领域函数已出现'
 }
 
-function checkSensitiveViewNeedBinding() {
+function checkSensitiveViewMinimalAudit() {
   const indexSource = readText('server/src/index.js')
   const domainSource = readText('server/src/domain.js')
-  const mapSource = readText('pages/map/map.js')
-  const listingsSource = readText('pages/listings/listings.js')
   const detailSource = readText('pages/listing-detail/listing-detail.js')
-  const sensitiveHandler = sliceBetween(indexSource, /const sensitiveMatch[\s\S]*?if \(method === 'POST' && sensitiveMatch\) \{/, /const error = new Error/)
-  const addSensitiveBlock = sliceBetween(domainSource, /function addSensitiveFootprint\b/, /function rechargePoints\b/)
-  const sensitiveGuardBlock = sliceBetween(domainSource, /function assertSensitiveViewAllowed\b/, /function listingDisplayFields\b/)
-  const adminLogsBlock = sliceBetween(domainSource, /function adminLogs\b/, /function adminReportRows\b/)
-  const reportBlock = sliceBetween(domainSource, /function createClientReport\b/, /function createDealFromReport\b/)
+  const detailWxml = readText('pages/listing-detail/listing-detail.wxml')
+  const sensitiveHandler = sliceBetween(indexSource, /const sensitiveMatch\b/, /const phoneCallOpenedMatch\b/)
+  const addSensitiveBlock = sliceBetween(domainSource, /function addSensitiveFootprint\b/, /function hasDialableListingPhone\b/)
+  const sensitiveGuardBlock = sliceBetween(domainSource, /function assertSensitiveViewAllowed\b/, /function adminUsers\b/)
   assertOk(
-    /needId/.test(sensitiveHandler) && /purpose/.test(sensitiveHandler),
-    '敏感查看接口应接收并传递 needId / purpose'
+    /idempotencyKey:\s*body\.idempotencyKey/.test(sensitiveHandler),
+    '敏感查看路由必须只透传幂等键'
   )
   assertOk(
-    /needId/.test(addSensitiveBlock) && /purpose/.test(addSensitiveBlock),
-    'addSensitiveFootprint 应保存 needId / purpose 到 footprints'
+    !/needId:\s*body|purpose:\s*body|viewerId:\s*body|actionType:\s*body/.test(sensitiveHandler),
+    '敏感查看路由不得透传客户端身份、动作、需求或用途'
   )
   assertOk(
-    /assertUserNeed/.test(sensitiveGuardBlock) && /purpose/.test(sensitiveGuardBlock) && !/category === 'own'[\s\S]{0,120}return/.test(sensitiveGuardBlock),
-    '前台敏感查看不能因上传人查看自己房源而豁免 needId / purpose'
+    /actionType:\s*'sensitive_view'/.test(addSensitiveBlock) && /pushFootprint\(/.test(addSensitiveBlock),
+    '敏感查看动作与写入入口必须由服务端固定'
   )
   assertOk(
-    /needId/.test(adminLogsBlock) && /purpose/.test(adminLogsBlock),
-    '后台足迹接口应返回 needId / purpose，页面才可审计追责'
+    !/assertUserNeed/.test(sensitiveGuardBlock) && !/markMilestone/.test(addSensitiveBlock),
+    '敏感查看不得再绑定需求或制造 L1 漏斗里程碑'
   )
   assertOk(
-    /needId/.test(mapSource) && /listing-detail\/listing-detail\?id=\$\{id\}\$\{query\}/.test(mapSource),
-    '地图进入房源详情必须继续携带 needId'
+    /sensitiveConfirmVisible/.test(detailSource) && /idempotencyKey/.test(readText('utils/api-service.js')),
+    '详情必须保留二次确认且请求仅使用幂等键'
   )
   assertOk(
-    /needId/.test(listingsSource) && /source=listings/.test(listingsSource),
-    '列表进入房源详情必须继续携带 needId'
+    !/need-bind-row|purpose-options|sensitivePurpose/.test(detailWxml),
+    '详情不得恢复需求绑定或查看用途 UI'
   )
-  assertOk(
-    /createMinimalNeedForListing/.test(detailSource) && /submitClientReportWithNeed/.test(detailSource),
-    '详情页报备缺 needId 时应先创建需求单再报备'
-  )
-  assertOk(
-    /assertUserNeed/.test(reportBlock) && /reportSnapshot/.test(reportBlock),
-    '报备接口必须校验 needId 并冻结 reportSnapshot'
-  )
-  return '敏感查看已绑定 needId / purpose，后台足迹可审计'
+  return '敏感查看仅保留账号、二次确认、额度、服务端六字段留痕，不再绑定需求或用途'
+}
+
+function checkReportDealPauseGuard() {
+  const configSource = readText('server/src/config.js')
+  const indexSource = readText('server/src/index.js')
+  const domainSource = readText('server/src/domain.js')
+  const adminSource = readText('admin-web/index.html')
+  const app = JSON.parse(readText('app.json'))
+  assertOk(/REPORT_DEAL_WRITES_ENABLED'[\s\S]{0,40}false/.test(configSource), '报备/签单恢复开关必须默认关闭')
+  ;['reportMatch', 'reportDealMatch', 'dealMatch', 'adminDealConfirmMatch'].forEach((routeName) => {
+    const block = sliceBetween(indexSource, new RegExp(`if \\(method === 'POST' && ${routeName}\\)`), /\n\s*(?:const|if) /)
+    assertOk(/assertReportDealWritesEnabled\(\)/.test(block), `${routeName} 缺少路由层暂停封堵`)
+  })
+  ;['createClientReport', 'createDealFromReport', 'confirmDeal', 'registerDeal'].forEach((name) => {
+    const start = domainSource.indexOf(`function ${name}`)
+    assertOk(start >= 0 && /assertReportDealWritesEnabled\(\)/.test(domainSource.slice(start, start + 260)), `${name} 缺少领域层暂停封堵`)
+  })
+  assertOk(indexSource.includes("pathname === '/mini/reports'") && indexSource.includes("pathname === '/mini/deals'"), '历史中介报备/签单查询必须保留')
+  assertOk(indexSource.includes("pathname === '/admin/reports'") && indexSource.includes("pathname === '/admin/deals'"), '历史后台报备/签单查询必须保留')
+  assertOk(!app.pages.includes('pages/client-reports/client-reports') && !app.pages.includes('pages/deal-records/deal-records'), '暂停页面不得注册到小程序')
+  assertOk(!/confirm-deal-button|confirmAdminDeal/.test(adminSource), '后台不得保留确认签单动作')
+  assertOk(/报备与签单功能暂停/.test(adminSource) && /历史数据只读/.test(adminSource), '后台必须明确暂停且历史只读')
+  return '报备/签单默认暂停，四条写链路双层封堵，历史查询只读保留'
+}
+
+function checkFootprintRetentionAndSingleWriter() {
+  const domainSource = readText('server/src/domain.js')
+  const indexSource = readText('server/src/index.js')
+  const feishuSource = readText('server/src/feishu-sync.js')
+  const footprintPage = readText('pages/footprint/footprint.js')
+  assertOk(/BROKER_FOOTPRINT_RETENTION_MS\s*=\s*7\s*\*\s*DAY_MS/.test(domainSource), '中介足迹必须只读最近 7 天')
+  assertOk(/ADMIN_FOOTPRINT_RETENTION_MS\s*=\s*90\s*\*\s*DAY_MS/.test(domainSource), '后台足迹必须保留 90 天')
+  assertOk(!/MAX_FOOTPRINT_ROWS|FOOTPRINT_MAX_ROWS/.test(domainSource), '足迹不得按数量截断 90 天内证据')
+  assertOk((domainSource.match(/\.footprints\.unshift\(/g) || []).length === 1, 'domain.js 只能由统一入口直接写 footprints 数组')
+  assertOk(!/\.footprints\.(?:unshift|push)\(/.test(feishuSource), '飞书同步不得绕过统一足迹入口')
+  assertOk(/recordSystemFootprint/.test(feishuSource), '飞书系统动作必须调用统一足迹入口')
+  assertOk(/expiredFootprintCount\(snapshot\)/.test(indexSource) && /pruneExpiredFootprints\(nextDb\)/.test(indexSource), '只在命中过期记录时进入写锁清理')
+  assertOk(/filters:\s*\['我的房源被查看',\s*'电话查看'\]/.test(footprintPage), '中介足迹页只允许两个筛选')
+  return '新足迹统一六字段单写入口；中介 7 天、后台 90 天、锁内清理且不按行数截断'
 }
 
 function checkDealSnapshotUsesDealUploader() {
@@ -118,21 +146,20 @@ function checkUploadDedupeExists() {
   return '上传去重函数和测试/审计项存在'
 }
 
-function checkAdminDashboardFinalTasks() {
+function checkAdminHistoricalReadOnlyPanels() {
   const adminSource = readText('admin-web/index.html')
   const requiredTexts = [
     '待维护房源',
     '即将失效 / 废房源池',
-    '待跟进报备',
-    '待确认签单',
     '今日敏感查看',
-    '待确认预计上传人分佣'
+    '报备与签单功能暂停',
+    '历史数据只读'
   ]
   const missing = requiredTexts.filter((text) => !adminSource.includes(text))
   assertOk(!missing.length, `后台数据总览缺少今日任务文案：${missing.join('、')}`)
-  assertOk(adminSource.includes('needId / snapshot'), '报备/签单表缺少 needId / snapshot 表头')
-  assertOk(adminSource.includes('footprintPurposeText') && adminSource.includes('needIdText'), '足迹表缺少 needId / purpose fallback 渲染')
-  return '后台今日任务和 needId/snapshot 展示结构存在'
+  assertOk(adminSource.includes('needId / snapshot'), '历史报备/签单表仍须展示冻结快照摘要')
+  assertOk(!/confirm-deal-button|confirmAdminDeal/.test(adminSource), '历史只读面板不得包含确认动作')
+  return '后台当前任务存在，历史报备/签单暂停只读且无确认动作'
 }
 
 function checkDefaultAdminPasswordAudit() {
@@ -168,10 +195,12 @@ function checkV1HiddenLegacyEntries() {
 
 const checks = [
   ['需求单接口/函数存在', checkDemandOrderContract],
-  ['敏感查看绑定 needId/purpose', checkSensitiveViewNeedBinding],
+  ['敏感查看最小六字段审计', checkSensitiveViewMinimalAudit],
+  ['报备/签单双层暂停封堵', checkReportDealPauseGuard],
+  ['足迹 7/90 天与单写入口', checkFootprintRetentionAndSingleWriter],
   ['签单 snapshot 使用 deal.uploaderId', checkDealSnapshotUsesDealUploader],
   ['上传去重函数/测试存在', checkUploadDedupeExists],
-  ['首页今日任务文案/结构存在', checkAdminDashboardFinalTasks],
+  ['后台当前任务与历史只读面板', checkAdminHistoricalReadOnlyPanels],
   ['默认后台密码上线检查仍能识别', checkDefaultAdminPasswordAudit],
   ['历史入口未在第一版可见', checkV1HiddenLegacyEntries]
 ]

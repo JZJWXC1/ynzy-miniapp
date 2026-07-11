@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('assert')
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 冻结佣金测试显式进入历史恢复模式。
 const domain = require('../src/domain')
 
 function makeDb() {

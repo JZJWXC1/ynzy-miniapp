@@ -190,6 +190,11 @@ async function main() {
   const removed = await feishuSync.applySync(db, [], [], 'A1', { dryRun: true })
   assert.strictEqual(removed.down, 1, '房源表删除后应自动下架')
   assert.strictEqual(db.listings[0].status, '已下架', '自动下架后状态应进入后台资产池')
+  const removedFootprint = db.footprints.find((item) => item.listingId === db.listings[0].id && item.actionType === 'listing_feishu_removed')
+  assert.ok(removedFootprint, '飞书自动下架必须进入统一足迹入口')
+  assert.deepStrictEqual(Object.keys(removedFootprint).sort(), ['id', 'viewerId', 'listingId', 'actionType', 'occurredAt', 'idempotencyKey'].sort(), '飞书自动下架足迹必须严格六字段')
+  assert.strictEqual(removedFootprint.viewerId, 'A1', '操作者只能来自服务端同步身份')
+  assert.ok(Number.isFinite(Date.parse(removedFootprint.occurredAt)), '发生时间必须由服务端生成 ISO 时间')
 
   const snapshot = feishuSync.sanitizeSheetSnapshot({
     rows: [

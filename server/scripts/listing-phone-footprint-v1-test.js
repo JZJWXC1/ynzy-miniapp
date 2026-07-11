@@ -113,6 +113,12 @@ async function run() {
   const own = domain.recordPhoneCallOpened(db, 'U1', 'L1', { idempotencyKey: 'call_own_0000001' })
   assert.strictEqual(own.viewerId, 'U1', '上传人可记录自己的拨号动作')
 
+  assert.throws(
+    () => domain.recordPhoneCallOpened(db, 'U1', 'L1', { idempotencyKey: '19900000009' }),
+    (error) => error && error.statusCode === 400 && !String(error.message).includes('19900000009'),
+    '幂等键不得把纯手机号伪装成不可读标识，错误消息也不得回显原文'
+  )
+
   ;['钥匙', '密码', '联系房东'].forEach((viewingMethod, index) => {
     const listingId = `L-METHOD-${index}`
     db.listings.push(activeListing({ id: listingId, viewingMethod }))
@@ -217,6 +223,7 @@ async function run() {
     showToast() {},
     showModal() {}
   }
+  pageStorage.ynzy_auth_token = 'token-page-default'
   global.Page = (definition) => { pageDefinition = definition }
   const pageModulePath = require.resolve('../../pages/listing-detail/listing-detail')
   delete require.cache[pageModulePath]
@@ -235,6 +242,7 @@ async function run() {
     page.setData = function (next) { Object.assign(this.data, next) }
     page.promptLoginGuide = function () { this.loginPrompted = true }
     page.flushPhoneFootprints = function () { return Promise.resolve() }
+    page.profileAuthToken = pageStorage.ynzy_auth_token
     return page
   }
 
@@ -275,6 +283,27 @@ async function run() {
   switchedPage.onShow()
   assert.deepStrictEqual(switchedLoads, ['L-PAGE'], 'token 变化时必须先重新读取可信 profile')
   assert.deepStrictEqual(switchedFlushes, [], 'token 变化时不得用旧账号队列配新 token 补发')
+
+  const dialSwitchAccount = 'U-DIAL-SWITCH'
+  const dialSwitchPage = makePage({
+    currentUserId: dialSwitchAccount,
+    listing: { id: 'L-DIAL-SWITCH', landlordPhone: '19900000001', viewingMethod: '联系房东' }
+  })
+  dialSwitchPage.profileAuthToken = 'token-dial-old'
+  pageStorage.ynzy_auth_token = 'token-dial-old'
+  const dialSwitchFlushes = []
+  dialSwitchPage.flushPhoneFootprints = (accountId) => {
+    dialSwitchFlushes.push({ accountId, token: pageStorage.ynzy_auth_token })
+    return Promise.resolve()
+  }
+  const dialSwitchBefore = outbox.pendingPhoneCalls(dialSwitchAccount).length
+  makePhoneCallOptions = null
+  dialSwitchPage.callLandlord()
+  assert.ok(makePhoneCallOptions, '旧账号已验证资料应能发起系统拨号')
+  pageStorage.ynzy_auth_token = 'token-dial-new'
+  makePhoneCallOptions.success()
+  assert.strictEqual(outbox.pendingPhoneCalls(dialSwitchAccount).length, dialSwitchBefore + 1, '换号前已成功打开的拨号必须留在旧账号补发分区')
+  assert.deepStrictEqual(dialSwitchFlushes, [], '拨号 success 前换号时不得用新 token 立即补发旧账号足迹')
 
   const pageApiService = require('../../utils/api-service')
   const originalPageApi = {
@@ -337,6 +366,7 @@ async function run() {
     const midPage = makePage({ currentUserId: 'U-MID' })
     midPage.flushPhoneFootprints = pageDefinition.flushPhoneFootprints
     pageStorage.ynzy_auth_token = 'token-mid-a'
+    midPage.profileAuthToken = 'token-mid-a'
     const midFlush = midPage.flushPhoneFootprints('U-MID')
     assert.strictEqual(midCalls.length, 1, '第一项补发应立即使用启动账号 token')
     midPage.data.currentUserId = 'U-OTHER'
@@ -352,6 +382,36 @@ async function run() {
   } finally {
     pageApiService.recordPhoneCallOpened = originalRecordPhoneCallOpened
   }
+
+  const rateDb = makeDb()
+  rateDb.listings.push(activeListing())
+  domain.addSensitiveFootprint(rateDb, 'U2', 'L1', { idempotencyKey: 'sensitive_rate_seed' })
+  for (let index = 0; index < 30; index += 1) {
+    domain.recordPhoneCallOpened(rateDb, 'U2', 'L1', { idempotencyKey: `call_rate_${String(index).padStart(4, '0')}` })
+  }
+  const rowsBeforeRateLimit = rateDb.footprints.length
+  assert.throws(
+    () => domain.recordPhoneCallOpened(rateDb, 'U2', 'L1', { idempotencyKey: 'call_rate_blocked' }),
+    (error) => error && error.statusCode === 429 && error.data && error.data.reason === 'FOOTPRINT_RATE_LIMITED',
+    '同一已验签账号高频生成唯一拨号幂等键时必须由服务端限流'
+  )
+  assert.strictEqual(rateDb.footprints.length, rowsBeforeRateLimit, '限流请求不得继续扩大数据库')
+  const retryAtLimit = domain.recordPhoneCallOpened(rateDb, 'U2', 'L1', { idempotencyKey: 'call_rate_0029' })
+  assert.strictEqual(retryAtLimit.idempotencyKey, 'call_rate_0029', '达到上限后同幂等键重试仍应返回原记录')
+  assert.strictEqual(rateDb.footprints.length, rowsBeforeRateLimit, '幂等重试不得因限流新增或丢失记录')
+
+  const otherAccount = domain.recordPhoneCallOpened(rateDb, 'U1', 'L1', { idempotencyKey: 'call_rate_other_01' })
+  assert.strictEqual(otherAccount.viewerId, 'U1', '一个账号达到上限不得连带封禁另一个已验签账号')
+  const otherAction = domain.recordVideoShare(rateDb, 'U2', 'L1', {})
+  assert.strictEqual(otherAction.message, '视频转发已留痕', '拨号动作达到上限不得连带封禁同账号的其他动作')
+
+  rateDb.footprints.forEach((record) => {
+    if (record.viewerId === 'U2' && record.actionType === 'phone_call_opened') {
+      record.occurredAt = new Date(Date.now() - 61 * 1000).toISOString()
+    }
+  })
+  const afterWindow = domain.recordPhoneCallOpened(rateDb, 'U2', 'L1', { idempotencyKey: 'call_rate_after_window' })
+  assert.strictEqual(afterWindow.actionType, 'phone_call_opened', '一分钟窗口结束后必须自动恢复写入，不能退化为 90 天累计配额')
 
   delete global.wx
 

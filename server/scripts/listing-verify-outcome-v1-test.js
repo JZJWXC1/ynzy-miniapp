@@ -74,9 +74,26 @@ function makeDb() {
 {
   const db = makeDb()
   assert.strictEqual(domain.isOwnListing(db, 'L1', 'U1'), true, '上传人本人 = own')
-  assert.strictEqual(domain.isOwnListing(db, 'L1', 'U2'), false, '他人 ≠ own（仍须留痕绑 needId）')
+  assert.strictEqual(domain.isOwnListing(db, 'L1', 'U2'), false, '他人 ≠ own（查看敏感信息仍须留痕，但无需绑定需求单）')
   assert.strictEqual(domain.isOwnListing(db, 'L1', ''), false, '空 userId = false（游客）')
   assert.strictEqual(domain.isOwnListing(db, 'NOPE', 'U1'), false, '不存在房源 = false')
+}
+
+// 8) 上传人反复核验也受服务端一分钟窗口约束；窗口结束后恢复，不能用唯一动作无限放大足迹。
+{
+  const db = makeDb()
+  for (let index = 0; index < 30; index += 1) {
+    domain.submitListingVerification(db, 'U1', 'L1', '未出租')
+  }
+  const before = db.footprints.length
+  assert.throws(
+    () => domain.submitListingVerification(db, 'U1', 'L1', '未出租'),
+    (error) => error && error.statusCode === 429 && error.data && error.data.reason === 'FOOTPRINT_RATE_LIMITED',
+    '上传人高频核验必须由服务端按验签账号和动作限流'
+  )
+  assert.strictEqual(db.footprints.length, before, '核验限流后不得新增足迹')
+  db.footprints.forEach((record) => { record.occurredAt = new Date(Date.now() - 61 * 1000).toISOString() })
+  assert.strictEqual(domain.submitListingVerification(db, 'U1', 'L1', '未出租').outcome, 'available', '一分钟窗口结束后应恢复核验')
 }
 
 console.log('listing-verify-outcome-v1-test passed')

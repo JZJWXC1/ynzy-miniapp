@@ -9,7 +9,7 @@ const expectedTabs = [
   { pagePath: 'pages/map/map', text: '地图' },
   { pagePath: 'pages/profile/profile', text: '我的' }
 ]
-const hiddenV1EntryKeywords = ['房源群', '积分', '充值', '换群', '微信支付']
+const hiddenV1EntryKeywords = ['房源群', '积分', '充值', '换群', '微信支付', '报备', '签单']
 const criticalScripts = [
   // 历史综合 smoke 会写临时业务数据，门禁只执行其 env-only 配置测试，绝不直接跑真实 smoke。
   'server/scripts/smoke-credentials-env-v1-test.js',
@@ -19,6 +19,14 @@ const criticalScripts = [
   // 详情佣金、自动成交金额与拨号成功最小足迹是房源体验闭环资金/隐私红线。
   'server/scripts/listing-detail-commission-v1-test.js',
   'server/scripts/listing-phone-footprint-v1-test.js',
+  // M3：报备/签单默认暂停、旧客户端封堵、敏感查看最小化、7/90 天留存和活动入口下线。
+  'server/scripts/report-deal-pause-v1-test.js',
+  'server/scripts/sensitive-view-simplification-v1-test.js',
+  'server/scripts/footprint-retention-v1-test.js',
+  'server/scripts/footprint-route-prune-v1-test.js',
+  'server/scripts/mini-paused-entry-v1-test.js',
+  'server/scripts/mini-static-contract-v1-test.js',
+  'server/scripts/listing-verify-outcome-v1-test.js',
   // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
   'server/scripts/staff-listing-auto-approve-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',
@@ -41,10 +49,10 @@ const criticalScripts = [
   // 注册申请飞书提醒：新申请/驳回后重申请→通知、待审核重复提交不轰炸、409 不通知、手机号打码零 PII、
   // 无 webhook 注册不受影响。
   'server/scripts/registration-notify-v1-test.js',
-  // 签单快照冻结/needId 闭环、视频转发留痕、验收矩阵此前不在合并门禁内，改坏这些规则
+  // 历史恢复模式的签单快照冻结、带看需求归因、视频转发最小留痕与验收矩阵此前不在合并门禁内，改坏这些规则
   // v1-final-audit 仍全绿；纳入门禁使行为级回归也能被拦下。
   'server/scripts/v1-closure-contract-test.js',
-  // P1.3 需求漏斗：首推/L1/L2/带看/L3 必须绑定服务端可信 needId，聚合零 PII，readyz 显示死信数量。
+  // P1.3 需求漏斗：敏感查看不再制造 L1；历史恢复模式 L2/带看/L3 仍只接受服务端可信 needId。
   'server/scripts/need-funnel-v1-test.js',
   'server/scripts/video-share-v1-test.js',
   'server/scripts/v1-acceptance-check.js',
@@ -63,7 +71,9 @@ const criticalScripts = [
   // 飞书公司房源同步是线上库存口径来源：无素材/素材失败必须降级上架并保留对账信息。
   'server/scripts/feishu-sync-v1-test.js',
   // 登录态真 LLM 链路挂起时必须在供应商级超时后回本地真实匹配，不能让前端报网络失败。
-  'server/scripts/llm-provider-timeout-fallback-test.js'
+  'server/scripts/llm-provider-timeout-fallback-test.js',
+  // 把静态上线差距审计纳入最终门禁，避免旧 need/purpose、主动签单入口或足迹旁路再次漂移。
+  'server/scripts/v1-online-gap-audit.js'
 ]
 
 function repoPath(relativePath) {
@@ -359,21 +369,23 @@ function checkV1DocsMaintenanceRule() {
   return '第一版文档均为 3/5/7 房态规则'
 }
 
-function checkAdminReportDealContract() {
+function checkPausedReportDealHistoryContract() {
   const indexSource = readText('server/src/index.js')
   const domainSource = readText('server/src/domain.js')
+  const app = readJson('app.json')
+  const detailJs = readText('pages/listing-detail/listing-detail.js')
   const detailWxml = readText('pages/listing-detail/listing-detail.wxml')
+  const profileJs = profileEntrySurface()
+  const profileWxml = readText('pages/profile/profile.wxml')
+  const adminSource = readText('admin-web/index.html')
   const listingDisplaySource = readText('utils/listing-display.js')
   const configSource = readText('server/src/config.js')
   const requiredIndexFragments = [
     "pathname === '/mini/reports'",
     "pathname === '/mini/deals'",
-    'domain.createClientReport',
-    'domain.createDealFromReport',
     "pathname === '/admin/reports'",
     "pathname === '/admin/deals'",
-    'adminDealConfirmMatch',
-    'domain.confirmDeal'
+    'adminDealConfirmMatch'
   ]
   const requiredDomainFragments = [
     'function createClientReport',
@@ -393,6 +405,29 @@ function checkAdminReportDealContract() {
   const missingDomain = requiredDomainFragments.filter((fragment) => !domainSource.includes(fragment))
   assertOk(!missingIndex.length, `server/src/index.js 缺少接口片段：${missingIndex.join('、')}`)
   assertOk(!missingDomain.length, `server/src/domain.js 缺少契约片段：${missingDomain.join('、')}`)
+  assertOk(/REPORT_DEAL_WRITES_ENABLED'[\s\S]{0,50}false/.test(configSource), '报备/签单服务端恢复开关必须默认关闭')
+  assertOk(indexSource.includes("error.data = { reason: 'REPORT_DEAL_PAUSED' }"), '路由层必须返回稳定 REPORT_DEAL_PAUSED 原因')
+  assertOk(domainSource.includes("error.data = { reason: 'REPORT_DEAL_PAUSED' }"), '领域层必须返回稳定 REPORT_DEAL_PAUSED 原因')
+  ;['reportMatch', 'reportDealMatch', 'dealMatch', 'adminDealConfirmMatch'].forEach((routeName) => {
+    const start = indexSource.indexOf(`if (method === 'POST' && ${routeName})`)
+    const block = indexSource.slice(start, start + 700)
+    const guardAt = block.indexOf('assertReportDealWritesEnabled()')
+    const parseAt = block.indexOf('parseBody')
+    const updateAt = block.indexOf('updateDb')
+    assertOk(start >= 0 && guardAt >= 0, `${routeName} 必须保留兼容路由并在路由层封堵`)
+    assertOk(parseAt < 0 || guardAt < parseAt, `${routeName} 必须在解析客户端正文前封堵`)
+    assertOk(updateAt < 0 || guardAt < updateAt, `${routeName} 必须在数据库写锁前封堵`)
+  })
+  ;['createClientReport', 'createDealFromReport', 'confirmDeal', 'registerDeal'].forEach((name) => {
+    const start = domainSource.indexOf(`function ${name}`)
+    assertOk(start >= 0 && domainSource.slice(start, start + 260).includes('assertReportDealWritesEnabled()'), `${name} 必须保留恢复实现并默认由领域层封堵`)
+  })
+  assertOk(!app.pages.includes('pages/client-reports/client-reports') && !app.pages.includes('pages/deal-records/deal-records'), '小程序不得注册报备/签单历史页面')
+  assertOk(!/startReportDeal|submitClientReport|submitDealFromReport|客户报备|提交签单/.test(`${detailJs}\n${detailWxml}`), '详情页不得保留可达报备/签单入口')
+  assertOk(!/client-reports|deal-records|我的报备|我的签单/.test(`${profileJs}\n${profileWxml}`), '我的页面不得保留报备/签单入口')
+  assertOk(!/need-bind-row|purpose-options|sensitivePurpose/.test(detailWxml), '敏感查看不得恢复需求绑定或用途选择')
+  assertOk(!/confirm-deal-button|confirmAdminDeal/.test(adminSource), '后台历史签单不得保留确认动作')
+  assertOk(/报备与签单功能暂停/.test(adminSource) && /历史数据只读/.test(adminSource), '后台必须明确暂停且历史只读')
   assertOk(domainSource.includes('公司房源成交不抽佣，带看中介全佣'), '后端必须提供公司房源带看中介全佣文案')
   assertOk(domainSource.includes('commissionRule.rate <= 0'), 'confirmDeal 必须保留 no-commission 分支')
   assertOk(domainSource.includes('commissionRecord: null'), '公司房源确认签单必须返回空分佣记录')
@@ -406,10 +441,6 @@ function checkAdminReportDealContract() {
   assertOk(configSource.includes('COMPANY_CONTACT_PHONES'), '公司看房电话必须来自服务端配置')
   assertOk(domainSource.includes('companyContactPhones') && domainSource.includes('companyContactPhoneText'), '公司房源详情必须下发公司看房电话')
   assertOk(domainSource.includes('sensitiveLocked: !display.companyListing'), '公司房源详情必须直接公开地址电话')
-  assertOk(
-    detailWxml.includes('wx:if="{{!listing.companyListing && !isOwnListing}}" class="need-bind-row'),
-    '公司房源与上传人自查详情必须隐藏需求单提示'
-  )
   // 查看地址电话按钮须由 !listing.companyListing 守卫（公司房源隐藏）。上传人自查分支加入后，
   // reveal 按钮由 wx:if 变为 wx:elif（前置 isOwnListing 自查 wx:if），两种形式都满足"公司房源隐藏"。
   assertOk(
@@ -418,7 +449,7 @@ function checkAdminReportDealContract() {
     '公司房源详情必须隐藏查看地址电话按钮（查看按钮须由 !companyListing 守卫，含自查 wx:if/wx:elif 分支）'
   )
   assertOk(detailWxml.includes('wx:if="{{!listing.companyListing}}" class="showing-action-card'), '公司房源详情必须隐藏水印拍照区块')
-  return '报备、签单、后台确认与服务端佣金拆分契约存在，详情使用可信明细，公司房源不生成额外分佣记录'
+  return '报备/签单默认暂停且旧客户端双层封堵；历史查询与显式恢复佣金快照保留，活动界面只读无写入口'
 }
 
 function checkMapCoordinateGrading() {
@@ -484,7 +515,7 @@ const checks = [
   ['区域映射配置可扩展', checkDistrictMappingConfig],
   ['首页快照标题不暴露飞书来源', checkHomeSnapshotBranding],
   ['第一版文档不残留 15 天房态规则', checkV1DocsMaintenanceRule],
-  ['报备/签单/后台确认接口契约存在', checkAdminReportDealContract],
+  ['报备/签单暂停与历史只读契约', checkPausedReportDealHistoryContract],
   ['地图坐标分级链路存在', checkMapCoordinateGrading],
   ['我的页面退出登录存在', checkProfileLogout],
   ['小程序登录已接账号密码校验', checkMiniLoginPassword],

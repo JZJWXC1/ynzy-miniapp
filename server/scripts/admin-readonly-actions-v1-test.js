@@ -36,9 +36,12 @@ assert.ok(!/<button\b/.test(readonlyMarkup), '受限管理员操作列不得包�
 const superMarkup = evaluateSuperOnlyActions(true)
 assert.ok(/write-action/.test(superMarkup), '超级管理员写能力不得回退')
 
-;['renderListings', 'listingReviewActions', 'expiredListingActions', 'renderDeals', 'renderShowingUploads'].forEach((name) => {
+;['renderListings', 'listingReviewActions', 'expiredListingActions', 'renderShowingUploads'].forEach((name) => {
   assert.ok(extractFunction(name).includes('superOnlyActions('), `${name} 必须统一收敛受限账号写按钮`)
 })
+
+assert.ok(!/confirm-deal-button|confirmAdminDeal/.test(source), '暂停期间任何管理员都不得确认历史签单')
+assert.ok(/报备与签单功能暂停/.test(source) && /历史数据只读/.test(source), '后台必须明确历史报备/签单为暂停只读')
 
 assert.ok(
   /<button[^>]*id="saveMaintenanceRule"[^>]*data-super="1"/.test(source),

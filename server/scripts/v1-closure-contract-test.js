@@ -1,4 +1,5 @@
 const assert = require('assert')
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 历史成交闭环仅在显式恢复模式下验证。
 const domain = require('../src/domain')
 const { NO_FEATURE } = require('../src/listing-features')
 
@@ -97,26 +98,16 @@ function run() {
     '重复有效房源必须拒绝，且错误信息不能输出完整手机号'
   )
 
-  assertRejects(
-    () => domain.addSensitiveFootprint(db, 'U2', listing.id, { purpose: '约带看' }),
-    (error) => error.statusCode === 400 && /needId/.test(error.message),
-    '普通中介查看非自己房源必须传 needId'
-  )
-  assertRejects(
-    () => domain.addSensitiveFootprint(db, 'U2', listing.id, { needId: need.id }),
-    (error) => error.statusCode === 400 && /用途/.test(error.message),
-    '普通中介查看非自己房源必须传 purpose'
-  )
-
   const sensitiveResult = domain.addSensitiveFootprint(db, 'U2', listing.id, {
+    idempotencyKey: 'sensitive_closure_0001',
     needId: need.id,
     purpose: '约带看',
     action: '查看地址和电话'
   })
   const footprint = db.footprints.find((item) => item.viewerId === 'U2' && item.listingId === listing.id)
-  assert.ok(sensitiveResult.sensitive.landlordPhone, '绑定需求和用途后可返回敏感信息')
-  assert.strictEqual(footprint.needId, need.id, '敏感查看足迹必须保存 needId')
-  assert.strictEqual(footprint.purpose, '约带看', '敏感查看足迹必须保存 purpose')
+  assert.ok(sensitiveResult.sensitive.landlordPhone, '有效账号二次确认后无需需求或用途即可返回敏感信息')
+  assert.deepStrictEqual(Object.keys(footprint).sort(), ['id', 'viewerId', 'listingId', 'actionType', 'occurredAt', 'idempotencyKey'].sort(), '客户端 needId/purpose/action 必须被忽略，足迹仅六字段')
+  assert.strictEqual(footprint.actionType, 'sensitive_view')
 
   // 实名门槛：非中介且未实名的用户查看敏感信息必须 403，即便 needId/purpose 齐全也不放行。
   // （注：当前实现对角色含“中介”的用户整体豁免实名，此豁免是否符合产品预期需二次确认；
@@ -136,23 +127,15 @@ function run() {
   assert.strictEqual(ownView.sensitive.ownListing, true, '自查返回带 ownListing 标记')
   const afterOwnViewFootprints = (db.footprints || []).filter((item) => item.viewerId === 'U1' && item.listingId === listing.id).length
   assert.strictEqual(afterOwnViewFootprints, beforeOwnViewFootprints, '上传人自查自己房源不得新增足迹（免留痕）')
-  assertRejects(
-    () => domain.addSensitiveFootprint(db, 'ADMIN', listing.id, {}),
-    (error) => error.statusCode === 400 && /needId/.test(error.message),
-    '管理员从小程序前台查看也必须绑定 needId/purpose'
-  )
-  const adminNeedResult = domain.createRentalNeed(db, 'ADMIN', {
-    rawText: '管理员协助核验客户约看需求',
-    confirmedNeed: { area: '滨江区', layout: '两室' },
-    source: 'admin-mini-sensitive-view'
-  })
-  const adminNeed = db.rentalNeeds.find((item) => item.id === adminNeedResult.need.id)
   domain.addSensitiveFootprint(db, 'ADMIN', listing.id, {
-    needId: adminNeed.id,
-    purpose: '管理员协助客户核验'
+    idempotencyKey: 'sensitive_admin_0001',
+    needId: 'EVIL-NEED',
+    purpose: '不得保存'
   })
-  assert.ok(!db.footprints.some((item) => item.viewerId === 'U1' && item.listingId === listing.id && item.action === '查看地址和电话'), '上传人自查自己房源不得留下敏感查看足迹（免留痕）')
-  assert.ok(db.footprints.some((item) => item.viewerId === 'ADMIN' && item.listingId === listing.id && item.needId === adminNeed.id), '管理员前台查看也必须保存 needId/purpose')
+  assert.ok(!db.footprints.some((item) => item.viewerId === 'U1' && item.listingId === listing.id && item.actionType === 'sensitive_view'), '上传人自查自己房源不得留下敏感查看足迹（免留痕）')
+  const adminFootprint = db.footprints.find((item) => item.viewerId === 'ADMIN' && item.listingId === listing.id)
+  assert.strictEqual(adminFootprint.actionType, 'sensitive_view', '管理员前台查看同样只留服务端动作')
+  assert.ok(!Object.prototype.hasOwnProperty.call(adminFootprint, 'needId') && !Object.prototype.hasOwnProperty.call(adminFootprint, 'purpose'), '管理员足迹同样不得保存客户端需求与用途')
 
   assertRejects(
     () => domain.createClientReport(db, 'U2', listing.id, { needId: 'UNKNOWN', customerPhone: '13800001111' }),

@@ -67,9 +67,7 @@ function successApi(userName = '测试中介') {
         reminders: [{ title: '真实提醒', value: '来自服务端' }]
       })
     },
-    getFootprintRecords() { return Promise.resolve([{ id: 'F1' }]) },
-    getClientReports() { return Promise.resolve([{ id: 'R1' }, { id: 'R2' }]) },
-    getDealRecords() { return Promise.resolve([{ id: 'D1' }]) }
+    getFootprintRecords() { return Promise.resolve([{ id: 'F1' }]) }
   }
 }
 
@@ -85,19 +83,18 @@ async function run() {
   const definition = loadDefinition(wrappedApi)
   const page = makePage(definition)
   assert.deepStrictEqual(page.data.reminders, [], '资料成功前不得展示示例提醒')
-  assert.deepStrictEqual(page.data.dealWorkbench, [], '资料成功前不得展示报备/签单假零统计')
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(page.data, 'dealWorkbench'), false, '暂停期间不得生成报备/签单工作台状态')
   assert.strictEqual(typeof page.retryProfile, 'function', '“我的”页必须提供重试方法')
 
   page.refreshProfile()
   assert.strictEqual(page.data.profileLoading, true, '“我的”页完整请求周期必须进入加载态')
   await flushPromises()
-  assert.strictEqual(page.data.profileReady, true, '四接口成功后才可展示业务区')
+  assert.strictEqual(page.data.profileReady, true, '资料与足迹两接口成功后才可展示业务区')
   assert.strictEqual(page.data.profileLoading, false, '成功后必须结束加载态')
   assert.strictEqual(page.data.profileLoadFailed, false, '成功后必须清除失败态')
   assert.strictEqual(page.data.user.name, '可信账号', '页面账号必须来自服务端成功响应')
   assert.strictEqual(page.data.reminders[0].title, '真实提醒', '页面提醒必须来自服务端成功响应')
-  assert.strictEqual(page.data.dealWorkbench[0].status, '2 条', '报备统计必须来自报备接口')
-  assert.strictEqual(page.data.dealWorkbench[1].status, '1 单', '签单统计必须来自签单接口')
+  assert.ok(!page.data.workbench.some((item) => /报备|签单/.test(item.title)), '暂停期间工作台不得出现报备/签单入口')
 
   shouldFail = true
   page.refreshProfile()
@@ -109,9 +106,7 @@ async function run() {
 
   const initialFailureDefinition = loadDefinition({
     getProfileState() { return Promise.reject(new Error('初次失败')) },
-    getFootprintRecords() { return Promise.reject(new Error('初次失败')) },
-    getClientReports() { return Promise.reject(new Error('初次失败')) },
-    getDealRecords() { return Promise.reject(new Error('初次失败')) }
+    getFootprintRecords() { return Promise.reject(new Error('初次失败')) }
   })
   const initialFailurePage = makePage(initialFailureDefinition)
   initialFailurePage.refreshProfile()
@@ -123,9 +118,7 @@ async function run() {
   const authError = Object.assign(new Error('登录已失效'), { statusCode: 401 })
   const authDefinition = loadDefinition({
     getProfileState() { return Promise.reject(authError) },
-    getFootprintRecords() { return Promise.reject(authError) },
-    getClientReports() { return Promise.reject(authError) },
-    getDealRecords() { return Promise.reject(authError) }
+    getFootprintRecords() { return Promise.reject(authError) }
   })
   const authPage = makePage(authDefinition)
   authPage.setData({

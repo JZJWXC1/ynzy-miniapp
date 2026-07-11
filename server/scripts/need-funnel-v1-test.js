@@ -8,6 +8,7 @@ const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 历史漏斗回归只在显式恢复模式下演练。
 const domain = require('../src/domain')
 const assistantService = require('../src/assistant-service')
 const metricReadout = require('./metric-readout')
@@ -119,18 +120,19 @@ function testTrustedMilestones() {
   assert.strictEqual(otherNeed.funnel, undefined, '其他用户需求不得被当前用户推荐事件写入里程碑')
 
   domain.addSensitiveFootprint(db, 'U-BROKER', listing.id, {
+    idempotencyKey: 'sensitive_funnel_0001',
     needId: need.id,
-    purpose: '约带看',
-    action: '查看地址和电话'
+    purpose: '客户端旧字段不得进入足迹'
   })
-  assertIso(need.funnel.l1SensitiveViewedAt, 'L1 敏感查看应保存首次服务端时间')
-  const firstL1At = need.funnel.l1SensitiveViewedAt
+  assert.strictEqual(need.funnel.l1SensitiveViewedAt, undefined, '新敏感查看不再绑定需求单或制造 L1 里程碑')
   domain.addSensitiveFootprint(db, 'U-BROKER', listing.id, {
+    idempotencyKey: 'sensitive_funnel_0002',
     needId: need.id,
-    purpose: '再次核对',
-    action: '查看地址和电话'
+    purpose: '再次核对也不得归因'
   })
-  assert.strictEqual(need.funnel.l1SensitiveViewedAt, firstL1At, '重复敏感查看不得覆盖 L1 首次时间')
+  assert.strictEqual(need.funnel.l1SensitiveViewedAt, undefined, '重复敏感查看仍不得写 L1 需求里程碑')
+  const sensitiveFootprint = db.footprints.find((item) => item.idempotencyKey === 'sensitive_funnel_0001')
+  assert.deepStrictEqual(Object.keys(sensitiveFootprint).sort(), ['id', 'viewerId', 'listingId', 'actionType', 'occurredAt', 'idempotencyKey'].sort(), '敏感查看足迹只保留六字段')
 
   const report = domain.createClientReport(db, 'U-BROKER', listing.id, {
     needId: need.id,
@@ -156,8 +158,8 @@ function testTrustedMilestones() {
   const approvedShowingAt = need.funnel.showingAt
   domain.reviewShowingUpload(db, 'ADMIN', showing.id, { action: 'approve' })
   assert.strictEqual(need.funnel.showingAt, approvedShowingAt, '重复审核不得覆盖首次带看时间')
-  const showingFootprint = db.footprints.find((item) => item.showingUploadId === showing.id)
-  assert.strictEqual(showingFootprint.needId, need.id, '审核通过足迹必须继承带看 needId')
+  const showingFootprint = db.footprints.find((item) => item.actionType === 'showing_verified' && item.viewerId === 'U-BROKER' && item.listingId === listing.id)
+  assert.deepStrictEqual(Object.keys(showingFootprint).sort(), ['id', 'viewerId', 'listingId', 'actionType', 'occurredAt', 'idempotencyKey'].sort(), '审核通过足迹也必须收敛为六字段，需求归因只留在带看记录')
 
   const legacyShowing = domain.recordShowing(db, 'U-BROKER', listing.id, {
     photoKey: 'showing-proof/legacy-client.jpg'
@@ -178,7 +180,7 @@ function testTrustedMilestones() {
   assert.strictEqual(need.funnel.l3DealConfirmedAt, firstConfirmedAt, '重复确认不得覆盖首次确认时间')
 
   const snapshot = metricReadout.buildSnapshot(db, {})
-  assert.strictEqual(snapshot.fillRate.fillL1_viewPct, 50, '两个真实需求中一个达到 L1')
+  assert.strictEqual(snapshot.fillRate.fillL1_viewPct, 0, '敏感查看取消需求绑定后不得再抬高 L1 漏斗')
   assert.strictEqual(snapshot.fillRate.fillL2_reportPct, 50, '两个真实需求中一个达到 L2')
   assert.strictEqual(snapshot.fillRate.fillL3_dealSubmitPct, 50, '两个真实需求中一个提交成交')
   assert.strictEqual(snapshot.fillRate.fillL3_dealConfirmedPct, 50, '两个真实需求中一个确认成交')
@@ -306,10 +308,11 @@ async function testReadyzDeadLetterSummary() {
 function testClientAndAuditContracts() {
   const root = path.join(__dirname, '..', '..')
   const pageSource = fs.readFileSync(path.join(root, 'pages', 'listing-detail', 'listing-detail.js'), 'utf8')
-  const recordStart = pageSource.indexOf('const result = await apiService.recordShowing')
-  const recordBlock = pageSource.slice(recordStart, recordStart + 700)
+  const recordStart = pageSource.indexOf('const showingPayload =')
+  const recordBlock = pageSource.slice(recordStart, recordStart + 800)
   assert.ok(
-    /needId\s*:\s*this\.data\.needTemporary\s*\?\s*['"]{2}\s*:\s*this\.data\.needId/.test(recordBlock),
+    /relatedNeedId\s*=\s*this\.data\.needTemporary\s*\?\s*['"]{2}\s*:\s*safeText\(this\.data\.needId\)/.test(recordBlock) &&
+      /if\s*\(relatedNeedId\)\s*showingPayload\.needId\s*=\s*relatedNeedId/.test(recordBlock),
     '客户端带看只允许携带当前持久 needId，临时需求保持兼容但不计漏斗'
   )
 

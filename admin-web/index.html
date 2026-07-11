@@ -1134,7 +1134,7 @@
     <div class="brand-side">
       <img class="logo" src="../assets/logo.png" alt="寓你住一起">
       <h1>内部房源协作管理后台</h1>
-      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、报备记录、签单审核和分佣记录。</p>
+      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、历史报备与签单只读记录和分佣记录。</p>
     </div>
     <div class="login-panel">
       <h2 class="panel-title">管理员登录</h2>
@@ -1164,8 +1164,8 @@
       <button class="nav-button" data-panel="listingReviews">房源审核</button>
       <button class="nav-button" data-panel="expiredListings">废房源池</button>
       <div class="menu-title">成交闭环</div>
-      <button class="nav-button" data-panel="reports">报备记录</button>
-      <button class="nav-button" data-panel="deals">签单审核</button>
+      <button class="nav-button" data-panel="reports">历史报备（只读）</button>
+      <button class="nav-button" data-panel="deals">历史签单（只读）</button>
       <button class="nav-button" data-panel="commissions">分佣记录</button>
       <div class="menu-title">风控记录</div>
       <button class="nav-button" data-panel="logs">敏感查看足迹</button>
@@ -1392,7 +1392,7 @@
       </section>
 
       <section class="panel" id="reports">
-        <div class="status-box audit-note">报备客户称呼可选，客户手机号必填；后台只展示脱敏手机号，签单必须从报备记录发起。</div>
+        <div class="status-box audit-note">报备与签单功能暂停，历史数据只读。此处仅供查询既有报备记录，客户手机号继续脱敏展示，不提供新增、编辑或签单操作。</div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>报备房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>报备状态</th><th>签单记录</th><th>时间</th></tr></thead>
@@ -1404,13 +1404,13 @@
 
       <section class="panel" id="deals">
         <div class="deal-summary" id="dealSummary"></div>
-        <div class="status-box audit-note">管理员只确认签单；成交月租、成交总佣金由报备发起人提交。分佣按签单时冻结的配置快照结算：业主/二房东 上传人+平台分出后，带看成交中介净留其余；公司房源不抽佣、自传自带全免。</div>
+        <div class="status-box audit-note">报备与签单功能暂停，历史数据只读。此处仅展示既有签单及冻结快照，不提供确认签单、状态变更或重新结算操作。</div>
         <div class="table-wrap">
           <table>
-	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
+	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>只读说明</th></tr></thead>
             <tbody id="dealRows"></tbody>
           </table>
-          <div class="empty" id="dealEmpty" hidden>暂无签单审核记录</div>
+          <div class="empty" id="dealEmpty" hidden>暂无历史签单记录</div>
         </div>
       </section>
 
@@ -1844,8 +1844,8 @@
       listings: '房源管理',
       listingReviews: '房源审核',
       expiredListings: '废房源池',
-      reports: '报备记录',
-      deals: '签单审核',
+      reports: '历史报备（只读）',
+      deals: '历史签单（只读）',
       logs: '敏感查看足迹',
       commissions: '分佣记录',
       showingUploads: '带看审核',
@@ -1924,7 +1924,6 @@
     let expiredListingItems = [];
     let adminListingItems = [];
     let adminToastTimer = null;
-    const localConfirmedDeals = {};
 
     function pillClass(value) {
       if (value === '需关注' || value === '待确认' || value === '待审核' || value === '待联系核对' || value === '提醒核验' || value === '重点核验' || value === '需核验' || value === '需处理') return 'pill warn';
@@ -2185,19 +2184,19 @@
 	      document.getElementById('dashboardStats').innerHTML = [
 	        { value: tasks.pendingMaintenanceListings, label: `待维护房源<br>${areaText}` },
 	        { value: `${tasks.expiringSoonListings}/${tasks.expiredListingCount}`, label: '即将失效 / 废房源池<br>第7天自动进入资产池' },
-	        { value: tasks.pendingReportCount, label: '待跟进报备<br>未发起签单或待补充' },
-	        { value: tasks.pendingDealCount, label: '待确认签单<br>管理员确认后生成分佣' },
+	        { value: tasks.pendingReportCount, label: '历史未完成报备（只读）<br>功能暂停，不再跟进' },
+	        { value: tasks.pendingDealCount, label: '历史待确认状态（只读）<br>功能暂停，不可确认' },
 	        { value: tasks.todaySensitiveViews, label: `今日敏感查看<br>需复盘 ${tasks.todaySensitiveViews} 次` },
-	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端按规则拆分' }
+	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '历史预计分佣（只读）<br>不触发结算' }
 	      ].map((item) => `<div class="stat"><strong>${safeText(item.value)}</strong><span>${safeTextWithBreaks(item.label)}</span></div>`).join('');
 
 	      document.getElementById('riskRows').innerHTML = [
 	        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '待维护房源', status: tasks.pendingMaintenanceListings > 0 ? '需核验' : '正常', time: '今日任务' },
 	        { title: '即将失效房源与废房源池复盘', object: '资产池', status: (tasks.expiringSoonListings + tasks.expiredListingCount) > 0 ? '需关注' : '正常', time: '今日任务' },
-	        { title: '报备记录待跟进', object: '报备记录', status: tasks.pendingReportCount > 0 ? '待联系核对' : '正常', time: '今日任务' },
-	        { title: '签单审核待管理员确认', object: '签单审核', status: tasks.pendingDealCount > 0 ? '待确认' : '正常', time: '今日任务' },
+	        { title: '报备功能暂停，历史记录只读', object: '历史报备', status: '只读', time: '历史数据' },
+	        { title: '签单功能暂停，历史记录只读', object: '历史签单', status: '只读', time: '历史数据' },
 	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，按配置快照拆分' }
+	        { title: '历史预计上传人分佣（不触发结算）', object: '分佣记录', status: '只读', time: '按历史冻结快照展示' }
 	      ].map((item) => `
 	        <tr><td>${safeText(item.title)}</td><td>${safeText(item.object)}</td><td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td><td>${safeText(item.time)}</td></tr>
 	      `).join('');
@@ -2859,7 +2858,6 @@
       if (!dataCenter.getDealRecords) return [];
       const config = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig);
       return dataCenter.getDealRecords().map((item) => {
-        const confirmed = Boolean(localConfirmedDeals[item.id]);
         const expectedFen = expectedUploaderCommissionFen(item);
         return Object.assign({
           broker: '当前中介',
@@ -2871,12 +2869,7 @@
           uploaderCommissionRate: config.secondLandlordRate + config.secondLandlordPlatformRate,
           uploaderRate: config.secondLandlordRate,
           platformRate: config.secondLandlordPlatformRate
-        }, item, confirmed ? {
-          status: '已确认',
-          uploaderCommissionFen: expectedFen,
-          uploaderCommission: (expectedFen / 100).toFixed(2),
-          confirmedAt: localConfirmedDeals[item.id]
-        } : {});
+        }, item);
       });
     }
 
@@ -2909,9 +2902,9 @@
         .filter((item) => item.status !== '已确认')
         .reduce((sum, item) => sum + expectedUploaderCommissionFen(item), 0);
       document.getElementById('dealSummary').innerHTML = [
-        { value: pending, label: '待管理员确认' },
-        { value: confirmed, label: '已确认签单' },
-        { value: moneyText('', pendingCommissionFen, true), label: '待确认预计上传人分佣' }
+        { value: pending, label: '历史待确认状态（只读）' },
+        { value: confirmed, label: '历史已确认签单' },
+        { value: moneyText('', pendingCommissionFen, true), label: '历史预计分佣（只读）' }
       ].map((item) => `<div class="status-box"><strong>${safeText(item.value)}</strong>${safeText(item.label)}</div>`).join('');
     }
 
@@ -2940,9 +2933,9 @@
               <span class="money-strong">${safeText(commissionText)}</span>
               <span class="sub-cell">成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%</span>
             </td>
-            <td><span class="${pillClass(item.status)}">${safeText(item.status || '待管理员确认')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '历史状态未知')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
             <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
-            <td>${superOnlyActions(`<button class="table-action confirm-deal-button" data-id="${safeAttr(item.id)}" ${confirmed ? 'disabled' : ''}>确认签单</button>`)}</td>
+            <td><span class="sub-cell">历史数据只读，签单功能暂停</span></td>
           </tr>
         `;
       }).join('');
@@ -4038,29 +4031,6 @@
       await renderAdminLogs();
     }
 
-    async function confirmAdminDeal(id) {
-      if (!id) return;
-      if (!window.confirm('确认该签单真实有效，并按签单时的分佣配置快照生成分佣记录？')) return;
-
-      if (!canUseAdminApi()) {
-        localConfirmedDeals[id] = new Date().toLocaleString('zh-CN', { hour12: false });
-        await renderDeals();
-        alert('本地预览已标记为已确认；正式环境会调用后端生成分佣记录。');
-        return;
-      }
-
-      const result = await adminRequest(`/admin/deals/${encodeURIComponent(id)}/confirm`, {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      await renderReports();
-      await renderDeals();
-      await renderCommissions();
-      await renderListings();
-      await renderDashboardStats();
-      alert((result && result.message) || '签单已确认，正式分佣记录已生成。');
-    }
-
     function fallbackFeishuSyncStatus() {
       return {
         ready: false,
@@ -4500,14 +4470,6 @@
       if (registrationRejectButton && !registrationRejectButton.disabled) {
         reviewRegistrationRequest(registrationRejectButton.dataset.id, 'reject').catch((error) => {
           alert(error.message || '审核驳回失败');
-        });
-        return;
-      }
-
-      const confirmDealButton = event.target.closest('.confirm-deal-button');
-      if (confirmDealButton && !confirmDealButton.disabled) {
-        confirmAdminDeal(confirmDealButton.dataset.id).catch((error) => {
-          alert(error.message || '确认签单失败');
         });
         return;
       }

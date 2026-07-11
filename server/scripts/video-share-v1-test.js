@@ -60,9 +60,9 @@ const result = domain.recordVideoShare(db, 'U002', 'L-video-share', {
 assert.strictEqual(result.message, '视频转发已留痕')
 assert.strictEqual(result.share.broker, '推荐中介')
 assert.strictEqual(db.footprints.length, 1)
-assert.strictEqual(db.footprints[0].action, '转发房间视频给租客')
+assert.strictEqual(db.footprints[0].actionType, 'video_shared')
 assert.strictEqual(db.footprints[0].viewerId, 'U002')
-assert.strictEqual(db.footprints[0].shareTarget, 'tenant')
+assert.deepStrictEqual(Object.keys(db.footprints[0]).sort(), ['id', 'viewerId', 'listingId', 'actionType', 'occurredAt', 'idempotencyKey'].sort(), '视频转发足迹不得保存分享目标、路径或敏感正文')
 assert(result.logs.some((item) => item.action === '转发房间视频给租客'))
 
 const noVideoDb = dbWithListing(listing({ id: 'L-no-video', videoUrl: '', videoKey: '' }))
@@ -73,6 +73,18 @@ assert.throws(() => {
 assert.throws(() => {
   domain.recordVideoShare(db, '', 'L-video-share', {})
 }, /未登录|账号未开通/)
+
+const rateDb = dbWithListing(listing())
+for (let index = 0; index < 30; index += 1) {
+  domain.recordVideoShare(rateDb, 'U002', 'L-video-share', {})
+}
+const videoRowsBeforeRateLimit = rateDb.footprints.length
+assert.throws(
+  () => domain.recordVideoShare(rateDb, 'U002', 'L-video-share', {}),
+  (error) => error && error.statusCode === 429 && error.data && error.data.reason === 'FOOTPRINT_RATE_LIMITED',
+  '高频视频转发留痕必须由服务端按已验签账号限流'
+)
+assert.strictEqual(rateDb.footprints.length, videoRowsBeforeRateLimit, '视频留痕限流请求不得继续扩大数据库')
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..')
 const detailJs = fs.readFileSync(path.join(ROOT_DIR, 'pages/listing-detail/listing-detail.js'), 'utf8')
@@ -110,7 +122,6 @@ assert(!/\b(title|path|fileName|name)\s*:/.test(shareFilePayload), '发送文件
 
 assert(detailJs.includes("sharePath: ''"), '转发留痕不得写入小程序分享路径')
 assert(detailJs.includes('不包含地址、房东电话、楼栋单元房号'), '转发提示必须明确不包含敏感房源信息')
-assert(detailWxss.includes('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)'), '查看用途弹窗按钮区必须避免窄屏截断')
-assert(detailWxss.includes('white-space: normal'), '查看用途按钮文字必须允许换行')
+assert(!detailWxml.includes('purpose-options'), '暂停新流程后详情不得恢复查看用途选择')
 
 console.log('video-share-v1-test passed')

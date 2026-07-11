@@ -12,8 +12,6 @@
     "pages/shared-video/shared-video",
     "pages/footprint/footprint",
     "pages/commissions/commissions",
-    "pages/client-reports/client-reports",
-    "pages/deal-records/deal-records",
     "pages/profile/profile"
   ],
   "window": {

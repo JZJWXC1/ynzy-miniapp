@@ -234,6 +234,22 @@ function assertMiniLogin(userId) {
   throw error
 }
 
+function assertReportDealWritesEnabled() {
+  if (config.features && config.features.reportDealWritesEnabled === true) return
+  const error = new Error('客户报备与签单功能已暂停')
+  error.statusCode = 410
+  error.data = { reason: 'REPORT_DEAL_PAUSED' }
+  throw error
+}
+
+function readFootprintsWithLockedPrune(snapshot, reader) {
+  if (domain.expiredFootprintCount(snapshot) === 0) return reader(snapshot)
+  return dbStore.updateDb((nextDb) => {
+    domain.pruneExpiredFootprints(nextDb)
+    return reader(nextDb)
+  })
+}
+
 function isGuestUser(userId) {
   return !String(userId || '').trim()
 }
@@ -1563,7 +1579,7 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'GET' && pathname === '/mini/footprints') {
     assertMiniLogin(userId)
-    return sendJson(res, domain.footprintRecords(db, userId))
+    return sendJson(res, readFootprintsWithLockedPrune(db, (sourceDb) => domain.footprintRecords(sourceDb, userId)))
   }
 
   if (method === 'GET' && pathname === '/mini/rental-needs') {
@@ -1758,7 +1774,9 @@ async function handleMini(req, res, pathname, searchParams) {
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
   if (method === 'GET' && listingLogsMatch) {
     assertMiniLogin(userId)
-    return sendJson(res, domain.listingLogs(db, listingLogsMatch[1], userId))
+    return sendJson(res, readFootprintsWithLockedPrune(db, (sourceDb) => (
+      domain.listingLogs(sourceDb, listingLogsMatch[1], userId)
+    )))
   }
 
   const videoShareMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/video-share$/)
@@ -1779,6 +1797,7 @@ async function handleMini(req, res, pathname, searchParams) {
   const reportMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/reports$/)
   if (method === 'POST' && reportMatch) {
     assertMiniLogin(userId)
+    assertReportDealWritesEnabled()
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.createClientReport(nextDb, userId, reportMatch[1], body)))
   }
@@ -1786,6 +1805,7 @@ async function handleMini(req, res, pathname, searchParams) {
   const reportDealMatch = pathname.match(/^\/mini\/reports\/([^/]+)\/deals$/)
   if (method === 'POST' && reportDealMatch) {
     assertMiniLogin(userId)
+    assertReportDealWritesEnabled()
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.createDealFromReport(nextDb, userId, reportDealMatch[1], body)))
   }
@@ -1800,6 +1820,7 @@ async function handleMini(req, res, pathname, searchParams) {
   const dealMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/deals$/)
   if (method === 'POST' && dealMatch) {
     assertMiniLogin(userId)
+    assertReportDealWritesEnabled()
     return sendJson(res, dbStore.updateDb((nextDb) => domain.registerDeal(nextDb, userId, dealMatch[1])))
   }
 
@@ -1808,13 +1829,7 @@ async function handleMini(req, res, pathname, searchParams) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => domain.addSensitiveFootprint(nextDb, userId, sensitiveMatch[1], {
-      action: body.action,
-      needId: body.needId,
-      rentalNeedId: body.rentalNeedId,
-      clientNeedId: body.clientNeedId,
-      purpose: body.purpose,
-      scene: body.scene,
-      reason: body.reason
+      idempotencyKey: body.idempotencyKey
     })))
   }
 
@@ -2072,7 +2087,9 @@ async function handleAdmin(req, res, pathname, searchParams) {
     )))
   }
   if (method === 'GET' && pathname === '/admin/footprints') {
-    return sendJson(res, filterAdminFootprints(domain.adminLogs(db), searchParams))
+    return sendJson(res, readFootprintsWithLockedPrune(db, (sourceDb) => (
+      filterAdminFootprints(domain.adminLogs(sourceDb), searchParams)
+    )))
   }
   if (method === 'GET' && pathname === '/admin/commissions') {
     return sendJson(res, domain.commissionRows(db))
@@ -2086,6 +2103,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const adminDealConfirmMatch = pathname.match(/^\/admin\/deals\/([^/]+)\/confirm$/)
   if (method === 'POST' && adminDealConfirmMatch) {
     assertAdminCapability(adminAccount)
+    assertReportDealWritesEnabled()
     return sendJson(res, dbStore.updateDb((nextDb) => (
       domain.confirmDeal(nextDb, adminAccount.userId || adminAccount.id, adminDealConfirmMatch[1])
     )))

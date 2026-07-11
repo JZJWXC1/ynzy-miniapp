@@ -1,5 +1,6 @@
 const assert = require('assert')
 process.env.COMPANY_CONTACT_PHONES = process.env.COMPANY_CONTACT_PHONES || '19900000001,19900000002'
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 显式演练暂停功能的可恢复历史成交链。
 
 const domain = require('../src/domain')
 const feishuSync = require('../src/feishu-sync')
@@ -198,6 +199,10 @@ function run() {
     videoKey: ''
   }), { admin: true })
   markSyncedCompanyListing(dongxinyuanListing)
+  // 领域测试 ID 由毫秒时间与短随机数组成；两个筛选夹具若极低概率同毫秒同随机数，
+  // 会让“按 id 判断两室是否混入三室以上”的断言随机误报。跨一个时钟刻度固定夹具身份。
+  const fixtureCreatedAt = Date.now()
+  while (Date.now() === fixtureCreatedAt) {}
   const fourRoomListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     district: '拱墅区',
     area: '拱墅区',
@@ -681,7 +686,7 @@ function run() {
   })
   assert.strictEqual(savedCommissionConfig.secondLandlordRate, 12, '分佣配置应允许调整二房东上传人比例')
   assert.strictEqual(savedCommissionConfig.ownerRate, 18, '分佣配置应允许调整业主上传人比例')
-  assert.ok(db.footprints.some((item) => item.action === '调整分佣配置'), '分佣配置变更必须写足迹')
+  assert.ok(db.footprints.some((item) => item.actionType === 'commission_config_updated'), '分佣配置变更必须写六字段足迹')
   assert.strictEqual(db.commissionRecords.find((item) => item.id === confirmResult.commissionRecord.id).uploaderRate, 20, '旧分佣记录不受后续配置调整影响')
 
   const configurableListing = domain.addNormalListing(db, 'U1', listingPayload({

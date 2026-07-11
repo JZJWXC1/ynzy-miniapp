@@ -3,7 +3,6 @@ const phoneFootprintOutbox = require('../../utils/footprint-outbox')
 
 const SHOWING_CANVAS_WIDTH = 900
 const SHOWING_CANVAS_HEIGHT = 1200
-const SENSITIVE_PURPOSE_OPTIONS = ['带客户看房', '报备前核对', '签约前确认']
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -43,11 +42,6 @@ function decodeOption(value) {
   } catch (error) {
     return value
   }
-}
-
-function needIdFromResult(result) {
-  const data = result || {}
-  return data.needId || data.id || (data.need && (data.need.needId || data.need.id)) || ''
 }
 
 function compactText(value, maxLength) {
@@ -127,32 +121,14 @@ Page({
     showingPhotoPath: '',
     showingCanvasWidth: SHOWING_CANVAS_WIDTH,
     showingCanvasHeight: SHOWING_CANVAS_HEIGHT,
-    reportModalVisible: false,
-    dealModalVisible: false,
-    sensitivePurposeModalVisible: false,
-    reportSubmitting: false,
-    dealSubmitting: false,
+    sensitiveConfirmVisible: false,
     sensitiveSubmitting: false,
-    sensitivePurposeOptions: SENSITIVE_PURPOSE_OPTIONS,
-    sensitivePurpose: SENSITIVE_PURPOSE_OPTIONS[0],
-    sensitivePurposeCustom: '',
     canShareVideo: false,
     shareVideoBusy: false,
     shareStateText: '登录中介账号后，可把原视频文件发送给租客。',
     shareBrokerName: '',
     needId: '',
     needTemporary: false,
-    entrySource: '',
-    reportForm: {
-      customerName: '',
-      customerPhone: ''
-    },
-    dealForm: {
-      monthlyRent: '',
-      landlordCommission: '',
-      remark: ''
-    },
-    currentReportId: '',
     currentUserId: '',
     phoneCallBusy: false
   },
@@ -169,8 +145,7 @@ Page({
     this.listingId = id
     this.setData({
       needId,
-      needTemporary: /^TMP-NEED-/.test(needId),
-      entrySource: decodeOption(options.source)
+      needTemporary: /^TMP-NEED-/.test(needId)
     })
     this.loadListing(id);
   },
@@ -203,6 +178,8 @@ Page({
     const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
     const requestToken = currentAuthToken()
     this.listingLoadGeneration = requestGeneration
+    this.profileAuthToken = ''
+    this.sensitiveViewIdempotencyKey = ''
     const isCurrentRequest = () => (
       this.listingLoadGeneration === requestGeneration && currentAuthToken() === requestToken
     )
@@ -215,6 +192,8 @@ Page({
       listingAccessRequired: false,
       logs: [],
       sensitiveVisible: false,
+      sensitiveConfirmVisible: false,
+      sensitiveSubmitting: false,
       sensitivePlaceholder: '完成确认后可查看',
       ownSensitiveLoading: false,
       ownSensitiveLoadFailed: false
@@ -265,6 +244,7 @@ Page({
       const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
       const companyListing = Boolean(listing && listing.companyListing)
       const ownListing = Boolean(listing && listing.ownListing)
+      this.profileAuthToken = requestToken
       this.setData({
         listing,
         unavailableListing: {},
@@ -289,7 +269,7 @@ Page({
           : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
       });
       if (user.id) this.flushPhoneFootprints(user.id)
-      // 上传人自查自己上传的房源：直接拉取地址/房东电话填充（后端免留痕分支，不需 needId/用途弹窗）。
+      // 上传人自查自己上传的房源：直接拉取地址/房东电话填充，后端免留痕且不耗额度。
       if (ownListing && !companyListing) {
         this.loadOwnSensitive(listing.id, { requestGeneration, requestToken })
       }
@@ -532,7 +512,7 @@ Page({
     }
   },
 
-  // 上传人自查：调后端免留痕分支（空 body）直接取地址/房东电话填充，不需 needId/用途、不留痕、不耗额度。
+  // 上传人自查：调后端免留痕分支直接取地址/房东电话，不留痕、不耗额度。
   loadOwnSensitive(listingId, requestContext = {}) {
     if (!listingId) return
     const requestGeneration = requestContext.requestGeneration === undefined
@@ -550,7 +530,7 @@ Page({
       sensitiveVisible: false,
       sensitivePlaceholder: '正在读取'
     })
-    return apiService.addSensitiveFootprint(listingId, {}).then((result) => {
+    return apiService.addSensitiveFootprint(listingId).then((result) => {
       if (!isCurrentRequest()) return
       const sensitive = result && result.sensitive ? result.sensitive : {}
       this.setData({
@@ -579,7 +559,7 @@ Page({
 
   flushPhoneFootprints(accountId) {
     const flushToken = currentAuthToken()
-    if (!accountId || !flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
+    if (!accountId || !flushToken || this.profileAuthToken !== flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
     return phoneFootprintOutbox.flushPhoneCalls(
       accountId,
       (listingId, idempotencyKey) => {
@@ -596,7 +576,8 @@ Page({
   callLandlord() {
     const listing = this.data.listing || {}
     const accountId = safeText(this.data.currentUserId)
-    if (!accountId) {
+    const dialToken = currentAuthToken()
+    if (!accountId || !dialToken || this.profileAuthToken !== dialToken) {
       this.promptLoginGuide('登录后联系房东', '打开系统拨号页需要记录本人操作，请先登录内部中介账号。')
       return
     }
@@ -610,6 +591,12 @@ Page({
       return
     }
     if (this.data.phoneCallBusy) return
+    const dialContext = {
+      accountId,
+      token: dialToken,
+      listingId: safeText(listing.id),
+      requestGeneration: this.listingLoadGeneration
+    }
     this.setData({ phoneCallBusy: true })
     wx.makePhoneCall({
       phoneNumber,
@@ -617,11 +604,16 @@ Page({
         try {
           const idempotencyKey = phoneFootprintOutbox.createPhoneCallIdempotencyKey()
           phoneFootprintOutbox.enqueuePhoneCall({
-            accountId,
-            listingId: listing.id,
+            accountId: dialContext.accountId,
+            listingId: dialContext.listingId,
             idempotencyKey
           })
-          this.flushPhoneFootprints(accountId)
+          const stillCurrent = currentAuthToken() === dialContext.token &&
+            this.profileAuthToken === dialContext.token &&
+            safeText(this.data.currentUserId) === dialContext.accountId &&
+            safeText(this.data.listing && this.data.listing.id) === dialContext.listingId &&
+            this.listingLoadGeneration === dialContext.requestGeneration
+          if (stillCurrent) this.flushPhoneFootprints(dialContext.accountId)
         } catch (error) {}
       },
       fail: () => {},
@@ -638,134 +630,59 @@ Page({
       this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
       return
     }
-    if (!this.data.needId) {
-      wx.showModal({
-        title: '先绑定需求单',
-        content: '查看地址和电话需要尽量绑定客户需求。可用当前房源创建一条最小需求单后继续。',
-        cancelText: '先不查看',
-        confirmText: '创建需求',
-        success: (res) => {
-          if (!res.confirm) return
-          this.createMinimalNeedForListing().then(() => {
-            this.openSensitivePurposeModal()
-          }).catch(() => {})
-        }
-      })
-      return
-    }
-    this.openSensitivePurposeModal()
+    this.sensitiveViewIdempotencyKey = apiService.createSensitiveViewIdempotencyKey()
+    this.setData({ sensitiveConfirmVisible: true })
   },
 
-  openSensitivePurposeModal() {
-    this.setData({
-      sensitivePurposeModalVisible: true,
-      sensitivePurpose: this.data.sensitivePurpose || SENSITIVE_PURPOSE_OPTIONS[0],
-      sensitivePurposeCustom: ''
-    })
-  },
-
-  closeSensitivePurposeModal() {
+  closeSensitiveConfirm() {
     if (this.data.sensitiveSubmitting) return
-    this.setData({ sensitivePurposeModalVisible: false })
+    this.sensitiveViewIdempotencyKey = ''
+    this.setData({ sensitiveConfirmVisible: false })
   },
 
-  chooseSensitivePurpose(event) {
-    const purpose = event.currentTarget.dataset.purpose || ''
-    if (!purpose) return
-    this.setData({ sensitivePurpose: purpose })
-  },
-
-  updateSensitivePurposeCustom(event) {
-    this.setData({ sensitivePurposeCustom: event.detail.value })
-  },
-
-  createMinimalNeedForListing() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后绑定需求', '创建需求单、报备和查看敏感信息都需要先登录内部中介账号。')
-      return Promise.reject(new Error('请先登录内部中介账号'))
-    }
+  confirmRevealSensitive() {
     const listing = this.data.listing || {}
-    if (!listing.id) return Promise.reject(new Error('请选择房源'))
-    const community = listing.community || listing.shortTitle || listing.title || ''
-    const confirmedNeed = {
-      community,
-      area: listing.area || listing.district || '',
-      layout: listing.layout || '',
-      rentMode: listing.rentMode || listing.type || '',
-      budget: listing.rent || '',
-      maxBudget: listing.rent || ''
-    }
-    const rawText = [
-      community ? `客户对${community}感兴趣` : '客户对当前房源感兴趣',
-      listing.rent ? `预算约${listing.rent}元/月` : '',
-      listing.layout ? `户型${listing.layout}` : '',
-      listing.rentMode || listing.type ? `租住方式${listing.rentMode || listing.type}` : ''
-    ].filter(Boolean).join('，')
-    wx.showLoading({ title: '创建需求单' })
-    return apiService.createRentalNeed({
-      source: 'listing-detail',
-      listingId: listing.id,
-      rawText,
-      text: rawText,
-      confirmedNeed,
-      form: confirmedNeed
-    }).then((result) => {
-      wx.hideLoading()
-      const needId = needIdFromResult(result)
-      this.setData({
-        needId,
-        needTemporary: Boolean(result && result.temporary)
-      })
-      if (result && result.temporary) {
-        wx.showToast({ title: '已用临时需求单继续', icon: 'none' })
-      }
-      return result
-    }).catch((error) => {
-      wx.hideLoading()
-      wx.showModal({
-        title: '需求单创建失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-      throw error
-    })
-  },
-
-  submitSensitivePurpose() {
-    const listing = this.data.listing || {}
-    const purpose = safeText(this.data.sensitivePurposeCustom) || safeText(this.data.sensitivePurpose)
-    if (!purpose) {
-      wx.showToast({ title: '请选择或填写用途', icon: 'none' })
-      return
-    }
-    if (!this.data.needId) {
-      wx.showToast({ title: '请先创建或选择需求单', icon: 'none' })
-      return
-    }
     if (this.data.sensitiveSubmitting || !listing.id) return
+    const requestGeneration = this.listingLoadGeneration
+    const requestToken = currentAuthToken()
+    const listingId = listing.id
+    if (!requestToken || this.profileAuthToken !== requestToken) {
+      this.sensitiveViewIdempotencyKey = ''
+      this.setData({ sensitiveConfirmVisible: false, sensitiveSubmitting: false })
+      this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+      return Promise.resolve()
+    }
+    const idempotencyKey = this.sensitiveViewIdempotencyKey || apiService.createSensitiveViewIdempotencyKey()
+    this.sensitiveViewIdempotencyKey = idempotencyKey
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration &&
+      currentAuthToken() === requestToken &&
+      this.data.listing && this.data.listing.id === listingId
+    )
     this.setData({ sensitiveSubmitting: true })
-    apiService.addSensitiveFootprint(listing.id, {
-      needId: this.data.needId,
-      purpose,
-      action: '查看地址和电话'
-    }).then((result) => {
+    return apiService.addSensitiveFootprint(listingId, idempotencyKey).then((result) => {
+      if (!isCurrentRequest()) return
       const logs = result && result.logs ? result.logs : result;
       const sensitive = result && result.sensitive ? result.sensitive : {};
       this.setData({
         listing: Object.assign({}, this.data.listing, sensitive),
         sensitiveVisible: true,
-        sensitivePurposeModalVisible: false,
+        sensitiveConfirmVisible: false,
         sensitiveSubmitting: false,
         logs
       });
+      this.sensitiveViewIdempotencyKey = ''
       wx.showToast({
         title: '已记录查看足迹',
         icon: 'none'
       });
     }).catch((error) => {
+      if (!isCurrentRequest()) return
       this.setData({ sensitiveSubmitting: false })
       const message = error && error.message ? error.message : '足迹记录失败'
       if (isAuthError(error)) {
+        this.sensitiveViewIdempotencyKey = ''
+        this.setData({ sensitiveConfirmVisible: false })
         this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
         return
       }
@@ -791,18 +708,6 @@ Page({
         return
       }
       wx.showToast({ title: message, icon: 'none' })
-    });
-  },
-
-  confirmRevealSensitive() {
-    wx.showModal({
-      title: '确认查看敏感信息',
-      content: '查看后将留下用途、需求单和足迹，并同步给房源上传人和管理员后台。',
-      confirmText: '确认查看',
-      success: (res) => {
-        if (!res.confirm) return;
-        this.submitSensitivePurpose()
-      }
     });
   },
 
@@ -847,15 +752,17 @@ Page({
       })
       const uploaded = await apiService.uploadShowingPhoto(watermarked.tempFilePath, policy)
       wx.showLoading({ title: '提交审核' })
-      const result = await apiService.recordShowing(listing.id, {
-        needId: this.data.needTemporary ? '' : this.data.needId,
+      const showingPayload = {
         photoUrl: uploaded.fileUrl,
         photoKey: uploaded.objectKey,
         watermarkText: watermarked.watermarkText,
         locationText: location.locationText,
         latitude: location.latitude,
         longitude: location.longitude
-      })
+      }
+      const relatedNeedId = this.data.needTemporary ? '' : safeText(this.data.needId)
+      if (relatedNeedId) showingPayload.needId = relatedNeedId
+      const result = await apiService.recordShowing(listing.id, showingPayload)
       this.setData({ showingPhotoPath: watermarked.tempFilePath })
       wx.hideLoading()
       wx.showToast({
@@ -967,151 +874,5 @@ Page({
     })
 
     return { tempFilePath, watermarkText }
-  },
-
-  startReportDeal() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后报备签单', '报备客户和提交签单需要先登录内部中介账号。')
-      return
-    }
-    const listing = this.data.listing || {}
-    this.setData({
-      reportModalVisible: true,
-      dealModalVisible: false,
-      currentReportId: '',
-      reportForm: {
-        customerName: '',
-        customerPhone: ''
-      },
-      'dealForm.monthlyRent': listing.rent || '',
-      'dealForm.landlordCommission': '',
-      'dealForm.remark': ''
-    })
-  },
-
-  closeReportModal() {
-    if (this.data.reportSubmitting) return
-    this.setData({ reportModalVisible: false })
-  },
-
-  closeDealModal() {
-    if (this.data.dealSubmitting) return
-    this.setData({ dealModalVisible: false })
-  },
-
-  updateReportField(event) {
-    const field = event.currentTarget.dataset.field
-    if (!field) return
-    this.setData({ [`reportForm.${field}`]: event.detail.value })
-  },
-
-  updateDealField(event) {
-    const field = event.currentTarget.dataset.field
-    if (!field) return
-    this.setData({ [`dealForm.${field}`]: event.detail.value })
-  },
-
-  submitClientReport() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后报备客户', '报备客户需要先登录内部中介账号。')
-      return
-    }
-    const listing = this.data.listing || {}
-    const form = this.data.reportForm || {}
-    const customerPhone = safeText(form.customerPhone)
-    if (!/^1[3-9]\d{9}$/.test(customerPhone)) {
-      wx.showToast({ title: '请填写客户手机号', icon: 'none' })
-      return
-    }
-    if (!listing.id || this.data.reportSubmitting) return
-    this.setData({ reportSubmitting: true })
-    const needId = this.data.needId
-    if (!needId) {
-      this.createMinimalNeedForListing().then((result) => {
-        const createdNeedId = needIdFromResult(result) || this.data.needId
-        this.submitClientReportWithNeed(listing, form, customerPhone, createdNeedId)
-      }).catch(() => {
-        this.setData({ reportSubmitting: false })
-      })
-      return
-    }
-    this.submitClientReportWithNeed(listing, form, customerPhone, needId)
-  },
-
-  submitClientReportWithNeed(listing, form, customerPhone, needId) {
-    if (!needId) {
-      this.setData({ reportSubmitting: false })
-      wx.showToast({ title: '请先绑定需求单', icon: 'none' })
-      return
-    }
-    apiService.createClientReport(listing.id, {
-      customerName: safeText(form.customerName),
-      customerPhone,
-      needId
-    }).then((result) => {
-      const report = result && result.report ? result.report : result
-      this.setData({
-        reportSubmitting: false,
-        reportModalVisible: false,
-        dealModalVisible: true,
-        currentReportId: report.id || '',
-        'dealForm.monthlyRent': listing.rent || '',
-        'dealForm.landlordCommission': '',
-        'dealForm.remark': ''
-      })
-      wx.showToast({ title: '报备已创建', icon: 'none' })
-    }).catch((error) => {
-      this.setData({ reportSubmitting: false })
-      wx.showModal({
-        title: '报备失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-    })
-  },
-
-  submitDealFromReport() {
-    const reportId = this.data.currentReportId
-    const form = this.data.dealForm || {}
-    const monthlyRent = Number(form.monthlyRent)
-    const landlordCommission = Number(form.landlordCommission)
-    if (!reportId) {
-      wx.showToast({ title: '请先完成报备', icon: 'none' })
-      return
-    }
-    if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) {
-      wx.showToast({ title: '请填写成交月租', icon: 'none' })
-      return
-    }
-    if (!Number.isFinite(landlordCommission) || landlordCommission <= 0) {
-      wx.showToast({ title: '请填写房东实付佣金', icon: 'none' })
-      return
-    }
-    if (this.data.dealSubmitting) return
-    this.setData({ dealSubmitting: true })
-    apiService.createDealFromReport(reportId, {
-      monthlyRent,
-      landlordCommission,
-      needId: this.data.needId,
-      remark: safeText(form.remark)
-    }).then((result) => {
-      this.setData({
-        dealSubmitting: false,
-        dealModalVisible: false,
-        currentReportId: ''
-      })
-      wx.showModal({
-        title: '签单已提交',
-        content: (result && result.message) || '待管理员确认后生成正式分佣记录。',
-        showCancel: false
-      })
-    }).catch((error) => {
-      this.setData({ dealSubmitting: false })
-      wx.showModal({
-        title: '签单失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-    })
   }
 })

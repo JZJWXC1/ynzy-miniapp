@@ -36,11 +36,11 @@ https://zf-api.ynzyqbot.cn
 
 健康巡检（`server/scripts/health-check.js` + `deploy/ynzy-health-check.{service,timer}`）：独立于 `/healthz` 的定时巡检，检查「会拖垮生产但 `/healthz` 未必发现」的信号——**db 可解析**（JSON 有效且含 listings 数组）、**磁盘余量**（`df -Pk`，低于 `DISK_MIN_FREE_PCT`% 告警，默认 10）、**备份新鲜度**（复用 `backup.checkFreshness`，超 `BACKUP_MAX_AGE_HOURS` 小时无新备份告警，默认 24；未配置备份目录则跳过不误报）、**服务端点**（`curl /healthz` 是否 200）。打一行 `[health] {"ok","checks","failures"}` 到 journald，**任一失败非零退出**（systemd 可据此告警）；配了 `HEALTH_ALERT_CMD` 时经环境变量把摘要传给外部通知命令（仓库不写凭据/webhook）。systemd 定时器每 15 分钟跑一次（`install-on-server.sh` 自动加装）；服务单元 `EnvironmentFile=-/etc/default/ynzy-backup` 复用备份环境。不改 `index.js`/`/readyz`，是纯旁路巡检。查看：`journalctl -u ynzy-health-check --since "1 hour ago"`。
 
-需求转化漏斗（`server/src/need-funnel.js` + `server/scripts/metric-readout.js`）：服务端在持久需求的 `funnel` 对象中只保存固定版本和首次里程碑 ISO 时间，包含首次有效推荐、L1 敏感查看、L2 报备、审核通过带看、L3 成交提交与管理员确认；不保存客户、房源、地址或自由文本。业务记录仍保留各自 `needId`，计算时会再次校验需求 `brokerId` 与 trace/足迹/报备/带看/成交的服务端用户字段，串绑记录不计。重复请求不覆盖首次时间；足迹或 trace 达保留上限后，需求里程碑仍可持续读出。
+需求转化漏斗（`server/src/need-funnel.js` + `server/scripts/metric-readout.js`）：持久需求的 `funnel` 对象仍兼容读取首次推荐、历史 L1 敏感查看、历史 L2 报备、审核通过带看、历史 L3 成交提交与确认时间，不保存客户、房源、地址或自由文本。M3 起新的敏感查看不再绑定 `needId`、不再制造 L1；报备/签单写入默认暂停，因此不会新增 L2/L3。带看仍可选提交本人持久 `needId`，由服务端验归属后再计漏斗。历史显式恢复模式下，报备/成交仍沿用服务端可信归因与首次时间幂等规则。
 
-- 主指标 `fillL2_reportPct`：有可信报备的需求数 / 持久需求总数。
+- 历史指标 `fillL2_reportPct`：有可信报备的需求数 / 持久需求总数；暂停期只反映存量，不代表当前活动入口。
 - 首次有效推荐耗时：需求创建到首个“绑定同一需求且实际返回房源”的持久 trace，输出 P50/P95 分钟和可测样本数。
-- 带看率 `showingRatePct`：有审核通过带看的需求数 / 已报备需求数；待审核或驳回照片不计。
+- 带看率 `showingRatePct`：有审核通过带看的需求数 / 历史已报备需求数；待审核或驳回照片不计。
 - 成交确认率 `dealConfirmationRatePct`：管理员已确认成交的需求数 / 已提交成交的需求数；提交不能冒充确认。
 - 新客户端带看会提交当前持久 `needId` 并由服务端验归属；临时/空需求及旧客户端仍可提交带看证明，但不计入需求漏斗，避免破坏兼容。
 - 每日 `ynzy-metric-snapshot.timer` 继续只读追加 `metrics-snapshots.jsonl`；查看当前聚合用 `node scripts/metric-readout.js --pretty`，查看趋势用 `node scripts/show-metric-trend.js --last=14`。两者只输出计数、比例和耗时，不输出任何原始 `needId` 或 PII。
@@ -210,11 +210,7 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 
 上述条件均有锁定测试：`server/scripts/backup-restore-v1-test.js`。
 
-足迹留痕写入统一经过后端截断。代码默认 `FOOTPRINT_MAX_ROWS=5000`，最低不会低于 `1000`；生产 systemd 服务显式设置为：
-
-```ini
-Environment=FOOTPRINT_MAX_ROWS=30000
-```
+足迹留痕不再按行数截断。所有新写入严格收敛为 `{id, viewerId, listingId, actionType, occurredAt, idempotencyKey}` 六字段；中介接口只返回最近 7 天，后台返回最近 90 天。可解析且超过 90 天的记录会在数据库写锁内物理清理；无过期记录时读取不触发整库写盘。无法解析时间的存量旧记录不做破坏性猜测：中介接口不下发，后台保守可读且不自动删除，后续只能通过受控迁移处理。旧 `FOOTPRINT_MAX_ROWS` 环境变量已失效，不得再用数量上限提前删除 90 天内审计证据。
 
 数据库 JSON 默认紧凑写入以降低整库重写的磁盘写放大；如需人工排查可设置 `DB_JSON_PRETTY=1` 恢复两空格缩进（`/admin/data/export` 导出始终为美化格式，不受影响）。
 
@@ -259,8 +255,8 @@ token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签�
 - 匿名用户可以访问首页、公司房源列表、公司房源详情、地图公司房源点位、公司房源表快照和助手匹配中的公司房源结果。
 - 公司房源对匿名与登录中介全量公开，包含房号、完整地址、联系方式、看房方式密码、备注等公司公开字段。
 - 匿名用户只能看到公司房源；访问二房东房源或业主房源详情返回 `401`。
-- 合作房源的完整地址、房东电话等敏感信息仍走登录、实名/需求单校验和留痕机制。
-- 上传、我的房源、需求单、报备、签单、分佣、足迹、视频上传策略等操作接口仍强制登录。
+- 合作房源的完整地址、房东电话等敏感信息走有效账号、二次确认、每日额度和服务端留痕；不再要求需求单或查看用途。
+- 上传、我的房源、需求单、分佣、足迹、视频上传策略等活动接口仍强制登录。报备/签单历史查询需要登录，但新增报备、从报备签单、直接签单和管理员确认均默认暂停。
 
 ## 房源类型、视频与可见性
 
@@ -300,7 +296,7 @@ token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签�
 - 自传自带：带看人与房源维护人是同一服务端账号时，带看人取得全部房东总佣金，不重复生成维护人分佣。
 - 管理员维护的合作房源：管理员个人维护人比例固定为 `0%`，平台按配置取得默认 `10%`，带看人取得剩余部分。
 
-详情接口只返回服务端计算的 `commissionBreakdown`，不再返回详情旧字段 `uploader`、`commissionRate`、`commissionText`。签单只能从报备记录发起；客户端只提交成交月租和可选备注，房东实付佣金由 `成交月租 × 房源 landlordCommissionPercent` 自动计算。签单时冻结房东佣金比例、总金额、维护人/带看人身份、拆分规则和月租占比快照，客户端提交任何同名金额、身份、维护人或拆分字段都无效。金额统一按分存储。
+详情接口只返回服务端计算的 `commissionBreakdown`，不再返回详情旧字段 `uploader`、`commissionRate`、`commissionText`。当前报备/签单写入默认暂停；保留的显式恢复实现中，签单只能从报备记录发起，房东实付佣金由 `成交月租 × 房源 landlordCommissionPercent` 自动计算，并冻结比例、总金额、维护人/带看人身份、拆分规则和月租占比快照。客户端提交任何同名金额、身份、维护人或拆分字段都无效，金额统一按分存储。
 
 ## 上传房源
 
@@ -674,6 +670,37 @@ node scripts/listing-detail-commission-v1-test.js
 node scripts/listing-phone-footprint-v1-test.js
 ```
 
+## 房源体验闭环 M3：报备暂停、敏感查看简化与足迹留存
+
+报备/签单第一版暂停采用仅服务器可控的恢复开关：
+
+```env
+REPORT_DEAL_WRITES_ENABLED=0
+```
+
+- 默认值为关闭。只有服务器启动环境显式设为 `1/true/on` 才进入历史恢复模式；请求正文、查询参数和客户端同名字段均无效。
+- `POST /mini/listings/:id/reports`、`POST /mini/reports/:id/deals`、`POST /mini/listings/:id/deals`、`POST /admin/deals/:id/confirm` 均在路由层与领域层双重封堵，返回 HTTP `410`，响应 `data.reason=REPORT_DEAL_PAUSED`，且不修改数据库。
+- `GET /mini/reports`、`GET /mini/deals`、`GET /admin/reports`、`GET /admin/deals`、历史分佣查询继续只读；小程序不再注册历史报备/签单页面，后台无确认按钮。
+- 查看别人上传的合作房源只需有效账号、二次确认和当日额度。请求只提交随机幂等键；操作者、房源、动作和 ISO 时间全部由服务端决定。自己上传仍免留痕直出，公司房源仍直出基础联系信息；实际打开系统拨号页后另记 `phone_call_opened`。
+- 同一账号、同一房源在同一上海自然日只写一条敏感查看足迹，即使客户端更换幂等键也不会重复计数；客户端会在一次确认会话内复用同一幂等键。服务端已写但响应丢失时，会先重新验证当前账号资格；资格仍有效的同键重试优先返回原成功，即使跨自然日或当下已达到额度/速率上限也不重复写入，角色/实名资格已撤销则仍返回 403。
+- 所有新足迹，包括敏感查看、拨号、视频转发、带看审核、房态核验/下架/恢复、坐标修正、分佣配置及飞书同步下架，都经过同一六字段写入口。不得保存电话、地址、需求、用途、分享目标或同步正文。
+- 客户端可触发的敏感查看、拨号、视频转发及上传人房态核验按服务端验签账号和动作执行 `30 次/分钟` 滑动窗口；超过后返回 HTTP `429` 与 `data.reason=FOOTPRINT_RATE_LIMITED`，拒绝请求不写库。不同账号、不同动作互不连带，相同幂等键重试优先返回原记录，窗口结束自动恢复。
+- 足迹页保留四个统计块，筛选只保留“我的房源被查看”“电话查看”，默认前者。中介最近 7 天、后台最近 90 天；第 7 天记录不会因中介不可见而物理删除。
+
+M3 验收脚本：
+
+```bash
+node scripts/report-deal-pause-v1-test.js
+node scripts/sensitive-view-simplification-v1-test.js
+node scripts/footprint-retention-v1-test.js
+node scripts/footprint-route-prune-v1-test.js
+node scripts/mini-paused-entry-v1-test.js
+node scripts/listing-phone-footprint-v1-test.js
+node scripts/video-share-v1-test.js
+node scripts/listing-verify-outcome-v1-test.js
+node scripts/v1-online-gap-audit.js
+```
+
 ## 上线自检
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。
@@ -706,7 +733,7 @@ node scripts/mini-pending-no-data-v1-test.js
 
 - 地图真实坐标与敏感字段边界。
 - 助手需求解析与匹配。
-- 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签、报备/签单。
+- 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签，以及报备/签单默认暂停与显式恢复兼容链路。
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
 - Bearer token 鉴权、7 天有效期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
 - 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录；显式 `userId` 绑定的管理账号创建/改密会单向同步小程序密码，未绑定账号不按手机号串绑。

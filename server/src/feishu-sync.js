@@ -953,15 +953,7 @@ function downListing(db, listing, reason, adminId) {
   listing.feishuLastSyncAction = 'down'
   listing.feishuLastSyncAt = now
   listing.feishuLastSyncReason = reason
-  db.footprints = db.footprints || []
-  db.footprints.unshift({
-    id: id('F'),
-    listingId: listing.id,
-    viewerId: adminId || 'feishu-sync',
-    action: '飞书同步下架',
-    time: now,
-    sync: reason
-  })
+  domain.recordSystemFootprint(db, adminId || 'feishu-sync', listing.id, 'listing_feishu_removed')
   return true
 }
 

@@ -106,7 +106,7 @@ async function run() {
   await flushPromises()
   assert.strictEqual(detailLoads, 2, '登录返回详情页必须重新读取房源和登录态')
   assert.strictEqual(profileLoads, 2, '登录返回详情页必须重新读取当前用户')
-  assert.strictEqual(detailPage.data.isVerified, true, '登录返回后敏感查看、带看和报备能力必须立即解锁')
+  assert.strictEqual(detailPage.data.isVerified, true, '登录返回后敏感查看与带看能力必须立即解锁')
   assert.strictEqual(detailPage.data.canShareVideo, true, '登录返回后视频转发能力必须立即更新')
 
   let currentUserLoads = 0
@@ -139,14 +139,7 @@ async function run() {
   assert.strictEqual(currentUserLoads, 2, '登录返回上传页必须重新读取当前用户')
   assert.strictEqual(uploadPage.data.isAdmin, true, '管理员登录返回后必须能选择公司房源')
 
-  const reportPage = makePage(detailDefinition)
-  reportPage.setData({
-    isVerified: true,
-    listing: { id: 'L-RESUME', rent: 3200 },
-    reportForm: { customerName: '上一位客户', customerPhone: '13900000001' }
-  })
-  reportPage.startReportDeal()
-  assert.deepStrictEqual(reportPage.data.reportForm, { customerName: '', customerPhone: '' }, '每次打开报备必须清空上一位客户信息')
+  assert.strictEqual(typeof detailDefinition.startReportDeal, 'undefined', '暂停期间详情页不得保留报备/签单可达方法')
 
   console.log('mini-page-resume-state-v1-test passed')
 }

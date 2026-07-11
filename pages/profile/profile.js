@@ -1,10 +1,9 @@
 // profile.js
 const apiService = require('../../utils/api-service')
 
-const hiddenV1EntryKeywords = ['房源群', '换群', '积分', '充值', '微信支付']
+const hiddenV1EntryKeywords = ['房源群', '换群', '积分', '充值', '微信支付', '报备', '签单']
 const defaultReminders = [
   { title: '敏感信息查看', value: '今天有人查看了你上传房源的电话' },
-  { title: '待确认分佣', value: '有成交单待确认，签单后按配置快照结算' },
   { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新自动失效' }
 ]
 
@@ -33,28 +32,10 @@ function findStatValue(stats = [], keywords = [], fallback = 0) {
   return item ? item.value : fallback
 }
 
-function buildDealWorkbench(reportCount = 0, dealCount = 0) {
-  return [
-    {
-      title: '我的报备',
-      desc: '客户称呼可选，客户手机号必填',
-      status: `${reportCount} 条`,
-      url: '/pages/client-reports/client-reports'
-    },
-    {
-      title: '我的签单',
-      desc: '从报备记录发起签单，跟进管理员确认状态',
-      status: `${dealCount} 单`,
-      url: '/pages/deal-records/deal-records'
-    }
-  ]
-}
-
 Page({
   data: {
     user: {},
     workbench: [],
-    dealWorkbench: [],
     reminders: [],
     sourceStats: [],
     footprintCount: 0,
@@ -74,7 +55,7 @@ Page({
   buildWorkbench(profile, footprintCount) {
     const sourceStats = profile.sourceStats || []
     const listingCount = findStatValue(sourceStats, ['房源', '上传'], sourceStats[0] ? sourceStats[0].value : 0)
-    const commissionCount = findStatValue(sourceStats, ['分佣', '成交'], sourceStats[2] ? sourceStats[2].value : 0)
+    const commissionCount = findStatValue(sourceStats, ['分佣', '成交'], 0)
     // 工作台精简：只保留功能名称 + 数值徽标，去掉每项的说明文字（desc 已从卡片模板移除）。
     return [
       { title: '我的房源', value: `${listingCount} 套`, url: '/pages/my-listings/my-listings' },
@@ -96,10 +77,8 @@ Page({
     })
     Promise.all([
       apiService.getProfileState(),
-      apiService.getFootprintRecords(),
-      apiService.getClientReports(),
-      apiService.getDealRecords()
-    ]).then(([profile, footprints, reports, deals]) => {
+      apiService.getFootprintRecords()
+    ]).then(([profile, footprints]) => {
       if (requestSeq !== this._profileRequestSeq) return
       this.setData({
         profileReady: true,
@@ -110,8 +89,7 @@ Page({
         sourceStats: filterVisibleStats(profile.sourceStats || []),
         footprintCount: footprints.length,
         reminders: filterVisibleReminders(profile.reminders || defaultReminders),
-        workbench: this.buildWorkbench(profile, footprints.length),
-        dealWorkbench: buildDealWorkbench((reports || []).length, (deals || []).length)
+        workbench: this.buildWorkbench(profile, footprints.length)
       });
     }).catch((error) => {
       if (requestSeq !== this._profileRequestSeq) return
@@ -119,7 +97,6 @@ Page({
         this.setData({
           user: {},
           workbench: [],
-          dealWorkbench: [],
           reminders: [],
           sourceStats: [],
           footprintCount: 0,
@@ -151,7 +128,7 @@ Page({
   promptLoginGuide() {
     wx.showModal({
       title: '登录后进入我的',
-      content: '我的房源、足迹、报备、签单和分佣记录需要登录内部中介账号后查看。',
+      content: '我的房源、足迹和分佣记录需要登录内部中介账号后查看。',
       cancelText: '先看看',
       confirmText: '去登录',
       success: (res) => {

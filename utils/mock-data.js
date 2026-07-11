@@ -597,7 +597,7 @@
     state.commissionConfig.ownerRate = uploaderRates[OWNER_SOURCE];
     state.commissionConfig.secondLandlordPlatformRate = platformRates[SECOND_LANDLORD_SOURCE];
     state.commissionConfig.ownerPlatformRate = platformRates[OWNER_SOURCE];
-    state.footprints.unshift({
+    pushExactFootprint({
       id: 'F' + Date.now(),
       viewerId: 'preview-admin',
       action: '调整分佣配置',
@@ -711,12 +711,103 @@
     var item = record || {};
     if (item.action) return item.action;
     if (item.actionType === 'phone_call_opened') return '电话查看（已打开系统拨号页）';
+    if (item.actionType === 'sensitive_view') return '查看地址和电话';
+    if (item.actionType === 'showing_verified') return '记录带看';
+    if (item.actionType === 'video_shared') return '转发房间视频给租客';
+    if (item.actionType === 'listing_restored') return '重新上架';
+    if (item.actionType === 'commission_config_updated') return '调整分佣配置';
     return String(item.actionType || '');
   }
 
   function footprintOccurredAt(record) {
     var item = record || {};
     return item.time || item.occurredAt || '';
+  }
+
+  function footprintTimeMs(record) {
+    var item = record || {};
+    var legacyTime = String(item.time || '').trim();
+    var raw = String(item.occurredAt || (legacyTime && legacyTime !== '刚刚' ? legacyTime : item.dateKey) || '').trim();
+    if (!raw) return null;
+    var parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function footprintWithinDays(record, days, now) {
+    var time = footprintTimeMs(record);
+    if (time === null) return days >= 90;
+    var current = now || Date.now();
+    return time <= current && current - time <= days * 24 * 60 * 60 * 1000;
+  }
+
+  function footprintDateKey(record) {
+    var item = record || {};
+    if (item.dateKey) return String(item.dateKey);
+    if (item.time === '刚刚') return todayKey();
+    var time = footprintTimeMs(item);
+    return time === null ? '' : new Date(time).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  }
+
+  function isSensitiveFootprint(record) {
+    var item = record || {};
+    return item.actionType === 'sensitive_view' || Boolean(item.quotaCategory) || /查看地址和电话|查看敏感信息/.test(String(item.action || ''));
+  }
+
+  function isPhoneFootprint(record) {
+    var item = record || {};
+    return item.actionType === 'phone_call_opened' || /电话查看/.test(String(item.action || ''));
+  }
+
+  function pruneExpiredFootprints() {
+    state.footprints = (state.footprints || []).filter(function (item) {
+      return footprintWithinDays(item, 90);
+    });
+  }
+
+  function exactActionType(record) {
+    var item = record || {};
+    if (item.actionType) return item.actionType;
+    if (/下架|已出租|不租了/.test(String(item.action || ''))) return 'listing_expired';
+    var map = {
+      '查看地址和电话': 'sensitive_view',
+      '记录带看': 'showing_verified',
+      '转发房间视频给租客': 'video_shared',
+      '重新上架': 'listing_restored',
+      '调整分佣配置': 'commission_config_updated'
+    };
+    return map[item.action] || 'listing_activity';
+  }
+
+  function pushExactFootprint(record) {
+    pruneExpiredFootprints();
+    var item = record || {};
+    var footprintId = String(item.id || ('F' + Date.now()));
+    var stored = {
+      id: footprintId,
+      viewerId: String(item.viewerId || 'system'),
+      listingId: String(item.listingId || ''),
+      actionType: exactActionType(item),
+      occurredAt: new Date().toISOString(),
+      idempotencyKey: String(item.idempotencyKey || footprintId)
+    };
+    state.footprints = state.footprints || [];
+    state.footprints.unshift(stored);
+    return stored;
+  }
+
+  function assertClientFootprintRateLimit(viewerId, actionType) {
+    var now = Date.now();
+    var recentCount = (state.footprints || []).filter(function (item) {
+      var occurredAtMs = footprintTimeMs(item);
+      return String(item.viewerId || '') === String(viewerId || '') &&
+        String(item.actionType || '') === String(actionType || '') &&
+        occurredAtMs !== null && occurredAtMs <= now && now - occurredAtMs < 60 * 1000;
+    }).length;
+    if (recentCount < 30) return;
+    var error = new Error('操作过于频繁，请稍后再试');
+    error.statusCode = 429;
+    error.data = { reason: 'FOOTPRINT_RATE_LIMITED', retryAfterSeconds: 60 };
+    throw error;
   }
 
   function withListingNames(record) {
@@ -990,7 +1081,7 @@
       authedUsers: state.users.filter(function (user) {
         return user.authed === '已实名';
       }).length,
-      todaySensitiveViews: state.footprints.filter(function (item) { return item.action !== '记录带看'; }).length,
+      todaySensitiveViews: state.footprints.filter(function (item) { return isSensitiveFootprint(item) && footprintDateKey(item) === todayKey(); }).length,
       pendingShowingUploadCount: (state.showingUploads || []).filter(function (item) { return item.status === '待审核'; }).length
     };
   }
@@ -1278,7 +1369,7 @@
 
   function getListingLogs(listingId) {
     return state.footprints.filter(function (item) {
-      return item.listingId === listingId;
+      return item.listingId === listingId && footprintWithinDays(item, 7);
     }).map(function (item) {
       var user = getUser(item.viewerId) || {};
       return {
@@ -1292,7 +1383,11 @@
   }
 
   function getFootprintRecords() {
-    return state.footprints.map(withListingNames);
+    return state.footprints.filter(function (record) {
+      var listing = getListing(record.listingId) || {};
+      var related = record.viewerId === state.currentUserId || listing.uploaderId === state.currentUserId;
+      return related && (isSensitiveFootprint(record) || isPhoneFootprint(record)) && footprintWithinDays(record, 7);
+    }).map(withListingNames);
   }
 
   function getOwnedListings(userId) {
@@ -1359,7 +1454,7 @@
       }),
       reminders: [
         { title: '房态核验', value: owned.filter(function (item) { return item.needsVerify; }).length + ' 套房源需要电话核验' },
-        { title: '敏感信息查看', value: state.footprints.filter(function (item) { return item.action !== '记录带看'; }).length + ' 条地址或电话查看足迹' },
+        { title: '敏感信息查看', value: getFootprintRecords().filter(function (item) { return item.direction === '我的房源被查看'; }).length + ' 条最近 7 天地址或电话查看足迹' },
         { title: '待确认分佣', value: pendingCommission + ' 单成交分佣待确认' }
       ]
     };
@@ -1779,11 +1874,14 @@
   }
 
   function getAdminLogs() {
-    return state.footprints.map(function (item) {
+    return state.footprints.filter(function (item) {
+      return footprintWithinDays(item, 90);
+    }).map(function (item) {
       var listing = getListing(item.listingId) || {};
       var viewer = getUser(item.viewerId) || {};
       var uploader = getUser(listing.uploaderId) || {};
       return {
+        id: item.id,
         viewer: viewer.name,
         listing: listing.shortTitle,
         action: footprintActionText(item),
@@ -1914,9 +2012,8 @@
     var normalIds = {};
     (state.footprints || []).forEach(function (record) {
       if (record.viewerId !== userId) return;
-      if (record.action === '记录带看') return;
-      if (record.dateKey && record.dateKey !== targetDate) return;
-      if (!record.dateKey && record.time && record.time !== '刚刚' && String(record.time).indexOf(targetDate) === -1) return;
+      if (!isSensitiveFootprint(record)) return;
+      if (footprintDateKey(record) !== targetDate) return;
       var listing = getListing(record.listingId) || {};
       var category = record.quotaCategory || sensitiveQuotaCategory(listing, userId);
       if (category === 'owner') ownerIds[record.listingId] = true;
@@ -1940,31 +2037,23 @@
     };
   }
 
-  function assertSensitiveViewAllowed(listing, payload) {
-    var data = payload || {};
+  function assertSensitiveViewerEligible() {
     var viewer = getUser() || {};
-    var category = sensitiveQuotaCategory(listing || {}, state.currentUserId);
     if (!isBrokerUser(viewer) && viewer.authed !== '已实名') {
       var authError = new Error('查看地址和房东联系方式前需要先完成实名认证');
       authError.statusCode = 403;
       throw authError;
     }
-    if (!(data.needId || data.rentalNeedId || data.clientNeedId)) {
-      var needError = new Error('查看房源敏感信息必须绑定找房需求');
-      needError.statusCode = 400;
-      throw needError;
-    }
-    if (!(data.purpose || data.scene || data.reason)) {
-      var purposeError = new Error('查看房源敏感信息必须填写查看用途');
-      purposeError.statusCode = 400;
-      throw purposeError;
-    }
+    return viewer;
+  }
+
+  function assertSensitiveViewQuotaAllowed(listing) {
+    var category = sensitiveQuotaCategory(listing || {}, state.currentUserId);
     var date = todayKey();
     var alreadyViewed = (state.footprints || []).some(function (record) {
       if (record.viewerId !== state.currentUserId || record.listingId !== (listing || {}).id) return false;
-      if (record.action === '记录带看') return false;
-      if (record.dateKey) return record.dateKey === date;
-      return record.time === '刚刚' || String(record.time || '').indexOf(date) !== -1;
+      if (!isSensitiveFootprint(record)) return false;
+      return footprintDateKey(record) === date;
     });
     if (alreadyViewed) return { category: category, quota: brokerSensitiveUsage(state.currentUserId, date) };
     var quota = brokerSensitiveUsage(state.currentUserId, date);
@@ -1981,6 +2070,11 @@
       throw quotaError;
     }
     return { category: category, quota: quota };
+  }
+
+  function assertSensitiveViewAllowed(listing) {
+    assertSensitiveViewerEligible();
+    return assertSensitiveViewQuotaAllowed(listing);
   }
 
   function recordShowing(listingId, payload) {
@@ -2051,7 +2145,16 @@
     });
   }
 
+  function reportDealPausedError() {
+    var error = new Error('客户报备与签单功能已暂停');
+    error.statusCode = 410;
+    error.data = { reason: 'REPORT_DEAL_PAUSED' };
+    return error;
+  }
+
   function createClientReport(listingId, payload) {
+    throw reportDealPausedError();
+    /* istanbul ignore next -- 历史恢复实现保留，默认暂停时不可达。 */
     var data = payload || {};
     var listing = getListing(listingId);
     if (!listing) throw new Error('未找到该房源');
@@ -2114,6 +2217,8 @@
   }
 
   function createDealFromReport(reportId, payload) {
+    throw reportDealPausedError();
+    /* istanbul ignore next -- 历史恢复实现保留，默认暂停时不可达。 */
     var data = payload || {};
     var report = (state.clientReports || []).find(function (item) { return item.id === reportId; });
     if (!report) throw new Error('未找到报备记录');
@@ -2166,7 +2271,7 @@
   }
 
   function addSensitiveFootprint(listingId, payload) {
-    var data = typeof payload === 'object' && payload ? payload : { action: payload };
+    var data = typeof payload === 'object' && payload ? payload : {};
     var listing = getListing(listingId);
     if (isExpiredListing(listing)) {
       throw new Error('该房源已下架，已进入后台废房源池');
@@ -2202,21 +2307,29 @@
         }
       };
     }
-    var access = assertSensitiveViewAllowed(listing, data);
-    var id = 'F' + Date.now();
-    state.footprints.unshift({
-      id: id,
-      listingId: listingId,
-      viewerId: state.currentUserId,
-      action: data.action || '查看地址和电话',
-      needId: data.needId || data.rentalNeedId || data.clientNeedId || '',
-      purpose: data.purpose || data.scene || data.reason || '',
-      time: '刚刚',
-      dateKey: todayKey(),
-      quotaCategory: access.category,
-      sync: '已同步上传人'
+    var suppliedKey = String(data.idempotencyKey || '').trim();
+    if (suppliedKey && (!/^[A-Za-z0-9:_-]{8,128}$/.test(suppliedKey) || /1[3-9]\d{9}/.test(suppliedKey))) {
+      throw new Error('敏感查看幂等标识无效');
+    }
+    var key = suppliedKey || ('SV' + Date.now());
+    var date = todayKey();
+    var sameKeyExisting = (state.footprints || []).find(function (item) {
+      return isSensitiveFootprint(item) && item.viewerId === state.currentUserId && item.listingId === listingId && item.idempotencyKey === key;
     });
-    if (listing) {
+    var dailyExisting = sameKeyExisting || (state.footprints || []).find(function (item) {
+      return isSensitiveFootprint(item) && item.viewerId === state.currentUserId && item.listingId === listingId && footprintDateKey(item) === date;
+    });
+    assertSensitiveViewerEligible();
+    if (!sameKeyExisting) assertSensitiveViewQuotaAllowed(listing);
+    if (!dailyExisting) {
+      assertClientFootprintRateLimit(state.currentUserId, 'sensitive_view');
+      pushExactFootprint({
+        id: 'F' + Date.now(),
+        listingId: listingId,
+        viewerId: state.currentUserId,
+        actionType: 'sensitive_view',
+        idempotencyKey: key
+      });
       listing.sensitiveViews += 1;
     }
     var location = listing ? listingLocationFields(listing) : {};
@@ -2249,7 +2362,7 @@
   function recordPhoneCallOpened(listingId, payload) {
     if (!getUser()) throw new Error('请先登录内部中介账号');
     var key = String(payload && payload.idempotencyKey || '').trim();
-    if (!/^[A-Za-z0-9:_-]{8,128}$/.test(key)) throw new Error('拨号记录幂等标识无效');
+    if (!/^[A-Za-z0-9:_-]{8,128}$/.test(key) || /1[3-9]\d{9}/.test(key)) throw new Error('拨号记录幂等标识无效');
     var existing = state.footprints.find(function (item) {
       return item.actionType === 'phone_call_opened' && item.viewerId === state.currentUserId && item.listingId === listingId && item.idempotencyKey === key;
     });
@@ -2259,9 +2372,10 @@
     var allowed = isCompanyListing(listing) ||
       String(listing.uploaderId || '') === String(state.currentUserId || '') ||
       state.footprints.some(function (item) {
-        return item.listingId === listingId && item.viewerId === state.currentUserId && Boolean(item.quotaCategory);
+        return item.listingId === listingId && item.viewerId === state.currentUserId && isSensitiveFootprint(item);
       });
     if (!allowed) throw new Error('请先完成敏感信息查看确认');
+    assertClientFootprintRateLimit(state.currentUserId, 'phone_call_opened');
     var record = {
       id: 'F' + Date.now(),
       viewerId: state.currentUserId,
@@ -2270,8 +2384,7 @@
       occurredAt: new Date().toISOString(),
       idempotencyKey: key
     };
-    state.footprints.unshift(record);
-    return clone(record);
+    return clone(pushExactFootprint(record));
   }
 
   function recordVideoShare(listingId, payload) {
@@ -2290,9 +2403,10 @@
     if (!hasListingVideo(listing)) {
       throw new Error('该房源暂无可转发视频');
     }
+    assertClientFootprintRateLimit(user.id, 'video_shared');
     var location = publicListingLocationFields(listing);
     var title = publicListingTitle(listing, location) || listing.shortTitle || '房源视频';
-    state.footprints.unshift({
+    pushExactFootprint({
       id: 'F' + Date.now(),
       listingId: listingId,
       viewerId: user.id,
@@ -2411,7 +2525,7 @@
       showing.rewardGranted = true;
       showing.rewardDateKey = todayKey();
       showing.rewardCount = Number(showing.rewardCount || 1);
-      state.footprints.unshift({
+      pushExactFootprint({
         id: 'F' + Date.now(),
         listingId: showing.listingId,
         viewerId: showing.userId,
@@ -2891,7 +3005,7 @@
     delete listing.expiredReason;
     delete listing.expiredStaleDays;
     syncListingRecommendationProfile(listing);
-    state.footprints.unshift({
+    pushExactFootprint({
       id: 'F' + Date.now(),
       listingId: id,
       viewerId: state.currentUserId,
