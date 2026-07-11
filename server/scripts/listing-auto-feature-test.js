@@ -130,6 +130,18 @@ async function main() {
   })
   assertIncludesAll(positiveCan.features, ['朝南', '可短租', '可月付', '燃气'], '不可/不能修复未误伤正例')
 
+  const newFeatureInference = createListing(db, {
+    features: ['朝南'],
+    note: '挑高复式 Loft 户型，客厅带落地窗'
+  })
+  assertIncludesAll(newFeatureInference.features, ['朝南', 'Loft', '落地窗'], 'M1 新特点自动推断')
+
+  const loftSubstringSafety = createListing(db, {
+    features: ['朝南'],
+    note: '英文标识 softlofting 仅作普通描述'
+  })
+  assertExcludesAll(loftSubstringSafety.features, ['Loft'], 'Loft 英文子串不得误推断')
+
   const negatedAfterCannot = createListing(db, {
     features: ['朝南'],
     note: '短租不支持，月付不允许'
@@ -227,6 +239,7 @@ async function main() {
         房号: '1004A',
         户型: '一室一厅一卫',
         押一付一: '3200',
+        联系电话: '13900001111',
         标签: '南北通透 独立卫生间 可月付 首次出租 民水民电 带阁楼 可短租',
         备注: '无燃气，非近地铁'
       }

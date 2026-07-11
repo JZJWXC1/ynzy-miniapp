@@ -1,5 +1,6 @@
 const apiService = require('../../utils/api-service')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+const { LISTING_FEATURE_OPTIONS, NO_FEATURE } = require('../../utils/listing-features')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
@@ -10,6 +11,7 @@ const regionOptions = [
   { name: '余杭区', blocks: [] }
 ]
 const layoutOptions = ['不限', '一室', '两室', '三室', '三室以上']
+const featureOptions = LISTING_FEATURE_OPTIONS.filter((item) => item !== NO_FEATURE)
 const emptyFilters = {
   needId: '',
   district: '',
@@ -18,7 +20,8 @@ const emptyFilters = {
   layout: '',
   rentMode: '',
   rentMin: '',
-  rentMax: ''
+  rentMax: '',
+  features: ''
 }
 
 function cleanFilterValue(value) {
@@ -57,6 +60,7 @@ function normalizeListingState(input = {}) {
       rentMode: normalizeRentModeFilter(sourceFilters.rentMode),
       rentMin: cleanFilterValue(sourceFilters.rentMin),
       rentMax: cleanFilterValue(sourceFilters.rentMax),
+      features: cleanFilterValue(sourceFilters.features || sourceFilters.feature),
       needId: cleanFilterValue(sourceFilters.needId || sourceFilters.rentalNeedId || sourceFilters.clientNeedId)
     }
   }
@@ -73,6 +77,7 @@ function normalizeOptions(options = {}) {
       rentMode: options.rentMode ? decodeURIComponent(options.rentMode) : '',
       rentMin: options.rentMin || '',
       rentMax: options.rentMax || '',
+      features: options.features ? decodeURIComponent(options.features) : '',
       needId: options.needId ? decodeURIComponent(options.needId) : ''
     }
   })
@@ -83,6 +88,7 @@ Page({
     categories,
     regionOptions,
     layoutOptions,
+    featureOptions,
     communityOptions: [],
     category: '全部',
     filters: {
@@ -93,7 +99,8 @@ Page({
       layout: '',
       rentMode: '',
       rentMin: '',
-      rentMax: ''
+      rentMax: '',
+      features: ''
     },
     listings: [],
     loading: false,
@@ -184,7 +191,8 @@ Page({
         layout: '',
         rentMode: '',
         rentMin: '',
-        rentMax: ''
+        rentMax: '',
+        features: ''
       }
     }, () => this.loadListings())
   },

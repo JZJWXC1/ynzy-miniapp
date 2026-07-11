@@ -12,7 +12,8 @@ function normalizeFilters(value = {}) {
     layout: cleanValue(value.layout),
     rentMin: cleanValue(value.rentMin),
     rentMax: cleanValue(value.rentMax),
-    rentMode: cleanValue(value.rentMode)
+    rentMode: cleanValue(value.rentMode),
+    features: cleanValue(value.features || value.feature)
   }
 }
 
@@ -56,6 +57,10 @@ Component({
     layoutOptions: {
       type: Array,
       value: ['不限', '一室', '两室', '三室', '三室以上']
+    },
+    featureOptions: {
+      type: Array,
+      value: []
     },
     loading: {
       type: Boolean,
@@ -130,6 +135,13 @@ Component({
       this.updateDraft({
         ...this.data.draftFilters,
         rentMode
+      }, true)
+    },
+    selectFeature(event) {
+      const feature = event.currentTarget.dataset.feature || ''
+      this.updateDraft({
+        ...this.data.draftFilters,
+        features: this.data.draftFilters.features === feature ? '' : feature
       }, true)
     },
     updateInput(event) {

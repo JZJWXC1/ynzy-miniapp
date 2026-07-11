@@ -343,9 +343,10 @@ function parseLayoutDescription(fields) {
   }
 }
 
-const CONTACT_FIELD_ALIASES = ['联系方式', '联系电话', '房东联系方式', '房东电话', '联系人电话', '手机号', '手机', '电话', '微信', 'contact', 'phone', 'mobile', 'wechat']
+const CONTACT_FIELD_ALIASES = ['联系方式', '联系电话', '房东联系方式', '房东电话', '联系人电话', '手机号', '手机', '电话', 'contact', 'phone', 'mobile']
 const VIEWING_PASSWORD_FIELD_ALIASES = ['看房方式密码', '看房密码', '门锁密码', '密码', 'viewingPassword', 'showingPassword', 'password']
 const REMARK_FIELD_ALIASES = ['备注', '说明', '备注说明', '水电', 'note', 'remark', 'memo']
+const LANDLORD_COMMISSION_FIELD_ALIASES = ['房东佣金占月租比例', '房东佣金比例', '房东佣金%', 'landlordCommissionPercent']
 
 function roomAddressFromParts(parts = {}) {
   return [parts.building, parts.unit, parts.roomNumber].filter(Boolean).join('-')
@@ -386,6 +387,7 @@ function normalizeRecord(rawRecord, index) {
   const contact = firstField(fields, CONTACT_FIELD_ALIASES)
   const viewingPassword = firstField(fields, VIEWING_PASSWORD_FIELD_ALIASES)
   const remark = firstField(fields, REMARK_FIELD_ALIASES)
+  const landlordCommissionPercent = firstField(fields, LANDLORD_COMMISSION_FIELD_ALIASES)
   const video = rawRecord.video || fields.video || fields.视频 || null
   return {
     raw: rawRecord,
@@ -401,10 +403,11 @@ function normalizeRecord(rawRecord, index) {
     unit: roomParts.unit,
     roomNumber: roomParts.roomNumber,
     roomAddress: roomAddressFromParts(roomParts),
-    contact: contact || '公司统一维护',
+    contact,
     viewingPassword,
     showingPassword: viewingPassword,
     remark,
+    landlordCommissionPercent: landlordCommissionPercent === '' ? 50 : landlordCommissionPercent,
     rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
     layout: layoutText || [room, hall, bath].filter(Boolean).join(''),
     rentMode,
@@ -1000,7 +1003,7 @@ function buildListingPayload(row, video) {
     unit: row.unit,
     roomNumber: row.roomNumber,
     roomAddress: row.roomAddress,
-    contact: row.contact || '公司统一维护',
+    contact: row.contact || '',
     rent: row.rent,
     layout: row.layout,
     rentMode: row.rentMode,
@@ -1009,6 +1012,7 @@ function buildListingPayload(row, video) {
     hall: row.hall,
     bath: row.bath,
     commissionRate: 0,
+    landlordCommissionPercent: row.landlordCommissionPercent,
     features: normalizedTags,
     rawFeatures: row.tags,
     companyListing: true,
@@ -1074,6 +1078,9 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.showingPassword = row.showingPassword || row.viewingPassword || ''
   listing.remark = row.remark || ''
   listing.note = row.remark || ''
+  listing.landlordCommissionPercent = listing.landlordCommissionPercent === undefined || listing.landlordCommissionPercent === null
+    ? 50
+    : Number(listing.landlordCommissionPercent)
   listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
   const hasMaterial = Boolean(material)
   const materialReady = hasMaterial && !materialFailureReason
@@ -1175,6 +1182,13 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       result.skippedInvalid += 1
       result.messages.push(`第 ${row.rowNumber} 行字段不完整，需小区、几栋、房间号、租金、户型`)
       result.auditRows.push(buildAuditRow(row, null, '跳过-字段不完整', '缺少小区/楼栋/房号/租金/户型之一'))
+      continue
+    }
+    const effectiveContact = String(row.contact || (existing && existing.landlordPhone) || '').trim()
+    if (!/^1[3-9]\d{9}$/.test(effectiveContact)) {
+      result.skippedInvalid += 1
+      result.messages.push(`第 ${row.rowNumber} 行缺少合法房东手机号，已跳过`)
+      result.auditRows.push(buildAuditRow(row, null, '跳过-房东手机号无效', '缺少合法 11 位房东手机号'))
       continue
     }
     const material = matcher(row)

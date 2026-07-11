@@ -35,6 +35,8 @@
     { name: '花园', pattern: /花园/ },
     { name: '近地铁', pattern: /近地铁|地铁口|地铁站|号线/ },
     { name: '朝南', pattern: /朝南|南向/ },
+    { name: 'Loft', pattern: /\bloft\b|挑高复式|复式挑高/i },
+    { name: '落地窗', pattern: /落地窗/ },
     { name: '独卫', pattern: /独卫|独立卫|独立厨卫|独厨独卫/ },
     { name: '电梯', pattern: /电梯/ },
     { name: '整租', pattern: /整租|（整）|\(整\)/ },
@@ -42,17 +44,21 @@
     { name: DEPOSIT_FREE_FEATURE, pattern: /免押金|无押金|零押金|押金0|押金为0/ }
   ];
   var LISTING_FEATURE_OPTIONS = [
+    '近地铁',
+    '电梯',
+    '燃气',
+    '独卫',
+    '朝南',
+    'Loft',
+    '落地窗',
     '带阳台',
     '带露台（阁楼）',
+    '可短租',
+    '可月付',
     '干湿分离',
-    '燃气',
-    '阁楼',
-    '露台',
-    '花园',
-    '近地铁',
-    '朝南',
-    '独卫',
-    '电梯',
+    '采光好',
+    '首次出租',
+    '民水民电',
     '整租',
     '合租',
     DEPOSIT_FREE_FEATURE,
@@ -268,6 +274,34 @@
       return Object.prototype.hasOwnProperty.call(target, item);
     });
     return field ? target[field] : undefined;
+  }
+
+  function normalizeListingRemark(value) {
+    return String(value === undefined || value === null ? '' : value).trim();
+  }
+
+  function listingRemarkContainsContact(value) {
+    var text = normalizeListingRemark(value).normalize('NFKC');
+    if (!text) return false;
+    var compact = text.replace(/[\s\-—_()（）+.,，:：]/g, '');
+    if (/1[3-9]\d{9}/.test(compact)) return true;
+    return /微信|微\s*信|wei\s*xin|we\s*chat|二维码|https?:\/\/|www\.|(?:^|[^a-z0-9])(?:wx|vx|v信|微号)(?:\s*[:：号]?)/i.test(text);
+  }
+
+  function landlordCommissionPercentFrom(form, current) {
+    var input = firstOwnValue(form, ['landlordCommissionPercent']);
+    var currentValue = firstOwnValue(current, ['landlordCommissionPercent']);
+    var raw = input !== undefined ? input : (currentValue !== undefined ? currentValue : 50);
+    var text = String(raw === undefined || raw === null ? '' : raw).trim();
+    var typeValid = typeof raw === 'number' || typeof raw === 'string';
+    var formatValid = typeof raw === 'number' ? Number.isInteger(raw) : /^\d+$/.test(text);
+    return typeValid && formatValid ? Number(text) : Number.NaN;
+  }
+
+  function validateLandlordCommissionPercent(value) {
+    if (!Number.isInteger(value) || value < 0 || value > 100) {
+      throw new Error('房东佣金占月租比例必须是 0 至 100 的整数');
+    }
   }
 
   function normalizeFormFeatures(form, current) {
@@ -965,6 +999,11 @@
       if (query.rentMode && (listing.rentMode || listing.type) !== query.rentMode) return false;
       if (query.rentMin && Number(listing.rent || 0) < Number(query.rentMin)) return false;
       if (query.rentMax && Number(listing.rent || 0) > Number(query.rentMax)) return false;
+      var requestedFeatures = parseFeatureInput(query.features || query.feature);
+      if (requestedFeatures.length) {
+        var featureSet = listingMatchFeatureSet(listing);
+        if (!requestedFeatures.every(function (feature) { return featureSet.has(feature); })) return false;
+      }
       return true;
     }).map(function (listing) {
       var row = formatHomeListing(listing);
@@ -1093,6 +1132,8 @@
       hasVideo: hasVideo,
       landlordPhone: listing.landlordPhone || listing.contact || '',
       contact: listing.landlordPhone || listing.contact || '',
+      remark: listingRemarkContainsContact(listing.remark) ? '' : normalizeListingRemark(listing.remark),
+      landlordCommissionPercent: landlordCommissionPercentFrom({}, listing),
       status: listing.status,
       type: listing.type || listing.rentMode || '',
       rentMode: listing.rentMode || listing.type || '',
@@ -1171,6 +1212,8 @@
       companyContactPhones: companyListing ? COMPANY_CONTACT_PHONES.slice() : [],
       companyContactPhoneText: companyListing ? companyContactText : '',
       sensitiveLocked: !companyListing,
+      remark: listingRemarkContainsContact(listing.remark) ? '' : normalizeListingRemark(listing.remark),
+      landlordCommissionPercent: landlordCommissionPercentFrom({}, listing),
       commissionRate: listing.commissionRate,
       videoLabel: listing.videoLabel,
       videoUrl: listing.videoUrl || '',
@@ -2361,25 +2404,28 @@
     var viewingMethod = firstText(form.viewingMethod, form.showingMethod);
     var viewingKeyLocation = String(form.viewingKeyLocation || '').trim();
     var viewingPassword = String(form.viewingPassword || form.showingPassword || '').trim();
+    var contact = firstText(form.contact, form.landlordPhone);
+    var remark = normalizeListingRemark(firstOwnValue(form, ['remark', 'note', 'memo']));
+    var landlordCommissionPercent = landlordCommissionPercentFrom(form, {});
     if (viewingMethod && VIEWING_METHOD_OPTIONS.indexOf(viewingMethod) === -1) {
       throw new Error('看房方式只能是钥匙、密码或联系房东');
     }
     if (!address || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
       throw new Error('城市、区域、小区、几栋、房间号、租金、户型和视频必填');
     }
-    // 与生产后端同口径：房东手机号仅在看房方式=联系房东时必填
+    // 与生产后端同口径：所有来源、所有看房方式均要求合法房东手机号
+    if (!/^1[3-9]\d{9}$/.test(contact)) {
+      throw new Error('请输入 11 位房东手机号');
+    }
     if (viewingMethod === '钥匙' && !viewingKeyLocation) {
       throw new Error('看房方式为钥匙时，请填写钥匙在哪');
     }
     if (viewingMethod === '密码' && !viewingPassword) {
       throw new Error('看房方式为密码时，请填写看房密码');
     }
-    if (viewingMethod === '联系房东' && !firstText(form.contact)) {
-      throw new Error('看房方式为联系房东时，请填写房东手机号');
-    }
-    if (!viewingMethod && !firstText(form.contact)) {
-      throw new Error('请选择看房方式（钥匙/密码/联系房东）并填写对应信息');
-    }
+    if (Array.from(remark).length > 200) throw new Error('房源备注最多 200 字');
+    if (listingRemarkContainsContact(remark)) throw new Error('房源备注不能包含手机号、微信号等联系方式');
+    validateLandlordCommissionPercent(landlordCommissionPercent);
     if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 100) {
       throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
@@ -2408,7 +2454,9 @@
       unit: unit,
       roomNumber: roomNumber,
       address: address,
-      landlordPhone: firstText(form.contact),
+      landlordPhone: contact,
+      remark: remark,
+      landlordCommissionPercent: landlordCommissionPercent,
       viewingMethod: viewingMethod,
       viewingKeyLocation: viewingKeyLocation,
       viewingPassword: viewingPassword,
@@ -2480,6 +2528,8 @@
       address: listing.address || '',
       contact: listing.landlordPhone || '',
       landlordPhone: listing.landlordPhone || '',
+      remark: listingRemarkContainsContact(listing.remark) ? '' : normalizeListingRemark(listing.remark),
+      landlordCommissionPercent: landlordCommissionPercentFrom({}, listing),
       viewingMethod: listingViewingMethodFields(listing).viewingMethod,
       viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
       viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
@@ -2521,6 +2571,14 @@
     var sourceState = prepareSourceFields(form, listing, featureState);
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
+    var nextContact = firstText(form.contact, form.landlordPhone, listing.landlordPhone);
+    var remarkInput = firstOwnValue(form, ['remark', 'note', 'memo']);
+    var nextRemark = remarkInput !== undefined ? normalizeListingRemark(remarkInput) : normalizeListingRemark(listing.remark);
+    var nextLandlordCommissionPercent = landlordCommissionPercentFrom(form, listing);
+    if (!/^1[3-9]\d{9}$/.test(nextContact)) throw new Error('请输入 11 位房东手机号');
+    if (remarkInput !== undefined && Array.from(nextRemark).length > 200) throw new Error('房源备注最多 200 字');
+    if (remarkInput !== undefined && listingRemarkContainsContact(nextRemark)) throw new Error('房源备注不能包含手机号、微信号等联系方式');
+    validateLandlordCommissionPercent(nextLandlordCommissionPercent);
     if (!Number.isFinite(sourceState.commissionRate) || sourceState.commissionRate < 0 || sourceState.commissionRate > 100) {
       throw new Error('结算规则由当前配置和房源类型派生，当前历史佣金字段取值异常');
     }
@@ -2552,7 +2610,9 @@
     listing.unit = unit;
     listing.roomNumber = roomNumber;
     listing.address = address;
-    listing.landlordPhone = firstText(form.contact, form.landlordPhone, listing.landlordPhone);
+    listing.landlordPhone = nextContact;
+    listing.remark = nextRemark;
+    listing.landlordCommissionPercent = nextLandlordCommissionPercent;
     // 显式传空串=清空、不传=沿用（与生产后端 normalizeListingForm 同语义）
     if (Object.prototype.hasOwnProperty.call(form, 'viewingMethod')) listing.viewingMethod = firstText(form.viewingMethod);
     if (Object.prototype.hasOwnProperty.call(form, 'viewingKeyLocation')) listing.viewingKeyLocation = String(form.viewingKeyLocation || '').trim();

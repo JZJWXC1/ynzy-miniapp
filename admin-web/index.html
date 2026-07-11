@@ -1752,7 +1752,11 @@
         </label>
         <label class="form-item">
           <span>房东电话</span>
-          <input id="editContact" placeholder="看房方式为联系房东时必填">
+          <input id="editContact" placeholder="所有房源和看房方式均必填 11 位手机号">
+        </label>
+        <label class="form-item">
+          <span>房东佣金占月租比例（%）</span>
+          <input id="editLandlordCommissionPercent" type="number" min="0" max="100" step="1" placeholder="0-100 的整数，默认 50">
         </label>
         <label class="form-item">
           <span>看房密码</span>
@@ -1788,6 +1792,10 @@
         <label class="form-item full">
           <span>视频链接</span>
           <input id="editVideoUrl" placeholder="视频 URL（留空保持不变）">
+        </label>
+        <label class="form-item full">
+          <span>房源备注（选填，最多 200 字，不得包含电话或微信号）</span>
+          <textarea id="editRemark" maxlength="200" placeholder="水电、采光等补充说明"></textarea>
         </label>
         <div class="form-item full">
           <span>房源特点（至少选一项，无特点请选“无”）</span>
@@ -2396,6 +2404,8 @@
         ['楼栋/单元/房号', roomPositionText(item)],
         ['完整地址', item.address, true],
         ['房东电话', pickText(item.landlordPhone, item.contact)],
+        ['房源备注', item.remark, true],
+        ['房东总佣金', `${item.landlordCommissionPercent === undefined || item.landlordCommissionPercent === null ? 50 : item.landlordCommissionPercent}% 月租`],
         ['上传人', item.uploader],
         ['上传人电话', item.uploaderPhone],
         ['视频状态', item.hasVideo || item.videoUrl ? '已上传视频' : pickText(item.videoMaterialStatus, item.video, '未传视频')],
@@ -3669,9 +3679,17 @@
     }
 
     // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
-    const LISTING_EDIT_FEATURE_OPTIONS = ['近地铁', '电梯', '燃气', '独卫', '朝南', '带阳台', '带露台（阁楼）', '可短租', '可月付', '干湿分离', '采光好', '首次出租', '民水民电', '无'];
+    const LISTING_EDIT_FEATURE_OPTIONS = ['近地铁', '电梯', '燃气', '独卫', '朝南', 'Loft', '落地窗', '带阳台', '带露台（阁楼）', '可短租', '可月付', '干湿分离', '采光好', '首次出租', '民水民电', '无'];
     let editingListingItem = null;
     let editingListingInitialViewingMethod = '';
+
+    function listingRemarkContainsContact(value) {
+      const text = String(value || '').trim().normalize('NFKC');
+      if (!text) return false;
+      const compact = text.replace(/[\s\-—_()（）+.,，:：]/g, '');
+      if (/1[3-9]\d{9}/.test(compact)) return true;
+      return /微信|微\s*信|wei\s*xin|we\s*chat|二维码|https?:\/\/|www\.|(?:^|[^a-z0-9])(?:wx|vx|v信|微号)(?:\s*[:：号]?)/i.test(text);
+    }
 
     function renderEditFeatureOptions(selected) {
       const tags = uniqueTextList(selected);
@@ -3697,6 +3715,8 @@
       document.getElementById('editBath').value = item.bath || '';
       document.getElementById('editRent').value = item.rentValue || '';
       document.getElementById('editContact').value = item.landlordPhone || item.contact || '';
+      document.getElementById('editRemark').value = item.remark || '';
+      document.getElementById('editLandlordCommissionPercent').value = item.landlordCommissionPercent === undefined || item.landlordCommissionPercent === null ? 50 : item.landlordCommissionPercent;
       document.getElementById('editViewingPassword').value = item.viewingPassword || '';
       // item.viewingMethod 是展示推导值（存量可能库里并无显式方式）；记录初值，保存时未改动就不下发，
       // 避免把推导值物化成显式方式（否则飞书表清空密码列后该行同步会被条件必填卡死）
@@ -3738,6 +3758,25 @@
         errorBox.textContent = '请至少选择一个房源特点，无特点请选“无”';
         return;
       }
+      const contact = document.getElementById('editContact').value.trim();
+      if (!/^1[3-9]\d{9}$/.test(contact)) {
+        errorBox.textContent = '请输入 11 位房东手机号；所有看房方式均为必填';
+        return;
+      }
+      const remark = document.getElementById('editRemark').value.trim();
+      if (Array.from(remark).length > 200) {
+        errorBox.textContent = '房源备注最多 200 字';
+        return;
+      }
+      if (listingRemarkContainsContact(remark)) {
+        errorBox.textContent = '房源备注不能包含手机号、微信号等联系方式';
+        return;
+      }
+      const landlordCommissionPercent = Number(document.getElementById('editLandlordCommissionPercent').value);
+      if (!Number.isInteger(landlordCommissionPercent) || landlordCommissionPercent < 0 || landlordCommissionPercent > 100) {
+        errorBox.textContent = '房东佣金占月租比例必须是 0 至 100 的整数';
+        return;
+      }
       const payload = {
         area: document.getElementById('editArea').value.trim(),
         block: document.getElementById('editBlock').value.trim(),
@@ -3750,7 +3789,9 @@
         hall: document.getElementById('editHall').value.trim(),
         bath: document.getElementById('editBath').value.trim(),
         rent,
-        contact: document.getElementById('editContact').value.trim(),
+        contact,
+        remark,
+        landlordCommissionPercent,
         viewingPassword: document.getElementById('editViewingPassword').value.trim(),
         viewingKeyLocation: document.getElementById('editViewingKeyLocation').value.trim(),
         ownerType: document.getElementById('editOwnerType').value,

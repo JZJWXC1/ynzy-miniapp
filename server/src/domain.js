@@ -57,6 +57,8 @@ const FEATURE_INFERENCE_RULES = [
   // 但「X号线」后紧跟专名后缀(公寓/苑/园…)视为楼盘名(一号线公寓)不打标签。因本函数已不读 title/tags/community，仅从 description 等推断，安全。
   { name: '近地铁', pattern: /近地铁|地铁口|地铁站|地铁旁|地铁边|靠地铁|临地铁|挨地铁|[\d一二三四五六七八九十两]号线(?!公寓|公馆|花园|家园|苑|园|城|府|庄|阁|座|幢|邸|里|巷|弄|路|桥|楼|号|馆|居|庭|轩|湾|郡|墅|寓)/ },
   { name: '朝南', pattern: /朝南|南向/ },
+  { name: 'Loft', pattern: /\bloft\b|挑高复式|复式挑高/i },
+  { name: '落地窗', pattern: /落地窗/ },
   // 独卫：裸「独立卫」加负向前瞻，排除「独立卫星电视/独立卫视」等撞词。
   { name: '独卫', pattern: /独卫|独立卫生间|独立厨卫|独厨独卫|独立卫(?![星视])/ },
   { name: '电梯', pattern: /电梯/ },
@@ -828,7 +830,7 @@ function patternMatchesFeature(text, pattern) {
 // 与「无电梯/非首次出租/不可短租」(否定形) 冒充特征——它们都不等于任何整词别名。
 const ANCHORED_FEATURE_RES = FEATURE_INFERENCE_RULES.map((rule) => ({
   name: rule.name,
-  anchored: new RegExp('^(?:' + rule.pattern.source + ')$')
+  anchored: new RegExp('^(?:' + rule.pattern.source + ')$', rule.pattern.flags.replace(/g/g, ''))
 }))
 function tagTokenMatchesFeature(token, ruleName) {
   const entry = ANCHORED_FEATURE_RES.find((item) => item.name === ruleName)
@@ -1969,6 +1971,7 @@ function matchesLayoutFilter(listing = {}, layoutFilter = '') {
 function filterListings(db, filter = {}) {
   const companyOnly = isCompanyOnlyFilter(filter)
   const districtFilter = String(filter.district || '').trim()
+  const requestedFeatures = parseFeatureInput(filter.features || filter.feature)
   return publicListings(db)
     .filter((listing) => {
       const locationText = publicLocationSearchText(listing)
@@ -1982,6 +1985,10 @@ function filterListings(db, filter = {}) {
       if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
       if (filter.rentMin && Number(listing.rent || 0) < Number(filter.rentMin)) return false
       if (filter.rentMax && Number(listing.rent || 0) > Number(filter.rentMax)) return false
+      if (requestedFeatures.length) {
+        const featureSet = listingMatchFeatureSet(listing)
+        if (!requestedFeatures.every((feature) => featureSet.has(feature))) return false
+      }
       return true
     })
     .map((listing) => {
@@ -2104,6 +2111,8 @@ function buildListingDetail(db, listing) {
     // 看房方式名不属敏感，直接下发；钥匙位置/密码/电话等敏感值仍走公司公开或留痕后 sensitive 下发
     ...listingViewingMethodFields(listing),
     commissionRate: display.noCommission ? 0 : commissionRateForListing(listing, db),
+    landlordCommissionPercent: storedLandlordCommissionPercent(listing),
+    remark: safePublicListingRemark(listing),
     commissionText: display.commissionText,
     noCommission: display.noCommission,
     companyListing: display.companyListing,
@@ -2933,6 +2942,8 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
     rawLayout: listing.layout || '',
     rentValue: Number(listing.rent || 0),
     commissionRate: Number(listing.commissionRate || 0),
+    landlordCommissionPercent: storedLandlordCommissionPercent(listing),
+    remark: safePublicListingRemark(listing),
     features: display.features || [],
     tags: display.features || [],
     featureText: display.featureText || '',
@@ -4372,6 +4383,34 @@ function listingViewingKeyLocation(listing = {}) {
   return firstText(listing.viewingKeyLocation, listing.keyLocation)
 }
 
+const DEFAULT_LANDLORD_COMMISSION_PERCENT = 50
+const MAX_LISTING_REMARK_LENGTH = 200
+
+function normalizeListingRemark(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
+}
+
+function listingRemarkContainsContact(value) {
+  const text = normalizeListingRemark(value).normalize('NFKC')
+  if (!text) return false
+  const compact = text.replace(/[\s\-—_()（）+.,，:：]/g, '')
+  if (/1[3-9]\d{9}/.test(compact)) return true
+  return /微信|微\s*信|wei\s*xin|we\s*chat|二维码|https?:\/\/|www\.|(?:^|[^a-z0-9])(?:wx|vx|v信|微号)(?:\s*[:：号]?)/i.test(text)
+}
+
+function safePublicListingRemark(listing = {}) {
+  const remark = normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo))
+  if (!remark || Array.from(remark).length > MAX_LISTING_REMARK_LENGTH || listingRemarkContainsContact(remark)) return ''
+  return remark
+}
+
+function storedLandlordCommissionPercent(listing = {}) {
+  const raw = listing.landlordCommissionPercent
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_LANDLORD_COMMISSION_PERCENT
+  const value = Number(raw)
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : DEFAULT_LANDLORD_COMMISSION_PERCENT
+}
+
 function companyPublicListingFields(listing = {}) {
   if (!isCompanyListing(listing)) return {}
   const location = listingLocationFields(listing)
@@ -4381,7 +4420,7 @@ function companyPublicListingFields(listing = {}) {
   const companyPhoneText = companyPhones.join('/')
   const contact = companyPhoneText || firstText(listing.contact, listing.feishuContact, listing.landlordPhone)
   const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
-  const remark = firstText(listing.remark, listing.note, listing.memo)
+  const remark = safePublicListingRemark(listing)
   const room = firstText(listing.roomAddress, location.roomAddress)
   const address = firstText(listing.address, [location.city, location.area, location.community, room].filter(Boolean).join(''))
   return {
@@ -4478,6 +4517,23 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const address = firstText(form.address, hasLocationInput ? builtAddress : '', current.address, builtAddress)
   const layout = firstText(form.layout, hasLayoutInput ? builtLayout : '', current.layout, builtLayout)
   const contact = firstText(form.contact, form.landlordPhone, current.landlordPhone)
+  const remarkInput = firstOwnValue(form, ['remark', 'note', 'memo'])
+  const remark = remarkInput !== undefined
+    ? normalizeListingRemark(remarkInput)
+    : normalizeListingRemark(firstText(current.remark, current.note, current.memo))
+  const landlordCommissionInput = firstOwnValue(form, ['landlordCommissionPercent'])
+  const currentLandlordCommissionInput = firstOwnValue(current, ['landlordCommissionPercent'])
+  const rawLandlordCommissionPercent = landlordCommissionInput !== undefined
+    ? landlordCommissionInput
+    : (currentLandlordCommissionInput !== undefined ? currentLandlordCommissionInput : DEFAULT_LANDLORD_COMMISSION_PERCENT)
+  const landlordCommissionText = String(rawLandlordCommissionPercent === null || rawLandlordCommissionPercent === undefined ? '' : rawLandlordCommissionPercent).trim()
+  const landlordCommissionInputTypeValid = typeof rawLandlordCommissionPercent === 'number' || typeof rawLandlordCommissionPercent === 'string'
+  const landlordCommissionFormatValid = typeof rawLandlordCommissionPercent === 'number'
+    ? Number.isInteger(rawLandlordCommissionPercent)
+    : /^\d+$/.test(landlordCommissionText)
+  const landlordCommissionPercent = landlordCommissionInputTypeValid && landlordCommissionFormatValid
+    ? Number(landlordCommissionText)
+    : Number.NaN
   const rent = firstText(form.rent, current.rent)
   const videoUrl = firstText(form.videoUrl, current.videoUrl)
   const videoKey = firstText(form.videoKey, current.videoKey)
@@ -4626,6 +4682,9 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
     address,
     layout,
     contact,
+    remark,
+    validateRemark: remarkInput !== undefined || !current.id,
+    landlordCommissionPercent,
     rent: Number(rent),
     videoUrl,
     videoKey,
@@ -4712,8 +4771,17 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  // 看房方式条件必填：钥匙→钥匙位置、密码→看房密码、联系房东→房东手机号。
-  // 房东手机号不再无条件必填；未选方式的旧客户端/存量编辑仍要求联系方式，保证房源至少有一种可看房途径。
+  // 房东手机号对所有来源和看房方式均为必填；钥匙/密码方式还需各自的操作信息。
+  if (!fields.contact) {
+    const error = new Error('请填写房东手机号')
+    error.statusCode = 400
+    throw error
+  }
+  if (!/^1[3-9]\d{9}$/.test(fields.contact)) {
+    const error = new Error('请输入 11 位房东手机号')
+    error.statusCode = 400
+    throw error
+  }
   if (fields.viewingMethod === VIEWING_METHOD_KEY && !fields.viewingKeyLocation) {
     const error = new Error('看房方式为钥匙时，请填写钥匙在哪')
     error.statusCode = 400
@@ -4724,18 +4792,18 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  if (fields.viewingMethod === VIEWING_METHOD_LANDLORD && !fields.contact) {
-    const error = new Error('看房方式为联系房东时，请填写房东手机号')
+  if (fields.validateRemark && Array.from(fields.remark || '').length > MAX_LISTING_REMARK_LENGTH) {
+    const error = new Error('房源备注最多 200 字')
     error.statusCode = 400
     throw error
   }
-  if (!fields.companyListing && fields.viewingMethod === VIEWING_METHOD_LANDLORD && !/^1[3-9]\d{9}$/.test(fields.contact)) {
-    const error = new Error('请输入 11 位房东手机号')
+  if (fields.validateRemark && listingRemarkContainsContact(fields.remark)) {
+    const error = new Error('房源备注不能包含手机号、微信号等联系方式')
     error.statusCode = 400
     throw error
   }
-  if (!fields.viewingMethod && !fields.contact) {
-    const error = new Error('请选择看房方式（钥匙/密码/联系房东）并填写对应信息')
+  if (!Number.isInteger(fields.landlordCommissionPercent) || fields.landlordCommissionPercent < 0 || fields.landlordCommissionPercent > 100) {
+    const error = new Error('房东佣金占月租比例必须是 0 至 100 的整数')
     error.statusCode = 400
     throw error
   }
@@ -4837,6 +4905,8 @@ function addNormalListing(db, userId, form = {}, options = {}) {
     roomNumber: fields.roomNumber,
     address: fields.address,
     landlordPhone: fields.contact,
+    remark: fields.remark,
+    landlordCommissionPercent: fields.landlordCommissionPercent,
     viewingMethod: fields.viewingMethod,
     viewingKeyLocation: fields.viewingKeyLocation,
     viewingPassword: fields.viewingPassword,
@@ -4922,6 +4992,8 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     address: listing.address || '',
     contact: listing.landlordPhone || '',
     landlordPhone: listing.landlordPhone || '',
+    remark: safePublicListingRemark(listing),
+    landlordCommissionPercent: storedLandlordCommissionPercent(listing),
     commissionRate: listing.commissionRate,
     videoLabel: listing.videoLabel || '房源实拍视频',
     videoUrl: listing.videoUrl || '',
@@ -5006,6 +5078,8 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
   listing.roomNumber = fields.roomNumber
   listing.address = fields.address
   listing.landlordPhone = fields.contact
+  listing.remark = fields.remark
+  listing.landlordCommissionPercent = fields.landlordCommissionPercent
   listing.commissionRate = fields.commissionRate
   listing.videoUrl = fields.videoUrl
   listing.videoKey = fields.videoKey || ''

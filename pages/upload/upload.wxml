@@ -120,16 +120,27 @@
           <view class="label">看房密码</view>
           <input value="{{form.viewingPassword}}" data-field="viewingPassword" bindinput="updateField" placeholder="如 1234#" />
         </view>
-        <view wx:if="{{form.viewingMethod === '联系房东'}}" class="field">
-          <view class="label">房东手机号</view>
+        <view class="field">
+          <view class="label">房东手机号（必填）</view>
           <input value="{{form.contact}}" data-field="contact" type="number" maxlength="11" bindinput="updateField" placeholder="11 位房东手机号" />
         </view>
-        <view class="hint">选钥匙填钥匙在哪，选密码填看房密码；房东手机号仅在「联系房东」时必填。</view>
+        <view class="hint">所有房源和看房方式都必须填写房东手机号；选钥匙还需填写钥匙在哪，选密码还需填写看房密码。</view>
+      </view>
+
+      <view class="field">
+        <view class="label">房源备注（选填，最多 200 字）</view>
+        <textarea class="remark-input" value="{{form.remark}}" data-field="remark" maxlength="200" bindinput="updateField" placeholder="可填写水电、采光等补充说明，请勿填写电话或微信号" />
       </view>
 
       <view class="field">
         <view class="label">租金</view>
         <input value="{{form.rent}}" data-field="rent" bindinput="updateField" type="number" placeholder="月租" />
+      </view>
+
+      <view class="field">
+        <view class="label">房东佣金占月租比例（%）</view>
+        <input value="{{form.landlordCommissionPercent}}" data-field="landlordCommissionPercent" bindinput="updateField" type="number" placeholder="0-100 的整数，默认 50" />
+        <view class="hint">例如填写 50，表示房东总佣金为成交月租的 50%。具体拆分由服务端计算。</view>
       </view>
 
       <view class="field">

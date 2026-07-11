@@ -63,6 +63,8 @@ const defaultForm = {
   unit: '',
   roomNumber: '',
   contact: '',
+  remark: '',
+  landlordCommissionPercent: 50,
   rent: '',
   rentMode: '整租',
   room: '一室',
@@ -71,7 +73,7 @@ const defaultForm = {
   features: [],
   companyListing: false,
   ownerType: '二房东房源',
-  // 看房方式：钥匙/密码/联系房东；房东手机号仅在「联系房东」时必填
+  // 看房方式：钥匙/密码/联系房东；房东手机号对所有方式均必填
   viewingMethod: '联系房东',
   viewingKeyLocation: '',
   viewingPassword: ''
@@ -106,6 +108,14 @@ function buildFeatureOptions(selected) {
 
 function isBlank(value) {
   return String(value === undefined || value === null ? '' : value).trim() === ''
+}
+
+function remarkContainsContact(value) {
+  const text = String(value || '').trim().normalize('NFKC')
+  if (!text) return false
+  const compact = text.replace(/[\s\-—_()（）+.,，:：]/g, '')
+  if (/1[3-9]\d{9}/.test(compact)) return true
+  return /微信|微\s*信|wei\s*xin|we\s*chat|二维码|https?:\/\/|www\.|(?:^|[^a-z0-9])(?:wx|vx|v信|微号)(?:\s*[:：号]?)/i.test(text)
 }
 
 function requiresUploadVideo(form = {}) {
@@ -548,6 +558,10 @@ Page({
         unit: listing.unit || '',
         roomNumber: listing.roomNumber || '',
         contact: listing.contact || listing.landlordPhone || '',
+        remark: listing.remark || '',
+        landlordCommissionPercent: listing.landlordCommissionPercent === undefined || listing.landlordCommissionPercent === null
+          ? 50
+          : listing.landlordCommissionPercent,
         rent: listing.rent || '',
         rentMode: listing.rentMode || listing.type || '整租',
         room: listing.room || '一室',
@@ -606,10 +620,11 @@ Page({
     if (isBlank(building)) missingFields.push('几栋')
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(rentMode)) missingFields.push('租法')
-    // 房东手机号只在看房方式=联系房东时必填；钥匙/密码各自必填对应信息
+    // 房东手机号对所有方式必填；钥匙/密码还需填写各自操作信息
     if (viewingMethod === '钥匙' && isBlank(form.viewingKeyLocation)) missingFields.push('钥匙在哪')
     if (viewingMethod === '密码' && isBlank(form.viewingPassword)) missingFields.push('看房密码')
-    if (viewingMethod === '联系房东' && isBlank(contact)) missingFields.push('房东手机号')
+    if (isBlank(contact)) missingFields.push('房东手机号')
+    if (isBlank(form.landlordCommissionPercent)) missingFields.push('房东佣金占月租比例')
     if (isBlank(rent)) missingFields.push('租金')
     if (videoRequired && !hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
     if (missingFields.length) {
@@ -619,11 +634,33 @@ Page({
       }
     }
 
-    if (!form.companyListing && viewingMethod === '联系房东' && !/^1[3-9]\d{9}$/.test(String(contact || '').trim())) {
+    if (!/^1[3-9]\d{9}$/.test(String(contact || '').trim())) {
       return {
         ok: false,
         message: '请输入 11 位房东手机号'
       }
+    }
+
+    const landlordCommissionRaw = form.landlordCommissionPercent
+    const landlordCommissionText = String(landlordCommissionRaw).trim()
+    const landlordCommissionTypeValid = typeof landlordCommissionRaw === 'number' || typeof landlordCommissionRaw === 'string'
+    const landlordCommissionFormatValid = typeof landlordCommissionRaw === 'number'
+      ? Number.isInteger(landlordCommissionRaw)
+      : /^\d+$/.test(landlordCommissionText)
+    const landlordCommissionPercent = landlordCommissionTypeValid && landlordCommissionFormatValid ? Number(landlordCommissionText) : Number.NaN
+    if (!Number.isInteger(landlordCommissionPercent) || landlordCommissionPercent < 0 || landlordCommissionPercent > 100) {
+      return {
+        ok: false,
+        message: '房东佣金占月租比例必须是 0 至 100 的整数'
+      }
+    }
+
+    const remark = String(form.remark || '').trim()
+    if (Array.from(remark).length > 200) {
+      return { ok: false, message: '房源备注最多 200 字' }
+    }
+    if (remarkContainsContact(remark)) {
+      return { ok: false, message: '房源备注不能包含手机号、微信号等联系方式' }
     }
 
     if (form.companyListing && !this.data.isAdmin) {
@@ -669,6 +706,8 @@ Page({
       roomNumber: form.roomNumber,
       address: validation.address,
       contact: form.contact,
+      remark: String(form.remark || '').trim(),
+      landlordCommissionPercent: Number(String(form.landlordCommissionPercent).trim()),
       rent: form.rent,
       layout: validation.layout,
       type: form.rentMode,

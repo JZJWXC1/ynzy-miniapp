@@ -108,6 +108,8 @@ const FEATURE_RULES = [
   // 裸「地铁/号线」只有当标签 token 恰好整词等于时才算，故「地铁明珠苑/一号线公寓」不会误判；真号线标签(2号线口)另经 NEAR_METRO_TAG_RE。
   { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁旁', '地铁边', '靠地铁', '临地铁', '挨地铁', '地铁', '号线'], missing: '离地铁较远', reason: '近地铁' },
   { name: '朝南', aliases: ['朝南', '南向'], missing: '不是朝南', reason: '朝南' },
+  { name: 'Loft', aliases: ['Loft', 'loft', '挑高复式', '复式挑高'], missing: '不是 Loft', reason: 'Loft 户型' },
+  { name: '落地窗', aliases: ['落地窗', '大落地窗'], missing: '没有落地窗', reason: '有落地窗' },
   // NEED-1：与房源侧 LISTING_FEATURE_OPTIONS 对齐（别名同房源侧自动打标签口径），让中介说得出、系统点得动
   { name: '干湿分离', aliases: ['干湿分离', '干湿分区'], missing: '不是干湿分离', reason: '干湿分离' },
   { name: '采光好', aliases: ['采光好', '采光佳', '采光很好', '光线好', '南北通透', '通透'], missing: '采光一般', reason: '采光好' },

@@ -600,6 +600,40 @@ PUT /admin/llm-config
 POST /admin/llm-config/test
 ```
 
+## 房源体验闭环 M1：录入字段与存量迁移
+
+房源创建、编辑、飞书同步和后台编辑现在统一使用以下服务端字段口径：
+
+- `landlordCommissionPercent`：房东总佣金占月租比例，允许 `0` 至 `100` 的整数；新建请求未传时由服务端固定为 `50`。该字段是房源业务输入，绝不能复用旧 `commissionRate`；旧字段仍仅表示服务端分佣配置中的上传人比例。
+- `remark`：可空，最多 200 字。服务端会拦截手机号、微信/weixin/wechat/wx/vx、二维码和联系方式 URL；公共详情不会返回不符合新规则的存量备注。
+- `landlordPhone` / `contact`：公司、业主、二房东房源及钥匙、密码、联系房东三种方式都必须提供合法 11 位手机号；钥匙和密码方式仍分别额外要求钥匙位置、看房密码。存量缺电话可以读取，但任何编辑都必须先补齐。
+- 房源特点白名单新增 `Loft`、`落地窗`，服务端、客户端、后台、筛选、推荐资料与找房需求解析保持一致。
+
+飞书房源表可使用“房东佣金占月租比例”“房东佣金比例”或 `landlordCommissionPercent` 列；缺失按 50 处理，显式 0 保留。新房源缺少合法电话时会在素材匹配/搬运前跳过，不再写入“公司统一维护”等占位联系方式。错误摘要只记录行号和通用原因，不打印号码或备注正文。
+
+存量佣金字段迁移必须显式执行，服务启动和普通请求不会自动迁移：
+
+```bash
+cd server
+# 默认 dry-run，只输出总量、缺失量、覆盖率等汇总
+node scripts/migrate-listing-landlord-commission-v1.js
+
+# 经生产数据授权、停写和仓库外加密备份后才可执行
+node scripts/migrate-listing-landlord-commission-v1.js --apply
+
+# 使用 apply 返回的备份文件回滚
+node scripts/migrate-listing-landlord-commission-v1.js --rollback <备份文件路径>
+```
+
+脚本在写入前校验 `listings` 结构和所有已有值；apply 前生成同目录回滚副本，写后核对房源总数及 100% 字段覆盖率，重复 apply 为零修改。任何非法值或异常结构都会在写盘前失败。本仓库只提供脚本和合成数据测试，本轮不执行真实生产迁移。
+
+M1 验收脚本：
+
+```bash
+node scripts/listing-experience-fields-v1-test.js
+node scripts/listing-landlord-commission-migration-v1-test.js
+```
+
 ## 上线自检
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。

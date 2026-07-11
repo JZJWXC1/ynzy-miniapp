@@ -1447,7 +1447,8 @@ async function handleMini(req, res, pathname, searchParams) {
       layout: searchParams.get('layout') || '',
       rentMode: searchParams.get('rentMode') || '',
       rentMin: searchParams.get('rentMin') || '',
-      rentMax: searchParams.get('rentMax') || ''
+      rentMax: searchParams.get('rentMax') || '',
+      features: searchParams.get('features') || ''
     }
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-listings')

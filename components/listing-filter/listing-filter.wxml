@@ -49,6 +49,16 @@
     </scroll-view>
   </view>
 
+  <view class="filter-section">
+    <view class="filter-label">房源特点</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.features ? 'active' : ''}}" data-feature="" bindtap="selectFeature">不限</view>
+        <view wx:for="{{featureOptions}}" wx:key="*this" class="filter-chip {{draftFilters.features === item ? 'active' : ''}}" data-feature="{{item}}" bindtap="selectFeature">{{item}}</view>
+      </view>
+    </scroll-view>
+  </view>
+
   <view class="price-filter-row">
     <input class="filter-input price-input" value="{{draftFilters.rentMin}}" data-field="rentMin" bindinput="updateInput" type="number" placeholder="最低租金" />
     <view class="price-divider"></view>

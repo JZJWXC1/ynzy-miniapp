@@ -56,6 +56,8 @@ function validClientForm(overrides = {}) {
     unit: '',
     roomNumber: '502',
     contact: '13800001111',
+    remark: '',
+    landlordCommissionPercent: 50,
     rent: '3500',
     rentMode: '整租',
     room: '二室',
@@ -129,6 +131,8 @@ assert.strictEqual(payload.unit, '', '可选单元留空时客户端必须保持
 ;['isAdmin', 'uploaderId', 'commissionRate', 'uploaderRate', 'platformRate'].forEach((field) => {
   assert.ok(!Object.prototype.hasOwnProperty.call(payload, field), `客户端不得提交权限/分佣字段：${field}`)
 })
+assert.strictEqual(payload.landlordCommissionPercent, 50, '客户端应提交房东佣金占月租比例这一业务输入')
+assert.strictEqual(payload.remark, '', '客户端应提交规范化备注')
 
 const db = makeDb()
 domain.addNormalListing(db, 'U1', validServerForm({ block: ' 东新园 ', unit: '' }))
@@ -144,14 +148,21 @@ assert.throws(
 
 const keyDb = makeDb()
 domain.addNormalListing(keyDb, 'U1', validServerForm({
-  contact: '',
+  contact: '13911112222',
   viewingMethod: '钥匙',
   viewingKeyLocation: '前台领取'
 }))
-assert.strictEqual(keyDb.listings[0].landlordPhone, '', '钥匙方式仍不得强制房东手机号')
+assert.strictEqual(keyDb.listings[0].landlordPhone, '13911112222', '钥匙方式也必须保存房东手机号')
+assert.throws(
+  () => domain.addNormalListing(makeDb(), 'U1', validServerForm({ contact: '', viewingMethod: '钥匙', viewingKeyLocation: '前台领取' })),
+  (error) => error && error.statusCode === 400 && /房东手机号/.test(error.message),
+  '钥匙方式缺房东手机号也必须由服务端拒绝'
+)
 
 assert.ok(/板块（可选）/.test(uploadWxml), '上传页必须提供可选板块输入')
 assert.ok(/几单元（可选）/.test(uploadWxml), '上传页必须明确单元可选')
 assert.ok(/data-field="contact"[^>]*type="number"[^>]*maxlength="11"/.test(uploadWxml), '房东手机号输入必须限制数字和 11 位')
+assert.ok(/data-field="landlordCommissionPercent"/.test(uploadWxml), '上传页必须提供房东佣金占月租比例输入')
+assert.ok(/data-field="remark"/.test(uploadWxml), '上传页必须提供房源备注输入')
 
 console.log('upload-field-parity-v1-test passed')

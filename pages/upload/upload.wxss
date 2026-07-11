@@ -146,7 +146,8 @@ page {
 }
 
 input,
-.picker-value {
+.picker-value,
+.remark-input {
   box-sizing: border-box;
   width: 100%;
   height: 88rpx;
@@ -158,6 +159,12 @@ input,
   background: #F6F2EA;
   border: 1rpx solid #DED8CC;
   border-radius: 22rpx;
+}
+
+.remark-input {
+  height: 180rpx;
+  padding: 22rpx 24rpx;
+  line-height: 1.5;
 }
 
 .three-col input {

@@ -9,6 +9,8 @@ const LISTING_FEATURE_OPTIONS = [
   '燃气',
   '独卫',
   '朝南',
+  'Loft',
+  '落地窗',
   '带阳台',
   '带露台（阁楼）',
   '可短租',

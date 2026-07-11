@@ -29,6 +29,7 @@ function baseForm(extra) {
     building: '3',
     unit: '1',
     roomNumber: '502',
+    contact: '13911112222',
     rent: 3500,
     rentMode: '整租',
     room: '二室',
@@ -40,14 +41,14 @@ function baseForm(extra) {
   }, extra || {})
 }
 
-// 1) 钥匙 + 钥匙位置、无房东手机号 → 通过；房东手机号不再无条件必填。
+// 1) 钥匙 + 钥匙位置 + 房东手机号 → 通过；房东手机号对所有方式必填。
 {
   const db = makeDb()
   const created = domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '前台领取' }))
   const listing = db.listings[0]
   assert.strictEqual(listing.viewingMethod, '钥匙', '看房方式落库')
   assert.strictEqual(listing.viewingKeyLocation, '前台领取', '钥匙位置落库')
-  assert.strictEqual(listing.landlordPhone, '', '未填手机号不报错、不编值')
+  assert.strictEqual(listing.landlordPhone, '13911112222', '钥匙方式也保存房东手机号')
   assert.strictEqual(created.viewingMethod, '钥匙', '编辑回包带看房方式')
   assert.strictEqual(created.viewingKeyLocation, '前台领取', '编辑回包带钥匙位置')
 }
@@ -66,7 +67,7 @@ function baseForm(extra) {
     '密码缺密码应 400'
   )
   assert.throws(
-    () => domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '联系房东' })),
+    () => domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '联系房东', contact: '' })),
     (e) => e && e.statusCode === 400 && /房东手机号/.test(e.message),
     '联系房东缺手机号应 400'
   )
@@ -89,8 +90,8 @@ function baseForm(extra) {
   domain.addNormalListing(db, 'U1', baseForm({ contact: '13800002222' }))
   assert.strictEqual(db.listings[0].viewingMethod, '', '未显式指定不编造方式')
   assert.throws(
-    () => domain.addNormalListing(db, 'U1', baseForm({ roomNumber: '504' })),
-    (e) => e && e.statusCode === 400 && /看房方式/.test(e.message),
+    () => domain.addNormalListing(db, 'U1', baseForm({ roomNumber: '504', contact: '' })),
+    (e) => e && e.statusCode === 400 && /房东手机号/.test(e.message),
     '无方式且无联系方式应 400'
   )
 }
@@ -216,7 +217,7 @@ function baseForm(extra) {
     rent: 3200, address: '杭州拱墅区皋塘运都3栋1单元506室', layout: '整租二室1厅1卫',
     community: '皋塘运都', building: '3', unit: '1', roomNumber: '506',
     companyListing: true, isCompanyListing: true, source: '公司房源',
-    landlordPhone: '公司统一维护', viewingPassword: '2468#', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
+    landlordPhone: '13911112222', viewingPassword: '2468#', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
   })
   const both = domain.listingDetail(db, 'L-BOTH')
   assert.strictEqual(both.viewingMethod, '联系房东', '非公司双信息电话优先，留痕后仍能看电话')
@@ -233,7 +234,7 @@ function baseForm(extra) {
     rent: 3000, address: '杭州拱墅区皋塘运都3栋1单元502室', layout: '整租二室1厅1卫',
     community: '皋塘运都', building: '3', unit: '1', roomNumber: '502',
     companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
-    landlordPhone: '公司统一维护', viewingPassword: '1357#', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
+    landlordPhone: '13911112222', viewingPassword: '1357#', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
   })
   domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '前台' }))
   assert.strictEqual(db.listings.length, 2, '合作钥匙房源不与同房间公司房源撞判重')
@@ -252,12 +253,12 @@ function baseForm(extra) {
     companyListing: true,
     viewingMethod: '密码',
     viewingPassword: '9527#',
-    contact: '公司统一维护'
+    contact: '13911112222'
   }), { admin: true })
   const listingId = db.listings[0].id
   domain.updateNormalListing(db, 'ADMIN', listingId, baseForm({
     companyListing: true,
-    contact: '公司统一维护',
+    contact: '13911112222',
     viewingPassword: ''
   }), { admin: true })
   const listing = db.listings[0]
@@ -273,7 +274,7 @@ function baseForm(extra) {
     uploaderId: 'ADMIN', status: '在租', lifecycleStatus: 'active',
     rent: 3200, layout: '整租二室1厅1卫', community: '皋塘运都', building: '3', unit: '1',
     companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
-    landlordPhone: '公司统一维护', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
+    landlordPhone: '13911112222', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
   }
   db.listings.push(Object.assign({}, companyBase, {
     id: 'L-VACANT', roomNumber: '601', address: '杭州拱墅区皋塘运都3栋1单元601室', viewingPassword: '15号空出'
@@ -330,7 +331,7 @@ function baseForm(extra) {
     rent: 3200, address: '杭州拱墅区皋塘运都3栋1单元701室', layout: '整租二室1厅1卫',
     community: '皋塘运都', building: '3', unit: '1', roomNumber: '701',
     companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
-    landlordPhone: '公司统一维护', viewingPassword: '15号空出',
+    landlordPhone: '13911112222', viewingPassword: '15号空出',
     features: ['电梯'], videoKey: 'v.mp4', videoUrl: 'https://example.com/v.mp4', communityMatched: true
   })
   const editable = domain.editableListingDetail(db, 'ADMIN', 'L-VACANT-EDIT', { admin: true })
@@ -417,7 +418,7 @@ function baseForm(extra) {
       rent: 3200, address: `杭州拱墅区半山家苑3栋1单元${roomNumber}室`, layout: '整租二室1厅1卫',
       community: '半山家苑', building: '3', unit: '1', roomNumber,
       companyListing: true, isCompanyListing: true, source: '公司房源', externalSource: 'feishu',
-      landlordPhone: '公司统一维护', viewingPassword,
+      landlordPhone: '13911112222', viewingPassword,
       features: ['电梯'], videoKey: 'v.mp4', videoUrl: 'https://example.com/v.mp4', communityMatched: true
     })
   }

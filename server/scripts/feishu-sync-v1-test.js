@@ -13,11 +13,11 @@ function makeDb() {
 }
 
 function row(fields) {
-  return { fields }
+  return { fields: { 联系电话: '13900001111', ...fields } }
 }
 
 function record(recordId, fields) {
-  return { record_id: recordId, fields }
+  return { record_id: recordId, fields: { 联系电话: '13900001111', ...fields } }
 }
 
 async function main() {
@@ -32,6 +32,7 @@ async function main() {
       户型: '一室一厅一卫',
       押一付一: '2800',
       联系电话: '13900001111',
+      房东佣金占月租比例: 0,
       看房方式密码: '336699#'
     })
   ], [], 'system-feishu-sync', { dryRun: true })
@@ -46,12 +47,30 @@ async function main() {
   assert.strictEqual(missing.requiresManualReview, false, '飞书公司房源缺视频也不得进入人工审核拦截')
   assert.strictEqual(missing.communityMatched, true, '飞书公司房源应按表内在租直接视为小区已匹配')
   assert.strictEqual(missing.landlordPhone, '13900001111', '公司房源应保留飞书联系电话')
+  assert.strictEqual(missing.landlordCommissionPercent, 0, '飞书显式 0% 房东佣金不得被默认 50 覆盖')
   assert.strictEqual(missing.viewingPassword, '336699#', '公司房源应保留看房方式密码')
   assert.ok(JSON.stringify(missing).includes('13900001111'), '同步房源应保留飞书联系电话')
   assert.ok(JSON.stringify(missing).includes('336699'), '同步房源应保留看房密码')
   missing.requiresManualReview = true
   missing.communityMatched = false
   missing.communityMatchStatus = '未匹配'
+
+  const invalidPhoneDb = makeDb()
+  const invalidPhone = await feishuSync.applySync(invalidPhoneDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      房号: '609A',
+      户型: '一室一厅一卫',
+      押一付一: '2800',
+      联系电话: ''
+    })
+  ], [{ name: '609A.mp4', videoUrl: 'https://example.test/609A.mp4' }], 'A1', { dryRun: true })
+  assert.strictEqual(invalidPhone.skippedInvalid, 1, '飞书缺合法房东手机号必须在素材处理前跳过')
+  assert.strictEqual(invalidPhone.created, 0)
+  assert.strictEqual(invalidPhoneDb.listings.length, 0, '飞书缺电话不得写入房源库')
+  assert.ok(invalidPhone.messages.every((message) => !/1[3-9]\d{9}/.test(message)), '飞书错误摘要不得输出号码')
 
   const matched = await feishuSync.applySync(db, [
     row({
