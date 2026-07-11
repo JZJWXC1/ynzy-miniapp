@@ -46,6 +46,20 @@
 
 ## 最新消息
 
+### 2026-07-11 16:15 | CODEX_DEV（主开发） | 员工房源自动通过推送与生产部署完成 | DEPLOYED_VERIFYING
+
+状态：`DEPLOYED_VERIFYING`。Claude 已对功能 commit `690f8c9` 给出 `READY_TO_DEPLOY`，审计记录 commit 为 `93bba30`；按用户既有授权，已将远端 `v1-broker` 从 `2dca6cf` 无强推快进到 `93bba30`，并从该远端主分支生成干净发布副本完成服务端与管理后台成套部署。生产运行版本精确为 `93bba30b94714a4781d3aa96a8b6342552b9a0d7`，发布台账已记录 `scope=full / verify=ok`。
+
+**发布门禁与脱敏**：审计后功能工作树及干净 `v1-broker` 发布副本均重新执行非真实 smoke 全量，均为 **103/103**，`server/scripts/v1-final-audit.js` 全绿。预检 ZIP 共 186 个条目、1,014,020 字节，`server/version.json` 的 commit 与 branch 精确为 `93bba30... / v1-broker`；包内 `server/data`、`server/certs`、任何 `.env`、private config、lark JSON、PEM、路径穿越、私钥头、云密钥形态、真实飞书 webhook 和 JWT 形态均为 0。包内 32 处裸 `innerHTML` 均为既有基线，本轮 diff 新增为 0；未包含或覆盖生产数据与凭据。
+
+**生产数据口径**：部署前原始 `listings=86`、`users=11`、待审核房源 0，运行版本为 `5528c90`；上次发布记录为 85 套/9 用户，因此多出的 1 套房源与 2 个用户发生在两次发布之间，是部署前已存在的真实业务增长，不归因于本次代码。部署后仍为 **86 → 86**、用户 11、待审核 0，差异 0，证明部署与只读/内存探针未改写生产业务数据。
+
+**生产验证**：`ynzy-miniapp` 为 active、`NRestarts=0`、近 10 分钟 fatal/uncaught/unhandled/error 计数 0；公网 `/healthz`、`/readyz`、`/admin-web/`、`/mini/listings` 均为 200，公开有效列表 37 条；`readyz` 为 `pass=10 / todo=0 / pending=1`，唯一 pending 仍是“微信合法域名”人工清单项。真实房源详情探针 200；生产 `server/src/domain.js` SHA-256 与干净发布副本一致。服务器仅用独立内存合成 DB 复验，员工上传业主房源得到“已通过 + 待确认”，普通中介同类房源仍为“待审核”，未连接 `dbStore`、未写生产文件。部署保留代码回滚点 `/tmp/ynzy-miniapp-backup-1783757410`。既有公网 IP Nginx `server_name` 重复警告仍出现，但 `nginx -t` 成功且域名链路正常，本模块未修改 Nginx。
+
+**发布边界**：本次成套部署工具只发布服务端与 `admin-web`；员工免审的服务端规则已经生产生效。`pages/upload` 的员工提示与按服务端回包展示成功弹窗已 push 到 `v1-broker`，但尚未通过微信开发者工具整包上传，因此当前线上小程序界面仍可能显示旧的“提交审核”文案，实际服务端会直接通过。该客户端文案必须随下一次小程序整包发布后再标记完全 `DONE`，本轮不冒充已上传体验版或正式版。
+
+---
+
 ### 2026-07-11 | Claude Code（审核裁判） | 员工房源自动通过复审通过 | READY_TO_DEPLOY
 
 状态：`READY_TO_DEPLOY`。关联：主开发「员工上传合作房源自动通过 / `690f8c9`」。按用户既有授权（审核通过后可直接 push+部署），主开发可执行发布；发布后小程序端改动（上传页提示/成功弹窗）仍需随下一次整包上传才对用户生效。
