@@ -426,6 +426,12 @@ page {
   align-items: flex-start;
 }
 
+.card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
 .card-title {
   min-width: 0;
   color: #182E2A;

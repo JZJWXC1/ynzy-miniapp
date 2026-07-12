@@ -115,8 +115,11 @@
               >
                 <view class="card-head">
                   <view class="card-title">{{listing.cardTitle}}</view>
-                  <view wx:if="{{listing.displayRelevance}}" class="score-chip">
-                    {{listing.displayRelevance}}
+                  <view class="card-head-actions">
+                    <view wx:if="{{listing.displayRelevance}}" class="score-chip">
+                      {{listing.displayRelevance}}
+                    </view>
+                    <favorite-toggle listing-id="{{listing.id}}" compact></favorite-toggle>
                   </view>
                 </view>
                 <view class="card-facts">

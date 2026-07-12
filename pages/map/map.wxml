@@ -73,7 +73,10 @@
           <text wx:if="{{item.hasVideo}}" class="video-tag">视频</text>
         </view>
       </view>
-      <button catchtap="openListing" data-id="{{item.id}}">看详情</button>
+      <view class="listing-actions">
+        <favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle>
+        <button catchtap="openListing" data-id="{{item.id}}">看详情</button>
+      </view>
     </view>
   </view>
 </view>

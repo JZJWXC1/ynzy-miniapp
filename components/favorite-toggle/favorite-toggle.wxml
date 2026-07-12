@@ -1,0 +1,8 @@
+<button
+  class="favorite-toggle {{favorited ? 'active' : ''}} {{compact ? 'compact' : ''}} {{syncing ? 'syncing' : ''}}"
+  catchtap="toggleFavorite"
+  disabled="{{busy}}"
+  aria-label="{{syncing ? '正在同步收藏状态' : (favorited ? '取消收藏' : '收藏房源')}}"
+>
+  <text class="favorite-icon">{{favorited ? '★' : '☆'}}</text>
+</button>

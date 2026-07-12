@@ -4,11 +4,13 @@ const path = require('path')
 
 const repoRoot = path.join(__dirname, '..', '..')
 const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+const apiClientPath = require.resolve(path.join(repoRoot, 'utils', 'api-client.js'))
 const profilePagePath = require.resolve(path.join(repoRoot, 'pages', 'profile', 'profile.js'))
 const profileWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'profile', 'profile.wxml'), 'utf8')
 
 let modals = []
 let toasts = []
+let authToken = 'TOKEN_A'
 
 global.wx = {
   showModal(options) { modals.push(options) },
@@ -40,6 +42,12 @@ function makePage(definition) {
 }
 
 function loadDefinition(apiStub) {
+  require.cache[apiClientPath] = {
+    id: apiClientPath,
+    filename: apiClientPath,
+    loaded: true,
+    exports: { getAuthToken: () => authToken }
+  }
   require.cache[apiServicePath] = {
     id: apiServicePath,
     filename: apiServicePath,
@@ -162,6 +170,62 @@ async function run() {
   })
   await flushPromises()
   assert.strictEqual(racePage.data.user.name, '最新账号', '过期资料响应不得覆盖最新账号')
+
+  let resolveSwitchedProfile
+  let resolveSwitchedFootprints
+  const switchDefinition = loadDefinition({
+    getProfileState() { return new Promise((resolve) => { resolveSwitchedProfile = resolve }) },
+    getFootprintRecords() { return new Promise((resolve) => { resolveSwitchedFootprints = resolve }) }
+  })
+  const switchPage = makePage(switchDefinition)
+  switchPage._profileAccountToken = 'TOKEN_A'
+  switchPage.setData({
+    profileReady: true,
+    user: { id: 'U-A', name: '账号A' },
+    workbench: [{ title: '我的收藏', value: '9 套' }],
+    reminders: [{ title: 'A提醒' }],
+    sourceStats: [{ label: 'A统计', value: '9' }],
+    footprintCount: 9
+  })
+  authToken = 'TOKEN_B'
+  switchPage.refreshProfile()
+  assert.strictEqual(switchPage.data.profileReady, false, '换号请求发出时必须立即隐藏 A 的工作台')
+  assert.deepStrictEqual(switchPage.data.user, {}, '换号请求发出时必须立即清空 A 资料')
+  assert.deepStrictEqual(switchPage.data.workbench, [], '换号时不得短暂展示 A 的收藏数量')
+  resolveSwitchedProfile({
+    user: { id: 'U-B', name: '账号B', role: '中介', authed: '已实名' },
+    favoriteCount: 1,
+    sourceStats: [],
+    reminders: []
+  })
+  resolveSwitchedFootprints([])
+  await flushPromises()
+  assert.strictEqual(switchPage.data.user.name, '账号B')
+  assert.ok(switchPage.data.workbench.some((item) => item.title === '我的收藏' && item.value === '1 套'))
+
+  authToken = 'TOKEN_B'
+  switchPage.refreshProfile()
+  authToken = 'TOKEN_C'
+  resolveSwitchedProfile({
+    user: { id: 'U-B-LATE', name: '迟到账号B', role: '中介', authed: '已实名' },
+    favoriteCount: 99,
+    sourceStats: [],
+    reminders: []
+  })
+  resolveSwitchedFootprints([])
+  await flushPromises()
+  assert.deepStrictEqual(switchPage.data.user, {}, 'B 成功响应迟到时不得回填 C 页面')
+  assert.deepStrictEqual(switchPage.data.workbench, [], 'B 的收藏数量不得回填 C 工作台')
+
+  authToken = 'TOKEN_B'
+  switchPage.refreshProfile()
+  authToken = 'TOKEN_C'
+  const toastBeforeStaleFailure = toasts.length
+  resolveSwitchedProfile(Promise.reject(new Error('unused')))
+  resolveSwitchedFootprints(Promise.reject(new Error('unused')))
+  await flushPromises()
+  assert.deepStrictEqual(switchPage.data.user, {}, 'B 失败响应迟到时不得污染 C 页面')
+  assert.strictEqual(toasts.length, toastBeforeStaleFailure, 'B 失败迟到不得在 C 弹加载失败')
 
   assert.ok(/bindtap="retryProfile"/.test(profileWxml), '“我的”页模板必须绑定重试入口')
   assert.ok(/bindtap="goLogin"/.test(profileWxml), '未登录状态必须绑定登录入口')

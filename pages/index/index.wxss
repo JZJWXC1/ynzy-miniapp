@@ -1083,10 +1083,18 @@ page {
 }
 
 .listing-card {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 20rpx;
   padding: 20rpx;
+}
+
+.listing-favorite {
+  position: absolute;
+  top: 16rpx;
+  right: 16rpx;
+  z-index: 3;
 }
 
 .listing-photo {

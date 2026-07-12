@@ -181,10 +181,18 @@
 }
 
 .listing-card {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 18rpx;
   padding: 18rpx;
+}
+
+.listing-favorite {
+  position: absolute;
+  top: 16rpx;
+  right: 16rpx;
+  z-index: 3;
 }
 
 .listing-media {

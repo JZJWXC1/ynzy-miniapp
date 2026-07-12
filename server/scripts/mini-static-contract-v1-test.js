@@ -92,6 +92,7 @@ for (const pageName of registeredPages) {
 const componentBases = [
   path.join(repoRoot, 'components', 'navigation-bar', 'navigation-bar'),
   path.join(repoRoot, 'components', 'listing-filter', 'listing-filter'),
+  path.join(repoRoot, 'components', 'favorite-toggle', 'favorite-toggle'),
   path.join(repoRoot, 'custom-tab-bar', 'index')
 ]
 

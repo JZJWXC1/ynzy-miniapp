@@ -26,6 +26,13 @@ const criticalScripts = [
   'server/scripts/footprint-route-prune-v1-test.js',
   'server/scripts/mini-paused-entry-v1-test.js',
   'server/scripts/mini-static-contract-v1-test.js',
+  // M4：服务端账号收藏、跨进程幂等、失效房源脱敏、token/请求竞态、全场景星标与 Mock 同口径。
+  'server/scripts/favorite-domain-v1-test.js',
+  'server/scripts/favorite-http-v1-test.js',
+  'server/scripts/favorite-store-v1-test.js',
+  'server/scripts/favorite-component-page-v1-test.js',
+  'server/scripts/favorite-entry-v1-test.js',
+  'server/scripts/favorite-mock-v1-test.js',
   'server/scripts/listing-verify-outcome-v1-test.js',
   // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
   'server/scripts/staff-listing-auto-approve-v1-test.js',

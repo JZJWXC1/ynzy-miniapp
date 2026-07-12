@@ -1,0 +1,69 @@
+<navigation-bar title="我的收藏" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell favorites-page">
+    <view class="favorite-hero">
+      <view class="hero-title">收藏跟随中介账号同步</view>
+      <view class="hero-sub">失效房源会保留为灰色，仍可取消收藏，但不能继续查看敏感信息。</view>
+    </view>
+
+    <view class="filter-label">房源来源</view>
+    <scroll-view class="chip-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="chip-row">
+        <button wx:for="{{categories}}" wx:key="*this" class="filter-chip {{category === item ? 'active' : ''}}" data-category="{{item}}" bindtap="switchCategory">{{item}}</button>
+      </view>
+    </scroll-view>
+
+    <view class="filter-label">可用状态</view>
+    <view class="chip-row status-row">
+      <button wx:for="{{availabilityOptions}}" wx:key="value" class="filter-chip {{availability === item.value ? 'active' : ''}}" data-value="{{item.value}}" bindtap="switchAvailability">{{item.label}}</button>
+    </view>
+
+    <listing-filter
+      filters="{{filters}}"
+      region-options="{{regionOptions}}"
+      community-options="{{communityOptions}}"
+      layout-options="{{layoutOptions}}"
+      feature-options="{{featureOptions}}"
+      loading="{{loading}}"
+      bind:filterchange="handleListingFilterChange"
+      bind:filterapply="handleListingFilterApply"
+      bind:filterreset="resetFilters"
+    ></listing-filter>
+
+    <view class="favorite-summary">{{loadFailed ? '刷新失败，当前保留上次结果' : ('共 ' + favorites.length + ' 套收藏')}}</view>
+
+    <view wx:if="{{loadFailed}}" class="empty-card">
+      <view class="empty-title">收藏加载失败</view>
+      <view class="empty-desc">请检查网络后重试，已显示的收藏不会被清空。</view>
+      <button class="brand-button" bindtap="retryFavorites">重新加载</button>
+    </view>
+
+    <view wx:for="{{favorites}}" wx:key="id" class="favorite-card {{item.isAvailable ? '' : 'unavailable'}}" data-id="{{item.id}}" data-available="{{item.isAvailable}}" bindtap="openListing">
+      <view class="card-top">
+        <view class="card-copy">
+          <view class="card-title">{{item.title}}</view>
+          <view class="card-meta">{{item.meta || item.community || '房源信息已更新'}}</view>
+        </view>
+        <favorite-toggle listing-id="{{item.id}}" compact bind:favoritechange="handleFavoriteChange"></favorite-toggle>
+      </view>
+      <image wx:if="{{item.isAvailable && item.coverUrl}}" class="favorite-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
+      <view wx:if="{{!item.isAvailable}}" class="unavailable-banner">暂不可用 · {{item.unavailableReason}}</view>
+      <view wx:if="{{item.isAvailable}}" class="card-facts">
+        <text>{{item.price || '租金待补充'}}</text>
+        <text>{{item.layout || '户型待补充'}}</text>
+        <text>{{item.sourceLabel || item.source || '来源待补充'}}</text>
+      </view>
+      <view wx:if="{{item.features && item.features.length}}" class="feature-row">
+        <text wx:for="{{item.features}}" wx:key="*this" class="feature-chip">{{item}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{loading && !favorites.length}}" class="empty-card">
+      <view class="empty-title">正在加载收藏</view>
+    </view>
+    <view wx:elif="{{!loading && !loadFailed && !favorites.length}}" class="empty-card">
+      <view class="empty-title">暂无符合条件的收藏</view>
+      <view class="empty-desc">可以回到找房、房源、地图或找房助手页面点击星标。</view>
+    </view>
+  </view>
+</scroll-view>

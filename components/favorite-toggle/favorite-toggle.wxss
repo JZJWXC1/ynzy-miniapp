@@ -1,0 +1,45 @@
+.favorite-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88rpx;
+  min-width: 88rpx;
+  height: 88rpx;
+  margin: 0;
+  padding: 0;
+  border: 1rpx solid rgba(47, 111, 96, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #56736b;
+  box-shadow: 0 8rpx 22rpx rgba(22, 62, 52, 0.12);
+  line-height: 1;
+}
+
+.favorite-toggle::after {
+  border: 0;
+}
+
+.favorite-toggle.active {
+  border-color: #e6b24c;
+  color: #d79219;
+  background: #fff9e9;
+}
+
+.favorite-toggle.compact {
+  width: 80rpx;
+  min-width: 80rpx;
+  height: 80rpx;
+}
+
+.favorite-toggle[disabled] {
+  opacity: 0.62;
+}
+
+.favorite-toggle.syncing {
+  opacity: 0.72;
+}
+
+.favorite-icon {
+  font-size: 38rpx;
+  line-height: 1;
+}

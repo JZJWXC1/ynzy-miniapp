@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const { clone } = require('./db')
 const { hashPassword, verifyPassword, passwordIssue } = require('./auth-util')
 const oss = require('./oss')
@@ -2184,6 +2185,248 @@ function filterListings(db, filter = {}) {
     })
 }
 
+function favoriteRows(db, mutable = false) {
+  const rows = db.favorites
+  if (rows === undefined) {
+    if (mutable) db.favorites = []
+    return mutable ? db.favorites : []
+  }
+  const invalidStructure = !Array.isArray(rows) || rows.some((item) => (
+    !item || typeof item !== 'object' || Array.isArray(item) ||
+    !String(item.id || '').trim() || !String(item.userId || '').trim() ||
+    !String(item.listingId || '').trim() || !Number.isFinite(Date.parse(String(item.createdAt || '')))
+  ))
+  const ids = Array.isArray(rows) ? rows.map((item) => item && String(item.id || '')).filter(Boolean) : []
+  if (!invalidStructure && new Set(ids).size === ids.length) return rows
+  const error = new Error('收藏关系数据结构异常，拒绝覆盖原数据')
+  error.statusCode = 500
+  throw error
+}
+
+function normalizedFavoriteListingId(listingId) {
+  const value = String(listingId || '').trim()
+  if (value) return value
+  const error = new Error('缺少房源编号')
+  error.statusCode = 400
+  throw error
+}
+
+function favoriteRelationship(db, userId, listingId) {
+  return favoriteRows(db).find((item) => (
+    item && String(item.userId || '') === String(userId || '') &&
+    String(item.listingId || '') === String(listingId || '')
+  ))
+}
+
+function assertFavoriteUser(db, userId) {
+  const user = assertKnownUser(db, userId)
+  if (user.deleted || user.status === '禁用') {
+    const error = new Error('登录用户不存在或已停用')
+    error.statusCode = 403
+    throw error
+  }
+  return user
+}
+
+function uniqueFavoriteId(rows) {
+  const base = `FV${crypto.randomUUID().replace(/-/g, '')}`
+  let candidate = base
+  let suffix = 1
+  const used = new Set((rows || []).map((item) => item && String(item.id || '')).filter(Boolean))
+  while (used.has(candidate)) {
+    candidate = `${base}-${suffix}`
+    suffix += 1
+  }
+  return candidate
+}
+
+function favoriteListing(db, userId, listingId) {
+  assertFavoriteUser(db, userId)
+  const normalizedListingId = normalizedFavoriteListingId(listingId)
+  // 幂等优先：房源在首次收藏后失效时，旧客户端或网络重试仍返回原关系，不新增、不反转。
+  const existing = favoriteRelationship(db, userId, normalizedListingId)
+  if (existing) {
+    return {
+      id: existing.id,
+      listingId: normalizedListingId,
+      favorited: true,
+      isFavorited: true,
+      favoritedAt: existing.createdAt || ''
+    }
+  }
+
+  const listing = listingById(db, normalizedListingId)
+  if (!listing) {
+    const error = new Error('房源不存在，无法收藏')
+    error.statusCode = 404
+    throw error
+  }
+  assertFrontendListingAvailable(listing)
+
+  const rows = favoriteRows(db, true)
+  const record = {
+    id: uniqueFavoriteId(rows),
+    userId: String(userId),
+    listingId: normalizedListingId,
+    createdAt: new Date().toISOString()
+  }
+  rows.unshift(record)
+  return {
+    id: record.id,
+    listingId: normalizedListingId,
+    favorited: true,
+    isFavorited: true,
+    favoritedAt: record.createdAt
+  }
+}
+
+function unfavoriteListing(db, userId, listingId) {
+  assertFavoriteUser(db, userId)
+  const normalizedListingId = normalizedFavoriteListingId(listingId)
+  const rows = favoriteRows(db, true)
+  // 删除同一业务键的全部存量重复关系，顺便自愈历史脏数据；其他账号不受影响。
+  db.favorites = rows.filter((item) => !(
+    item && String(item.userId || '') === String(userId || '') &&
+    String(item.listingId || '') === normalizedListingId
+  ))
+  return {
+    listingId: normalizedListingId,
+    favorited: false,
+    isFavorited: false
+  }
+}
+
+function favoriteListingIds(db, userId) {
+  assertFavoriteUser(db, userId)
+  const seen = new Set()
+  return favoriteRows(db)
+    .filter((item) => item && String(item.userId || '') === String(userId || ''))
+    .slice()
+    .sort((left, right) => dateValue(right.createdAt) - dateValue(left.createdAt))
+    .map((item) => String(item.listingId || '').trim())
+    .filter((listingId) => {
+      if (!listingId || seen.has(listingId)) return false
+      seen.add(listingId)
+      return true
+    })
+}
+
+function favoriteSafeListingRow(db, listing, relationship) {
+  const favoritedAt = String((relationship && relationship.createdAt) || '')
+  if (!listing) {
+    return {
+      id: String((relationship && relationship.listingId) || ''),
+      title: '已删除房源',
+      meta: '房源信息已移除',
+      sub: '暂不可用',
+      price: '',
+      rent: 0,
+      layout: '',
+      rentMode: '',
+      type: '',
+      district: '',
+      area: '',
+      block: '',
+      community: '',
+      features: [],
+      source: '',
+      sourceLabel: '',
+      status: '暂不可用',
+      companyListing: false,
+      hasVideo: false,
+      coverUrl: '',
+      isAvailable: false,
+      unavailableCode: 'not-found',
+      unavailableReason: '房源不存在或已删除',
+      isFavorited: true,
+      favoritedAt
+    }
+  }
+
+  const location = publicListingLocationFields(listing)
+  const display = listingDisplayFields(listing, db)
+  const available = isFrontendEffectiveListing(listing)
+  const unavailable = available ? { reason: '', reasonText: '' } : listingUnavailableReason(listing)
+  const features = Array.from(listingMatchFeatureSet(listing))
+  const rent = Number(listing.rent || 0)
+  const rentMode = listing.rentMode || listing.type || ''
+  const source = listing.source || listing.ownerType || listing.houseSourceType || ''
+  const sourceLabel = display.sourceLabel || source
+  return {
+    id: listing.id,
+    title: publicListingTitle(listing, location),
+    meta: [location.locationSummary || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
+    sub: available ? [listing.layout, sourceLabel, listing.status].filter(Boolean).join(' · ') : '暂不可用',
+    price: rent ? `¥${rent}/月` : '',
+    rent,
+    layout: listing.layout || '',
+    rentMode,
+    type: rentMode,
+    district: location.district,
+    area: location.area,
+    block: location.block,
+    community: location.community,
+    features,
+    source,
+    sourceLabel,
+    status: listing.status || '',
+    companyListing: isCompanyListing(listing),
+    hasVideo: available && hasListingVideo(listing),
+    coverUrl: available ? listingCoverUrl(listing) : '',
+    isAvailable: available,
+    unavailableCode: unavailable.reason || '',
+    unavailableReason: unavailable.reasonText || '',
+    isFavorited: true,
+    favoritedAt
+  }
+}
+
+function favoriteListings(db, userId, filter = {}) {
+  assertFavoriteUser(db, userId)
+  const seen = new Set()
+  const requestedFeatures = parseFeatureInput(filter.features || filter.feature)
+  const districtFilter = String(filter.district || filter.area || '').trim()
+  const availability = String(filter.availability || '').trim().toLowerCase()
+  const rows = favoriteRows(db)
+    .filter((item) => item && String(item.userId || '') === String(userId || ''))
+    .slice()
+    .sort((left, right) => dateValue(right.createdAt) - dateValue(left.createdAt))
+    .filter((item) => {
+      const listingId = String(item.listingId || '').trim()
+      if (!listingId || seen.has(listingId)) return false
+      seen.add(listingId)
+      return true
+    })
+    .map((relationship) => ({
+      relationship,
+      listing: listingById(db, String(relationship.listingId || ''))
+    }))
+    .filter(({ listing }) => {
+      const available = Boolean(listing && isFrontendEffectiveListing(listing))
+      if (availability === 'available' && !available) return false
+      if (availability === 'unavailable' && available) return false
+      if (!listing) {
+        return !filter.category && !districtFilter && !filter.block && !filter.community &&
+          !filter.layout && !filter.rentMode && !filter.rentMin && !filter.rentMax && !requestedFeatures.length
+      }
+      if (filter.category && !matchesCategory(listing, filter.category)) return false
+      if (districtFilter && [listing.district, listing.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
+      if (filter.block && String(listing.block || '').indexOf(String(filter.block)) === -1) return false
+      if (filter.community && String(listing.community || '').indexOf(String(filter.community)) === -1) return false
+      if (!matchesLayoutFilter(listing, filter.layout)) return false
+      if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
+      if (filter.rentMin !== undefined && String(filter.rentMin).trim() !== '' && Number(listing.rent || 0) < Number(filter.rentMin)) return false
+      if (filter.rentMax !== undefined && String(filter.rentMax).trim() !== '' && Number(listing.rent || 0) > Number(filter.rentMax)) return false
+      if (requestedFeatures.length) {
+        const featureSet = listingMatchFeatureSet(listing)
+        if (!requestedFeatures.every((feature) => featureSet.has(feature))) return false
+      }
+      return true
+    })
+    .map(({ listing, relationship }) => favoriteSafeListingRow(db, listing, relationship))
+  return rows
+}
+
 function matchListings(db, condition = {}) {
   const budget = Number(condition.budget || 0)
   const area = String(condition.area || '').trim()
@@ -2553,6 +2796,7 @@ function profileState(db, userId) {
   return {
     user: clone(user),
     points,
+    favoriteCount: favoriteListingIds(db, userId).length,
     sourceStats: [
       { label: '已上架', value: String(owned.length) },
       { label: '积分', value: String(points) },
@@ -5600,6 +5844,10 @@ module.exports = {
   formatHomeListing,
   homeListings,
   filterListings,
+  favoriteListing,
+  unfavoriteListing,
+  favoriteListingIds,
+  favoriteListings,
   matchListings,
   listingDetail,
   listingDetailState,

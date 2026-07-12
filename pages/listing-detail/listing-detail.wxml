@@ -76,6 +76,7 @@
           <view class="listing-title">{{listing.title}}</view>
           <view class="listing-area">{{listing.areaText || listing.area}} · {{listing.status}}</view>
         </view>
+        <favorite-toggle listing-id="{{listing.id}}"></favorite-toggle>
       </view>
       <view class="source-badges">
         <text wx:if="{{listing.companyListing}}" class="company-badge">公司房源</text>

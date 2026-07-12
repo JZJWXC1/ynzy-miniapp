@@ -1,5 +1,6 @@
 // profile.js
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 
 const hiddenV1EntryKeywords = ['房源群', '换群', '积分', '充值', '微信支付', '报备', '签单']
 const defaultReminders = [
@@ -52,6 +53,24 @@ Page({
     this.refreshProfile();
   },
 
+  onUnload() {
+    this._profileRequestSeq = (this._profileRequestSeq || 0) + 1
+  },
+
+  resetProfileForAccount(token) {
+    this._profileAccountToken = token
+    this.setData({
+      user: {},
+      workbench: [],
+      reminders: [],
+      sourceStats: [],
+      footprintCount: 0,
+      profileReady: false,
+      profileLoadFailed: false,
+      profileAccessRequired: false
+    })
+  },
+
   buildWorkbench(profile, footprintCount) {
     const sourceStats = profile.sourceStats || []
     const listingCount = findStatValue(sourceStats, ['房源', '上传'], sourceStats[0] ? sourceStats[0].value : 0)
@@ -59,6 +78,7 @@ Page({
     // 工作台精简：只保留功能名称 + 数值徽标，去掉每项的说明文字（desc 已从卡片模板移除）。
     return [
       { title: '我的房源', value: `${listingCount} 套`, url: '/pages/my-listings/my-listings' },
+      { title: '我的收藏', value: `${Number(profile.favoriteCount || 0)} 套`, url: '/pages/favorites/favorites' },
       { title: '上传房源', value: '视频房源', url: '/pages/upload/upload' },
       { title: '房源足迹', value: `${footprintCount} 条`, url: '/pages/footprint/footprint' },
       { title: '分佣记录', value: `${commissionCount} 单`, url: '/pages/commissions/commissions' },
@@ -70,6 +90,8 @@ Page({
   refreshProfile() {
     this._profileRequestSeq = (this._profileRequestSeq || 0) + 1
     const requestSeq = this._profileRequestSeq
+    const requestToken = String(apiClient.getAuthToken() || '')
+    if (this._profileAccountToken !== requestToken) this.resetProfileForAccount(requestToken)
     this.setData({
       profileLoading: true,
       profileLoadFailed: false,
@@ -80,6 +102,12 @@ Page({
       apiService.getFootprintRecords()
     ]).then(([profile, footprints]) => {
       if (requestSeq !== this._profileRequestSeq) return
+      const currentToken = String(apiClient.getAuthToken() || '')
+      if (currentToken !== requestToken) {
+        this.resetProfileForAccount(currentToken)
+        this.setData({ profileLoading: false })
+        return
+      }
       this.setData({
         profileReady: true,
         profileLoading: false,
@@ -93,6 +121,12 @@ Page({
       });
     }).catch((error) => {
       if (requestSeq !== this._profileRequestSeq) return
+      const currentToken = String(apiClient.getAuthToken() || '')
+      if (currentToken !== requestToken) {
+        this.resetProfileForAccount(currentToken)
+        this.setData({ profileLoading: false })
+        return
+      }
       if (isAuthError(error)) {
         this.setData({
           user: {},
@@ -128,7 +162,7 @@ Page({
   promptLoginGuide() {
     wx.showModal({
       title: '登录后进入我的',
-      content: '我的房源、足迹和分佣记录需要登录内部中介账号后查看。',
+      content: '我的房源、收藏、足迹和分佣记录需要登录内部中介账号后查看。',
       cancelText: '先看看',
       confirmText: '去登录',
       success: (res) => {

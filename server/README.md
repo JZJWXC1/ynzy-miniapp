@@ -701,6 +701,57 @@ node scripts/listing-verify-outcome-v1-test.js
 node scripts/v1-online-gap-audit.js
 ```
 
+## 房源体验闭环 M4：账号收藏与我的收藏
+
+收藏只保存服务端账号与房源的最小关系，不把收藏状态或房源快照写进用户/房源对象：
+
+```json
+{
+  "favorites": [
+    {
+      "id": "服务端唯一关系编号",
+      "userId": "验签账号",
+      "listingId": "路由中的房源编号",
+      "createdAt": "服务端 ISO 时间"
+    }
+  ]
+}
+```
+
+- 旧库缺少 `favorites` 时，纯读取按空数组处理且不落盘；首次收藏才在 `updateDb` 写锁内惰性初始化。已存在但为 `null`、对象、字符串、缺四字段、时间非法或关系 `id` 重复时返回 500，禁止静默清空原数据。
+- 关系编号使用随机 UUID；即使 UUID 极端碰撞，也会检查现有关系并追加唯一后缀。重复收藏返回原关系和原 `createdAt`，不会刷新收藏顺序。
+- 代码回滚时旧版本会忽略并保留未知的 `favorites` 顶层键，因此不需要数据回滚。禁止用旧整库备份“删除收藏”，否则会同时抹掉备份后的房源、账号和足迹写入；只有停写维护窗口才能做整库恢复。
+
+小程序接口：
+
+```text
+GET    /mini/favorites/ids
+GET    /mini/favorites
+PUT    /mini/favorites/:listingId
+DELETE /mini/favorites/:listingId
+```
+
+- 四条接口都强制登录。`userId` 只取 HMAC 验签 token，`listingId` 只取路由；PUT/DELETE 不解析请求正文，也不接受客户端 `userId`、角色、维护人、时间或收藏结果。
+- PUT/DELETE 是显式目标态而不是 toggle：重复 PUT 只有一条关系，重复 DELETE 继续成功；DELETE 会移除同账号/同房源的全部异常重复关系，但不影响其他账号。
+- 写入在数据库跨进程锁内再次用最新用户状态和 `tokenVersion` 验签，封住路由初验后账号停用、删除或改密撤销与落库并发的窗口。
+- 新收藏只允许当前前台有效房源。既有收藏后来下架、过期、成交、进入待审、缺视频或被物理删除时仍保留为“暂不可用”，只允许取消，不授予敏感查看、拨号、视频或带看权限。
+- 我的收藏安全 DTO 不返回地址、电话、楼栋/单元/房号、密码、钥匙位置、备注、上传人或失效原文；不可用项不返回视频/封面签名。
+- `GET /mini/favorites` 的区域、板块、小区、户型、整租/合租、租金区间、特点、可用状态与公司/业主/二房东来源均在服务端执行 AND 筛选。板块只匹配板块字段，不能被同名小区误命中。
+- `profileState.favoriteCount` 统计当前账号去重后的全部收藏关系（含暂不可用项），“我的”页据此展示“我的收藏”入口。
+
+客户端不保存匿名或本地收藏。共享星标组件只维护 token 绑定的进程内缓存，并覆盖首页推荐、房源列表、地图房源卡、找房助手推荐和详情页；“我的房源”管理卡不显示星标。无 token 点击只提示登录，不发写请求。显式 PUT/DELETE 串行化并维护最后确认的服务端状态，失败精确回滚；旧 GET、旧 token、旧组件实例或旧页面请求的迟到响应不能覆盖新账号/新操作。
+
+`readDbForRequest` 的自动公司房源迁移与房态过期分支已改为：锁外克隆只做变化探测，发现变化后进入 `updateDb`，基于最新磁盘状态重新执行两项规则。不得恢复旧的“锁外读取 → `writeDb` 整库覆盖”路径，否则另一进程刚提交的收藏会被陈旧快照抹掉。
+
+M4 门禁：
+
+- `favorite-domain-v1-test.js`：关系结构、UUID 碰撞、账号隔离、非法结构、全部不可用类型、脱敏与九类筛选。
+- `favorite-http-v1-test.js`：双服务进程并发 PUT/DELETE、伪造身份正文、重复时间不刷新、跨账号隔离和改密撤销。
+- `favorite-store-v1-test.js`：GET/写入竞态、token A/B 隔离、失败回滚、相反操作双失败与多组件同步。
+- `favorite-component-page-v1-test.js`：游客、重复点击、组件复用、不可用导航、封面迟到错误、筛选/换号/卸载请求竞态。
+- `favorite-entry-v1-test.js`：六个规定入口（含我的收藏页）、正确房源 ID、`catchtap` 和“我的房源”禁星标契约。
+- `favorite-mock-v1-test.js`：开发者工具 Mock 登录假 token、收藏幂等、筛选、失效保留、账号隔离与无请求正文。
+
 ## 上线自检
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。

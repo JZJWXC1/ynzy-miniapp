@@ -360,6 +360,30 @@ function getCompanyListings() {
   return getListings({ category: '公司房源' })
 }
 
+function getFavoriteIds() {
+  return apiClient.call({
+    path: '/mini/favorites/ids',
+    mock: () => mockData.getFavoriteIds()
+  }).then((ids) => (ids || []).map((id) => String(id || '')).filter(Boolean))
+}
+
+function getFavorites(filter) {
+  const query = buildQuery(filter || {})
+  return apiClient.call({
+    path: `/mini/favorites${query}`,
+    mock: () => mockData.getFavorites(filter || {})
+  }).then((listings) => listingDisplay.normalizeListings(listings))
+}
+
+function setFavorite(listingId, desired) {
+  const id = String(listingId || '').trim()
+  return apiClient.call({
+    path: `/mini/favorites/${encodeURIComponent(id)}`,
+    method: desired ? 'PUT' : 'DELETE',
+    mock: () => mockData.setFavorite(id, Boolean(desired))
+  })
+}
+
 function buildMockCompanySheetSnapshot() {
   return {
     title: '寓你住一起房源表',
@@ -395,7 +419,15 @@ function loginByPhone(phone, password) {
     path: '/mini/auth/login',
     method: 'POST',
     data: { phone, password },
-    mock: () => mockData.loginByPhone(phone)
+    mock: () => {
+      const user = mockData.loginByPhone(phone)
+      return {
+        user,
+        // 开发者工具 Mock 也返回与真实接口同形状的明显假 token，让收藏等登录态功能可验收。
+        token: `synthetic-mock-token-${user.id}`,
+        tokenExpiresAt: '2099-01-01T00:00:00.000Z'
+      }
+    }
   }).then(normalizeAuthUser)
 }
 
@@ -934,6 +966,9 @@ module.exports = {
   getHomeListings,
   getListings,
   getCompanyListings,
+  getFavoriteIds,
+  getFavorites,
+  setFavorite,
   getCompanySheetSnapshot,
   loginByPhone,
   registerUser,

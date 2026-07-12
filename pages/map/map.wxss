@@ -256,6 +256,12 @@ page {
   box-sizing: border-box;
 }
 
+.listing-actions {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
 .listing-main {
   min-width: 0;
   flex: 1;

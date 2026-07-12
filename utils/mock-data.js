@@ -190,6 +190,7 @@
       { id: 'U006', name: '赵一', phone: '13800010006', role: '内部员工', authed: '未实名', isAdmin: false }
     ],
     listings: [],
+    favorites: [],
     listingMaintenanceRule: {
       enabled: false,
       remindDays: [3, 5],
@@ -1154,6 +1155,191 @@
     });
   }
 
+  function favoriteRecordsForCurrentUser() {
+    return (state.favorites || []).filter(function (item) {
+      return item && item.userId === state.currentUserId;
+    });
+  }
+
+  function getFavoriteIds() {
+    var seen = {};
+    return favoriteRecordsForCurrentUser()
+      .slice()
+      .sort(function (left, right) {
+        return Date.parse(right.createdAt || '') - Date.parse(left.createdAt || '');
+      })
+      .map(function (item) { return String(item.listingId || ''); })
+      .filter(function (listingId) {
+        if (!listingId || seen[listingId]) return false;
+        seen[listingId] = true;
+        return true;
+      });
+  }
+
+  function isFavoriteListingAvailable(listing) {
+    if (!listing || isExpiredListing(listing) || isPendingOwnerReview(listing)) return false;
+    if (listing.lifecycleStatus === 'sold' || /成交|签单/.test(String(listing.status || ''))) return false;
+    return isCompanyListing(listing) || hasListingVideo(listing);
+  }
+
+  function setFavorite(listingId, desired) {
+    var id = String(listingId || '').trim();
+    if (!id) throw new Error('缺少房源编号');
+    state.favorites = state.favorites || [];
+    var existing = state.favorites.find(function (item) {
+      return item.userId === state.currentUserId && item.listingId === id;
+    });
+    if (!desired) {
+      state.favorites = state.favorites.filter(function (item) {
+        return !(item.userId === state.currentUserId && item.listingId === id);
+      });
+      return { listingId: id, favorited: false, isFavorited: false };
+    }
+    if (existing) {
+      return {
+        id: existing.id,
+        listingId: id,
+        favorited: true,
+        isFavorited: true,
+        favoritedAt: existing.createdAt || ''
+      };
+    }
+    var listing = getListing(id);
+    if (!isFavoriteListingAvailable(listing)) {
+      var error = new Error(listing ? '该房源暂不可收藏' : '房源不存在，无法收藏');
+      error.statusCode = listing ? 410 : 404;
+      throw error;
+    }
+    var record = {
+      id: 'FV' + Date.now() + Math.floor(Math.random() * 1000),
+      userId: state.currentUserId,
+      listingId: id,
+      createdAt: new Date().toISOString()
+    };
+    state.favorites.unshift(record);
+    return {
+      id: record.id,
+      listingId: id,
+      favorited: true,
+      isFavorited: true,
+      favoritedAt: record.createdAt
+    };
+  }
+
+  function mockFavoriteLayoutMatches(listing, value) {
+    var filter = String(value || '').trim();
+    if (!filter || filter === '不限') return true;
+    var text = [listing.layout, listing.room, listing.type, listing.rentMode].join(' ');
+    var matched = text.match(/([一二两三四五六七八九]|\d+)\s*室/);
+    var map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    var count = matched ? (map[matched[1]] || Number(matched[1]) || 0) : 0;
+    if (filter === '一室') return count === 1;
+    if (filter === '两室' || filter === '二室') return count === 2;
+    if (filter === '三室') return count === 3;
+    if (filter === '三室以上') return count >= 3;
+    return String(listing.layout || '').indexOf(filter) !== -1;
+  }
+
+  function favoriteSafeRow(listing, relationship) {
+    if (!listing) {
+      return {
+        id: relationship.listingId,
+        title: '已删除房源',
+        meta: '房源信息已移除',
+        sub: '暂不可用',
+        price: '',
+        rent: 0,
+        layout: '',
+        rentMode: '',
+        type: '',
+        district: '',
+        area: '',
+        block: '',
+        community: '',
+        features: [],
+        source: '',
+        sourceLabel: '',
+        status: '暂不可用',
+        isAvailable: false,
+        unavailableReason: '房源不存在或已删除',
+        isFavorited: true,
+        favoritedAt: relationship.createdAt || ''
+      };
+    }
+    var location = listingLocationFields(listing);
+    var display = listingDisplayFields(listing);
+    var available = isFavoriteListingAvailable(listing);
+    var source = listing.source || display.ownerType || '';
+    var rent = Number(listing.rent || 0);
+    return {
+      id: listing.id,
+      title: listing.shortTitle || location.community || '房源',
+      meta: [location.locationSummary || location.area, listing.layout, display.sourceLabel || source].filter(Boolean).join(' · '),
+      sub: available ? [listing.layout, display.sourceLabel || source, listing.status].filter(Boolean).join(' · ') : '暂不可用',
+      price: rent ? '¥' + rent + '/月' : '',
+      rent: rent,
+      layout: listing.layout || '',
+      rentMode: listing.rentMode || listing.type || '',
+      type: listing.rentMode || listing.type || '',
+      district: location.district,
+      area: location.area,
+      block: location.block,
+      community: location.community,
+      features: display.features || [],
+      source: source,
+      sourceLabel: display.sourceLabel || source,
+      status: listing.status || '',
+      companyListing: isCompanyListing(listing),
+      hasVideo: available && hasListingVideo(listing),
+      coverUrl: '',
+      isAvailable: available,
+      unavailableReason: available ? '' : '该房源已下架、成交或正在审核',
+      isFavorited: true,
+      favoritedAt: relationship.createdAt || ''
+    };
+  }
+
+  function getFavorites(filter) {
+    var query = filter || {};
+    var requestedFeatures = parseFeatureInput(query.features || query.feature);
+    var seen = {};
+    return favoriteRecordsForCurrentUser()
+      .slice()
+      .sort(function (left, right) {
+        return Date.parse(right.createdAt || '') - Date.parse(left.createdAt || '');
+      })
+      .filter(function (relationship) {
+        if (!relationship.listingId || seen[relationship.listingId]) return false;
+        seen[relationship.listingId] = true;
+        return true;
+      })
+      .map(function (relationship) {
+        return { relationship: relationship, listing: getListing(relationship.listingId) };
+      })
+      .filter(function (entry) {
+        var listing = entry.listing;
+        var available = isFavoriteListingAvailable(listing);
+        if (query.availability === 'available' && !available) return false;
+        if (query.availability === 'unavailable' && available) return false;
+        if (!listing) return !query.category && !query.district && !query.area && !query.block && !query.community && !query.layout && !query.rentMode && !query.rentMin && !query.rentMax && !requestedFeatures.length;
+        var district = String(query.district || query.area || '');
+        if (query.category && !matchesCategory(listing, query.category)) return false;
+        if (district && [listing.district, listing.area].join('').indexOf(district) === -1) return false;
+        if (query.block && String(listing.block || '').indexOf(query.block) === -1) return false;
+        if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
+        if (!mockFavoriteLayoutMatches(listing, query.layout)) return false;
+        if (query.rentMode && (listing.rentMode || listing.type) !== query.rentMode) return false;
+        if (query.rentMin && Number(listing.rent || 0) < Number(query.rentMin)) return false;
+        if (query.rentMax && Number(listing.rent || 0) > Number(query.rentMax)) return false;
+        if (requestedFeatures.length) {
+          var featureSet = listingMatchFeatureSet(listing);
+          if (!requestedFeatures.every(function (feature) { return featureSet.has(feature); })) return false;
+        }
+        return true;
+      })
+      .map(function (entry) { return favoriteSafeRow(entry.listing, entry.relationship); });
+  }
+
   function matchListings(condition) {
     var budget = Number(condition.budget || 0);
     var area = (condition.area || '').trim();
@@ -1435,6 +1621,7 @@
     return {
       user: clone(user),
       points: points,
+      favoriteCount: getFavoriteIds().length,
       sourceStats: [
         { label: '已上架', value: String(owned.length) },
         { label: '积分', value: String(points) },
@@ -3025,6 +3212,9 @@
     loginByPhone: loginByPhone,
     getHomeListings: function () { return publicListings().slice(0, 3).map(formatHomeListing); },
     getListings: getListings,
+    getFavoriteIds: getFavoriteIds,
+    getFavorites: getFavorites,
+    setFavorite: setFavorite,
     matchListings: matchListings,
     getListingDetail: getListingDetail,
     getListingLogs: getListingLogs,

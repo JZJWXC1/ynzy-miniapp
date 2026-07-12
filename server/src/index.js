@@ -1340,13 +1340,19 @@ function withSignedShowingPhotoUrls(rows) {
 }
 
 function readDbForRequest() {
-  const db = dbStore.readDb()
-  const companyMigration = domain.migrateCompanyListings(db)
-  const maintenance = domain.enforceListingMaintenanceRule(db)
-  if (companyMigration.changed || maintenance.expiredCount > 0) {
-    dbStore.writeDb(db)
-  }
-  return db
+  const snapshot = dbStore.readDb()
+  const probe = dbStore.clone(snapshot)
+  const companyMigration = domain.migrateCompanyListings(probe)
+  const maintenance = domain.enforceListingMaintenanceRule(probe)
+  if (!companyMigration.changed && maintenance.expiredCount === 0) return snapshot
+
+  // 自动迁移/过期必须在 updateDb 的跨进程锁内基于最新磁盘状态重做。旧实现会把锁外读到的陈旧整库
+  // writeDb 回去，覆盖读写窗口内刚提交的收藏/足迹等关系。
+  return dbStore.updateDb((nextDb) => {
+    domain.migrateCompanyListings(nextDb)
+    domain.enforceListingMaintenanceRule(nextDb)
+    return dbStore.clone(nextDb)
+  })
 }
 
 async function handleMini(req, res, pathname, searchParams) {
@@ -1575,6 +1581,47 @@ async function handleMini(req, res, pathname, searchParams) {
       return sendJson(res, domain.mapPins(db, guestListingFilter(filter)))
     }
     return sendJson(res, domain.mapPins(db, filter))
+  }
+
+  if (method === 'GET' && pathname === '/mini/favorites/ids') {
+    assertMiniLogin(userId)
+    return sendJson(res, domain.favoriteListingIds(db, userId))
+  }
+
+  if (method === 'GET' && pathname === '/mini/favorites') {
+    assertMiniLogin(userId)
+    const filter = {
+      category: searchParams.get('category') || '',
+      district: searchParams.get('district') || '',
+      area: searchParams.get('area') || '',
+      block: searchParams.get('block') || '',
+      community: searchParams.get('community') || '',
+      layout: searchParams.get('layout') || '',
+      rentMode: searchParams.get('rentMode') || '',
+      rentMin: searchParams.get('rentMin') || '',
+      rentMax: searchParams.get('rentMax') || '',
+      features: searchParams.get('features') || '',
+      availability: searchParams.get('availability') || ''
+    }
+    return sendJson(res, domain.favoriteListings(db, userId, filter))
+  }
+
+  const favoriteMatch = pathname.match(/^\/mini\/favorites\/([^/]+)$/)
+  if (method === 'PUT' && favoriteMatch) {
+    assertMiniLogin(userId)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      // 路由初验后账号可能被停用、删除或因改密提升 tokenVersion；在写锁内用最新数据库重新验签。
+      const freshUserId = miniUserIdFromRequest(req, nextDb)
+      return domain.favoriteListing(nextDb, freshUserId, favoriteMatch[1])
+    }))
+  }
+
+  if (method === 'DELETE' && favoriteMatch) {
+    assertMiniLogin(userId)
+    return sendJson(res, dbStore.updateDb((nextDb) => {
+      const freshUserId = miniUserIdFromRequest(req, nextDb)
+      return domain.unfavoriteListing(nextDb, freshUserId, favoriteMatch[1])
+    }))
   }
 
   if (method === 'GET' && pathname === '/mini/footprints') {

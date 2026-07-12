@@ -31,6 +31,7 @@
     <view wx:if="{{listings.length}}" class="listing-list">
       <view wx:for="{{listings}}" wx:key="id" class="listing-card soft-card" data-id="{{item.id}}" bindtap="openListing">
         <view class="listing-media">
+          <view class="listing-favorite"><favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle></view>
           <image wx:if="{{item.coverUrl}}" class="listing-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
           <view wx:if="{{item.hasVideo}}" class="video-badge">视频</view>
           <view wx:if="{{!item.coverUrl}}" class="media-window"></view>
