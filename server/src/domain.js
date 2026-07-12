@@ -4363,6 +4363,24 @@ function createClientReport(db, userId, listingId, payload = {}) {
   }
 }
 
+function hasOwnCommissionRule(source) {
+  return Boolean(
+    source &&
+    typeof source === 'object' &&
+    Object.prototype.hasOwnProperty.call(source, 'commissionRule') &&
+    source.commissionRule !== undefined
+  )
+}
+
+function frozenCommissionRuleForDeal(deal = {}, fallbackRule = {}) {
+  // 顶层冻结值是第一事实源；只要字段存在（即使 null/非对象/不完整）就交给守恒校验判脏，
+  // 不能逐字段拿当前配置补齐。顶层真正缺失时才看 dealSnapshot；两处都缺失的真老记录才回退。
+  if (hasOwnCommissionRule(deal)) return deal.commissionRule
+  const snapshot = deal && deal.dealSnapshot
+  if (hasOwnCommissionRule(snapshot)) return snapshot.commissionRule
+  return fallbackRule
+}
+
 function formatDealRecord(db, deal = {}) {
   const listing = listingById(db, deal.listingId) || {}
   const location = publicListingLocationFields(listing)
@@ -4370,14 +4388,7 @@ function formatDealRecord(db, deal = {}) {
   const broker = userById(db, deal.brokerId) || {}
   const uploader = userById(db, deal.uploaderId) || {}
   const baseCommissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
-  const savedCommissionRule = deal.commissionRule || {}
-  // 展示总比例与 confirmDeal 结算口径一致：优先取签单冻结的 commissionRule.rate，仅历史缺失时
-  // 才回退按当前 listing 重算。否则签单后房源被改为公司房源等情况下，rate 会取现状 0 而
-  // uploaderRate/platformRate 仍是冻结拆分，形成“总佣 0% 却拆出比例”且与实付分佣冲突的矛盾对象。
-  const rate = Number(savedCommissionRule.rate ?? baseCommissionRule.rate ?? 0)
-  const uploaderRate = Number(savedCommissionRule.uploaderRate ?? (rate ? (savedCommissionRule.rate ?? baseCommissionRule.uploaderRate) : 0))
-  const platformRate = Number(savedCommissionRule.platformRate ?? Math.max(0, rate - uploaderRate))
-  const commissionRule = { rate, uploaderRate, platformRate }
+  const commissionRule = clone(frozenCommissionRuleForDeal(deal, baseCommissionRule))
   const savedLandlordCommissionPercent = Number(
     deal.landlordCommissionPercent ??
     (deal.dealSnapshot && deal.dealSnapshot.landlordCommissionPercent)
@@ -4386,6 +4397,9 @@ function formatDealRecord(db, deal = {}) {
     ? savedLandlordCommissionPercent
     : storedLandlordCommissionPercent(listing)
   let commissionBreakdown = null
+  let rate = null
+  let uploaderRate = null
+  let platformRate = null
   let expectedUploaderCommissionFen = null
   let expectedPlatformCommissionFen = null
   let commissionIntegrity = { valid: true, reason: '' }
@@ -4396,6 +4410,9 @@ function formatDealRecord(db, deal = {}) {
       commissionBreakdownFromRule(landlordCommissionPercent, commissionRule)
     )
     const expectedCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
+    rate = Number(commissionRule.rate)
+    uploaderRate = Number(commissionRule.uploaderRate)
+    platformRate = Number(commissionRule.platformRate)
     expectedUploaderCommissionFen = expectedCommissionFen.uploaderCommissionFen
     expectedPlatformCommissionFen = expectedCommissionFen.platformCommissionFen
   } catch (error) {
@@ -4590,9 +4607,10 @@ function confirmDeal(db, adminId, dealId) {
   // 分佣规则以签单时冻结的快照为准，绝不按确认时刻的房源现状重算——否则待确认期间房源被
   // 编辑/迁移（ownerType/source/companyListing 变化，或上传人被提为管理员）会静默改变甚至
   // 清零上传人分佣。仅当历史签单缺少冻结值时才回退重算。
-  const commissionRule = deal.commissionRule
-    || (deal.dealSnapshot && deal.dealSnapshot.commissionRule)
-    || commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
+  const commissionRule = frozenCommissionRuleForDeal(
+    deal,
+    commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
+  )
   // 写路径无论首次确认还是“已确认”幂等重试，都必须先校验冻结规则与金额；列表 formatter 的只读降级
   // 绝不能让脏已确认单借早退分支绕过 money 守恒，或在校验前写入漏斗里程碑。
   const settledCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
@@ -4612,10 +4630,10 @@ function confirmDeal(db, adminId, dealId) {
   const platformCommissionFen = settledCommissionFen.platformCommissionFen
   // 不再回写覆盖 deal.commissionRule / dealSnapshot.commissionRule：它们是签单时冻结的
   // 不可变证据。仅为缺失冻结值的历史签单补齐（不覆盖已有值）。
-  if (!deal.commissionRule) {
+  if (!hasOwnCommissionRule(deal)) {
     deal.commissionRule = clone(commissionRule)
   }
-  if (deal.dealSnapshot && !deal.dealSnapshot.commissionRule) {
+  if (deal.dealSnapshot && typeof deal.dealSnapshot === 'object' && !hasOwnCommissionRule(deal.dealSnapshot)) {
     deal.dealSnapshot = {
       ...deal.dealSnapshot,
       commissionRule: clone(commissionRule)

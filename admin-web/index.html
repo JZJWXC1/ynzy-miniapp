@@ -2065,6 +2065,7 @@
 	    }
 
 	    function snapshotSummaryText(item, roleFallback) {
+	      if (item.commissionIntegrity && item.commissionIntegrity.valid === false) return '分佣规则待复核';
 	      if (item.snapshotSummary) return item.snapshotSummary;
 	      if (item.listingSnapshotSummary) return item.listingSnapshotSummary;
 	      const snapshot = snapshotObject(item);
