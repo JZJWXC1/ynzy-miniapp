@@ -398,7 +398,106 @@ function run() {
     )
   }
 
-  // 12) 文件名时间戳越界必须判非法（防未来时间戳抑制超期告警 / 逃过保留清理）。
+  // 12) 最新历史基线不可读时不得静默放行新空备份；非空新好备份允许告警自愈。
+  {
+    const priorDb = sampleDb()
+    const priorMs = NOW - 6 * 3600000
+    const fixtures = [
+      {
+        tag: 'old-key',
+        write(file) {
+          backup.writeEnvelopeFile({
+            file,
+            passphrase: 'rotated-old-test-key',
+            db: priorDb,
+            meta: { schema: backup.SCHEMA, countsVersion: 2, createdAtMs: priorMs, counts: backup.countCoreCollections(priorDb), dbSha256: sha256Db(priorDb) }
+          })
+        }
+      },
+      {
+        tag: 'tampered',
+        write(file) {
+          backup.writeEnvelopeFile({
+            file,
+            passphrase: PW,
+            db: priorDb,
+            meta: { schema: backup.SCHEMA, countsVersion: 2, createdAtMs: priorMs, counts: backup.countCoreCollections(priorDb), dbSha256: sha256Db(priorDb) }
+          })
+          const bytes = fs.readFileSync(file)
+          bytes[bytes.length - 1] ^= 0xff
+          fs.writeFileSync(file, bytes)
+        }
+      },
+      {
+        tag: 'bad-sha',
+        write(file) {
+          backup.writeEnvelopeFile({
+            file,
+            passphrase: PW,
+            db: priorDb,
+            meta: { schema: backup.SCHEMA, countsVersion: 2, createdAtMs: priorMs, counts: backup.countCoreCollections(priorDb), dbSha256: '0'.repeat(64) }
+          })
+        }
+      }
+    ]
+
+    for (const fixture of fixtures) {
+      const dir = tmpdir(`baseline-${fixture.tag}`)
+      const stageDir = path.join(dir, 'backups')
+      const dataFile = path.join(dir, 'db.json')
+      const priorFile = path.join(stageDir, backup.backupFileName(priorMs))
+      fixture.write(priorFile)
+      fs.writeFileSync(dataFile, '{}')
+      const sink = makeSink()
+      let uploads = 0
+      const rb = backup.runBackup({
+        dataFile,
+        stageDir,
+        passphrase: PW,
+        now: NOW,
+        remoteCmd: 'mock-upload',
+        exec: () => { uploads += 1 },
+        alertSink: sink,
+        quiet: true
+      })
+      assert.strictEqual(rb.ok, false, `${fixture.tag}：最新历史基线不可读且本次全空时必须失败`)
+      assert.strictEqual(rb.file, null, `${fixture.tag}：不可信的新空备份必须删除`)
+      assert.strictEqual(rb.remoteUploaded, false, `${fixture.tag}：不得标记异地上传成功`)
+      assert.strictEqual(uploads, 0, `${fixture.tag}：必须在远端上传前阻断`)
+      assert.ok(sink.kinds().includes(backup.ALERT_KINDS.BACKUP_BASELINE_UNREADABLE), `${fixture.tag}：必须触发独立基线不可读告警`)
+      assert.strictEqual(fs.readdirSync(stageDir).filter((name) => /\.ygbak$/.test(name)).length, 1, `${fixture.tag}：只保留原历史文件供排查`)
+    }
+
+    // 兼容密钥轮换自愈：旧基线不可读但本次源明确非空时，必须告警，同时允许上传已自检的新好备份。
+    const dir = tmpdir('baseline-unreadable-nonempty')
+    const stageDir = path.join(dir, 'backups')
+    const dataFile = path.join(dir, 'db.json')
+    const priorFile = path.join(stageDir, backup.backupFileName(priorMs))
+    backup.writeEnvelopeFile({
+      file: priorFile,
+      passphrase: 'rotated-old-test-key',
+      db: priorDb,
+      meta: { schema: backup.SCHEMA, countsVersion: 2, createdAtMs: priorMs, counts: backup.countCoreCollections(priorDb), dbSha256: sha256Db(priorDb) }
+    })
+    fs.writeFileSync(dataFile, JSON.stringify(sampleDb()))
+    const sink = makeSink()
+    let uploads = 0
+    const rb = backup.runBackup({
+      dataFile,
+      stageDir,
+      passphrase: PW,
+      now: NOW,
+      remoteCmd: 'mock-upload',
+      exec: () => { uploads += 1 },
+      alertSink: sink,
+      quiet: true
+    })
+    assert.ok(rb.ok, '旧基线不可读但本次明确非空时，应允许新密钥链自愈')
+    assert.strictEqual(uploads, 1, '非空新好备份仍应完成异地上传')
+    assert.ok(sink.kinds().includes(backup.ALERT_KINDS.BACKUP_BASELINE_UNREADABLE), '兼容自愈也必须告警，不能静默')
+  }
+
+  // 13) 文件名时间戳越界必须判非法（防未来时间戳抑制超期告警 / 逃过保留清理）。
   {
     assert.strictEqual(backup.parseBackupTimeMs('db-backup-20260706T120000Z.ygbak'), NOW, '合法文件名应解析出正确时间')
     for (const bad of ['db-backup-20261306T000000Z.ygbak', 'db-backup-20260740T000000Z.ygbak', 'db-backup-20260706T256199Z.ygbak']) {
@@ -415,7 +514,7 @@ function run() {
     assert.ok(listed[0] === backup.backupFileName(NOW), '只保留合法命名的备份')
   }
 
-  // 13) 恢复演练不残留明文：未传 tempDir 时自建临时目录用完即清；传入时才保留产物。
+  // 14) 恢复演练不残留明文：未传 tempDir 时自建临时目录用完即清；传入时才保留产物。
   {
     const dir = tmpdir('cleanup')
     const stageDir = path.join(dir, 'backups')
@@ -437,7 +536,7 @@ function run() {
     assert.ok(fs.existsSync(drill2.restoredPath), '传入 tempDir 时解密产物应存在，供人工恢复')
   }
 
-  // 14) 异地目标门禁：默认缺 BACKUP_REMOTE_CMD 必须失败；只有显式 allowLocalOnly 才允许仅本地成功。
+  // 15) 异地目标门禁：默认缺 BACKUP_REMOTE_CMD 必须失败；只有显式 allowLocalOnly 才允许仅本地成功。
   {
     const mk = (tag) => {
       const dir = tmpdir(tag)

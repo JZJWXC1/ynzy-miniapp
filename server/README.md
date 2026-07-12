@@ -199,18 +199,19 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 10 3 * * * . /etc/default/ynzy-backup; cd /opt/ynzy-miniapp/server && node scripts/restore-drill.js >> /var/log/ynzy-restore-drill.log 2>&1
 ```
 
-#### 告警条件（均输出明确错误、非零退出）
+#### 告警条件（均输出明确记录；仅下述“非空自愈”可继续成功）
 
 - `BACKUP_FAILED`：读源/加密/写盘失败。
 - `BACKUP_VERIFY_FAILED`：新备份即时自检不过（已删除坏备份）。
 - `BACKUP_EMPTY_SOURCE`：跨备份计数回归——本次备份七项计数全为 0 但上一份备份仍有数据，疑似源被截断/读空（已删除该空备份并判失败）。上一份为 M7 前旧格式时，会先验证其整库 SHA，再从完整正文重算七项，避免旧元数据漏掉收藏。
+- `BACKUP_BASELINE_UNREADABLE`：上一份最新历史备份因密钥轮换、密文损坏、信封畸形或整库 SHA 不一致而无法作为可信基线。若本次七项全空，会在异地上传前删除本次空备份并判失败；若本次明确非空且已通过即时自检，则保留告警并允许上传，以建立新的可读密钥链基线。告警只记录文件名与汇总计数，不输出密钥或解密错误正文。
 - `BACKUP_REMOTE_REQUIRED`：未配置 `BACKUP_REMOTE_CMD` 且未显式 `BACKUP_ALLOW_LOCAL_ONLY=1`，未达成异地目标（本地可信备份已保留，但本轮判失败）。
 - `REMOTE_UPLOAD_FAILED`：异地上传命令失败。
 - `RESTORE_MISMATCH`：恢复演练往返数量不符。
 - `RESTORE_FAILED`：演练解密/解析失败或无备份可演练。
 - `BACKUP_STALE`：最近一次备份超过 `BACKUP_MAX_AGE_HOURS`。
 
-上述条件均有锁定测试：`server/scripts/backup-restore-v1-test.js`。
+上述条件均有锁定测试：`server/scripts/backup-restore-v1-test.js`。除 `BACKUP_BASELINE_UNREADABLE` 的“当前非空自愈”分支外，阻断条件均令 CLI 非零退出。
 
 足迹留痕不再按行数截断。所有新写入严格收敛为 `{id, viewerId, listingId, actionType, occurredAt, idempotencyKey}` 六字段；中介接口只返回最近 7 天，后台返回最近 90 天。可解析且超过 90 天的记录会在数据库写锁内物理清理；无过期记录时读取不触发整库写盘。无法解析时间的存量旧记录不做破坏性猜测：中介接口不下发，后台保守可读且不自动删除，后续只能通过受控迁移处理。旧 `FOOTPRINT_MAX_ROWS` 环境变量已失效，不得再用数量上限提前删除 90 天内审计证据。
 

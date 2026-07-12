@@ -42,6 +42,7 @@ const ALERT_KINDS = {
   BACKUP_FAILED: 'BACKUP_FAILED', // 生成加密备份失败（读源/加密/写盘任一步）
   BACKUP_VERIFY_FAILED: 'BACKUP_VERIFY_FAILED', // 新备份即时自检（解密+计数往返）不通过
   BACKUP_EMPTY_SOURCE: 'BACKUP_EMPTY_SOURCE', // 跨备份回归：整库七项全为 0，但上一份备份有数据（疑似源被截断/读空）
+  BACKUP_BASELINE_UNREADABLE: 'BACKUP_BASELINE_UNREADABLE', // 上一份最新备份无法验证，空源门禁失去可信基线
   BACKUP_REMOTE_REQUIRED: 'BACKUP_REMOTE_REQUIRED', // 未配置 BACKUP_REMOTE_CMD 且未显式允许仅本地 → 未达成异地目标
   REMOTE_UPLOAD_FAILED: 'REMOTE_UPLOAD_FAILED', // 异地上传命令失败
   RESTORE_MISMATCH: 'RESTORE_MISMATCH', // 恢复演练数量往返校验不符
@@ -420,28 +421,24 @@ function readBackupMeta(file, passphrase) {
   }
 }
 
-// 跨备份回归必须以“上一份实际恢复正文”为基线，而不能只信历史 meta.counts：
-// M7 前正文已包含 favorites，但旧计数没有该键。只有整库 SHA 有效且匹配时才返回实际七项计数。
+// 跨备份回归必须以“上一份通过完整恢复演练的正文”为基线，而不能只信历史 meta.counts：
+// M7 前正文已包含 favorites，但旧计数没有该键。解密、解析、计数版本、整库 SHA 或逐项计数
+// 任一校验不通过都返回 null，由 runBackup 进入不可读基线告警/空源阻断分支。
 function readBackupBaselineCounts(file, passphrase) {
-  try {
-    const { meta, db } = parseEnvelope(decryptPayload(fs.readFileSync(file), passphrase))
-    if (!meta || !meta.counts || typeof meta.counts !== 'object' || Array.isArray(meta.counts)) return null
-    if (typeof meta.dbSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(meta.dbSha256)) return null
-    const dbJson = JSON.stringify(db)
-    const actual = crypto.createHash('sha256').update(dbJson).digest('hex')
-    if (actual !== meta.dbSha256.toLowerCase()) return null
-    return countCoreCollections(db)
-  } catch (error) {
-    return null
-  }
+  const drill = restoreDrill({ backupFile: file, passphrase })
+  return drill.ok ? drill.counts : null
 }
 
 // 判定“疑似源被截断/读成空”：本次七项计数全为 0，而上一份备份存在任一 > 0。
 // 只在“整库全空 vs 上一份有数据”这一无歧义信号上触发，避免对正常的单集合清理误报。
 function isEmptySourceRegression(newCounts, priorCounts) {
   if (!priorCounts || !newCounts) return false
-  const total = (counts) => CORE_COLLECTIONS.reduce((sum, { label }) => sum + (Number(counts[label]) || 0), 0)
-  return total(newCounts) === 0 && total(priorCounts) > 0
+  return coreCollectionTotal(newCounts) === 0 && coreCollectionTotal(priorCounts) > 0
+}
+
+function coreCollectionTotal(counts) {
+  if (!counts || typeof counts !== 'object') return 0
+  return CORE_COLLECTIONS.reduce((sum, { label }) => sum + (Number(counts[label]) || 0), 0)
 }
 
 // ---------- 编排：一次完整备份 ----------
@@ -497,7 +494,19 @@ function runBackup(options) {
   //     避免把一份丢光生产数据的“成功备份”上传异地并进入轮换。（时间型保留策略保证旧的好备份仍在。）
   if (priorLatest) {
     const priorCounts = readBackupBaselineCounts(priorLatest.file, passphrase)
-    if (priorCounts && isEmptySourceRegression(created.meta.counts, priorCounts)) {
+    if (!priorCounts) {
+      // 密钥轮换、密文损坏、信封畸形或 SHA 不一致都会让最新历史基线不可验证。
+      // 此时绝不能把“当前全空”当作可信首份空库上传；若当前明确非空，则保留告警并允许
+      // 已通过本轮自检的新备份继续，从而建立新的可读密钥链基线。
+      alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_BASELINE_UNREADABLE,
+        `上一份最新备份（${priorLatest.name}）不可验证，跨备份空源门禁缺少可信基线`,
+        { file: created.fileName, priorFile: priorLatest.name, newCounts: created.meta.counts }))
+      if (coreCollectionTotal(created.meta.counts) === 0) {
+        try { fs.unlinkSync(created.file) } catch (error) { /* 忽略 */ }
+        result.file = null
+        return result
+      }
+    } else if (isEmptySourceRegression(created.meta.counts, priorCounts)) {
       alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_EMPTY_SOURCE,
         `疑似源被截断：本次备份七项计数全为 0，但上一份备份（${priorLatest.name}）仍有数据`,
         { file: created.fileName, newCounts: created.meta.counts, priorCounts }))
