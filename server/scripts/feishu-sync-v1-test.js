@@ -98,6 +98,8 @@ async function main() {
   assert.ok(invalidPhone.messages.every((message) => !/1[3-9]\d{9}/.test(message)), '飞书错误摘要不得输出号码')
   assert.strictEqual(feishuSync.status(invalidPhoneDb).missingLandlordPhoneCount, 1, '后台状态必须汇总仍在架的飞书缺号房源')
 
+  invalidPhoneDb.listings[0].landlordPhone = '公司统一维护'
+  invalidPhoneDb.listings[0].contact = 'invalid-legacy-phone'
   const invalidPhoneUpdated = await feishuSync.applySync(invalidPhoneDb, [
     row({
       区域: '闸弄口',
@@ -110,8 +112,10 @@ async function main() {
     })
   ], [{ name: '609A.mp4', videoUrl: 'https://example.test/609A.mp4' }], 'A1', { dryRun: true })
   assert.strictEqual(invalidPhoneUpdated.updated, 1, '存量无号公司房源后续仍必须继续同步租金/状态')
+  assert.strictEqual(invalidPhoneUpdated.failed, 0, '存量非法占位电话必须被内部同步清空，不能再次触发领域 400')
   assert.strictEqual(invalidPhoneDb.listings[0].rent, 3100, '缺号不得冻结公开库存字段更新')
   assert.strictEqual(invalidPhoneDb.listings[0].landlordPhone, '', '更新后仍不得伪造号码')
+  assert.strictEqual(invalidPhoneDb.listings[0].contact, '', '存量兼容 contact 非法值也必须清理')
 
   const matched = await feishuSync.applySync(db, [
     row({

@@ -110,7 +110,7 @@ function run() {
     )
   }
   expectBad(
-    listingForm({ companyListing: true, source: '公司房源', contact: '', videoKey: '' }),
+    listingForm({ companyListing: true, source: '公司房源', contact: '', videoKey: '', allowMissingLandlordPhone: true }),
     /房东手机号/,
     '公司房源也必须填写房东手机号',
     { userId: 'ADMIN', domainOptions: { admin: true } }
@@ -119,6 +119,12 @@ function run() {
     listingForm({ contact: '' }),
     /房东手机号/,
     '飞书缺号内部开关不得放宽非公司房源校验',
+    { userId: 'ADMIN', domainOptions: { admin: true, allowMissingLandlordPhone: true } }
+  )
+  expectBad(
+    listingForm({ companyListing: true, source: '公司房源', contact: 'invalid-phone', videoKey: '' }),
+    /11 位.*手机号/,
+    '飞书内部开关只允许缺失，不能把非空非法值写入公司房源',
     { userId: 'ADMIN', domainOptions: { admin: true, allowMissingLandlordPhone: true } }
   )
   expectBad(listingForm({ viewingMethod: '钥匙', viewingKeyLocation: '前台', contact: 'TEST-PHONE' }), /11 位.*手机号/, '所有方式都必须校验手机号格式')

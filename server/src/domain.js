@@ -5254,7 +5254,12 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const builtLayout = buildLayoutFromFields({ rentMode, room, hall, bath })
   const address = firstText(form.address, hasLocationInput ? builtAddress : '', current.address, builtAddress)
   const layout = firstText(form.layout, hasLayoutInput ? builtLayout : '', current.layout, builtLayout)
-  const contact = firstText(form.contact, form.landlordPhone, current.landlordPhone)
+  const contactInput = firstOwnValue(form, ['contact', 'landlordPhone'])
+  // 普通编辑显式空值仍沿用旧号码，避免误清敏感联系方式；只有飞书内部缺号同步需要把
+  // 已有非法占位值真正清空，否则 firstText 会回退到旧非法值并再次触发 400、冻结库存更新。
+  const contact = options.allowMissingLandlordPhone && contactInput !== undefined
+    ? String(contactInput === null || contactInput === undefined ? '' : contactInput).trim()
+    : firstText(form.contact, form.landlordPhone, current.landlordPhone)
   const remarkInput = firstOwnValue(form, ['remark', 'note', 'memo'])
   const remark = remarkInput !== undefined
     ? normalizeListingRemark(remarkInput)
@@ -5622,7 +5627,12 @@ function assertNoDuplicateActiveListing(db, fields, currentListingId = '') {
 
 function addNormalListing(db, userId, form = {}, options = {}) {
   const user = assertKnownUser(db, userId)
-  const fields = normalizeListingForm(form, {}, { admin: options.admin, user, db })
+  const fields = normalizeListingForm(form, {}, {
+    admin: options.admin,
+    allowMissingLandlordPhone: options.allowMissingLandlordPhone,
+    user,
+    db
+  })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields)
 
@@ -5777,7 +5787,12 @@ function updateNormalListing(db, userId, listingId, form = {}, options = {}) {
     throw error
   }
 
-  const fields = normalizeListingForm(form, listing, { admin: options.admin, user, db })
+  const fields = normalizeListingForm(form, listing, {
+    admin: options.admin,
+    allowMissingLandlordPhone: options.allowMissingLandlordPhone,
+    user,
+    db
+  })
   validateListingFields(fields, user, options)
   assertNoDuplicateActiveListing(db, fields, listingId)
   const mapCoordinate = listingMapCoordinateFields(fields, form, listing, options)
