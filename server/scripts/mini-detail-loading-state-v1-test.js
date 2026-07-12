@@ -177,12 +177,13 @@ async function run() {
   assert.strictEqual(profileFailurePage.data.isVerified, true, '有效 token 存在时 profile 辅助失败不得伪装退出登录')
   assert.strictEqual(profileFailurePage.data.canShareVideo, true, '有效 token 存在时视频转发能力不得被辅助请求误关')
 
-  // 真实跨层回归：游客公司详情主请求 200，但足迹/profile 两个辅助请求 401。
-  // 匿名 401 不能调用 logout 轮换 guest session，否则详情成功结果会被代次门禁丢弃并永久 loading。
+  // 真实跨层回归曾是：游客公司详情主请求 200，但足迹/profile 两个辅助请求 401 后轮换 guest session。
+  // 当前应只发送公开详情这一项；若以后误恢复辅助请求，下面仍返回 401，且请求清单断言会直接失败。
   authToken = ''
   const previousGetApp = global.getApp
   const previousRequest = global.wx.request
   let guestLogoutCount = 0
+  const guestRequestPaths = []
   const guestApp = {
     globalData: {
       authToken: '',
@@ -205,6 +206,7 @@ async function run() {
     global.getApp = () => guestApp
     global.wx.request = (options) => {
       const url = String(options.url || '')
+      guestRequestPaths.push(new URL(url).pathname)
       setImmediate(() => {
         if (/\/mini\/listings\/L-GUEST-COMPANY$/.test(url)) {
           options.success({
@@ -244,6 +246,7 @@ async function run() {
     await settlePage()
     assert.strictEqual(guestLogoutCount, 0, '游客辅助请求 401 不得调用 logout 轮换稳定 guest session')
     assert.strictEqual(guestApp.globalData.authSessionKey, 'guest-detail-session-1', '游客辅助 401 必须保持原 guest session')
+    assert.deepStrictEqual(guestRequestPaths, ['/mini/listings/L-GUEST-COMPANY'], '游客公司详情只应请求公开详情，不得再请求受保护足迹或 profile')
     assert.strictEqual(guestDetailPage.data.listingLoading, false, '游客公司详情成功后必须结束加载态')
     assert.strictEqual(guestDetailPage.data.listing.id, 'L-GUEST-COMPANY', '游客公司详情 200 结果不得被误判为旧会话响应')
   } finally {

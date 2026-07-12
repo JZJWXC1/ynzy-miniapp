@@ -73,6 +73,25 @@ async function run() {
     assert.ok(JSON.stringify(detail).includes('19900000002'), '详情必须保留第二个公司统一号码')
     assert.ok(JSON.stringify(detail).includes('19900000003'), '详情必须保留第三个公司统一号码')
     assert.ok(!JSON.stringify(detail).includes('19900000009'), '公司详情不得回退房源原始电话')
+
+    ;[[], ['invalid', '']].forEach((phones, index) => {
+      config.company.contactPhones = phones
+      const emptyDb = makeDb()
+      emptyDb.listings.push(activeListing({
+        id: `L-COMPANY-EMPTY-${index}`,
+        companyListing: true,
+        isCompanyListing: true,
+        ownerType: '公司房源',
+        source: '公司房源',
+        videoKey: '',
+        landlordPhone: '19900000009'
+      }))
+      const emptyDetail = domain.listingDetail(emptyDb, `L-COMPANY-EMPTY-${index}`, 'U2')
+      assert.deepStrictEqual(emptyDetail.companyContactPhones, [], '环境没有合法公司号码时必须返回空数组')
+      assert.strictEqual(emptyDetail.companyContactPhoneText, '', '环境没有合法号码时旧文本兼容字段也必须为空')
+      assert.strictEqual(emptyDetail.landlordPhone, '', '环境没有合法号码时不得回退房源原始电话')
+      assert.ok(!JSON.stringify(emptyDetail).includes('19900000009'), '空/全非法配置都不得泄露房源原始电话')
+    })
   } finally {
     config.company.contactPhones = originalPhones
   }
