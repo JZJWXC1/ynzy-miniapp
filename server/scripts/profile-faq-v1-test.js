@@ -58,12 +58,12 @@ async function run() {
 
   // 2. 游客进入“我的”时只显示登录卡，不得自动弹登录窗挡住 FAQ。
   const profileJs = read('pages/profile/profile.js')
-  const authCatch = profileJs.match(/if \(isAuthError\(error\)\) \{([\s\S]*?)\n\s*return\n\s*\}/)
+  const authCatch = profileJs.match(/if \(isAuthError\(error\)\) \{([\s\S]*?)\r?\n\s*return\r?\n\s*\}/)
   assert.ok(authCatch, '必须保留游客 profile 401 状态处理')
   assert.ok(!/promptLoginGuide|showModal/.test(authCatch[1]), '游客打开“我的”不得自动弹登录窗挡住公开 FAQ')
 
   // 3. 主动退出必须先请求服务端撤销；失败不能显示“已退出”或清本地伪装成功。
-  const logoutMethod = profileJs.match(/\n\s*logout\(\) \{([\s\S]*?)\n\s*\},\n/)
+  const logoutMethod = profileJs.match(/\r?\n\s*logout\(\) \{([\s\S]*?)\r?\n\s*\},\r?\n/)
   assert.ok(logoutMethod, '“我的”页必须保留退出操作')
   assert.ok(/apiService\.logout\(\)/.test(logoutMethod[1]), '主动退出必须调用服务端撤销接口')
   assert.ok(/\.then\(/.test(logoutMethod[1]) && /app\.logout\(\)/.test(logoutMethod[1]), '服务端撤销成功后才可清本地会话')

@@ -425,7 +425,7 @@ async function run() {
   assert.ok(apiSource.includes('/phone-call-opened'), '客户端必须调用专用拨号成功接口')
   assert.ok(/recordPhoneCallOpened[\s\S]*data:\s*\{\s*idempotencyKey\s*\}/.test(apiSource), '拨号成功请求体只能包含幂等键')
   assert.ok(/phone-call-opened[\s\S]*assertMiniLogin\(userId\)[\s\S]*recordPhoneCallOpened/.test(serverSource), '拨号成功接口必须先强制验签登录')
-  const routeBlock = serverSource.match(/const phoneCallOpenedMatch[\s\S]*?\n  }\n\n  const error =/)
+  const routeBlock = serverSource.match(/const phoneCallOpenedMatch[\s\S]*?\r?\n  }\r?\n\r?\n  const error =/)
   assert.ok(routeBlock, '服务端必须注册拨号成功路由')
   assert.ok(/\{\s*idempotencyKey:\s*body\.idempotencyKey\s*\}/.test(routeBlock[0]), '路由只允许把幂等键交给领域层')
   assert.ok(!/body\.(?:viewerId|userId|phone|landlordPhone|address|actionType|occurredAt)/.test(routeBlock[0]), '路由不得信任客户端身份、号码、地址、动作或时间')
