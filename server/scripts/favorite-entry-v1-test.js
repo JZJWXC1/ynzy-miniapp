@@ -31,8 +31,15 @@ assert.ok((app.pages || []).includes('pages/favorites/favorites'), 'app.json 必
 
 const componentWxml = read('components/favorite-toggle/favorite-toggle.wxml')
 const componentJs = read('components/favorite-toggle/favorite-toggle.js')
+const componentWxss = read('components/favorite-toggle/favorite-toggle.wxss')
 assert.ok(/catchtap\s*=\s*["']toggleFavorite["']/.test(componentWxml), '星标必须 catchtap，不能冒泡打开详情')
 assert.ok(/disabled\s*=\s*["']\{\{busy\}\}["']/.test(componentWxml), '请求中必须禁用重复点击')
+assert.ok(componentWxml.includes('♡') && componentWxml.includes('♥'), '收藏控件必须使用小爱心的未收藏/已收藏样式')
+assert.ok(!/[☆★]/.test(componentWxml), '收藏控件不得继续使用过大的星形图标')
+assert.ok(componentWxml.includes('favorite-visual'), '爱心必须有独立的小视觉层，与外层触控热区解耦')
+assert.ok(/\.favorite-toggle\s*\{[\s\S]*?width:\s*88rpx[\s\S]*?height:\s*88rpx/.test(componentWxss), '默认收藏外层必须保留 88rpx 易点击热区')
+assert.ok(/\.favorite-toggle\.compact\s*\{[\s\S]*?width:\s*80rpx[\s\S]*?height:\s*80rpx/.test(componentWxss), '卡片收藏外层必须保留 80rpx 易点击热区')
+assert.ok(/\.favorite-visual\s*\{[\s\S]*?width:\s*(?:4[0-9]|5[0-6])rpx[\s\S]*?height:\s*(?:4[0-9]|5[0-6])rpx/.test(componentWxss), '爱心可见圆层必须明显小于触控热区，避免遮挡房源图片')
 assert.ok(componentJs.includes('favoriteStore'), '星标组件必须统一使用 token 绑定的收藏状态仓库')
 assert.ok(componentJs.includes('busy'), '星标组件必须具备并发点击保护')
 

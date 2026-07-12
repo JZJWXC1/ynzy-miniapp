@@ -755,7 +755,7 @@ DELETE /mini/favorites/:listingId
 - `GET /mini/favorites` 的区域、板块、小区、户型、整租/合租、租金区间、特点、可用状态与公司/业主/二房东来源均在服务端执行 AND 筛选。板块只匹配板块字段，不能被同名小区误命中。
 - `profileState.favoriteCount` 统计当前账号去重后的全部收藏关系（含暂不可用项），“我的”页据此展示“我的收藏”入口。
 
-客户端不保存匿名或本地收藏。共享星标组件只维护 token 绑定的进程内缓存，并覆盖首页推荐、房源列表、地图房源卡、找房助手推荐和详情页；“我的房源”管理卡不显示星标。无 token 点击只提示登录，不发写请求。显式 PUT/DELETE 串行化并维护最后确认的服务端状态，失败精确回滚；旧 GET、旧 token、旧组件实例或旧页面请求的迟到响应不能覆盖新账号/新操作。
+客户端不保存匿名或本地收藏。共享收藏爱心组件只维护 token 绑定的进程内缓存，并覆盖首页推荐、房源列表、地图房源卡、找房助手推荐和详情页；“我的房源”管理卡不显示收藏爱心。可见层使用小号 `♡/♥`，外层仍保留 80/88rpx 点击热区并用 `catchtap` 阻止冒泡。无 token 点击只提示登录，不发写请求。显式 PUT/DELETE 串行化并维护最后确认的服务端状态，失败精确回滚；旧 GET、旧 token、旧组件实例或旧页面请求的迟到响应不能覆盖新账号/新操作。
 
 `readDbForRequest` 的自动公司房源迁移与房态过期分支已改为：锁外克隆只做变化探测，发现变化后进入 `updateDb`，基于最新磁盘状态重新执行两项规则。不得恢复旧的“锁外读取 → `writeDb` 整库覆盖”路径，否则另一进程刚提交的收藏会被陈旧快照抹掉。
 
@@ -765,7 +765,7 @@ M4 门禁：
 - `favorite-http-v1-test.js`：双服务进程并发 PUT/DELETE、伪造身份正文、重复时间不刷新、跨账号隔离和改密撤销。
 - `favorite-store-v1-test.js`：GET/写入竞态、token A/B 隔离、失败回滚、相反操作双失败与多组件同步。
 - `favorite-component-page-v1-test.js`：游客、重复点击、组件复用、不可用导航、封面迟到错误、筛选/换号/卸载请求竞态。
-- `favorite-entry-v1-test.js`：六个规定入口（含我的收藏页）、正确房源 ID、`catchtap` 和“我的房源”禁星标契约。
+- `favorite-entry-v1-test.js`：六个规定入口（含我的收藏页）、正确房源 ID、小爱心/独立热区、`catchtap` 和“我的房源”禁收藏契约。
 - `favorite-mock-v1-test.js`：开发者工具 Mock 登录假 token、收藏幂等、筛选、失效保留、账号隔离与无请求正文。
 
 ## 房源体验闭环 M5：详情 3 公里附近推荐
@@ -809,7 +809,7 @@ node scripts/listing-nearby-mock-v1-test.js
 node scripts/listing-nearby-page-v1-test.js
 ```
 
-同时复跑 `map-v1-test.js`、`assistant-radius-search-test.js`、`assistant-coordinate-safety-test.js`、`guest-mode-v1-test.js`、`mini-detail-loading-state-v1-test.js` 与 `favorite-entry-v1-test.js`，防止附近推荐改变地图、助手、游客、详情加载或星标边界。
+同时复跑 `map-v1-test.js`、`assistant-radius-search-test.js`、`assistant-coordinate-safety-test.js`、`guest-mode-v1-test.js`、`mini-detail-loading-state-v1-test.js` 与 `favorite-entry-v1-test.js`，防止附近推荐改变地图、助手、游客、详情加载或收藏边界。
 
 ## 上线自检
 
