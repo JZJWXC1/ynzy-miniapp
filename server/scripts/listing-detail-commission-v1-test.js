@@ -1,8 +1,12 @@
 'use strict'
 
 const assert = require('assert')
+const fs = require('fs')
+const path = require('path')
 process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 冻结佣金测试显式进入历史恢复模式。
 const domain = require('../src/domain')
+
+const rootDir = path.resolve(__dirname, '..', '..')
 
 function makeDb() {
   return {
@@ -217,6 +221,76 @@ function assertBreakdown(actual, expected, message) {
   assert.strictEqual(record.uploaderCommissionFen, 1, '维护人先按冻结比例进位')
   assert.strictEqual(record.platformCommissionFen, 0, '平台取总可分金额剩余值，禁止再次独立进位')
   assert.strictEqual(result.deal.expectedUploaderCommissionFen + result.deal.expectedPlatformCommissionFen, 1, '展示预期金额也必须守恒')
+}
+
+// 6) 历史脏佣金快照只能降级派生展示，不能拖垮整页；写路径仍须 fail-loud。
+{
+  const db = makeDb()
+  db.listings.push(activeListing())
+  db.dealRecords.push(
+    {
+      id: 'D-CLEAN', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: 30, uploaderRate: 20, platformRate: 10 }, status: '待管理员确认'
+    },
+    {
+      id: 'D-DIRTY-SAVED', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: 120, uploaderRate: 60, platformRate: 60 },
+      commissionBreakdown: { landlordPercentOfRent: 50, viewingAgentPercentOfRent: 0, maintainerPercentOfRent: 30, platformPercentOfRent: 30 },
+      uploaderCommissionFen: 123, platformCommissionFen: 45, status: '待管理员确认'
+    },
+    {
+      id: 'D-DIRTY-MISSING', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: 30, uploaderRate: 30, platformRate: 10 }, status: '待管理员确认'
+    },
+    {
+      id: 'D-DIRTY-CONFIRMED', needId: 'N1', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: 120, uploaderRate: 60, platformRate: 60 }, status: '已确认', confirmedAt: '2026-07-01 10:00:00'
+    }
+  )
+
+  const adminRows = domain.adminDealRows(db)
+  const userRows = domain.userDealRows(db, 'U2')
+  assert.deepStrictEqual(adminRows.map((item) => item.id), ['D-CLEAN', 'D-DIRTY-SAVED', 'D-DIRTY-MISSING', 'D-DIRTY-CONFIRMED'], '后台列表必须保留正常与脏历史行及顺序')
+  assert.deepStrictEqual(userRows.map((item) => item.id), adminRows.map((item) => item.id), '中介历史列表也不能被单条脏数据拖垮')
+  assert.deepStrictEqual(adminRows[0].commissionIntegrity, { valid: true, reason: '' }, '正常签单仍应返回可信派生佣金')
+
+  for (const dirtyId of ['D-DIRTY-SAVED', 'D-DIRTY-MISSING', 'D-DIRTY-CONFIRMED']) {
+    const row = adminRows.find((item) => item.id === dirtyId)
+    assert.deepStrictEqual(row.commissionIntegrity, { valid: false, reason: 'INVALID_COMMISSION_SNAPSHOT' }, '脏历史必须带稳定机器标记')
+    assert.strictEqual(row.commissionBreakdown, null, '脏历史不得把存量或当前规则包装成可信佣金拆分')
+    assert.strictEqual(row.expectedUploaderCommissionFen, null, '脏历史不得伪算维护人预期金额')
+    assert.strictEqual(row.expectedPlatformCommissionFen, null, '脏历史不得伪算平台预期金额')
+    assert.strictEqual(row.expectedUploaderCommission, '待核对')
+    assert.strictEqual(row.expectedPlatformCommission, '待核对')
+    assert.strictEqual(row.landlordCommissionFen, 200000, '脏历史原始房东佣金事实必须保留')
+    assert.deepStrictEqual(row.commissionRule, db.dealRecords.find((item) => item.id === dirtyId).commissionRule, '冻结原始规则必须保留供审计')
+  }
+  const savedDirty = adminRows.find((item) => item.id === 'D-DIRTY-SAVED')
+  assert.strictEqual(savedDirty.uploaderCommissionFen, 123, '已落库维护人金额不得被降级覆盖')
+  assert.strictEqual(savedDirty.platformCommissionFen, 45, '已落库平台金额不得被降级覆盖')
+
+  const beforeConfirm = JSON.stringify(db)
+  assert.throws(
+    () => domain.confirmDeal(db, 'ADM', 'D-DIRTY-SAVED'),
+    (error) => error && error.statusCode === 500 && /分佣规则异常/.test(error.message),
+    '列表降级不能削弱签单确认写路径的 money 守恒'
+  )
+  assert.strictEqual(JSON.stringify(db), beforeConfirm, '脏单确认失败不得产生状态或分佣副作用')
+  assert.throws(
+    () => domain.confirmDeal(db, 'ADM', 'D-DIRTY-CONFIRMED'),
+    (error) => error && error.statusCode === 500 && /分佣规则异常/.test(error.message),
+    '已确认脏单重复确认也必须在任何里程碑副作用前 fail-loud'
+  )
+  assert.strictEqual(JSON.stringify(db), beforeConfirm, '已确认脏单重复确认失败也不得修改漏斗或数据库')
+
+  const adminSource = fs.readFileSync(path.join(rootDir, 'admin-web/index.html'), 'utf8')
+  const miniSource = fs.readFileSync(path.join(rootDir, 'pages/deal-records/deal-records.js'), 'utf8')
+  assert.match(adminSource, /commissionIntegrity/, '后台历史签单展示必须识别服务端完整性标记，禁止 null 后默认重算')
+  assert.match(miniSource, /commissionIntegrity/, '保留的小程序历史签单页也必须显示待核对，禁止默认 30%')
 }
 
 console.log('listing detail commission v1 test passed')

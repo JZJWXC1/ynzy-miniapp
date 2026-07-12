@@ -4384,14 +4384,30 @@ function formatDealRecord(db, deal = {}) {
   const landlordCommissionPercent = Number.isInteger(savedLandlordCommissionPercent) && savedLandlordCommissionPercent >= 0 && savedLandlordCommissionPercent <= 100
     ? savedLandlordCommissionPercent
     : storedLandlordCommissionPercent(listing)
-  const commissionBreakdown = clone(
-    deal.commissionBreakdown ||
-    (deal.dealSnapshot && deal.dealSnapshot.commissionBreakdown) ||
-    commissionBreakdownFromRule(landlordCommissionPercent, commissionRule)
-  )
-  const expectedCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
-  const expectedUploaderCommissionFen = expectedCommissionFen.uploaderCommissionFen
-  const expectedPlatformCommissionFen = expectedCommissionFen.platformCommissionFen
+  let commissionBreakdown = null
+  let expectedUploaderCommissionFen = null
+  let expectedPlatformCommissionFen = null
+  let commissionIntegrity = { valid: true, reason: '' }
+  try {
+    commissionBreakdown = clone(
+      deal.commissionBreakdown ||
+      (deal.dealSnapshot && deal.dealSnapshot.commissionBreakdown) ||
+      commissionBreakdownFromRule(landlordCommissionPercent, commissionRule)
+    )
+    const expectedCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
+    expectedUploaderCommissionFen = expectedCommissionFen.uploaderCommissionFen
+    expectedPlatformCommissionFen = expectedCommissionFen.platformCommissionFen
+  } catch (error) {
+    const isHistoricalCommissionIntegrityError = error && error.statusCode === 500 &&
+      /分佣规则异常|房东佣金金额异常|房东佣金比例异常/.test(String(error.message || ''))
+    if (!isHistoricalCommissionIntegrityError) throw error
+    // 历史列表是只读审计入口：单条脏快照只能降级派生展示，不能拖垮整页，也不能按当前配置伪算。
+    // 原始金额、冻结规则、已落库结算值和关联 ID 仍在返回对象中保留，供管理员核对。
+    commissionBreakdown = null
+    expectedUploaderCommissionFen = null
+    expectedPlatformCommissionFen = null
+    commissionIntegrity = { valid: false, reason: 'INVALID_COMMISSION_SNAPSHOT' }
+  }
   return {
     id: deal.id,
     reportId: deal.reportId,
@@ -4409,13 +4425,15 @@ function formatDealRecord(db, deal = {}) {
     landlordCommission: fenToYuanText(deal.landlordCommissionFen),
     landlordCommissionPercent,
     commissionBreakdown,
+    commissionIntegrity,
+    commissionIntegrityMessage: commissionIntegrity.valid ? '' : '历史分佣数据异常，派生金额待管理员核对',
     uploaderCommissionRate: rate,
     uploaderRate,
     platformRate,
     expectedUploaderCommissionFen,
-    expectedUploaderCommission: fenToYuanText(expectedUploaderCommissionFen),
+    expectedUploaderCommission: commissionIntegrity.valid ? fenToYuanText(expectedUploaderCommissionFen) : '待核对',
     expectedPlatformCommissionFen,
-    expectedPlatformCommission: fenToYuanText(expectedPlatformCommissionFen),
+    expectedPlatformCommission: commissionIntegrity.valid ? fenToYuanText(expectedPlatformCommissionFen) : '待核对',
     uploaderCommissionFen: deal.uploaderCommissionFen || 0,
     uploaderCommission: fenToYuanText(deal.uploaderCommissionFen || 0),
     platformCommissionFen: deal.platformCommissionFen || 0,
@@ -4574,6 +4592,9 @@ function confirmDeal(db, adminId, dealId) {
   const commissionRule = deal.commissionRule
     || (deal.dealSnapshot && deal.dealSnapshot.commissionRule)
     || commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
+  // 写路径无论首次确认还是“已确认”幂等重试，都必须先校验冻结规则与金额；列表 formatter 的只读降级
+  // 绝不能让脏已确认单借早退分支绕过 money 守恒，或在校验前写入漏斗里程碑。
+  const settledCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
   if (deal.status === '已确认') {
     needFunnel.markMilestone(db, deal.brokerId, deal.needId, 'l3Confirmed', deal.confirmedAt)
     return {
@@ -4584,11 +4605,8 @@ function confirmDeal(db, adminId, dealId) {
     }
   }
 
-  // 结算端最后防线：确认前校验冻结分佣规则守恒，异常（sum>100/不一致/非数）直接 fail-loud、不生成分佣记录，
-  // 防止历史脏配置或异常冻结快照绕过 setCommissionConfig 入口后真实超发。
-  assertCommissionRuleConserved(commissionRule)
+  // 结算端最后防线已在早退分支之前完成，异常（sum>100/不一致/非数）直接 fail-loud、不生成分佣记录。
   const now = nowText()
-  const settledCommissionFen = commissionFenBreakdown(Number(deal.landlordCommissionFen || 0), commissionRule)
   const uploaderCommissionFen = settledCommissionFen.uploaderCommissionFen
   const platformCommissionFen = settledCommissionFen.platformCommissionFen
   // 不再回写覆盖 deal.commissionRule / dealSnapshot.commissionRule：它们是签单时冻结的

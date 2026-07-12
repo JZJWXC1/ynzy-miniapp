@@ -53,6 +53,11 @@ function makeDb() {
       id: 'D-HISTORY', reportId: 'R-HISTORY', listingId: 'L1', brokerId: 'U2',
       uploaderId: 'U1', status: '待管理员确认', landlordCommissionFen: 150000,
       commissionRule: { rate: 30, uploaderRate: 20, platformRate: 10 }
+    }, {
+      id: 'D-DIRTY-HISTORY', reportId: 'R-HISTORY', listingId: 'L1', brokerId: 'U2',
+      uploaderId: 'U1', status: '待管理员确认', landlordCommissionFen: 150000,
+      commissionRule: { rate: 120, uploaderRate: 60, platformRate: 60 },
+      commissionBreakdown: { landlordPercentOfRent: 50, viewingAgentPercentOfRent: 0, maintainerPercentOfRent: 30, platformPercentOfRent: 30 }
     }],
     commissionRecords: [{
       id: 'C-HISTORY', dealId: 'D-OLD', listingId: 'L1', dealUserId: 'U2',
@@ -124,8 +129,8 @@ async function assertMockDirectDealPaused() {
 
   assert.strictEqual(domain.userReportRows(db, 'U2').length, 1, '历史报备必须继续可读')
   assert.strictEqual(domain.adminReportRows(db).length, 1, '后台历史报备必须继续可读')
-  assert.strictEqual(domain.userDealRows(db, 'U2').length, 1, '历史签单必须继续可读')
-  assert.strictEqual(domain.adminDealRows(db).length, 1, '后台历史签单必须继续可读')
+  assert.strictEqual(domain.userDealRows(db, 'U2').length, 2, '正常与脏历史签单都必须继续可读')
+  assert.strictEqual(domain.adminDealRows(db).length, 2, '后台不得因单条脏历史签单丢整页')
   assert.strictEqual(domain.commissionRows(db).length, 1, '历史分佣必须继续可读')
 }
 
@@ -281,6 +286,14 @@ async function runHttpPauseIntegration() {
     await waitForServer(port, child)
     const miniToken = signToken({ userId: 'U2', exp: Date.now() + 60000, tokenVersion: 0 }, miniSecret)
     const adminToken = signToken({ id: 'A1', account: 'synthetic-admin', userId: 'ADMIN', exp: Date.now() + 60000 }, adminSecret)
+    for (const [pathname, token] of [['/mini/deals', miniToken], ['/admin/deals', adminToken]]) {
+      const response = await requestJson(port, 'GET', pathname, undefined, token)
+      assert.strictEqual(response.statusCode, 200, `${pathname} 遇到单条脏历史签单仍必须返回完整列表`)
+      const rows = response.body && response.body.data
+      assert.ok(Array.isArray(rows) && rows.length === 2, `${pathname} 不得过滤脏行或丢正常行`)
+      const dirty = rows.find((item) => item.id === 'D-DIRTY-HISTORY')
+      assert.deepStrictEqual(dirty && dirty.commissionIntegrity, { valid: false, reason: 'INVALID_COMMISSION_SNAPSHOT' }, `${pathname} 脏行必须显式标记待核对`)
+    }
     const before = fs.readFileSync(dataFile)
     const requests = [
       ['POST', '/mini/listings/L1/reports', { reportDealWritesEnabled: true }, miniToken],

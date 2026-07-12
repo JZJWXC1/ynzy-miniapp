@@ -14,6 +14,7 @@ function formatFen(value) {
 function normalizeDeal(item = {}) {
   const rule = item.commissionRule || {}
   const totalRate = Number(item.uploaderCommissionRate || item.rate || rule.rate || 30)
+  const commissionIntegrityValid = !item.commissionIntegrity || item.commissionIntegrity.valid !== false
   return Object.assign({}, item, {
     listingTitle: safeText(item.listingTitle) || '未命名房源',
     community: safeText(item.community) || '未填写小区',
@@ -21,7 +22,7 @@ function normalizeDeal(item = {}) {
     createdAtDisplay: safeText(item.createdAt || item.time) || '-',
     monthlyRentText: formatFen(item.dealMonthlyRentFen),
     landlordCommissionText: formatFen(item.landlordCommissionFen),
-    commissionRateText: `成交总比例 ${totalRate}%`,
+    commissionRateText: commissionIntegrityValid ? `成交总比例 ${totalRate}%` : '分佣数据待复核',
     remarkDisplay: safeText(item.remark) || '无备注'
   })
 }

@@ -2044,6 +2044,7 @@
     }
 
 	    function expectedUploaderCommissionFen(item) {
+	      if (item.commissionIntegrity && item.commissionIntegrity.valid === false) return null;
 	      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
 	      if (saved > 0) return saved;
 	      const fallbackRate = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig).secondLandlordRate;
@@ -2865,7 +2866,7 @@
           customerName: '',
           customerPhoneMasked: '',
           expectedUploaderCommissionFen: expectedFen,
-          expectedUploaderCommission: (expectedFen / 100).toFixed(2),
+          expectedUploaderCommission: expectedFen === null ? '待核对' : (expectedFen / 100).toFixed(2),
           uploaderCommissionRate: config.secondLandlordRate + config.secondLandlordPlatformRate,
           uploaderRate: config.secondLandlordRate,
           platformRate: config.secondLandlordPlatformRate
@@ -2900,7 +2901,7 @@
       const confirmed = rows.filter((item) => item.status === '已确认').length;
       const pendingCommissionFen = rows
         .filter((item) => item.status !== '已确认')
-        .reduce((sum, item) => sum + expectedUploaderCommissionFen(item), 0);
+        .reduce((sum, item) => sum + Number(expectedUploaderCommissionFen(item) || 0), 0);
       document.getElementById('dealSummary').innerHTML = [
         { value: pending, label: '历史待确认状态（只读）' },
         { value: confirmed, label: '历史已确认签单' },
@@ -2915,10 +2916,16 @@
       renderDealSummary(rows);
       body.innerHTML = rows.map((item) => {
         const confirmed = item.status === '已确认';
-        const commissionFen = confirmed ? Number(item.uploaderCommissionFen || 0) : expectedUploaderCommissionFen(item);
-        const commissionText = confirmed
+        const commissionInvalid = item.commissionIntegrity && item.commissionIntegrity.valid === false;
+        const commissionFen = commissionInvalid ? null : (confirmed ? Number(item.uploaderCommissionFen || 0) : expectedUploaderCommissionFen(item));
+        const commissionText = commissionInvalid
+          ? '分佣数据待复核'
+          : confirmed
           ? moneyText(item.uploaderCommission, commissionFen)
           : moneyText(item.expectedUploaderCommission, commissionFen);
+	        const commissionRuleText = commissionInvalid
+	          ? '冻结分佣快照异常，请核对原始记录'
+	          : `成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%`;
 	        return `
 	          <tr>
 	            <td>${safeText(item.listingTitle || item.listing)}<span class="sub-cell">报备 ${safeText(item.reportId, '-')}</span></td>
@@ -2931,7 +2938,7 @@
             </td>
             <td>
               <span class="money-strong">${safeText(commissionText)}</span>
-              <span class="sub-cell">成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%</span>
+              <span class="sub-cell">${safeText(commissionRuleText)}</span>
             </td>
             <td><span class="${pillClass(item.status)}">${safeText(item.status || '历史状态未知')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
             <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
