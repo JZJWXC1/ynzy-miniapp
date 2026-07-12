@@ -191,6 +191,7 @@ Page({
     this.listingId = id
     const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
     const requestSessionKey = currentAuthSessionKey()
+    const requestHasLogin = Boolean(currentAuthToken())
     this.listingLoadGeneration = requestGeneration
     this.profileAuthToken = '' // 实际保存稳定会话键；保留属性名兼容既有页面测试与运行态对象
     this.sensitiveViewIdempotencyKey = ''
@@ -217,13 +218,16 @@ Page({
     })
     return Promise.all([
       apiService.getListingDetail(id),
-      apiService.getListingLogs(id).catch(() => []),
+      // 游客无权读取足迹；不要为公开公司详情制造一个预期 401 和无意义网络请求。
+      requestHasLogin ? apiService.getListingLogs(id).catch(() => []) : Promise.resolve([]),
       // profile 只影响“可查看敏感信息”按钮态，属辅助请求：任何失败（鉴权或网络/5xx）都降级为
       // 未登录空用户，不能因它 fail-fast 拖垮整个 Promise.all，否则公司房源在弱网下会误报
       // “房源不存在或已下架”（此时 getListingDetail 往往已成功）。
-      apiService.getProfileState()
-        .then((profile) => ({ profile }))
-        .catch(() => ({ profile: { user: {} } }))
+      requestHasLogin
+        ? apiService.getProfileState()
+          .then((profile) => ({ profile }))
+          .catch(() => ({ profile: { user: {} } }))
+        : Promise.resolve({ profile: { user: {} } })
     ]).then(([listing, logs, profileState]) => {
       // 同页重载或换号后，较早请求即使更晚返回也不得覆盖新账号状态或触发旧账号队列补发。
       if (!isCurrentRequest()) return

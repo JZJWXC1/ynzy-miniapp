@@ -405,14 +405,14 @@ async function run() {
   detailPage.onLoad({ id: 'L-RESUME' })
   await flushPromises()
   assert.strictEqual(detailLoads, 1, '详情页首次展示只应加载一次')
-  assert.strictEqual(profileLoads, 1, '详情页首次展示只应读取一次登录态')
+  assert.strictEqual(profileLoads, 0, '游客首次展示不得请求受保护 profile，避免为公开详情制造预期 401')
   assert.strictEqual(detailPage.data.isVerified, false, '游客首次进入应保持未登录状态')
 
   authToken = 'token-after-login'
   detailPage.onShow()
   await flushPromises()
   assert.strictEqual(detailLoads, 2, '登录返回详情页必须重新读取房源和登录态')
-  assert.strictEqual(profileLoads, 2, '登录返回详情页必须重新读取当前用户')
+  assert.strictEqual(profileLoads, 1, '登录返回详情页必须首次读取当前用户')
   assert.strictEqual(detailPage.data.isVerified, true, '登录返回后敏感查看与带看能力必须立即解锁')
   assert.strictEqual(detailPage.data.canShareVideo, true, '登录返回后视频转发能力必须立即更新')
 

@@ -4,6 +4,7 @@ const path = require('path')
 
 const repoRoot = path.join(__dirname, '..', '..')
 const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+const apiClientPath = require.resolve(path.join(repoRoot, 'utils', 'api-client.js'))
 const detailPagePath = require.resolve(path.join(repoRoot, 'pages', 'listing-detail', 'listing-detail.js'))
 const sharedVideoPagePath = require.resolve(path.join(repoRoot, 'pages', 'shared-video', 'shared-video.js'))
 const detailWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listing-detail', 'listing-detail.wxml'), 'utf8')
@@ -175,6 +176,80 @@ async function run() {
   await settlePage()
   assert.strictEqual(profileFailurePage.data.isVerified, true, '有效 token 存在时 profile 辅助失败不得伪装退出登录')
   assert.strictEqual(profileFailurePage.data.canShareVideo, true, '有效 token 存在时视频转发能力不得被辅助请求误关')
+
+  // 真实跨层回归：游客公司详情主请求 200，但足迹/profile 两个辅助请求 401。
+  // 匿名 401 不能调用 logout 轮换 guest session，否则详情成功结果会被代次门禁丢弃并永久 loading。
+  authToken = ''
+  const previousGetApp = global.getApp
+  const previousRequest = global.wx.request
+  let guestLogoutCount = 0
+  const guestApp = {
+    globalData: {
+      authToken: '',
+      authSessionKey: 'guest-detail-session-1',
+      apiConfig: {
+        env: 'prod',
+        baseUrl: 'https://api.example.test',
+        timeout: 15000,
+        token: ''
+      }
+    },
+    logout() {
+      guestLogoutCount += 1
+      this.globalData.authToken = ''
+      this.globalData.authSessionKey = `guest-detail-session-${guestLogoutCount + 1}`
+      this.globalData.apiConfig.token = ''
+    }
+  }
+  try {
+    global.getApp = () => guestApp
+    global.wx.request = (options) => {
+      const url = String(options.url || '')
+      setImmediate(() => {
+        if (/\/mini\/listings\/L-GUEST-COMPANY$/.test(url)) {
+          options.success({
+            statusCode: 200,
+            header: {},
+            data: {
+              code: 0,
+              data: {
+                id: 'L-GUEST-COMPANY',
+                title: '游客公司房源',
+                companyListing: true,
+                rent: '3000',
+                layout: '整租一室',
+                status: '在租',
+                nearby: { listings: [], total: 0, hasMore: false }
+              }
+            }
+          })
+          return
+        }
+        if (/\/mini\/(?:profile|listings\/L-GUEST-COMPANY\/footprints)$/.test(url)) {
+          options.success({ statusCode: 401, header: {}, data: { code: 401, message: '请先登录' } })
+          return
+        }
+        options.fail({ errMsg: `unexpected request: ${url}` })
+      })
+    }
+    delete require.cache[apiServicePath]
+    delete require.cache[apiClientPath]
+    delete require.cache[detailPagePath]
+    let guestDetailDefinition = null
+    global.Page = (value) => { guestDetailDefinition = value }
+    require(detailPagePath)
+    const guestDetailPage = makePage(guestDetailDefinition)
+    guestDetailPage.loadListing('L-GUEST-COMPANY')
+    await settlePage()
+    await settlePage()
+    assert.strictEqual(guestLogoutCount, 0, '游客辅助请求 401 不得调用 logout 轮换稳定 guest session')
+    assert.strictEqual(guestApp.globalData.authSessionKey, 'guest-detail-session-1', '游客辅助 401 必须保持原 guest session')
+    assert.strictEqual(guestDetailPage.data.listingLoading, false, '游客公司详情成功后必须结束加载态')
+    assert.strictEqual(guestDetailPage.data.listing.id, 'L-GUEST-COMPANY', '游客公司详情 200 结果不得被误判为旧会话响应')
+  } finally {
+    global.getApp = previousGetApp
+    global.wx.request = previousRequest
+  }
 
   authToken = ''
   toasts = []

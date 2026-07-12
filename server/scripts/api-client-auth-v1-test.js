@@ -3,7 +3,7 @@
 // 小程序 utils/api-client.js 的 401 跳转策略锁定测试（Codex 返修要求固化）。
 // 用 mock wx / getApp / getCurrentPages 加载 api-client，直接调用导出的 handleUnauthorized，
 // 固化三条不变量：
-//   1) 游客（无 token）遇 401 只清状态、不跳登录页；
+//   1) 游客（无 token）遇 401 不撤销不存在的登录态、不轮换稳定游客会话，也不跳登录页；
 //   2) 已登录（有 token）遇 401 清 token 并跳登录页一次；
 //   3) token 清空后的连续 401 不再重复跳转（不形成循环）。
 // 另加：非 401（403）不跳转。这样任何人把 handleUnauthorized 改回“401 立即跳登录”都会被测到。
@@ -14,9 +14,11 @@ const assert = require('assert')
 function setupEnv({ globalToken, storageToken } = {}) {
   const nav = []
   const storage = {}
+  let logoutCount = 0
   if (storageToken) storage['ynzy_auth_token'] = storageToken
   const globalData = {
     authToken: globalToken || '',
+    authSessionKey: globalToken ? 'auth-session-1' : 'guest-session-1',
     userId: globalToken ? 'U1' : '',
     user: globalToken ? { id: 'U1' } : null,
     apiConfig: { token: globalToken || '' }
@@ -24,9 +26,11 @@ function setupEnv({ globalToken, storageToken } = {}) {
   global.getApp = () => ({
     globalData,
     logout() {
+      logoutCount += 1
       globalData.user = null
       globalData.userId = ''
       globalData.authToken = ''
+      globalData.authSessionKey = `guest-session-${logoutCount + 1}`
       if (globalData.apiConfig) globalData.apiConfig.token = ''
       delete storage['ynzy_auth_token']
       delete storage['ynzy_user_id']
@@ -42,7 +46,12 @@ function setupEnv({ globalToken, storageToken } = {}) {
     setStorageSync(k, v) { storage[k] = v },
     removeStorageSync(k) { delete storage[k] }
   }
-  return { nav, storage, globalData }
+  return {
+    nav,
+    storage,
+    globalData,
+    get logoutCount() { return logoutCount }
+  }
 }
 
 // 每个用例清 require 缓存重载 api-client，重置其模块级 authRedirecting 状态。
@@ -53,12 +62,15 @@ function loadFresh() {
 }
 
 async function run() {
-  // 1) 游客（无任何 token）遇 401：只清状态，不跳登录。
+  // 1) 游客（无任何 token）遇 401：当前本来就是匿名态，不能调用 logout 轮换 guest session。
   {
     const env = setupEnv({})
     const apiClient = loadFresh()
+    const sessionBefore = env.globalData.authSessionKey
     apiClient.handleUnauthorized({ statusCode: 401 })
     assert.strictEqual(env.nav.length, 0, '游客 401 不应跳登录页')
+    assert.strictEqual(env.logoutCount, 0, '游客 401 不得调用 logout 撤销不存在的登录态')
+    assert.strictEqual(env.globalData.authSessionKey, sessionBefore, '游客 401 不得轮换稳定 guest session，否则公开详情成功响应会被误判为旧请求')
   }
 
   // 2) 已登录（globalData 有 token）遇 401：清 token 并跳登录一次；再次 401 不重复跳。

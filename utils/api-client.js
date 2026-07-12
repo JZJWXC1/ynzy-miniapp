@@ -204,14 +204,16 @@ function handleUnauthorized(error, requestToken, requestSessionKey) {
     if (currentToken && requestToken) error.authResponseStale = true
     return
   }
+  // 当前本来就是游客时没有任何登录态可撤销。调用 app.logout() 反而会轮换稳定 guest session，
+  // 让同批已成功的公开请求被页面代次门禁误判为旧响应。匿名 401 交给具体页面显示登录引导即可。
+  if (!currentToken) return
   // 401 只能撤销发出该请求的同一会话。A 请求迟到时若用户已切到 B、刚从游客登录或主动退出，
   // 页面级序号还来不及拦住这里的全局副作用，因此必须先比较实际 Authorization token 快照。
   // 游客（从未登录、无 token）浏览时，不要因为某个后台请求 401（如详情页的 getProfileState、
   // 或点到非公司房源）就被强制弹去登录页——那正是「一直跳转登录」的根源。只有原本已登录、
-  // token 失效的用户才自动跳登录重新认证；游客只清理状态、不跳转，敏感操作各页面会显式引导登录。
-  const hadToken = Boolean(currentToken)
+  // token 失效的用户才自动跳登录重新认证；游客保持当前匿名会话、不跳转，敏感操作各页面会显式引导登录。
   clearAuthState()
-  if (hadToken) redirectToAuth()
+  redirectToAuth()
 }
 
 function isStaleUnauthorized(error) {
