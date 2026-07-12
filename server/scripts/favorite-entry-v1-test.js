@@ -61,6 +61,12 @@ surfaces.forEach(([base, name, binding]) => {
   assert.ok(wxml.includes(binding), `${name}必须把当前卡片真实房源 id 传给星标`)
 })
 
+const detailNearbyWxml = read('pages/listing-detail/listing-detail.wxml')
+assert.ok(/nearbyListings[\s\S]*<favorite-toggle[^>]+listing-id="\{\{item\.id\}\}"/.test(detailNearbyWxml), '详情附近推荐必须把服务端当前行 id 传给星标')
+const nearbyConfig = JSON.parse(read('pages/nearby-listings/nearby-listings.json'))
+assert.strictEqual(nearbyConfig.usingComponents['favorite-toggle'], '/components/favorite-toggle/favorite-toggle', '全部附近房源页必须注册共享星标组件')
+assert.ok(read('pages/nearby-listings/nearby-listings.wxml').includes('listing-id="{{item.id}}"'), '全部附近房源页必须把服务端当前行 id 传给星标')
+
 assert.ok(!read('pages/my-listings/my-listings.wxml').includes('<favorite-toggle'), '我的房源管理卡不得出现星标')
 
 const profile = read('pages/profile/profile.js')

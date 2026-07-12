@@ -33,6 +33,11 @@ const criticalScripts = [
   'server/scripts/favorite-component-page-v1-test.js',
   'server/scripts/favorite-entry-v1-test.js',
   'server/scripts/favorite-mock-v1-test.js',
+  // M5：verified-only 3 公里、服务端权限裁剪、详情/全量页与 Mock 同形。
+  'server/scripts/listing-nearby-domain-v1-test.js',
+  'server/scripts/listing-nearby-http-v1-test.js',
+  'server/scripts/listing-nearby-mock-v1-test.js',
+  'server/scripts/listing-nearby-page-v1-test.js',
   'server/scripts/listing-verify-outcome-v1-test.js',
   // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
   'server/scripts/staff-listing-auto-approve-v1-test.js',

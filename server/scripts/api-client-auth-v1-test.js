@@ -52,7 +52,7 @@ function loadFresh() {
   return require('../../utils/api-client')
 }
 
-function run() {
+async function run() {
   // 1) 游客（无任何 token）遇 401：只清状态，不跳登录。
   {
     const env = setupEnv({})
@@ -103,8 +103,87 @@ function run() {
     assert.strictEqual(env.nav.length, 0, '空 error / 无状态码不应跳转')
   }
 
+  // 6) TOKEN_A 请求发出后切到 TOKEN_B，A 的迟到 401 不能清空/跳转 B。
+  {
+    const env = setupEnv({ globalToken: 'TOKEN_A', storageToken: 'TOKEN_A' })
+    env.globalData.apiConfig = {
+      env: 'prod',
+      baseUrl: 'https://api.example.test',
+      timeout: 15000,
+      token: 'TOKEN_A'
+    }
+    let pendingRequest
+    global.wx.request = (options) => { pendingRequest = options }
+    const apiClient = loadFresh()
+    const request = apiClient.call({ path: '/mini/listings/ANCHOR/nearby?all=1' })
+    assert.strictEqual(pendingRequest.header.Authorization, 'Bearer TOKEN_A', '请求必须快照实际发送的 token')
+
+    env.globalData.authToken = 'TOKEN_B'
+    env.globalData.userId = 'U2'
+    env.globalData.user = { id: 'U2' }
+    env.globalData.apiConfig.token = 'TOKEN_B'
+    env.storage['ynzy_auth_token'] = 'TOKEN_B'
+    pendingRequest.success({ statusCode: 401, data: { message: 'TOKEN_A 已失效' }, header: {} })
+    await assert.rejects(request, (error) => error && error.statusCode === 401)
+    assert.strictEqual(env.globalData.authToken, 'TOKEN_B', '旧 A 请求的 401 不得清空当前 B token')
+    assert.strictEqual(env.storage['ynzy_auth_token'], 'TOKEN_B', '旧 A 请求的 401 不得清空 B 的本地 token')
+    assert.strictEqual(env.nav.length, 0, '旧 A 请求的 401 不得把 B 跳回登录页')
+  }
+
+  // 7) 游客请求发出后用户完成登录，游客请求迟到 401 也不能清新登录态。
+  {
+    const env = setupEnv({})
+    env.globalData.apiConfig = {
+      env: 'prod',
+      baseUrl: 'https://api.example.test',
+      timeout: 15000,
+      token: ''
+    }
+    let pendingRequest
+    global.wx.request = (options) => { pendingRequest = options }
+    const apiClient = loadFresh()
+    const request = apiClient.call({ path: '/mini/listings/ANCHOR/nearby?all=1' })
+    assert.ok(!pendingRequest.header.Authorization, '游客请求不应带 Authorization')
+
+    env.globalData.authToken = 'TOKEN_NEW'
+    env.globalData.userId = 'U2'
+    env.globalData.user = { id: 'U2' }
+    env.globalData.apiConfig.token = 'TOKEN_NEW'
+    env.storage['ynzy_auth_token'] = 'TOKEN_NEW'
+    pendingRequest.success({ statusCode: 401, data: { message: '游客请求被拒绝' }, header: {} })
+    await assert.rejects(request, (error) => error && error.statusCode === 401)
+    assert.strictEqual(env.globalData.authToken, 'TOKEN_NEW', '游客旧请求 401 不得清除刚登录的新 token')
+    assert.strictEqual(env.nav.length, 0)
+  }
+
+  // 8) A 请求发出后用户主动退出，迟到 401 不应再次跳转或复活任何会话副作用。
+  {
+    const env = setupEnv({ globalToken: 'TOKEN_A', storageToken: 'TOKEN_A' })
+    env.globalData.apiConfig = {
+      env: 'prod',
+      baseUrl: 'https://api.example.test',
+      timeout: 15000,
+      token: 'TOKEN_A'
+    }
+    let pendingRequest
+    global.wx.request = (options) => { pendingRequest = options }
+    const apiClient = loadFresh()
+    const request = apiClient.call({ path: '/mini/listings/ANCHOR/nearby?all=1' })
+    env.globalData.authToken = ''
+    env.globalData.userId = ''
+    env.globalData.user = null
+    env.globalData.apiConfig.token = ''
+    delete env.storage['ynzy_auth_token']
+    pendingRequest.success({ statusCode: 401, data: { message: 'TOKEN_A 已失效' }, header: {} })
+    await assert.rejects(request, (error) => error && error.statusCode === 401)
+    assert.strictEqual(env.globalData.authToken, '')
+    assert.strictEqual(env.nav.length, 0, '主动退出后的旧 401 不得再跳登录')
+  }
+
   console.log('api-client-auth-v1-test passed')
 }
 
-run()
-process.exit(0)
+run().catch((error) => {
+  console.error(error.stack || error.message)
+  process.exit(1)
+})

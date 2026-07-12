@@ -149,12 +149,16 @@ function redirectToAuth() {
   })
 }
 
-function handleUnauthorized(error) {
+function handleUnauthorized(error, requestToken) {
   if (!error || Number(error.statusCode) !== 401) return
+  const currentToken = String(getAuthToken(getRuntimeConfig()) || '')
+  // 401 只能撤销发出该请求的同一会话。A 请求迟到时若用户已切到 B、刚从游客登录或主动退出，
+  // 页面级序号还来不及拦住这里的全局副作用，因此必须先比较实际 Authorization token 快照。
+  if (requestToken !== undefined && currentToken !== String(requestToken || '')) return
   // 游客（从未登录、无 token）浏览时，不要因为某个后台请求 401（如详情页的 getProfileState、
   // 或点到非公司房源）就被强制弹去登录页——那正是「一直跳转登录」的根源。只有原本已登录、
   // token 失效的用户才自动跳登录重新认证；游客只清理状态、不跳转，敏感操作各页面会显式引导登录。
-  const hadToken = Boolean(getAuthToken())
+  const hadToken = Boolean(currentToken)
   clearAuthState()
   if (hadToken) redirectToAuth()
 }
@@ -180,6 +184,7 @@ function request(options) {
   return new Promise((resolve, reject) => {
     const url = buildUrl(config.baseUrl, options.path)
     const timeout = options.timeout || config.timeout
+    const requestAuthToken = String(getAuthToken(config) || '')
     const startedAt = Date.now()
     const context = (extra = {}) => ({
       requestType: 'request',
@@ -206,7 +211,7 @@ function request(options) {
       timeout,
       header: {
         'content-type': 'application/json',
-        ...authHeader(config)
+        ...(requestAuthToken ? { Authorization: `Bearer ${requestAuthToken}` } : {})
       },
       success(res) {
         const body = normalizeResponse(res.data)
@@ -218,7 +223,7 @@ function request(options) {
           }))
           error.data = body.data || null
           reportRequestError(error)
-          handleUnauthorized(error)
+          handleUnauthorized(error, requestAuthToken)
           reject(error)
           return
         }
@@ -229,7 +234,7 @@ function request(options) {
           }))
           error.data = body.data || null
           reportRequestError(error)
-          handleUnauthorized(error)
+          handleUnauthorized(error, requestAuthToken)
           reject(error)
           return
         }

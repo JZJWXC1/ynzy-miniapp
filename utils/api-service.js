@@ -537,15 +537,39 @@ function getMapPins(filter) {
   })
 }
 
+function normalizeNearbyResult(result) {
+  const source = result && typeof result === 'object' ? result : {}
+  const listings = listingDisplay.normalizeListings(Array.isArray(source.listings) ? source.listings : [])
+  const total = Math.max(listings.length, Number(source.total) || 0)
+  return {
+    radiusKm: Number(source.radiusKm) || 3,
+    total,
+    hasMore: Boolean(source.hasMore || total > listings.length),
+    listings
+  }
+}
+
 function getListingDetail(id) {
   return apiClient.call({
     path: `/mini/listings/${id}`,
-    mock: () => mockData.getListingDetail(id)
-  }).then((listing) => (
-    listing && listing.unavailable
-      ? listing
-      : listingDisplay.normalizeListing(listing)
-  ))
+    mock: () => mockData.getListingDetail(id, { companyOnly: !apiClient.getAuthToken() })
+  }).then((listing) => {
+    if (listing && listing.unavailable) return listing
+    const normalized = listingDisplay.normalizeListing(listing)
+    if (normalized) normalized.nearby = normalizeNearbyResult(listing && listing.nearby)
+    return normalized
+  })
+}
+
+function getNearbyListings(id) {
+  const listingId = String(id || '').trim()
+  return apiClient.call({
+    path: `/mini/listings/${encodeURIComponent(listingId)}/nearby?all=1`,
+    mock: () => mockData.getNearbyListings(listingId, {
+      all: true,
+      companyOnly: !apiClient.getAuthToken()
+    })
+  }).then(normalizeNearbyResult)
 }
 
 function getListingLogs(id) {
@@ -984,6 +1008,7 @@ module.exports = {
   getMapCommunities,
   getMapPins,
   getListingDetail,
+  getNearbyListings,
   getListingLogs,
   createSensitiveViewIdempotencyKey,
   addSensitiveFootprint,

@@ -1499,11 +1499,17 @@
     };
   }
 
-  function getListingDetail(id) {
+  function getListingDetail(id, options) {
     autoExpireOverdueListings();
     var listing = getListing(id);
     if (!listing) return null;
-    if (isExpiredListing(listing) || isPendingOwnerReview(listing)) return null;
+    if (!isMockFrontendEffectiveListing(listing)) return null;
+    var settings = options || {};
+    if (settings.companyOnly && !isCompanyListing(listing)) {
+      var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
+      accessError.statusCode = 401;
+      throw accessError;
+    }
     var location = listingLocationFields(listing);
     var companyListing = isCompanyListing(listing);
     var companyContactText = COMPANY_CONTACT_PHONES[0] || '';
@@ -1550,6 +1556,7 @@
     delete detail.commissionRate;
     delete detail.commissionText;
     delete detail.commissionBadge;
+    detail.nearby = getNearbyListings(id, { companyOnly: settings.companyOnly === true });
     return detail;
   }
 
@@ -1788,7 +1795,125 @@
   }
 
   function isMockFrontendEffectiveListing(listing) {
-    return !isExpiredListing(listing) && !isSoldListing(listing) && hasListingVideo(listing) && !isPendingOwnerReview(listing);
+    return !isExpiredListing(listing) &&
+      !isSoldListing(listing) &&
+      (isCompanyListing(listing) || hasListingVideo(listing)) &&
+      !isPendingOwnerReview(listing);
+  }
+
+  function nearbyReliableCoordinate(listing) {
+    var data = listing || {};
+    var communityCoordinate = coordinateByCommunity(data.community);
+    if (communityCoordinate) {
+      return {
+        latitude: Number(communityCoordinate.latitude),
+        longitude: Number(communityCoordinate.longitude)
+      };
+    }
+    var latitude = Number(data.mapLatitude || data.latitude);
+    var longitude = Number(data.mapLongitude || data.longitude);
+    var source = String(data.coordinateSource || '');
+    var level = String(data.coordinateLevel || data.coordinateAccuracy || '');
+    if (!isFinite(latitude) || !isFinite(longitude)) return null;
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+    if (isDefaultMapCoordinate(latitude, longitude)) return null;
+    if (data.coordinateVerified !== true || level !== 'verified') return null;
+    if (/block-center|tencent-geocode|qq-map-geocode|geocoder|approx|default|pending|legacy|estimated/i.test(source)) return null;
+    if (!/admin-verified-coordinate|community-coordinate|manual-confirmed|lianjia|amap/i.test(source)) return null;
+    return { latitude: latitude, longitude: longitude };
+  }
+
+  function nearbyDistanceKm(from, to) {
+    var radians = function (value) { return value * Math.PI / 180; };
+    var latitudeDelta = radians(to.latitude - from.latitude);
+    var longitudeDelta = radians(to.longitude - from.longitude);
+    var leftLatitude = radians(from.latitude);
+    var rightLatitude = radians(to.latitude);
+    var haversine = Math.sin(latitudeDelta / 2) * Math.sin(latitudeDelta / 2) +
+      Math.cos(leftLatitude) * Math.cos(rightLatitude) *
+      Math.sin(longitudeDelta / 2) * Math.sin(longitudeDelta / 2);
+    return 6371.0088 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(Math.max(0, 1 - haversine)));
+  }
+
+  function nearbyDistanceText(distanceKm) {
+    var meters = Math.max(0, Math.round(Number(distanceKm) * 1000));
+    return meters < 1000 ? (meters + '米') : (Number(distanceKm).toFixed(1) + '公里');
+  }
+
+  function mockNearbyCard(listing, distanceKm) {
+    var location = listingLocationFields(listing);
+    var display = listingDisplayFields(listing);
+    var sourceLabel = display.sourceLabel || listing.source || listing.ownerType || '';
+    var rent = Number(listing.rent || 0);
+    var rentMode = listing.rentMode || listing.type || '';
+    return {
+      id: listing.id,
+      title: listing.shortTitle || location.community || '房源',
+      meta: [location.community || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
+      coverUrl: '',
+      hasVideo: hasListingVideo(listing),
+      distanceKm: Number(Number(distanceKm).toFixed(3)),
+      distanceText: nearbyDistanceText(distanceKm),
+      source: sourceLabel,
+      sourceLabel: sourceLabel,
+      companyListing: isCompanyListing(listing),
+      type: rentMode,
+      rentMode: rentMode,
+      layout: listing.layout || '',
+      features: (display.features || []).slice(),
+      featureText: display.featureText || '',
+      rent: rent,
+      price: rent ? ('¥' + rent + '/月') : '',
+      community: location.community || ''
+    };
+  }
+
+  function emptyNearbyResult() {
+    return { radiusKm: 3, total: 0, hasMore: false, listings: [] };
+  }
+
+  function getNearbyListings(anchorListingId, options) {
+    autoExpireOverdueListings();
+    var settings = options || {};
+    var anchorId = String(anchorListingId || '').trim();
+    var anchor = getListing(anchorId);
+    if (!anchor) return emptyNearbyResult();
+    if (settings.companyOnly && !isCompanyListing(anchor)) {
+      var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
+      accessError.statusCode = 401;
+      throw accessError;
+    }
+    if (!isMockFrontendEffectiveListing(anchor)) return emptyNearbyResult();
+    var anchorCoordinate = nearbyReliableCoordinate(anchor);
+    if (!anchorCoordinate) return emptyNearbyResult();
+    var candidates = state.listings
+      .filter(function (listing) {
+        return listing.id !== anchorId && isMockFrontendEffectiveListing(listing) &&
+          (!settings.companyOnly || isCompanyListing(listing));
+      })
+      .map(function (listing) {
+        var coordinate = nearbyReliableCoordinate(listing);
+        if (!coordinate) return null;
+        var distanceKm = nearbyDistanceKm(anchorCoordinate, coordinate);
+        if (!isFinite(distanceKm) || distanceKm > 3) return null;
+        return { listing: listing, distanceKm: distanceKm };
+      })
+      .filter(Boolean)
+      .sort(function (left, right) {
+        if (left.distanceKm !== right.distanceKm) return left.distanceKm - right.distanceKm;
+        return String(left.listing.id || '').localeCompare(String(right.listing.id || ''), 'zh-CN');
+      });
+    var total = candidates.length;
+    var selected = settings.all === true ? candidates : candidates.slice(0, 6);
+    var listings = selected.map(function (item) {
+      return mockNearbyCard(item.listing, item.distanceKm);
+    });
+    return {
+      radiusKm: 3,
+      total: total,
+      hasMore: settings.all === true ? false : total > listings.length,
+      listings: listings
+    };
   }
 
   function recommendationNowText() {
@@ -3217,6 +3342,7 @@
     setFavorite: setFavorite,
     matchListings: matchListings,
     getListingDetail: getListingDetail,
+    getNearbyListings: getNearbyListings,
     getListingLogs: getListingLogs,
     recordVideoShare: recordVideoShare,
     getFootprintRecords: getFootprintRecords,

@@ -113,6 +113,52 @@
       </view>
     </view>
 
+    <view wx:if="{{nearbyListings.length}}" class="nearby-section soft-card">
+      <view class="nearby-section-head">
+        <view>
+          <view class="nearby-section-title">3 公里内的其他房源</view>
+          <view class="nearby-section-sub">仅按服务端已确认坐标计算，距离由近到远</view>
+        </view>
+        <button wx:if="{{nearbyHasMore}}" class="nearby-all-button" bindtap="goNearbyListings">查看全部 {{nearbyTotal}} 套</button>
+      </view>
+      <view
+        wx:for="{{nearbyListings}}"
+        wx:key="id"
+        class="nearby-card"
+        data-id="{{item.id}}"
+        bindtap="openNearbyListing"
+      >
+        <image
+          wx:if="{{item.coverUrl}}"
+          class="nearby-cover"
+          src="{{item.coverUrl}}"
+          mode="aspectFill"
+          lazy-load
+          data-id="{{item.id}}"
+          data-cover="{{item.coverUrl}}"
+          binderror="onNearbyCoverError"
+        ></image>
+        <view class="nearby-card-body">
+          <view class="nearby-card-head">
+            <view class="nearby-card-copy">
+              <view class="nearby-card-title">{{item.title}}</view>
+              <view class="nearby-distance">距当前房源 {{item.distanceText}}</view>
+            </view>
+            <favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle>
+          </view>
+          <view class="nearby-facts">
+            <text>{{item.sourceLabel}}</text>
+            <text>{{item.rentMode || item.type}}</text>
+            <text>{{item.layout}}</text>
+            <text>{{item.price}}</text>
+          </view>
+          <view wx:if="{{item.features && item.features.length}}" class="nearby-features">
+            <text wx:for="{{item.features}}" wx:key="*this" class="nearby-feature">{{item}}</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
     <view class="sensitive-card soft-card">
       <view class="sensitive-head">
         <view>

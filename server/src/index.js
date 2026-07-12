@@ -1794,6 +1794,34 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendJson(res, dbStore.updateDb((nextDb) => domain.addNormalListing(nextDb, userId, body)))
   }
 
+  const nearbyListingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/nearby$/)
+  if (method === 'GET' && nearbyListingMatch) {
+    const listingId = nearbyListingMatch[1]
+    const guest = isGuestUser(userId)
+    if (guest) assertGuestRateLimit(req, 'mini-listing-nearby')
+    const detailState = domain.listingDetailState(db, listingId, userId)
+    if (detailState.status === 'not-found') {
+      const error = new Error('房源不存在')
+      error.statusCode = 404
+      throw error
+    }
+    if (detailState.status === 'unavailable') {
+      if (guest && !domain.isCompanyListing(detailState.listing)) {
+        assertGuestListingAllowed({ companyListing: false })
+      }
+      return sendJson(res, domain.nearbyListings(db, listingId))
+    }
+    if (guest) {
+      // 锚点与候选双重裁剪：游客不能借合作房源编号或 total/hasMore 数量侧信道推断合作房源。
+      assertGuestListingAllowed(detailState.detail)
+    }
+    const scopedDb = guest ? companyOnlyDb(db) : db
+    return sendJson(res, domain.nearbyListings(scopedDb, listingId, {
+      all: searchParams.get('all') === '1',
+      companyOnly: guest
+    }))
+  }
+
   const listingMatch = pathname.match(/^\/mini\/listings\/([^/]+)$/)
   if (method === 'GET' && listingMatch) {
     const listingId = listingMatch[1]
@@ -1811,10 +1839,14 @@ async function handleMini(req, res, pathname, searchParams) {
     const detail = detailState.detail
     // 标记是否为上传人自查（服务端判定），供详情页免留痕直接展示地址/房东电话。
     detail.ownListing = domain.isOwnListing(db, listingId, userId)
-    if (isGuestUser(userId)) {
+    const guest = isGuestUser(userId)
+    if (guest) {
       assertGuestRateLimit(req, 'mini-listing-detail')
       assertGuestListingAllowed(detail)
     }
+    const scopedDb = guest ? companyOnlyDb(db) : db
+    // 附近预览随详情一次返回，最多 6 条；候选池在服务端先按当前身份裁剪，再计算 total/hasMore。
+    detail.nearby = domain.nearbyListings(scopedDb, listingId, { companyOnly: guest })
     return sendJson(res, withSignedVideoUrl(detail))
   }
 

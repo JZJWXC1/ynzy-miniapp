@@ -31,6 +31,8 @@ const BROKER_FOOTPRINT_RETENTION_MS = 7 * DAY_MS
 const ADMIN_FOOTPRINT_RETENTION_MS = 90 * DAY_MS
 const CLIENT_FOOTPRINT_RATE_WINDOW_MS = 60 * 1000
 const CLIENT_FOOTPRINT_RATE_LIMIT = 30
+const NEARBY_RADIUS_KM = 3
+const NEARBY_PREVIEW_LIMIT = 6
 // 分佣默认比例（均可后台系统配置覆盖）。基数 = 成交总佣金 deal.landlordCommissionFen（带看中介实赚那笔）。
 // 业主/二房东：上传人分 uploaderRate% + 平台抽 platformRate%，带看成交中介净留其余（默认 70%）；
 // 公司房源恒 0（带看中介全佣）；自传自带（成交人 == 上传人）全免、带看中介 100%、不生成分佣记录。
@@ -2425,6 +2427,118 @@ function favoriteListings(db, userId, filter = {}) {
     })
     .map(({ listing, relationship }) => favoriteSafeListingRow(db, listing, relationship))
   return rows
+}
+
+function verifiedNearbyCoordinate(listing = {}) {
+  const coordinate = mapCoordinateFromListing(listing)
+  if (!coordinate) return null
+  if (coordinate.level !== 'verified' || coordinate.coordinateVerified !== true) return null
+  const source = String(coordinate.source || '').trim()
+  // level/verified 可能来自旧数据或误标，M5 还要独立校验来源；近似地理编码和板块中心即使伪标
+  // verified 也不能参与“精确 3 公里”计算。
+  if (!/lianjia|amap|community-coordinate|admin-verified-coordinate|manual-confirmed/i.test(source)) return null
+  if (/block-center|tencent-geocode|qq-map-geocode|geocoder|approx|default|pending|legacy|estimated/i.test(source)) return null
+  const latitude = Number(coordinate.latitude)
+  const longitude = Number(coordinate.longitude)
+  if (!hasValidCoordinatePair(latitude, longitude)) return null
+  return { latitude, longitude }
+}
+
+function nearbyDistanceKm(from, to) {
+  const fromLatitude = Number(from && from.latitude)
+  const fromLongitude = Number(from && from.longitude)
+  const toLatitude = Number(to && to.latitude)
+  const toLongitude = Number(to && to.longitude)
+  if (![fromLatitude, fromLongitude, toLatitude, toLongitude].every(Number.isFinite)) return null
+  const radians = (value) => value * Math.PI / 180
+  const latitudeDelta = radians(toLatitude - fromLatitude)
+  const longitudeDelta = radians(toLongitude - fromLongitude)
+  const leftLatitude = radians(fromLatitude)
+  const rightLatitude = radians(toLatitude)
+  const haversine = Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(leftLatitude) * Math.cos(rightLatitude) * Math.sin(longitudeDelta / 2) ** 2
+  const centralAngle = 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(Math.max(0, 1 - haversine)))
+  return 6371.0088 * centralAngle
+}
+
+function nearbyDistanceText(distanceKm) {
+  const meters = Math.max(0, Math.round(Number(distanceKm) * 1000))
+  if (meters < 1000) return `${meters}米`
+  return `${Number(distanceKm).toFixed(1)}公里`
+}
+
+function nearbyListingCard(db, listing, distanceKm) {
+  const location = publicListingLocationFields(listing)
+  const display = listingDisplayFields(listing, db)
+  const sourceLabel = display.sourceLabel || listing.source || listing.ownerType || ''
+  const rent = Number(listing.rent || 0)
+  const rentMode = listing.rentMode || listing.type || ''
+  return {
+    id: listing.id,
+    title: publicListingTitle(listing, location),
+    meta: [location.community || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
+    coverUrl: listingCoverUrl(listing),
+    hasVideo: hasListingVideo(listing),
+    distanceKm: Number(Number(distanceKm).toFixed(3)),
+    distanceText: nearbyDistanceText(distanceKm),
+    source: sourceLabel,
+    sourceLabel,
+    companyListing: isCompanyListing(listing),
+    type: rentMode,
+    rentMode,
+    layout: listing.layout || '',
+    features: Array.isArray(display.features) ? display.features.slice() : [],
+    featureText: display.featureText || '',
+    rent,
+    price: rent ? `¥${rent}/月` : '',
+    community: location.community || ''
+  }
+}
+
+function emptyNearbyResult() {
+  return {
+    radiusKm: NEARBY_RADIUS_KM,
+    total: 0,
+    hasMore: false,
+    listings: []
+  }
+}
+
+function nearbyListings(db, anchorListingId, options = {}) {
+  const anchorId = String(anchorListingId || '').trim()
+  // 先走统一前台有效池，让 7 天自动过期等当前规则在锚点判定前生效；不能先拿陈旧锚点再触发过期。
+  const effectiveListings = publicListings(db)
+  const anchor = effectiveListings.find((listing) => String(listing.id || '') === anchorId)
+  if (!anchor) return emptyNearbyResult()
+  const anchorCoordinate = verifiedNearbyCoordinate(anchor)
+  if (!anchorCoordinate) return emptyNearbyResult()
+  const companyOnly = options.companyOnly === true
+
+  const candidates = effectiveListings
+    .filter((listing) => String(listing.id || '') !== anchorId)
+    .filter((listing) => !companyOnly || isCompanyListing(listing))
+    .map((listing) => {
+      const coordinate = verifiedNearbyCoordinate(listing)
+      if (!coordinate) return null
+      const distanceKm = nearbyDistanceKm(anchorCoordinate, coordinate)
+      if (!Number.isFinite(distanceKm) || distanceKm > NEARBY_RADIUS_KM) return null
+      return { listing, distanceKm }
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.distanceKm !== right.distanceKm) return left.distanceKm - right.distanceKm
+      return String(left.listing.id || '').localeCompare(String(right.listing.id || ''), 'zh-CN')
+    })
+
+  const total = candidates.length
+  const selected = options.all === true ? candidates : candidates.slice(0, NEARBY_PREVIEW_LIMIT)
+  const listings = selected.map((item) => nearbyListingCard(db, item.listing, item.distanceKm))
+  return {
+    radiusKm: NEARBY_RADIUS_KM,
+    total,
+    hasMore: options.all === true ? false : total > listings.length,
+    listings
+  }
 }
 
 function matchListings(db, condition = {}) {
@@ -5848,6 +5962,7 @@ module.exports = {
   unfavoriteListing,
   favoriteListingIds,
   favoriteListings,
+  nearbyListings,
   matchListings,
   listingDetail,
   listingDetailState,

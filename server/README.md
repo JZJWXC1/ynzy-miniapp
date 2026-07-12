@@ -752,6 +752,49 @@ M4 门禁：
 - `favorite-entry-v1-test.js`：六个规定入口（含我的收藏页）、正确房源 ID、`catchtap` 和“我的房源”禁星标契约。
 - `favorite-mock-v1-test.js`：开发者工具 Mock 登录假 token、收藏幂等、筛选、失效保留、账号隔离与无请求正文。
 
+## 房源体验闭环 M5：详情 3 公里附近推荐
+
+详情接口会在可用房源正文中附加服务端计算的 `nearby`：
+
+```json
+{
+  "nearby": {
+    "radiusKm": 3,
+    "total": 8,
+    "hasMore": true,
+    "listings": ["最多 6 条白名单卡片"]
+  }
+}
+```
+
+“查看全部附近房源”使用：
+
+```text
+GET /mini/listings/:listingId/nearby?all=1
+```
+
+- 半径固定为 3 公里。客户端提交的 `radiusKm`、经纬度、身份、角色、来源、`companyOnly` 或候选 ID 均不参与计算；`all=1` 只控制返回权限内全部结果，不改变半径和可见性。
+- 锚点与候选都取当前 `publicListings` 有效池：排除当前房源、待审核、下架/过期、成交，以及缺视频的非公司合作房源；公司房源按原规则允许无视频。
+- 坐标必须经 `mapCoordinateFromListing` 解析后同时满足 `coordinateLevel=verified` 与 `coordinateVerified=true`。默认中心、估算/历史偏移、未验证手填、腾讯近似地理编码及 `block-center` 均不用于本模块的精确 3 公里计算；找房助手原有板块中心近似兜底不受影响。
+- 使用 Haversine 距离，按原始距离升序、相同距离按房源 ID 稳定排序；距离只在请求时计算，不写回房源或数据库。
+- 游客先校验锚点必须是公司房源，再把候选数据库裁为公司房源后计算 `total/hasMore`；已失效合作锚点同样返回 401，避免通过数量或差异响应推断合作房源。有效签名 token 才能看到公司、业主和二房东三类来源，无效 token 不降级为游客。
+- 附近卡片为白名单 DTO，只含房源 ID、公开标题/小区、封面、距离、来源、租法、户型、特点和租金；不返回坐标、地址、楼栋单元房号、电话/联系人、密码/钥匙位置、上传人、备注或佣金拆分。
+- 锚点无可靠坐标或范围内无候选时返回空结构；详情页完全不渲染附近板块，不展示“附近无房”误导卡。详情 UI 再次截断到 6 条，`hasMore` 时进入独立全部页。
+- 全部页和详情卡复用 token 绑定的共享收藏组件。全部页按单调请求序号和 token 隔离换号、退出、卸载及迟到成功/失败；只允许打开当前服务端响应中仍存在的房源 ID。
+
+M5 不新增数据库字段、无需迁移；回滚只撤路由、计算与 UI，不能持久化 nearby ID 或距离快照。开发者工具 Mock 与真实接口保持相同有效房态、verified 坐标、游客裁剪、默认 6/全部和白名单 DTO 口径。
+
+M5 门禁：
+
+```bash
+node scripts/listing-nearby-domain-v1-test.js
+node scripts/listing-nearby-http-v1-test.js
+node scripts/listing-nearby-mock-v1-test.js
+node scripts/listing-nearby-page-v1-test.js
+```
+
+同时复跑 `map-v1-test.js`、`assistant-radius-search-test.js`、`assistant-coordinate-safety-test.js`、`guest-mode-v1-test.js`、`mini-detail-loading-state-v1-test.js` 与 `favorite-entry-v1-test.js`，防止附近推荐改变地图、助手、游客、详情加载或星标边界。
+
 ## 上线自检
 
 V1 上线自检不再推荐 `npm run smoke`。`server/scripts/smoke-test.js` 是历史综合冒烟脚本，会创建、审核并清理临时业务数据，仍保留但不要作为当前 V1 验收主线。脚本不再提供地址、后台账号或密码默认值；手工运行前必须只在当前终端/受控执行环境注入 `SMOKE_BASE_URL`、`SMOKE_ADMIN_ACCOUNT`、`SMOKE_ADMIN_PASSWORD`，缺任一项都会在读取数据或发出网络请求前退出。不得把这些值写入仓库、命令历史、协作文档或聊天输出。

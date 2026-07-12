@@ -1,0 +1,68 @@
+<navigation-bar title="附近房源" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell nearby-page">
+    <view class="nearby-hero">
+      <view class="hero-title">当前房源 3 公里内</view>
+      <view class="hero-sub">仅使用服务端已确认坐标，按距离由近到远排列</view>
+      <view wx:if="{{listings.length}}" class="hero-count">共 {{total}} 套可展示房源</view>
+    </view>
+
+    <view wx:if="{{accessRequired}}" class="state-card">
+      <view class="state-title">登录后继续查看</view>
+      <view class="state-desc">合作房源及其附近推荐只对内部中介账号开放。</view>
+      <button class="brand-button" bindtap="goLogin">去登录</button>
+    </view>
+
+    <view wx:elif="{{loadFailed}}" class="state-card">
+      <view class="state-title">加载失败</view>
+      <view class="state-desc">请检查网络后重试，当前结果不会由客户端本地估算。</view>
+      <button class="brand-button" bindtap="retryNearby">重新加载</button>
+    </view>
+
+    <view wx:elif="{{loading && !listings.length}}" class="state-card">
+      <view class="state-title">正在读取附近房源</view>
+    </view>
+
+    <view wx:elif="{{!loading && !listings.length}}" class="state-card">
+      <view class="state-title">当前没有可展示结果</view>
+      <view class="state-desc">可能是房源或坐标刚刚更新，请返回详情继续找房。</view>
+    </view>
+
+    <view
+      wx:for="{{listings}}"
+      wx:key="id"
+      class="nearby-card"
+      data-id="{{item.id}}"
+      bindtap="openListing"
+    >
+      <image
+        wx:if="{{item.coverUrl}}"
+        class="nearby-cover"
+        src="{{item.coverUrl}}"
+        mode="aspectFill"
+        lazy-load
+        data-id="{{item.id}}"
+        data-cover="{{item.coverUrl}}"
+        binderror="onCoverError"
+      ></image>
+      <view class="nearby-card-body">
+        <view class="nearby-card-head">
+          <view class="nearby-card-copy">
+            <view class="nearby-card-title">{{item.title}}</view>
+            <view class="nearby-distance">距当前房源 {{item.distanceText}}</view>
+          </view>
+          <favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle>
+        </view>
+        <view class="nearby-facts">
+          <text>{{item.sourceLabel}}</text>
+          <text>{{item.rentMode || item.type}}</text>
+          <text>{{item.layout}}</text>
+          <text class="price">{{item.price}}</text>
+        </view>
+        <view wx:if="{{item.features && item.features.length}}" class="nearby-features">
+          <text wx:for="{{item.features}}" wx:key="*this" class="nearby-feature">{{item}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+</scroll-view>

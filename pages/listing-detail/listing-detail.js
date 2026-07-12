@@ -1,5 +1,6 @@
 const apiService = require('../../utils/api-service')
 const phoneFootprintOutbox = require('../../utils/footprint-outbox')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
 const SHOWING_CANVAS_WIDTH = 900
 const SHOWING_CANVAS_HEIGHT = 1200
@@ -130,7 +131,10 @@ Page({
     needId: '',
     needTemporary: false,
     currentUserId: '',
-    phoneCallBusy: false
+    phoneCallBusy: false,
+    nearbyListings: [],
+    nearbyTotal: 0,
+    nearbyHasMore: false
   },
 
   onLoad(options) {
@@ -166,6 +170,11 @@ Page({
     if (this.data.currentUserId) this.flushPhoneFootprints(this.data.currentUserId)
   },
 
+  onUnload() {
+    // 整份详情（含服务端内嵌 nearby）共用同一代次；卸载后任何迟到响应都不得再写页面。
+    this.listingLoadGeneration = Number(this.listingLoadGeneration || 0) + 1
+  },
+
   hideNativeShareMenu() {
     if (!wx.hideShareMenu) return
     wx.hideShareMenu({
@@ -191,6 +200,9 @@ Page({
       listingLoadErrorText: '',
       listingAccessRequired: false,
       logs: [],
+      nearbyListings: [],
+      nearbyTotal: 0,
+      nearbyHasMore: false,
       sensitiveVisible: false,
       sensitiveConfirmVisible: false,
       sensitiveSubmitting: false,
@@ -244,6 +256,13 @@ Page({
       const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
       const companyListing = Boolean(listing && listing.companyListing)
       const ownListing = Boolean(listing && listing.ownListing)
+      const nearby = listing && listing.nearby && typeof listing.nearby === 'object' ? listing.nearby : {}
+      const nearbySourceRows = Array.isArray(nearby.listings) ? nearby.listings : []
+      const nearbyListings = nearbySourceRows.slice(0, 6)
+      const nearbyTotal = Math.max(nearbyListings.length, Number(nearby.total) || 0)
+      const nearbyHasMore = nearbyListings.length > 0 && Boolean(
+        nearby.hasMore || nearbyTotal > nearbyListings.length || nearbySourceRows.length > nearbyListings.length
+      )
       this.profileAuthToken = requestToken
       this.setData({
         listing,
@@ -253,6 +272,9 @@ Page({
         listingLoadErrorText: '',
         listingAccessRequired: false,
         logs,
+        nearbyListings,
+        nearbyTotal,
+        nearbyHasMore,
         isOwnListing: ownListing,
         sensitiveVisible: companyListing,
         sensitivePlaceholder: ownListing ? '正在读取' : '完成确认后可查看',
@@ -322,6 +344,28 @@ Page({
 
   retryListing() {
     if (this.listingId) this.loadListing(this.listingId)
+  },
+
+  openNearbyListing(event) {
+    const id = String((event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.id) || '')
+    if (!id || !(this.data.nearbyListings || []).some((item) => String(item.id) === id)) return
+    wx.navigateTo({
+      url: `/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby`
+    })
+  },
+
+  goNearbyListings() {
+    const anchorId = String((this.data.listing && this.data.listing.id) || '')
+    if (!anchorId || !this.data.nearbyHasMore) return
+    wx.navigateTo({
+      url: `/pages/nearby-listings/nearby-listings?id=${encodeURIComponent(anchorId)}`
+    })
+  },
+
+  onNearbyCoverError(event) {
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {}
+    const index = findFailedCoverIndex(this.data.nearbyListings, dataset.id, dataset.cover)
+    if (index >= 0) this.setData({ [`nearbyListings[${index}].coverUrl`]: '' })
   },
 
   goLoginFromListing() {
