@@ -1,5 +1,5 @@
 const assert = require('assert')
-process.env.COMPANY_CONTACT_PHONES = process.env.COMPANY_CONTACT_PHONES || '19900000001,19900000002'
+process.env.COMPANY_CONTACT_PHONES = process.env.COMPANY_CONTACT_PHONES || '19900000001,19900000002,19900000003'
 process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 显式演练暂停功能的可恢复历史成交链。
 
 const domain = require('../src/domain')
@@ -136,8 +136,13 @@ function run() {
   }, '公司房源详情必须展示带看人取得全部房东佣金的服务端拆分')
   assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
   assert.strictEqual(companyNoVideoDetail.sensitiveLocked, false, '公司房源详情地址电话必须直接公开')
-  assert.deepStrictEqual(companyNoVideoDetail.companyContactPhones, ['19900000001'], '公司房源详情只能下发第一个合法服务端配置电话')
-  assert.strictEqual(companyNoVideoDetail.landlordPhone, '19900000001', '公司房源详情电话必须使用第一个服务端配置号码')
+  assert.deepStrictEqual(
+    companyNoVideoDetail.companyContactPhones,
+    ['19900000001', '19900000002', '19900000003'],
+    '公司房源详情必须保留三个合法服务端配置电话'
+  )
+  assert.strictEqual(companyNoVideoDetail.companyContactPhoneText, '19900000001', '旧客户端兼容文本只使用首个统一号码')
+  assert.strictEqual(companyNoVideoDetail.landlordPhone, '19900000001', '旧客户端兼容拨号字段必须使用首个统一号码')
   const companyNoVideoRaw = db.listings.find((item) => item.id === companyNoVideo.id)
   companyNoVideoRaw.missingVideoMaterial = true
   companyNoVideoRaw.videoMaterialStatus = '缺视频素材'

@@ -49,9 +49,9 @@ function activeListing(overrides = {}) {
 }
 
 async function run() {
-  // 1) 公司房源只下发环境配置中的第一个合法号码，绝不拼接多个号码或回退房源原始电话。
+  // 1) 公司房源保留环境配置中的全部合法号码供新页面逐项展示；旧客户端兼容字段仍只取首号，绝不回退房源原始电话。
   const originalPhones = config.company.contactPhones
-  config.company.contactPhones = ['invalid', '19900000001', '19900000002']
+  config.company.contactPhones = ['invalid', '19900000001', '19900000002', '19900000003']
   try {
     const db = makeDb()
     db.listings.push(activeListing({
@@ -60,14 +60,19 @@ async function run() {
       ownerType: '公司房源',
       source: '公司房源',
       videoKey: '',
-      landlordPhone: '19900000003'
+      landlordPhone: '19900000009'
     }))
     const detail = domain.listingDetail(db, 'L1', 'U2')
-    assert.deepStrictEqual(detail.companyContactPhones, ['19900000001'], '只允许返回第一个合法环境配置号码')
+    assert.deepStrictEqual(
+      detail.companyContactPhones,
+      ['19900000001', '19900000002', '19900000003'],
+      '公司详情必须按服务端配置顺序保留全部三个合法统一号码'
+    )
     assert.strictEqual(detail.companyContactPhoneText, '19900000001')
     assert.strictEqual(detail.landlordPhone, '19900000001')
-    assert.ok(!JSON.stringify(detail).includes('19900000002'), '详情不得下发第二个公司号码')
-    assert.ok(!JSON.stringify(detail).includes('19900000003'), '公司详情不得回退房源原始电话')
+    assert.ok(JSON.stringify(detail).includes('19900000002'), '详情必须保留第二个公司统一号码')
+    assert.ok(JSON.stringify(detail).includes('19900000003'), '详情必须保留第三个公司统一号码')
+    assert.ok(!JSON.stringify(detail).includes('19900000009'), '公司详情不得回退房源原始电话')
   } finally {
     config.company.contactPhones = originalPhones
   }
@@ -421,7 +426,14 @@ async function run() {
   const serverSource = fs.readFileSync(path.join(rootDir, 'server/src/index.js'), 'utf8')
   assert.ok(pageJs.includes('wx.makePhoneCall'), '详情页必须调用微信拨号能力')
   assert.ok(/makePhoneCall[\s\S]*success[\s\S]*enqueuePhoneCall/.test(pageJs), '只有拨号 success 回调可以入队足迹')
-  assert.ok(pageWxml.includes('bindtap="callLandlord"'), '详情页必须提供联系房东按钮')
+  assert.ok(pageWxml.includes('bindtap="callLandlord"'), '非公司房源详情必须保留联系房东按钮')
+  assert.ok(/wx:for="\{\{listing\.companyContactPhones\}\}"/.test(pageWxml), '公司房源必须逐项展示全部服务端统一号码')
+  const callButtonAt = pageWxml.indexOf('bindtap="callLandlord"')
+  const callButtonStart = pageWxml.lastIndexOf('<button', callButtonAt)
+  const callButtonEnd = pageWxml.indexOf('</button>', callButtonAt)
+  const callButtonBlock = pageWxml.slice(callButtonStart, callButtonEnd + '</button>'.length)
+  assert.ok(callButtonStart >= 0 && callButtonEnd > callButtonAt, '必须能精确定位联系房东按钮')
+  assert.ok(callButtonBlock.includes('!listing.companyListing'), '公司房源不得新增联系房东按钮，按钮只能服务非公司房源')
   assert.ok(apiSource.includes('/phone-call-opened'), '客户端必须调用专用拨号成功接口')
   assert.ok(/recordPhoneCallOpened[\s\S]*data:\s*\{\s*idempotencyKey\s*\}/.test(apiSource), '拨号成功请求体只能包含幂等键')
   assert.ok(/phone-call-opened[\s\S]*assertMiniLogin\(userId\)[\s\S]*recordPhoneCallOpened/.test(serverSource), '拨号成功接口必须先强制验签登录')

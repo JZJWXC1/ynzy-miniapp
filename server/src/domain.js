@@ -5183,7 +5183,6 @@ function companyPublicListingFields(listing = {}) {
   const companyPhones = ((config.company && config.company.contactPhones) || [])
     .map((item) => String(item || '').trim())
     .filter((item) => /^1[3-9]\d{9}$/.test(item))
-    .slice(0, 1)
   const contact = companyPhones[0] || ''
   const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
   const remark = safePublicListingRemark(listing)

@@ -186,10 +186,14 @@
       </view>
       <view class="hidden-row">
         <view class="hidden-label">{{listing.companyListing ? '公司看房电话' : '房东电话'}}</view>
-        <view class="hidden-value">{{sensitiveVisible ? (listing.companyContactPhoneText || listing.landlordPhone || '待补充') : sensitivePlaceholder}}</view>
+        <view wx:if="{{listing.companyListing}}" class="hidden-value company-phone-list">
+          <text wx:for="{{listing.companyContactPhones}}" wx:key="*this" class="company-phone-item">{{item}}</text>
+          <text wx:if="{{!listing.companyContactPhones || !listing.companyContactPhones.length}}">待补充</text>
+        </view>
+        <view wx:else class="hidden-value">{{sensitiveVisible ? (listing.landlordPhone || '待补充') : sensitivePlaceholder}}</view>
       </view>
       <button
-        wx:if="{{sensitiveVisible && (listing.companyContactPhoneText || listing.landlordPhone)}}"
+        wx:if="{{!listing.companyListing && sensitiveVisible && listing.landlordPhone}}"
         class="phone-call-button"
         loading="{{phoneCallBusy}}"
         disabled="{{phoneCallBusy}}"

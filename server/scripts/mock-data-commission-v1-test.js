@@ -56,6 +56,14 @@ function run() {
   assert.strictEqual(company.noCommission, true, 'mock company listing should be no commission')
   assert.strictEqual(company.commissionRate, 0, 'mock company listing should force zero commission')
 
+  const companyDetail = mockData.getListingDetail(company.id)
+  assert.deepStrictEqual(
+    companyDetail.companyContactPhones,
+    ['19900000001', '19900000002', '19900000003'],
+    'mock company detail should retain the same three synthetic company phones as the server contract'
+  )
+  assert.strictEqual(companyDetail.companyContactPhoneText, '19900000001', 'mock legacy phone text should keep the first synthetic phone')
+
   const convertedSecondLandlord = mockData.updateNormalListing(company.id, listingPayload({
     companyListing: false,
     ownerType: TEXT.secondLandlord,

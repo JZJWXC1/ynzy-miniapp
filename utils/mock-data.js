@@ -14,7 +14,7 @@
   var V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
   // 开发者工具预览专用明显假值；生产号码只从服务端环境配置读取。
-  var COMPANY_CONTACT_PHONES = ['19900000001'];
+  var COMPANY_CONTACT_PHONES = ['19900000001', '19900000002', '19900000003'];
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var OWNER_SOURCE_ALIASES = [OWNER_SOURCE, '业主'];

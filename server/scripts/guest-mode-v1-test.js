@@ -187,7 +187,7 @@ async function run() {
       DATA_FILE: dataFile,
       V1_DISABLE_LEGACY_ROUTES: '1',
       AUTH_TOKEN_SECRET: 'guest-mode-test-secret',
-      COMPANY_CONTACT_PHONES: '19900000001,19900000002'
+      COMPANY_CONTACT_PHONES: '19900000001,19900000002,19900000003'
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -229,8 +229,12 @@ async function run() {
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
     assert.strictEqual(companyDetail.statusCode, 200, '匿名公司房源详情应返回 200')
     assert.strictEqual(dataOf(companyDetail).companyListing, true, '匿名详情只能打开公司房源')
-    assert.ok(JSON.stringify(dataOf(companyDetail)).includes('19900000001'), '匿名公司房源详情应返回第一个合法公司看房电话')
-    assert.ok(!JSON.stringify(dataOf(companyDetail)).includes('19900000002'), '匿名公司房源详情不得下发第二个公司号码')
+    assert.deepStrictEqual(
+      dataOf(companyDetail).companyContactPhones,
+      ['19900000001', '19900000002', '19900000003'],
+      '匿名公司房源详情也必须保留三个服务端统一号码'
+    )
+    assert.strictEqual(dataOf(companyDetail).companyContactPhoneText, '19900000001', '匿名旧客户端兼容字段只使用首号')
     assert.ok(JSON.stringify(dataOf(companyDetail)).includes('246810#'), '匿名公司房源详情应返回公司看房密码')
 
     const partnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER')
