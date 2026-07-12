@@ -3945,7 +3945,8 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
     isSensitiveViewFootprint(item) &&
     String(item.viewerId || '') === String(userId) &&
     String(item.listingId || '') === String(listingId) &&
-    item.idempotencyKey === idempotencyKey
+    item.idempotencyKey === idempotencyKey &&
+    footprintDateKey(item) === date
   ))
   const dailyExisting = sameKeyExisting || (db.footprints || []).find((item) => (
     item &&
@@ -3954,8 +3955,8 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
     String(item.listingId || '') === String(listingId) &&
     footprintDateKey(item) === date
   ))
-  // 同一幂等键表示服务端此前已完成同一次确认。账号和房源可用性已在本函数前部重验，
-  // 此时应优先返回原成功，不能因响应跨午夜丢失而重新扣额度、命中限流或重复写入。
+  // 幂等键只在同一上海自然日代表同一次确认。跨日重放必须作为次日新查看重新走额度、限流和足迹，
+  // 否则客户端可长期保存旧 key，免额度获取房源后来更新的地址和电话。
   assertSensitiveViewerEligible(db, userId)
   if (!sameKeyExisting) assertSensitiveViewQuotaAllowed(db, userId, listing)
   if (!dailyExisting) {

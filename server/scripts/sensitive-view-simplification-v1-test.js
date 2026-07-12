@@ -28,11 +28,13 @@ function makeDb() {
 
 {
   const db = makeDb()
-  domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey: 'sensitive_yesterday_01' })
+  const idempotencyKey = 'sensitive_cross_day_same_key'
+  domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey })
   db.footprints[0].occurredAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey: 'sensitive_today_0001' })
-  assert.strictEqual(db.footprints.length, 2, '跨上海自然日后同一房源应允许新增一条当天审计足迹')
-  assert.strictEqual(db.listings[0].sensitiveViews, 2, '跨自然日的新查看应正常累计一次查看次数')
+  domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey })
+  assert.strictEqual(db.footprints.length, 2, '跨上海自然日后即使复用旧 key，也必须新增当天审计足迹')
+  assert.strictEqual(db.footprints.filter((item) => item.idempotencyKey === idempotencyKey).length, 2, '敏感查看 key 只在同一自然日幂等，不得全局免审')
+  assert.strictEqual(db.listings[0].sensitiveViews, 2, '跨自然日同键应按次日新查看累计一次')
 }
 
 {
@@ -40,7 +42,7 @@ function makeDb() {
   const idempotencyKey = 'sensitive_midnight_retry'
   const first = domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey })
   db.footprints[0].occurredAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
-  for (let index = 0; index < 30; index += 1) {
+  for (let index = 0; index < 15; index += 1) {
     db.footprints.push({
       id: `F-RATE-${index}`,
       viewerId: 'U2',
@@ -51,11 +53,15 @@ function makeDb() {
     })
   }
   const before = db.footprints.length
-  const retry = domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey })
-  assert.deepStrictEqual(retry.sensitive, first.sensitive, '服务端已写但响应跨午夜丢失时，同键重试应返回原成功结果')
-  assert.strictEqual(db.footprints.length, before, '跨自然日同键重试必须优先于当日额度和速率限制且不得新增记录')
-  assert.strictEqual(db.footprints.filter((item) => item.idempotencyKey === idempotencyKey).length, 1, '同一敏感查看幂等键全局只能保存一条')
-  assert.strictEqual(db.listings[0].sensitiveViews, 1, '跨自然日同键重试不得重复增加查看次数')
+  db.listings[0].address = '次日更新后的测试地址'
+  assert.throws(
+    () => domain.addSensitiveFootprint(db, 'U2', 'L1', { idempotencyKey }),
+    (error) => error && (error.statusCode === 403 || error.statusCode === 429) && /额度|频繁/.test(error.message),
+    '旧 key 跨日重放必须重新受当天额度/限流约束，不能拿到最新地址'
+  )
+  assert.strictEqual(db.footprints.length, before, '跨日旧 key 被额度拒绝时不得新增记录')
+  assert.strictEqual(db.footprints.filter((item) => item.idempotencyKey === idempotencyKey).length, 1, '被拒后只保留昨日原记录')
+  assert.strictEqual(db.listings[0].sensitiveViews, 1, '被拒后不得放大查看次数')
 }
 
 {
@@ -115,12 +121,18 @@ function makeDb() {
 
 {
   const indexSource = fs.readFileSync(path.join(rootDir, 'server/src/index.js'), 'utf8')
+  const mockSource = fs.readFileSync(path.join(rootDir, 'utils/mock-data.js'), 'utf8')
   const start = indexSource.indexOf("if (method === 'POST' && sensitiveMatch)")
   const block = indexSource.slice(start, start + 600)
   assert.ok(block.includes('idempotencyKey: body.idempotencyKey'), '敏感查看路由只应透传幂等键')
   ;['needId:', 'rentalNeedId:', 'clientNeedId:', 'purpose:', 'scene:', 'reason:', 'viewerId:', 'actionType:'].forEach((field) => {
     assert.ok(!block.includes(field), `敏感查看路由不得透传客户端 ${field}`)
   })
+  assert.match(
+    mockSource,
+    /sameKeyExisting[\s\S]{0,500}idempotencyKey === key[\s\S]{0,200}footprintDateKey\(item\) === date/,
+    '开发者工具 Mock 的同键幂等也必须限制在同一上海自然日'
+  )
 
   const wxml = fs.readFileSync(path.join(rootDir, 'pages/listing-detail/listing-detail.wxml'), 'utf8')
   assert.ok(wxml.includes('确认查看'), '详情页必须保留二次确认')

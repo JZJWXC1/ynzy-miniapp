@@ -2651,7 +2651,7 @@
     var key = suppliedKey || ('SV' + Date.now());
     var date = todayKey();
     var sameKeyExisting = (state.footprints || []).find(function (item) {
-      return isSensitiveFootprint(item) && item.viewerId === state.currentUserId && item.listingId === listingId && item.idempotencyKey === key;
+      return isSensitiveFootprint(item) && item.viewerId === state.currentUserId && item.listingId === listingId && item.idempotencyKey === key && footprintDateKey(item) === date;
     });
     var dailyExisting = sameKeyExisting || (state.footprints || []).find(function (item) {
       return isSensitiveFootprint(item) && item.viewerId === state.currentUserId && item.listingId === listingId && footprintDateKey(item) === date;
