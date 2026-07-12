@@ -115,6 +115,12 @@ function run() {
     '公司房源也必须填写房东手机号',
     { userId: 'ADMIN', domainOptions: { admin: true } }
   )
+  expectBad(
+    listingForm({ contact: '' }),
+    /房东手机号/,
+    '飞书缺号内部开关不得放宽非公司房源校验',
+    { userId: 'ADMIN', domainOptions: { admin: true, allowMissingLandlordPhone: true } }
+  )
   expectBad(listingForm({ viewingMethod: '钥匙', viewingKeyLocation: '前台', contact: 'TEST-PHONE' }), /11 位.*手机号/, '所有方式都必须校验手机号格式')
 
   const safe200 = '房'.repeat(200)

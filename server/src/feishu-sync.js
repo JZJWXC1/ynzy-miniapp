@@ -1046,6 +1046,15 @@ function buildAuditRow(row, material, syncResult, failureReason = '') {
   }
 }
 
+function validLandlordPhone(value) {
+  const phone = String(value || '').trim()
+  return /^1[3-9]\d{9}$/.test(phone) ? phone : ''
+}
+
+function combineFailureReasons(...reasons) {
+  return reasons.map((item) => String(item || '').trim()).filter(Boolean).join('；')
+}
+
 function attachFeishuFields(listing, row, material, video, materialFailureReason = '') {
   listing.externalSource = 'feishu'
   listing.feishuRecordId = String(row.externalId)
@@ -1064,8 +1073,11 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.manualReviewReason = ''
   listing.communityMatched = true
   listing.communityMatchStatus = '已匹配'
-  listing.landlordPhone = row.contact || listing.landlordPhone || ''
-  listing.contact = row.contact || listing.contact || listing.landlordPhone || ''
+  const contact = validLandlordPhone(row.contact) || validLandlordPhone(listing.landlordPhone) || validLandlordPhone(listing.contact)
+  listing.landlordPhone = contact
+  listing.contact = contact
+  listing.missingLandlordPhone = !contact
+  listing.feishuContactStatus = contact ? '已配置' : '待补充'
   listing.viewingPassword = row.viewingPassword || ''
   listing.showingPassword = row.showingPassword || row.viewingPassword || ''
   listing.remark = row.remark || ''
@@ -1090,7 +1102,7 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   }
   listing.syncedAt = nowText()
   listing.feishuLastSyncAt = listing.syncedAt
-  listing.feishuLastSyncReason = materialFailureReason || ''
+  listing.feishuLastSyncReason = combineFailureReasons(materialFailureReason, contact ? '' : '联系电话待补充')
   listing.status = '在租'
   listing.lifecycleStatus = 'active'
   listing.reviewStatus = '无需审核'
@@ -1114,12 +1126,12 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
       existing.lifecycleStatus = 'active'
       existing.status = '在租'
     }
-    domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true })
+    domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true, allowMissingLandlordPhone: true })
     attachFeishuFields(existing, row, material, video, materialFailureReason)
     existing.feishuLastSyncAction = 'updated'
     return { action: 'updated', listing: existing }
   }
-  const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true })
+  const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true, allowMissingLandlordPhone: true })
   const listing = db.listings.find((item) => item.id === detail.id)
   attachFeishuFields(listing, row, material, video, materialFailureReason)
   if (listing) listing.feishuLastSyncAction = 'created'
@@ -1147,6 +1159,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     skippedNoMaterial: 0,
     missingVideoMaterial: 0,
     materialTransferFailed: 0,
+    missingLandlordPhone: 0,
     skippedInvalid: 0,
     failed: 0,
     auditRows: [],
@@ -1176,12 +1189,17 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       result.auditRows.push(buildAuditRow(row, null, '跳过-字段不完整', '缺少小区/楼栋/房号/租金/户型之一'))
       continue
     }
-    const effectiveContact = String(row.contact || (existing && existing.landlordPhone) || '').trim()
-    if (!/^1[3-9]\d{9}$/.test(effectiveContact)) {
-      result.skippedInvalid += 1
-      result.messages.push(`第 ${row.rowNumber} 行缺少合法房东手机号，已跳过`)
-      result.auditRows.push(buildAuditRow(row, null, '跳过-房东手机号无效', '缺少合法 11 位房东手机号'))
-      continue
+    // 飞书公司库存允许表内暂缺电话，但无效原值绝不能落库。优先采用本行合法号码，
+    // 其次保留线上已有合法号码；两者都没有时写空并显式标记待补，公开租金/房态仍继续同步。
+    const rowContact = validLandlordPhone(row.contact)
+    const existingContact = validLandlordPhone(existing && existing.landlordPhone) || validLandlordPhone(existing && existing.contact)
+    row.contact = rowContact || existingContact
+    const missingContactReason = row.contact ? '' : '联系电话待补充'
+    if (missingContactReason) {
+      result.missingLandlordPhone += 1
+      if (result.messages.length < 20) {
+        result.messages.push(`第 ${row.rowNumber} 行联系电话待补充；公开库存字段继续同步`)
+      }
     }
     const material = matcher(row)
     if (!material) {
@@ -1202,7 +1220,12 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       } else {
         result.created += 1
       }
-      result.auditRows.push(buildAuditRow(row, material, material ? '上架-已配视频' : '上架-缺视频素材', material ? '' : '未匹配素材'))
+      result.auditRows.push(buildAuditRow(
+        row,
+        material,
+        material ? '上架-已配视频' : '上架-缺视频素材',
+        combineFailureReasons(material ? '' : '未匹配素材', missingContactReason)
+      ))
     } catch (error) {
       if (material) {
         const failureReason = shortError(error)
@@ -1221,16 +1244,21 @@ async function applySync(db, rows, materials, adminId, options = {}) {
           if (result.messages.length < 20) {
             result.messages.push(`第 ${row.rowNumber} 行素材匹配但搬运失败，已降级上架并标记缺视频素材：${failureReason}`)
           }
-          result.auditRows.push(buildAuditRow(row, material, '上架-素材失败降级缺视频素材', failureReason))
+          result.auditRows.push(buildAuditRow(
+            row,
+            material,
+            '上架-素材失败降级缺视频素材',
+            combineFailureReasons(failureReason, missingContactReason)
+          ))
         } catch (retryError) {
           result.failed += 1
           result.messages.push(`第 ${row.rowNumber} 行同步失败：${retryError.message}`)
-          result.auditRows.push(buildAuditRow(row, material, '失败', shortError(retryError)))
+          result.auditRows.push(buildAuditRow(row, material, '失败', combineFailureReasons(shortError(retryError), missingContactReason)))
         }
       } else {
         result.failed += 1
         result.messages.push(`第 ${row.rowNumber} 行同步失败：${error.message}`)
-        result.auditRows.push(buildAuditRow(row, material, '失败', shortError(error)))
+        result.auditRows.push(buildAuditRow(row, material, '失败', combineFailureReasons(shortError(error), missingContactReason)))
       }
     }
   }
@@ -1322,6 +1350,13 @@ function status(db = {}) {
     sheetSnapshotRowCount: db.companySheetSnapshot ? (db.companySheetSnapshot.rowCount || 0) : 0,
     lastLog: (db.feishuSyncLogs || [])[0] || null,
     missingVideoMaterialCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.missingVideoMaterial && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length,
+    missingLandlordPhoneCount: (db.listings || []).filter((item) => (
+      item.externalSource === 'feishu' &&
+      item.lifecycleStatus !== 'expired' &&
+      item.status !== '已下架' &&
+      !validLandlordPhone(item.landlordPhone) &&
+      !validLandlordPhone(item.contact)
+    )).length,
     feishuListingCount: (db.listings || []).filter((item) => item.externalSource === 'feishu' && item.lifecycleStatus !== 'expired' && item.status !== '已下架').length
   }
 }

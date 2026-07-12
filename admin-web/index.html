@@ -4064,6 +4064,7 @@
         { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
         { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },
         { name: '缺视频素材', value: status.missingVideoMaterialCount || 0, note: '后台标记缺视频素材，不再因素材缺失自动下架' },
+        { name: '联系电话待补充', value: status.missingLandlordPhoneCount || 0, note: '公开库存继续同步；人工编辑时必须补合法手机号' },
         { name: '最近执行', value: lastLog && lastLog.finishedAt ? lastLog.finishedAt : '暂无', note: lastLog ? `新增 ${lastLog.created || 0} / 更新 ${lastLog.updated || 0} / 下架 ${lastLog.down || 0}` : '点击立即同步后返回本次结果' }
       ].map((item) => `
         <tr><td>${safeText(item.name)}</td><td>${safeText(item.value)}</td><td>${safeText(item.note || '', '')}</td></tr>
@@ -4080,6 +4081,7 @@
           down: lastLog.down,
           skippedNoMaterial: lastLog.skippedNoMaterial,
           missingVideoMaterial: lastLog.missingVideoMaterial,
+          missingLandlordPhone: lastLog.missingLandlordPhone,
           skippedInvalid: lastLog.skippedInvalid,
           failed: lastLog.failed,
           messages: lastLog.messages || []

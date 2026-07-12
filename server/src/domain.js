@@ -5509,13 +5509,18 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  // 房东手机号对所有来源和看房方式均为必填；钥匙/密码方式还需各自的操作信息。
-  if (!fields.contact) {
+  // 房东手机号对所有客户端上传/编辑、后台人工上传/编辑及所有看房方式均为必填。
+  // 唯一例外是服务端内部飞书公司库存同步：历史表可能暂缺电话，但公开租金/房态不能因此冻结。
+  // 该例外必须同时具备 admin + 显式内部开关 + 公司房源三项，路由客户端无法提交 options。
+  const allowMissingCompanyLandlordPhone = Boolean(
+    options.admin && options.allowMissingLandlordPhone && fields.companyListing
+  )
+  if (!fields.contact && !allowMissingCompanyLandlordPhone) {
     const error = new Error('请填写房东手机号')
     error.statusCode = 400
     throw error
   }
-  if (!/^1[3-9]\d{9}$/.test(fields.contact)) {
+  if (fields.contact && !/^1[3-9]\d{9}$/.test(fields.contact)) {
     const error = new Error('请输入 11 位房东手机号')
     error.statusCode = 400
     throw error

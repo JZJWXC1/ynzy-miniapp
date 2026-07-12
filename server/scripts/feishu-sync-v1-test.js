@@ -51,6 +51,23 @@ async function main() {
   assert.strictEqual(missing.viewingPassword, '336699#', '公司房源应保留看房方式密码')
   assert.ok(JSON.stringify(missing).includes('13900001111'), '同步房源应保留飞书联系电话')
   assert.ok(JSON.stringify(missing).includes('336699'), '同步房源应保留看房密码')
+
+  const keepExistingPhone = await feishuSync.applySync(db, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '601D',
+      户型: '一室一厅一卫',
+      押一付一: '2850',
+      联系电话: 'invalid-phone'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(keepExistingPhone.updated, 1, '表内无效号码不能冻结已有公司房源更新')
+  assert.strictEqual(keepExistingPhone.missingLandlordPhone, 0, '线上已有合法号码时应保留，不应误报待补')
+  assert.strictEqual(db.listings[0].landlordPhone, '13900001111', '表内无效号码不得覆盖线上已有合法号码')
+  assert.ok(!JSON.stringify(db.listings[0]).includes('invalid-phone'), '飞书无效号码不得落入任何房源字段')
   missing.requiresManualReview = true
   missing.communityMatched = false
   missing.communityMatchStatus = '未匹配'
@@ -64,13 +81,37 @@ async function main() {
       房号: '609A',
       户型: '一室一厅一卫',
       押一付一: '2800',
+      联系电话: 'invalid-phone'
+    })
+  ], [{ name: '609A.mp4', videoUrl: 'https://example.test/609A.mp4' }], 'A1', { dryRun: true })
+  assert.strictEqual(invalidPhone.skippedInvalid, 0, '飞书缺电话不能冻结整行公开库存同步')
+  assert.strictEqual(invalidPhone.missingLandlordPhone, 1, '飞书缺电话必须单独计数并 fail-loud')
+  assert.strictEqual(invalidPhone.created, 1, '无号公司房源仍应创建，后续由管理员补电话')
+  assert.strictEqual(invalidPhoneDb.listings.length, 1, '飞书缺电话仍应写入公开库存字段')
+  assert.strictEqual(invalidPhoneDb.listings[0].landlordPhone, '', '不得用占位文字或无效号码冒充房东手机号')
+  assert.strictEqual(invalidPhoneDb.listings[0].contact, '', '兼容 contact 字段也不得残留无效号码')
+  assert.ok(!JSON.stringify(invalidPhoneDb.listings[0]).includes('invalid-phone'), '无效号码不得旁路写入房源对象')
+  assert.strictEqual(invalidPhoneDb.listings[0].missingLandlordPhone, true, '房源必须显式标记联系电话待补')
+  assert.strictEqual(invalidPhoneDb.listings[0].feishuContactStatus, '待补充')
+  assert.ok(invalidPhone.messages.some((message) => /联系电话待补充/.test(message)), '同步结果必须给出可运维的缺号摘要')
+  assert.ok((invalidPhone.auditRows || []).some((item) => /联系电话待补充/.test(item.failureReason)), '逐行对账必须标记缺号而非静默')
+  assert.ok(invalidPhone.messages.every((message) => !/1[3-9]\d{9}/.test(message)), '飞书错误摘要不得输出号码')
+  assert.strictEqual(feishuSync.status(invalidPhoneDb).missingLandlordPhoneCount, 1, '后台状态必须汇总仍在架的飞书缺号房源')
+
+  const invalidPhoneUpdated = await feishuSync.applySync(invalidPhoneDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      房号: '609A',
+      户型: '一室一厅一卫',
+      押一付一: '3100',
       联系电话: ''
     })
   ], [{ name: '609A.mp4', videoUrl: 'https://example.test/609A.mp4' }], 'A1', { dryRun: true })
-  assert.strictEqual(invalidPhone.skippedInvalid, 1, '飞书缺合法房东手机号必须在素材处理前跳过')
-  assert.strictEqual(invalidPhone.created, 0)
-  assert.strictEqual(invalidPhoneDb.listings.length, 0, '飞书缺电话不得写入房源库')
-  assert.ok(invalidPhone.messages.every((message) => !/1[3-9]\d{9}/.test(message)), '飞书错误摘要不得输出号码')
+  assert.strictEqual(invalidPhoneUpdated.updated, 1, '存量无号公司房源后续仍必须继续同步租金/状态')
+  assert.strictEqual(invalidPhoneDb.listings[0].rent, 3100, '缺号不得冻结公开库存字段更新')
+  assert.strictEqual(invalidPhoneDb.listings[0].landlordPhone, '', '更新后仍不得伪造号码')
 
   const matched = await feishuSync.applySync(db, [
     row({
