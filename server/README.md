@@ -287,6 +287,7 @@ token 还签入账号级 `tokenVersion`：`POST /mini/auth/logout`、用户自�
 - 二房东房源、业主房源必须带真实视频，`videoUrl` 或 `videoKey` 至少有一个。
 - 视频文件本体不进 `db.json`，房源只保存访问地址或 OSS 对象 Key。
 - 有 `videoKey` 时，详情接口会生成短期签名播放地址，默认有效期由 `ALI_OSS_READ_URL_EXPIRE_SECONDS` 控制，当前默认 `900` 秒。
+- 手机拍摄的 MP4 可能实际使用 HEVC/H.265；Chrome/Edge 无法解码时，后台审核页会在原播放器报错后自动调用管理员鉴权接口，按需转为 H.264/yuv420p + AAC，再以 Blob URL 回填播放器。原 OSS 对象和房源记录保持不变；兼容接口只读取服务端持久且符合 `ALI_OSS_UPLOAD_DIR` 前缀/安全格式的 `videoKey`，不接受客户端提交 URL/Key。
 
 房源可见性：
 
@@ -480,9 +481,26 @@ ALI_OSS_UPLOAD_DIR=house-videos
 ALI_OSS_MAX_VIDEO_MB=300
 ALI_OSS_POLICY_EXPIRE_SECONDS=900
 ALI_OSS_READ_URL_EXPIRE_SECONDS=900
+# 后台审核 HEVC 兼容预览（均可选；路径必须为绝对路径）
+VIDEO_PREVIEW_FFMPEG_PATH=/usr/bin/ffmpeg
+VIDEO_PREVIEW_MAX_CONCURRENT=1
+VIDEO_PREVIEW_TIMEOUT_MS=300000
+VIDEO_PREVIEW_MAX_DURATION_SECONDS=300
+VIDEO_PREVIEW_MAX_OUTPUT_MB=200
+# 仅当 Node 以 root 运行时，用于把 ffmpeg 子进程降权；不得配置为 0
+VIDEO_PREVIEW_UID=65534
+VIDEO_PREVIEW_GID=65534
 ```
 
 不要把 AccessKey、Token、私钥或 `.env` 写入仓库。
+
+兼容预览不把 OSS 签名 URL 放进浏览器地址、ffmpeg 参数或错误正文：Node 只允许 HTTPS、精确 OSS 主机和精确对象路径，拒绝重定向；源对象必须给出合法 `Content-Length`，完整下载时同时累计限长，并要求实际字节数与声明值精确一致。下载内容先进入随机 `0700` 目录内以 `wx` 创建的 `0600` 临时文件；写入关闭后只读打开，立即删除文件路径与空目录，只把匿名文件描述符继承为 ffmpeg 的 fd 3。这样既支持 `moov` 位于文件尾部、必须 seek 的普通手机 MP4，也不会把临时路径或签名地址暴露给子进程。
+
+ffmpeg 只开放 `fd,pipe` 协议，固定用 `-fd 3 -f mov -i fd:` 读取上述匿名可寻址输入，输出仍走 `pipe:1`；输入解码器只允许 HEVC/H.264/AAC，且在解码前限制单帧不超过 4096×4096。子进程使用绝对路径、关闭 stdin、最小无密钥环境和非应用工作目录，Node 为 root 时自动降到非 root UID/GID。解码/编码线程、探测量、流数量、1920×1080 输出盒、30fps、码率、时长和输出字节均受限，响应明确 `Accept-Ranges: none`。
+
+默认最多同时生成 1 路、最长 5 分钟、输出最多 200 MiB；并发名额覆盖“完整下载落盘 + 转码”全过程。成功、源读取失败、长度不一致、临时存储失败、客户端断开、超时、ffmpeg 启动/转码失败和输出越界都会在返回结论前关闭文件描述符并清理临时目录。后台切换栏目、会话失效、页面退出或请求断开都会暂停审核播放器、中止 OSS 上游和 ffmpeg，并回收 Blob URL；BFCache 返回时已释放预览恢复为可重试状态。浏览器只有在响应 MIME 为 `video/mp4` 且播放器触发 `loadedmetadata/canplay` 后才显示成功，Blob 解码失败会恢复重试入口；无 AbortController 时也用请求代次隔离迟到成功/失败。服务器缺 ffmpeg、临时存储不可用、源对象不可读、超时或编码损坏时均返回脱敏错误，不回显对象 Key、签名、临时路径或 OSS 响应正文。
+
+`deploy/install-on-server.sh` 不自动安装或升级 ffmpeg。每次发布前必须在目标服务器只读确认 `VIDEO_PREVIEW_FFMPEG_PATH` 存在、ffmpeg 启用了 `fd` 协议，并用 `mdat` 在前、`moov` 在尾的 HEVC+AAC 样本按本项目固定 fd 3 参数真实转码；`ffprobe` 输出必须为 H.264/yuv420p + AAC。缺少 `fd`、`libx264`、AAC 或任一固定参数即停止发布，不得用 faststart/纯管道样本或模拟测试代替生产预检。
 
 ## 管理后台
 
@@ -514,6 +532,7 @@ Authorization: Bearer <admin-token>
 - `GET /admin/launch-check`
 - `GET /admin/env-template`
 - `GET /admin/listings`
+- `GET /admin/listings/:id/video-compatible-preview`（Bearer 鉴权；只按受控上传目录内的房源持久 `videoKey` 生成 H.264 审核预览）
 - `GET /admin/expired-listings`
 - `POST /admin/expired-listings/:id/restore`
 - `GET /admin/footprints`

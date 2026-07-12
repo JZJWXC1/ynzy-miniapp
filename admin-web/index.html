@@ -658,12 +658,46 @@
     }
 
     .review-video-link {
-      display: block;
-      padding: 12px 14px;
+      display: inline-flex;
+      align-items: center;
       color: var(--pine);
       font-weight: 900;
       text-decoration: none;
       word-break: break-all;
+    }
+
+    .review-video-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 14px;
+    }
+
+    .review-video-compat-button {
+      min-height: 36px;
+      padding: 8px 12px;
+      border: 1px solid var(--pine);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--pine);
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .review-video-compat-button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    .review-video-status {
+      min-height: 20px;
+      margin: 0;
+      padding: 0 14px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
     }
 
     .review-detail-grid {
@@ -2342,15 +2376,38 @@
       return pickText(item.videoMaterialStatus, item.video, '缺视频');
     }
 
+    function safeReviewVideoUrl(value) {
+      const url = String(value || '').trim();
+      if (/^https:\/\/[^\s]+$/i.test(url)) return url;
+      if (/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(url)) return url;
+      return '';
+    }
+
     function renderReviewVideo(item) {
-      const videoUrl = pickText(item.videoPreviewUrl, item.videoUrl);
-      const sourceUrl = pickText(item.videoUrl, videoUrl);
+      const videoUrl = safeReviewVideoUrl(pickText(item.videoPreviewUrl, item.videoUrl));
+      // 私有桶原始 videoUrl 通常是未签名地址；新窗口入口也必须优先使用本次 API 返回的签名地址。
+      const sourceUrl = videoUrl;
       const videoKey = pickText(item.videoKey);
       if (videoUrl) {
         return `
           <div class="review-video">
-            <video controls preload="metadata" playsinline src="${safeAttr(videoUrl)}"></video>
-            <a class="review-video-link" href="${safeAttr(sourceUrl)}" target="_blank" rel="noopener">播放失败时打开原视频</a>
+            <video
+              controls
+              preload="metadata"
+              playsinline
+              data-review-video
+              data-listing-id="${safeAttr(item.id)}"
+              data-review-video-source="${safeAttr(videoUrl)}"
+            ></video>
+            <div class="review-video-actions">
+              <a class="review-video-link" href="${safeAttr(sourceUrl)}" target="_blank" rel="noopener">在新窗口打开原视频</a>
+              <button
+                type="button"
+                class="review-video-compat-button"
+                title="生成浏览器兼容的 H.264 审核预览"
+              >&#9654; 兼容播放</button>
+            </div>
+            <p class="review-video-status" data-review-video-status hidden aria-live="polite"></p>
           </div>
         `;
       }
@@ -2361,6 +2418,262 @@
           </div>
         </div>
       `;
+    }
+
+    function releaseReviewVideoObjectUrls(container) {
+      if (!container || !container.querySelectorAll) return;
+      container.querySelectorAll('video[data-review-video]').forEach((video) => {
+        const previousState = String(video.dataset.compatibilityState || '');
+        const previousRequestId = Number(video.dataset.compatibilityRequestId || 0);
+        video.dataset.compatibilityRequestId = String(
+          Number.isSafeInteger(previousRequestId) && previousRequestId >= 0 ? previousRequestId + 1 : 1
+        );
+        if (typeof video.pause === 'function') video.pause();
+        if (video.compatibilityAbortController) {
+          video.compatibilityAbortController.abort();
+          video.compatibilityAbortController = null;
+        }
+        const objectUrl = video.dataset.compatibilityObjectUrl;
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+          if (String(video.src || '') === objectUrl) {
+            if (typeof video.removeAttribute === 'function') video.removeAttribute('src');
+            if (typeof video.load === 'function') video.load();
+          }
+        }
+        video.dataset.compatibilityState = 'idle';
+        if (objectUrl || previousState === 'loading' || previousState === 'ready') {
+          const wrapper = typeof video.closest === 'function' ? video.closest('.review-video') : null;
+          const status = wrapper && wrapper.querySelector('[data-review-video-status]');
+          const retryButton = wrapper && wrapper.querySelector('.review-video-compat-button');
+          if (status) {
+            status.hidden = false;
+            status.textContent = '兼容预览已释放，请重新生成。';
+          }
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+        }
+      });
+    }
+
+    function releaseAllReviewVideoResources() {
+      releaseReviewVideoObjectUrls(listingReviewDetail);
+      releaseReviewVideoObjectUrls(expiredListingDetail);
+    }
+
+    function reviewVideoAbortError() {
+      const abortError = new Error('兼容预览请求已取消');
+      abortError.name = 'AbortError';
+      return abortError;
+    }
+
+    function waitForReviewVideoPlayable(video, signal, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        function cleanup() {
+          if (timer) clearTimeout(timer);
+          video.removeEventListener('loadedmetadata', onPlayable);
+          video.removeEventListener('canplay', onPlayable);
+          video.removeEventListener('error', onError);
+          if (signal) signal.removeEventListener('abort', onAbort);
+        }
+
+        function finish(callback, value) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback(value);
+        }
+
+        function onPlayable() {
+          finish(resolve);
+        }
+
+        function onError() {
+          finish(reject, new Error('浏览器仍无法解码兼容预览，请重新上传通用 MP4'));
+        }
+
+        function onAbort() {
+          finish(reject, reviewVideoAbortError());
+        }
+
+        video.addEventListener('loadedmetadata', onPlayable);
+        video.addEventListener('canplay', onPlayable);
+        video.addEventListener('error', onError);
+        if (signal) {
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+        timer = setTimeout(() => {
+          finish(reject, new Error('兼容预览加载超时，请稍后重试'));
+        }, timeoutMs);
+      });
+    }
+
+    function isReviewVideoResponse(response) {
+      const contentType = String(response && response.headers && response.headers.get
+        ? response.headers.get('content-type')
+        : '').split(';')[0].trim().toLowerCase();
+      return contentType === 'video/mp4';
+    }
+
+    async function loadCompatibleReviewVideo(video) {
+      if (!video || !video.dataset) return;
+      if (video.dataset.compatibilityState === 'loading') return;
+
+      const wrapper = video.closest('.review-video');
+      const status = wrapper && wrapper.querySelector('[data-review-video-status]');
+      const retryButton = wrapper && wrapper.querySelector('.review-video-compat-button');
+      const listingId = String(video.dataset.listingId || '').trim();
+      if (!listingId || !canUseAdminApi() || !adminToken) {
+        throw new Error('管理员登录已失效，请重新登录后生成兼容预览');
+      }
+
+      video.dataset.compatibilityState = 'loading';
+      if (retryButton) retryButton.disabled = true;
+      if (status) {
+        status.hidden = false;
+        status.textContent = '正在生成浏览器兼容预览，请稍候…';
+      }
+
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const sessionToken = adminToken;
+      const previousRequestId = Number(video.dataset.compatibilityRequestId || 0);
+      const requestId = String(
+        Number.isSafeInteger(previousRequestId) && previousRequestId >= 0 ? previousRequestId + 1 : 1
+      );
+      video.dataset.compatibilityRequestId = requestId;
+      let createdObjectUrl = '';
+      video.compatibilityAbortController = controller;
+      try {
+        const response = await fetch(`/admin/listings/${encodeURIComponent(listingId)}/video-compatible-preview`, {
+          headers: {
+            Accept: 'video/mp4',
+            Authorization: `Bearer ${adminToken}`
+          },
+          signal: controller ? controller.signal : undefined
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          if (response.status === 401 && typeof clearAdminSession === 'function') {
+            clearAdminSession(body.message || '管理员登录已失效，请重新登录。');
+          }
+          throw new Error(body.message || '兼容预览生成失败，请稍后重试');
+        }
+        if (!isReviewVideoResponse(response)) {
+          throw new Error('服务器未返回有效的 MP4 兼容预览');
+        }
+        const blob = await response.blob();
+        if (!blob || !blob.size) throw new Error('兼容预览为空，请重新上传通用 MP4');
+        const blobType = String(blob.type || '').split(';')[0].trim().toLowerCase();
+        if (blobType && blobType !== 'video/mp4') {
+          throw new Error('兼容预览文件类型无效，请稍后重试');
+        }
+        if (sessionToken !== adminToken
+          || video.compatibilityAbortController !== controller
+          || video.dataset.compatibilityRequestId !== requestId) {
+          throw reviewVideoAbortError();
+        }
+
+        const previousObjectUrl = video.dataset.compatibilityObjectUrl;
+        if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
+        const objectUrl = URL.createObjectURL(blob);
+        createdObjectUrl = objectUrl;
+        video.dataset.compatibilityObjectUrl = objectUrl;
+        const playable = waitForReviewVideoPlayable(video, controller ? controller.signal : null);
+        video.src = objectUrl;
+        video.load();
+        await playable;
+        if (sessionToken !== adminToken
+          || video.compatibilityAbortController !== controller
+          || video.dataset.compatibilityRequestId !== requestId) {
+          throw reviewVideoAbortError();
+        }
+        video.dataset.compatibilityState = 'ready';
+        if (status) {
+          status.hidden = false;
+          status.textContent = '兼容预览已生成，可以播放审核。';
+        }
+        if (retryButton) retryButton.hidden = true;
+        video.addEventListener('error', () => {
+          if (video.dataset.compatibilityState !== 'ready') return;
+          if (video.dataset.compatibilityObjectUrl !== objectUrl) return;
+          URL.revokeObjectURL(objectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+          video.dataset.compatibilityState = 'failed';
+          if (status) {
+            status.hidden = false;
+            status.textContent = '兼容预览播放失败，请重试或重新上传通用 MP4。';
+          }
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+        }, { once: true });
+      } catch (error) {
+        if (createdObjectUrl && video.dataset.compatibilityObjectUrl === createdObjectUrl) {
+          URL.revokeObjectURL(createdObjectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+        }
+        if (video.dataset.compatibilityRequestId !== requestId) {
+          return;
+        }
+        if (sessionToken !== adminToken) {
+          if (video.dataset.compatibilityState === 'loading') video.dataset.compatibilityState = 'idle';
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+          return;
+        }
+        if (error && error.name === 'AbortError') {
+          if (video.dataset.compatibilityState === 'loading') video.dataset.compatibilityState = 'idle';
+          return;
+        }
+        video.dataset.compatibilityState = 'failed';
+        const rawMessage = String(error && error.message ? error.message : '');
+        const friendlyMessage = /failed to fetch|networkerror|load failed/i.test(rawMessage)
+          ? '兼容预览生成中断，请稍后重试。'
+          : (rawMessage || '兼容预览生成失败，请稍后重试。');
+        if (status) {
+          status.hidden = false;
+          status.textContent = friendlyMessage;
+        }
+        if (retryButton) {
+          retryButton.hidden = false;
+          retryButton.disabled = false;
+        }
+        throw new Error(friendlyMessage);
+      } finally {
+        if (video.compatibilityAbortController === controller
+          && video.dataset.compatibilityRequestId === requestId) {
+          video.compatibilityAbortController = null;
+        }
+        if (retryButton && video.dataset.compatibilityState !== 'loading') retryButton.disabled = false;
+      }
+    }
+
+    function activateReviewVideos(container) {
+      if (!container || !container.querySelectorAll) return;
+      container.querySelectorAll('video[data-review-video]').forEach((video) => {
+        const sourceUrl = String(video.dataset.reviewVideoSource || '').trim();
+        if (!sourceUrl) return;
+        // 先监听错误再赋 src，避免私有桶响应很快时漏掉 HEVC/损坏媒体错误。
+        video.addEventListener('error', () => {
+          if (video.dataset.compatibilityState) return;
+          loadCompatibleReviewVideo(video).catch(() => {});
+        }, { once: true });
+        video.src = sourceUrl;
+        video.load();
+      });
     }
 
     function roomPositionText(item) {
@@ -2488,12 +2801,14 @@
     }
 
     function showListingReviewList() {
+      releaseReviewVideoObjectUrls(listingReviewDetail);
       listingReviewList.hidden = false;
       listingReviewDetail.hidden = true;
       listingReviewDetail.innerHTML = '';
     }
 
     function showExpiredListingList() {
+      releaseReviewVideoObjectUrls(expiredListingDetail);
       expiredListingList.hidden = false;
       expiredListingDetail.hidden = true;
       expiredListingDetail.innerHTML = '';
@@ -2511,9 +2826,11 @@
         alert('未找到这套待审核房源，请刷新列表后重试。');
         return;
       }
+      releaseReviewVideoObjectUrls(listingReviewDetail);
       listingReviewDetail.innerHTML = renderDetailPage(item, 'review');
       listingReviewList.hidden = true;
       listingReviewDetail.hidden = false;
+      activateReviewVideos(listingReviewDetail);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -2523,9 +2840,11 @@
         alert('未找到这套废房源，请刷新列表后重试。');
         return;
       }
+      releaseReviewVideoObjectUrls(expiredListingDetail);
       expiredListingDetail.innerHTML = renderDetailPage(item, 'expired');
       expiredListingList.hidden = true;
       expiredListingDetail.hidden = false;
+      activateReviewVideos(expiredListingDetail);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -4367,6 +4686,7 @@
     }
 
     function clearAdminSession(message) {
+      releaseAllReviewVideoResources();
       adminToken = '';
       currentAdminId = '';
       sessionStorage.removeItem('ynzy_admin_token');
@@ -4535,6 +4855,18 @@
         return;
       }
 
+      const compatibleVideoButton = event.target.closest('.review-video-compat-button');
+      if (compatibleVideoButton && !compatibleVideoButton.disabled) {
+        const wrapper = compatibleVideoButton.closest('.review-video');
+        const video = wrapper && wrapper.querySelector('video[data-review-video]');
+        if (video) {
+          loadCompatibleReviewVideo(video).catch((error) => {
+            showAdminToast(error.message || '兼容预览生成失败，请稍后重试。');
+          });
+        }
+        return;
+      }
+
       const backReviewButton = event.target.closest('.back-review-list-button');
       if (backReviewButton) {
         showListingReviewList();
@@ -4593,6 +4925,7 @@
 
     document.querySelectorAll('.nav-button').forEach((button) => {
       button.addEventListener('click', () => {
+        releaseAllReviewVideoResources();
         document.querySelectorAll('.nav-button').forEach((item) => item.classList.remove('active'));
         document.querySelectorAll('.panel').forEach((item) => item.classList.remove('active'));
         button.classList.add('active');
@@ -4604,6 +4937,8 @@
         if (button.dataset.panel === 'assistantTraces') renderAssistantTraces().catch(() => {});
       });
     });
+
+    window.addEventListener('pagehide', releaseAllReviewVideoResources);
 
     [areaFilter, blockFilter, communityFilter, sourceFilter, statusFilter, missingVideoFilter].forEach((item) => {
       item.addEventListener('input', () => {

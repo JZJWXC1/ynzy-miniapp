@@ -14,6 +14,7 @@ const asrRealtime = require('./asr-realtime')
 const assistantService = require('./assistant-service')
 const backup = require('./backup')
 const oss = require('./oss')
+const adminVideoPreview = require('./admin-video-preview')
 const wxpay = require('./wxpay')
 const { hashPassword, verifyPassword } = require('./auth-util')
 const { parseMultipartForm } = require('./multipart')
@@ -2234,6 +2235,31 @@ async function handleAdmin(req, res, pathname, searchParams) {
       community: searchParams.get('community') || '',
       source: searchParams.get('source') || ''
     })))
+  }
+  const adminVideoPreviewMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/video-compatible-preview$/)
+  if (method === 'GET' && adminVideoPreviewMatch) {
+    let listingId = ''
+    try {
+      listingId = decodeURIComponent(adminVideoPreviewMatch[1])
+    } catch (error) {
+      const invalidIdError = new Error('房源编号无效')
+      invalidIdError.statusCode = 400
+      throw invalidIdError
+    }
+    const listing = (db.listings || []).find((item) => (
+      item && !item.deleted && String(item.id) === listingId
+    ))
+    if (!listing || !adminVideoPreview.isManagedVideoObjectKey(listing.videoKey)) {
+      const error = new Error('房源没有可生成兼容预览的视频')
+      error.statusCode = 404
+      throw error
+    }
+    // 源对象只取服务端持久、且仍符合受控上传目录规则的 videoKey；不接受客户端 URL/Key。
+    return adminVideoPreview.streamCompatiblePreview({
+      request: req,
+      response: res,
+      objectKey: listing.videoKey
+    })
   }
   const adminExpiredRestoreMatch = pathname.match(/^\/admin\/expired-listings\/([^/]+)\/restore$/)
   if (method === 'POST' && adminExpiredRestoreMatch) {

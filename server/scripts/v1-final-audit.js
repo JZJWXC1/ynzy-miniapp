@@ -58,6 +58,8 @@ const criticalScripts = [
   'server/scripts/mini-pending-no-data-v1-test.js',
   // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
   'server/scripts/oss-video-snapshot-v1-test.js',
+  // 后台审核视频：HEVC 兼容预览必须经管理员鉴权，并锁定受控 Key/OSS 主机、匿名 fd 3 输入、协议白名单、降权与资源上限。
+  'server/scripts/admin-review-video-v1-test.js',
   // STS 临时凭据：GET/快照/PUT 必须把 security token 纳入 V1 签名，错误正文不得回显 token。
   'server/scripts/oss-sts-signing-v1-test.js',
   // 图片错误事件晚于列表刷新时，必须按房源 id + 当时 URL 定位，禁止旧 index 误清另一套房的封面。
