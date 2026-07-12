@@ -24,22 +24,24 @@ const IV_LEN = 12
 const TAG_LEN = 16
 const HEADER_LEN = MAGIC_LEN + SALT_LEN + IV_LEN + TAG_LEN
 
-// 六个核心集合：label 用于对外汇报（与需求口径一致），key 是 db.json 真实顶层键。
+// 七个核心集合：label 用于对外汇报（与需求口径一致），key 是 db.json 真实顶层键。
 // reports/deals 在库里分别存为 clientReports/dealRecords，若按字面 key 计数会恒为 0、
-// 使往返校验形同虚设，故这里做显式映射。
+// 使往返校验形同虚设，故这里做显式映射。favorites 是后加计数项；历史备份正文与整库 SHA
+// 已覆盖收藏，但 meta.counts 没有该键，因此只允许这一新增项在旧元数据中缺省。
 const CORE_COLLECTIONS = [
   { label: 'listings', key: 'listings' },
   { label: 'users', key: 'users' },
   { label: 'reports', key: 'clientReports' },
   { label: 'deals', key: 'dealRecords' },
   { label: 'commissionRecords', key: 'commissionRecords' },
-  { label: 'footprints', key: 'footprints' }
+  { label: 'footprints', key: 'footprints' },
+  { label: 'favorites', key: 'favorites', optionalInLegacyMeta: true }
 ]
 
 const ALERT_KINDS = {
   BACKUP_FAILED: 'BACKUP_FAILED', // 生成加密备份失败（读源/加密/写盘任一步）
   BACKUP_VERIFY_FAILED: 'BACKUP_VERIFY_FAILED', // 新备份即时自检（解密+计数往返）不通过
-  BACKUP_EMPTY_SOURCE: 'BACKUP_EMPTY_SOURCE', // 跨备份回归：整库六项全为 0，但上一份备份有数据（疑似源被截断/读空）
+  BACKUP_EMPTY_SOURCE: 'BACKUP_EMPTY_SOURCE', // 跨备份回归：整库七项全为 0，但上一份备份有数据（疑似源被截断/读空）
   BACKUP_REMOTE_REQUIRED: 'BACKUP_REMOTE_REQUIRED', // 未配置 BACKUP_REMOTE_CMD 且未显式允许仅本地 → 未达成异地目标
   REMOTE_UPLOAD_FAILED: 'REMOTE_UPLOAD_FAILED', // 异地上传命令失败
   RESTORE_MISMATCH: 'RESTORE_MISMATCH', // 恢复演练数量往返校验不符
@@ -48,6 +50,7 @@ const ALERT_KINDS = {
 }
 
 const SCHEMA = 'ynzy-db-backup/1'
+const CORE_COUNTS_VERSION = 2
 
 // ---------- 计数 ----------
 
@@ -175,6 +178,7 @@ function createBackup({ dataFile, stageDir, passphrase, now }) {
   const dbSha256 = crypto.createHash('sha256').update(JSON.stringify(db)).digest('hex')
   const meta = {
     schema: SCHEMA,
+    countsVersion: CORE_COUNTS_VERSION,
     createdAtMs: nowMs,
     createdAt: new Date(nowMs).toISOString(),
     dataFile: path.basename(dataFile),
@@ -260,16 +264,47 @@ function restoreDrill({ backupFile, passphrase, tempDir, now }) {
     const counts = countCoreCollections(reparsed)
     result.counts = counts
 
-    if (!meta || !meta.counts) {
+    if (!meta || !meta.counts || typeof meta.counts !== 'object' || Array.isArray(meta.counts)) {
       result.error = '备份缺少 meta.counts，无法做往返一致性校验'
       return result
     }
 
-    // 信封自洽校验：恢复出的六项数量 逐项 == 备份时刻记录的源数量（meta.counts）。
+    const hasCountsVersion = Object.prototype.hasOwnProperty.call(meta, 'countsVersion')
+    if (hasCountsVersion && meta.countsVersion !== CORE_COUNTS_VERSION) {
+      result.error = `不支持的核心计数版本：${String(meta.countsVersion)}`
+      return result
+    }
+
+    // 所有由本备份模块生成的历史信封自首版起就带整库 SHA。它既是字段级完整性二次防线，
+    // 也是“旧计数尚无 favorites”兼容的可信锚点；缺失或格式非法时不得把任意信封当历史好备份放行。
+    if (typeof meta.dbSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(meta.dbSha256)) {
+      result.dbSha256Match = false
+      result.error = '备份缺少有效的 db 内容哈希，无法确认整库完整性'
+      return result
+    }
+    const actualSha256 = crypto.createHash('sha256').update(dbJson).digest('hex')
+    result.dbSha256Match = actualSha256 === meta.dbSha256.toLowerCase()
+    if (!result.dbSha256Match) {
+      result.error = 'db 内容哈希与备份记录不一致（数量相同但内容被改动/损坏）'
+      return result
+    }
+
+    // 信封自洽校验：恢复出的七项数量逐项 == 备份时刻记录的源数量（meta.counts）。
     // 说明：meta.counts 与 db 同在一个信封里，本项确保备份内部一致、完整可恢复、解析路径正确；
     // “源被读成空/截断”这类问题由 runBackup 里对上一份备份的跨备份计数回归检查兜底，二者互补。
-    for (const { label } of CORE_COLLECTIONS) {
-      const expected = Number.isFinite(meta.counts[label]) ? meta.counts[label] : 0
+    for (const { label, optionalInLegacyMeta } of CORE_COLLECTIONS) {
+      const hasCount = Object.prototype.hasOwnProperty.call(meta.counts, label)
+      // 真正的历史格式没有 countsVersion；只有其整库 SHA 已在上方验证通过时，才允许缺后加的收藏计数。
+      if (!hasCount && optionalInLegacyMeta && !hasCountsVersion) continue
+      if (!hasCount) {
+        result.mismatches.push({ collection: label, expected: '非负整数计数', got: '缺失' })
+        continue
+      }
+      const expected = meta.counts[label]
+      if (!Number.isSafeInteger(expected) || expected < 0) {
+        result.mismatches.push({ collection: label, expected: '非负整数计数', got: expected })
+        continue
+      }
       const got = counts[label]
       if (expected !== got) result.mismatches.push({ collection: label, expected, got })
     }
@@ -277,16 +312,6 @@ function restoreDrill({ backupFile, passphrase, tempDir, now }) {
       result.error = '往返数量校验不符：' +
         result.mismatches.map((m) => `${m.collection} 期望 ${m.expected} 实得 ${m.got}`).join('；')
       return result
-    }
-
-    // 内容哈希：即便数量相同，字段级篡改/损坏也能被发现（GCM 之外的二次防线）。
-    if (meta.dbSha256) {
-      const actual = crypto.createHash('sha256').update(dbJson).digest('hex')
-      result.dbSha256Match = actual === meta.dbSha256
-      if (!result.dbSha256Match) {
-        result.error = 'db 内容哈希与备份记录不一致（数量相同但内容被改动/损坏）'
-        return result
-      }
     }
 
     result.ok = true
@@ -395,7 +420,23 @@ function readBackupMeta(file, passphrase) {
   }
 }
 
-// 判定“疑似源被截断/读成空”：本次六项计数全为 0，而上一份备份存在任一 > 0。
+// 跨备份回归必须以“上一份实际恢复正文”为基线，而不能只信历史 meta.counts：
+// M7 前正文已包含 favorites，但旧计数没有该键。只有整库 SHA 有效且匹配时才返回实际七项计数。
+function readBackupBaselineCounts(file, passphrase) {
+  try {
+    const { meta, db } = parseEnvelope(decryptPayload(fs.readFileSync(file), passphrase))
+    if (!meta || !meta.counts || typeof meta.counts !== 'object' || Array.isArray(meta.counts)) return null
+    if (typeof meta.dbSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(meta.dbSha256)) return null
+    const dbJson = JSON.stringify(db)
+    const actual = crypto.createHash('sha256').update(dbJson).digest('hex')
+    if (actual !== meta.dbSha256.toLowerCase()) return null
+    return countCoreCollections(db)
+  } catch (error) {
+    return null
+  }
+}
+
+// 判定“疑似源被截断/读成空”：本次七项计数全为 0，而上一份备份存在任一 > 0。
 // 只在“整库全空 vs 上一份有数据”这一无歧义信号上触发，避免对正常的单集合清理误报。
 function isEmptySourceRegression(newCounts, priorCounts) {
   if (!priorCounts || !newCounts) return false
@@ -452,14 +493,14 @@ function runBackup(options) {
   }
 
   // 2.1) 跨备份计数回归：信封“自比自”无法发现“源被截断/读成空”。用上一份备份的计数做独立比对——
-  //     若本次六项全为 0 而上一份有数据，几乎必是源被清空/截断，此空备份不可信：告警、删除、判失败，
+  //     若本次七项全为 0 而上一份有数据，几乎必是源被清空/截断，此空备份不可信：告警、删除、判失败，
   //     避免把一份丢光生产数据的“成功备份”上传异地并进入轮换。（时间型保留策略保证旧的好备份仍在。）
   if (priorLatest) {
-    const priorMeta = readBackupMeta(priorLatest.file, passphrase)
-    if (priorMeta && isEmptySourceRegression(created.meta.counts, priorMeta.counts)) {
+    const priorCounts = readBackupBaselineCounts(priorLatest.file, passphrase)
+    if (priorCounts && isEmptySourceRegression(created.meta.counts, priorCounts)) {
       alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_EMPTY_SOURCE,
-        `疑似源被截断：本次备份六项计数全为 0，但上一份备份（${priorLatest.name}）仍有数据`,
-        { file: created.fileName, newCounts: created.meta.counts, priorCounts: priorMeta.counts }))
+        `疑似源被截断：本次备份七项计数全为 0，但上一份备份（${priorLatest.name}）仍有数据`,
+        { file: created.fileName, newCounts: created.meta.counts, priorCounts }))
       try { fs.unlinkSync(created.file) } catch (error) { /* 忽略 */ }
       result.file = null
       return result
@@ -554,6 +595,7 @@ function runRestoreDrill(options) {
 
 module.exports = {
   CORE_COLLECTIONS,
+  CORE_COUNTS_VERSION,
   ALERT_KINDS,
   SCHEMA,
   countCoreCollections,
@@ -569,6 +611,7 @@ module.exports = {
   listBackups,
   readSourceDb,
   readBackupMeta,
+  readBackupBaselineCounts,
   isEmptySourceRegression,
   createBackup,
   restoreDrill,

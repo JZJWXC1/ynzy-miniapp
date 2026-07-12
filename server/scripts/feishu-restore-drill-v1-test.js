@@ -32,7 +32,11 @@ function sampleDb(nListings) {
     clientReports: [],
     dealRecords: [{ id: 'D1' }],
     commissionRecords: [],
-    footprints: [{ id: 'F1' }, { id: 'F2' }]
+    footprints: [{ id: 'F1' }, { id: 'F2' }],
+    favorites: [
+      { id: 'FV1', userId: 'U1', listingId: 'L0' },
+      { id: 'FV2', userId: 'U1', listingId: 'L1' }
+    ]
   }
 }
 
@@ -103,7 +107,11 @@ async function run() {
     const drill = backup.restoreDrill({ backupFile: dest, passphrase: PW })
     assert.ok(drill.ok, '从飞书拉回的备份应能通过往返演练')
     assert.deepStrictEqual(drill.counts, newer.counts, '恢复计数应等于最新那份的源计数')
-    assert.deepStrictEqual(drill.counts, { listings: 5, users: 1, reports: 0, deals: 1, commissionRecords: 0, footprints: 2 }, '计数逐项正确')
+    assert.deepStrictEqual(
+      drill.counts,
+      { listings: 5, users: 1, reports: 0, deals: 1, commissionRecords: 0, footprints: 2, favorites: 2 },
+      '七项计数逐项正确，飞书下载与解密恢复不得漏掉收藏'
+    )
   }
 
   // 2) findLatestYgbak：忽略非 .ygbak 与越界文件名，选出最新。

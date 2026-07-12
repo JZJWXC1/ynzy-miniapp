@@ -62,6 +62,7 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 - `dealRecords`：签单记录。
 - `commissionRecords`：分佣记录。
 - `footprints`：敏感信息查看、视频转发、房态核验等留痕。
+- `favorites`：内部中介账号与房源的最小收藏关系。
 - `adminAccounts`：管理后台账号。
 - `llmConfig`：LLM 配置。
 - `uploadRecords`：上传记录。
@@ -87,10 +88,11 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
   - 自检通过后调用**异地上传钩子**，再执行**保留清理**。
 - 恢复演练 CLI：`server/scripts/restore-drill.js`
   - 解密最新（或 `--file` 指定）备份到系统临时目录，**绝不写回生产 `db.json`**。
-  - 校验 JSON 可解析，输出 `listings/users/reports/deals/commissionRecords/footprints` 六项数量。
-  - **往返一致性校验**：恢复出的六项数量必须与备份时刻记录的源数量逐项相等，任一不符即判失败。
+  - 校验 JSON 可解析，输出 `listings/users/reports/deals/commissionRecords/footprints/favorites` 七项数量。
+  - **往返一致性校验**：恢复出的七项数量必须与备份时刻记录的源数量逐项相等，任一不符即判失败。
   - 顺带做**新鲜度巡检**：最近一份备份超过 `BACKUP_MAX_AGE_HOURS`（默认 24h）即告警。
   - 说明：`reports`/`deals` 对应库内真实键 `clientReports`/`dealRecords`，计数已按真实键统计。
+  - 计数版本：新备份写入 `countsVersion=2` 并显式记录七项；缺项、非法计数或未知版本均 fail-loud。M7 之前的备份正文和整库 SHA 已覆盖 `favorites`，但 `meta.counts` 尚未单列该项；只允许无计数版本且整库 SHA 有效、匹配的真实旧格式缺省这一项，原六项仍逐项校验。
 
 #### 环境变量
 
@@ -155,7 +157,7 @@ systemctl start ynzy-feishu-drill.service && journalctl -u ynzy-feishu-drill -n 
 node scripts/restore-drill-from-feishu.js
 ```
 
-流程：取 tenant_access_token → 列云盘文件夹 → 按文件名时间戳选最新 `.ygbak` → 以二进制下载到临时目录 → 调 `restoreDrill` 解密校验。下载的是加密 `.ygbak`；解密只到临时目录、用完即清，不残留明文，也不写回生产。输出 `listings/users/reports/deals/commissionRecords/footprints` 的「备份时刻 vs 恢复出」逐项计数，逐项相等即通过；任一步失败（缺凭据/无备份/下载失败/解密失败/数量不符）非零退出。
+流程：取 tenant_access_token → 列云盘文件夹 → 按文件名时间戳选最新 `.ygbak` → 以二进制下载到临时目录 → 调 `restoreDrill` 解密校验。下载的是加密 `.ygbak`；解密只到临时目录、用完即清，不残留明文，也不写回生产。输出 `listings/users/reports/deals/commissionRecords/footprints/favorites` 的「备份时刻 vs 恢复出」逐项计数，逐项相等即通过；任一步失败（缺凭据/无备份/下载失败/解密失败/数量不符）非零退出。
 
 仍可用本机文件手动演练（不经飞书）：
 
@@ -201,7 +203,7 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 
 - `BACKUP_FAILED`：读源/加密/写盘失败。
 - `BACKUP_VERIFY_FAILED`：新备份即时自检不过（已删除坏备份）。
-- `BACKUP_EMPTY_SOURCE`：跨备份计数回归——本次备份六项计数全为 0 但上一份备份仍有数据，疑似源被截断/读空（已删除该空备份并判失败）。
+- `BACKUP_EMPTY_SOURCE`：跨备份计数回归——本次备份七项计数全为 0 但上一份备份仍有数据，疑似源被截断/读空（已删除该空备份并判失败）。上一份为 M7 前旧格式时，会先验证其整库 SHA，再从完整正文重算七项，避免旧元数据漏掉收藏。
 - `BACKUP_REMOTE_REQUIRED`：未配置 `BACKUP_REMOTE_CMD` 且未显式 `BACKUP_ALLOW_LOCAL_ONLY=1`，未达成异地目标（本地可信备份已保留，但本轮判失败）。
 - `REMOTE_UPLOAD_FAILED`：异地上传命令失败。
 - `RESTORE_MISMATCH`：恢复演练往返数量不符。
