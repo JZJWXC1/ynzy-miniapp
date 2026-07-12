@@ -311,7 +311,7 @@ token 还签入账号级 `tokenVersion`：`POST /mini/auth/logout`、用户自�
 
 详情接口只返回服务端计算的 `commissionBreakdown`，不再返回详情旧字段 `uploader`、`commissionRate`、`commissionText`。当前报备/签单写入默认暂停；保留的显式恢复实现中，签单只能从报备记录发起，房东实付佣金由 `成交月租 × 房源 landlordCommissionPercent` 自动计算，并冻结比例、总金额、维护人/带看人身份、拆分规则和月租占比快照。客户端提交任何同名金额、身份、维护人或拆分字段都无效，金额统一按分存储。
 
-历史签单只读列表与恢复确认使用同一冻结规则优先级：顶层 `deal.commissionRule` 存在时以它为准；顶层真正缺失才读取 `dealSnapshot.commissionRule`；两处都真正缺失的老记录才允许按当前房源配置回退。冻结字段只要存在但为 null、非对象、缺项或不守恒，列表不会逐字段拿当前配置补齐，而是保留原始规则、返回 `commissionIntegrity.reason=INVALID_COMMISSION_SNAPSHOT`，派生比例和预计金额均置空并显示“待复核”；确认写路径仍在任何状态/漏斗副作用前 fail-loud。后台快照摘要同样不得为异常行显示默认比例。
+历史签单只读列表与恢复确认使用同一冻结规则优先级：顶层 `deal.commissionRule` 存在时以它为准；顶层真正缺失才读取 `dealSnapshot.commissionRule`；两处都真正缺失的老记录才允许按当前房源配置回退。冻结字段只要存在但为 null、非对象、缺项或不守恒，列表不会逐字段拿当前配置补齐，而是保留原始规则、返回 `commissionIntegrity.reason=INVALID_COMMISSION_SNAPSHOT`，派生比例和预计金额均置空并显示“待复核”；确认写路径仍在任何状态/漏斗副作用前 fail-loud。比例只接受有限 number，历史兼容非空严格十进制数字字符串；null、空白、布尔、数组或对象不得借 JavaScript 强制转换伪装成 0%。后台快照摘要同样不得为异常行显示默认比例。
 
 ## 上传房源
 

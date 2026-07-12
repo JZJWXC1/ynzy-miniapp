@@ -285,6 +285,21 @@ function assertBreakdown(actual, expected, message) {
       commissionRule: { rate: 30, uploaderRate: 20 }, status: '待管理员确认'
     },
     {
+      id: 'D-RULE-NULLS', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: null, uploaderRate: null, platformRate: null }, status: '待管理员确认'
+    },
+    {
+      id: 'D-RULE-EMPTY-STRINGS', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: '', uploaderRate: '', platformRate: '' }, status: '待管理员确认'
+    },
+    {
+      id: 'D-RULE-BOOLEANS', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
+      dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
+      commissionRule: { rate: false, uploaderRate: false, platformRate: false }, status: '待管理员确认'
+    },
+    {
       id: 'D-SNAPSHOT-RULE-INCOMPLETE', listingId: 'L1', brokerId: 'U2', uploaderId: 'U1',
       dealMonthlyRentFen: 400000, landlordCommissionFen: 200000,
       dealSnapshot: { landlordCommissionPercent: 50, commissionRule: { rate: 30, uploaderRate: 20 } },
@@ -314,6 +329,9 @@ function assertBreakdown(actual, expected, message) {
     'D-RULE-NON-OBJECT',
     'D-RULE-RATE-ONLY',
     'D-RULE-MISSING-PLATFORM',
+    'D-RULE-NULLS',
+    'D-RULE-EMPTY-STRINGS',
+    'D-RULE-BOOLEANS',
     'D-SNAPSHOT-RULE-INCOMPLETE',
     'D-SNAPSHOT-RULE-CLEAN',
     'D-LEGACY-NO-RULE'
@@ -329,6 +347,9 @@ function assertBreakdown(actual, expected, message) {
     'D-RULE-NON-OBJECT',
     'D-RULE-RATE-ONLY',
     'D-RULE-MISSING-PLATFORM',
+    'D-RULE-NULLS',
+    'D-RULE-EMPTY-STRINGS',
+    'D-RULE-BOOLEANS',
     'D-SNAPSHOT-RULE-INCOMPLETE'
   ]
   for (const dirtyId of dirtyIds) {
@@ -382,6 +403,9 @@ function assertBreakdown(actual, expected, message) {
     'D-RULE-NON-OBJECT',
     'D-RULE-RATE-ONLY',
     'D-RULE-MISSING-PLATFORM',
+    'D-RULE-NULLS',
+    'D-RULE-EMPTY-STRINGS',
+    'D-RULE-BOOLEANS',
     'D-SNAPSHOT-RULE-INCOMPLETE'
   ]) {
     const beforeDirtyConfirm = JSON.stringify(db)
@@ -414,6 +438,47 @@ function assertBreakdown(actual, expected, message) {
     listingTitle: '测试房源'
   }, '带看中介')
   assert.strictEqual(invalidSummary, '分佣规则待复核', '后台快照摘要不得对脏行回退并展示默认 20%')
+}
+
+// 7) 规则类型必须严格：数组/对象不能借 Number 强转；历史严格数字字符串保持兼容。
+{
+  for (const [id, commissionRule] of [
+    ['D-RULE-ARRAYS', { rate: [0], uploaderRate: [0], platformRate: [0] }],
+    ['D-RULE-OBJECTS', { rate: { value: 0 }, uploaderRate: { value: 0 }, platformRate: { value: 0 } }]
+  ]) {
+    const db = makeDb()
+    db.listings.push(activeListing())
+    db.dealRecords.push({
+      id,
+      listingId: 'L1',
+      brokerId: 'U2',
+      uploaderId: 'U1',
+      landlordCommissionFen: 200000,
+      commissionRule,
+      status: '待管理员确认'
+    })
+    const row = domain.adminDealRows(db)[0]
+    assert.deepStrictEqual(row.commissionIntegrity, { valid: false, reason: 'INVALID_COMMISSION_SNAPSHOT' }, `${id} 不得借强制类型转换伪装合法`)
+    const before = JSON.stringify(db)
+    assert.throws(() => domain.confirmDeal(db, 'ADM', id), /分佣规则异常/)
+    assert.strictEqual(JSON.stringify(db), before, `${id} 确认失败不得有副作用`)
+  }
+
+  const stringDb = makeDb()
+  stringDb.listings.push(activeListing())
+  stringDb.dealRecords.push({
+    id: 'D-RULE-NUMERIC-STRINGS',
+    listingId: 'L1',
+    brokerId: 'U2',
+    uploaderId: 'U1',
+    landlordCommissionFen: 200000,
+    commissionRule: { rate: '30', uploaderRate: '20', platformRate: '10' },
+    status: '待管理员确认'
+  })
+  const stringRow = domain.adminDealRows(stringDb)[0]
+  assert.deepStrictEqual(stringRow.commissionIntegrity, { valid: true, reason: '' }, '历史严格数字字符串规则应兼容读取')
+  assert.strictEqual(stringRow.expectedUploaderCommissionFen, 40000)
+  assert.strictEqual(stringRow.expectedPlatformCommissionFen, 20000)
 }
 
 console.log('listing detail commission v1 test passed')

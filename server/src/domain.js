@@ -774,9 +774,19 @@ function commissionRuleForListing(listing = {}, db = {}, uploaderId = '', closer
 // 校验：三项比例均为有限非负数；上传+平台 <= 100%；rate 与拆分一致。不符则 fail-loud（500，数据异常）。
 function assertCommissionRuleConserved(rule) {
   const r = rule || {}
-  const uploaderRate = Number(r.uploaderRate)
-  const platformRate = Number(r.platformRate)
-  const rate = Number(r.rate)
+  // 历史 JSON 允许严格十进制数字字符串，但拒绝 JS 会隐式强转成 0 的 null/空串/布尔/数组/对象。
+  // 否则一条三字段均为 null/false 的脏冻结规则会伪装成合法 0/0/0，并被确认成“不分佣”。
+  const parseRate = (value) => {
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') {
+      const text = value.trim()
+      if (/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return Number(text)
+    }
+    return Number.NaN
+  }
+  const uploaderRate = parseRate(r.uploaderRate)
+  const platformRate = parseRate(r.platformRate)
+  const rate = parseRate(r.rate)
   const finiteNonNeg = (n) => Number.isFinite(n) && n >= 0
   if (!finiteNonNeg(uploaderRate) || !finiteNonNeg(platformRate) || !finiteNonNeg(rate)) {
     const error = new Error('分佣规则异常：比例必须为有限非负数，拒绝结算以防超发')

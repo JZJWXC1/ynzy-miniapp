@@ -56,7 +56,7 @@ function makeDb() {
     }, {
       id: 'D-DIRTY-HISTORY', reportId: 'R-HISTORY', listingId: 'L1', brokerId: 'U2',
       uploaderId: 'U1', status: '待管理员确认', landlordCommissionFen: 150000,
-      commissionRule: { rate: 30, uploaderRate: 20 },
+      commissionRule: { rate: null, uploaderRate: null, platformRate: null },
       commissionBreakdown: { landlordPercentOfRent: 50, viewingAgentPercentOfRent: 0, maintainerPercentOfRent: 30, platformPercentOfRent: 30 }
     }],
     commissionRecords: [{
