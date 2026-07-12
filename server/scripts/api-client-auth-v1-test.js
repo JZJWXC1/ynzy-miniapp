@@ -131,6 +131,7 @@ async function run() {
     assert.strictEqual(pendingRequest.header.Authorization, 'Bearer TOKEN_A', '请求必须快照实际发送的 token')
 
     env.globalData.authToken = 'TOKEN_B'
+    env.globalData.authSessionKey = 'auth-session-B'
     env.globalData.userId = 'U2'
     env.globalData.user = { id: 'U2' }
     env.globalData.apiConfig.token = 'TOKEN_B'
@@ -158,6 +159,7 @@ async function run() {
     assert.ok(!pendingRequest.header.Authorization, '游客请求不应带 Authorization')
 
     env.globalData.authToken = 'TOKEN_NEW'
+    env.globalData.authSessionKey = 'auth-session-new'
     env.globalData.userId = 'U2'
     env.globalData.user = { id: 'U2' }
     env.globalData.apiConfig.token = 'TOKEN_NEW'
@@ -182,6 +184,7 @@ async function run() {
     const apiClient = loadFresh()
     const request = apiClient.call({ path: '/mini/listings/ANCHOR/nearby?all=1' })
     env.globalData.authToken = ''
+    env.globalData.authSessionKey = 'guest-session-after-logout'
     env.globalData.userId = ''
     env.globalData.user = null
     env.globalData.apiConfig.token = ''
@@ -195,7 +198,15 @@ async function run() {
   console.log('api-client-auth-v1-test passed')
 }
 
-run().catch((error) => {
+function runWithTimeout() {
+  let timer = null
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('api-client-auth-v1-test 超时，可能存在未响应的鉴权重试导致假绿')), 5000)
+  })
+  return Promise.race([run(), timeout]).finally(() => clearTimeout(timer))
+}
+
+runWithTimeout().catch((error) => {
   console.error(error.stack || error.message)
   process.exit(1)
 })
