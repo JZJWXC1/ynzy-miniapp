@@ -27,6 +27,10 @@ const emptyFilters = {
   features: ''
 }
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
 function uniqueCommunities(rows) {
   const seen = new Set()
   return (rows || []).map((item) => String(item.community || '').trim()).filter(Boolean).filter((item) => {
@@ -73,9 +77,9 @@ Page({
   loadFavorites() {
     this._favoriteRequestSeq = (this._favoriteRequestSeq || 0) + 1
     const requestSeq = this._favoriteRequestSeq
-    const requestToken = String(apiClient.getAuthToken() || '')
-    if (this._favoriteAccountToken !== requestToken) {
-      this._favoriteAccountToken = requestToken
+    const requestSessionKey = currentAuthSessionKey()
+    if (this._favoriteAccountToken !== requestSessionKey) {
+      this._favoriteAccountToken = requestSessionKey
       // 换号必须在新请求返回前立即清掉旧账号行，避免 B 误看/误操作 A 的收藏。
       this.setData({ favorites: [], communityOptions: [], loadFailed: false })
     }
@@ -87,9 +91,9 @@ Page({
       apiService.getFavorites(communityQuery)
     ]).then(([favorites, communityRows]) => {
       if (this._favoriteRequestSeq !== requestSeq) return
-      const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this._favoriteAccountToken = currentToken
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this._favoriteAccountToken = currentSessionKey
         this.setData({ favorites: [], communityOptions: [], loadFailed: false, loading: false })
         return
       }
@@ -100,9 +104,9 @@ Page({
       })
     }).catch(() => {
       if (this._favoriteRequestSeq !== requestSeq) return
-      const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this._favoriteAccountToken = currentToken
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this._favoriteAccountToken = currentSessionKey
         this.setData({ favorites: [], communityOptions: [], loadFailed: false, loading: false })
         return
       }

@@ -1277,7 +1277,7 @@ function currentUser(db, userId) {
 
 function assertKnownUser(db, userId) {
   const user = userById(db, userId)
-  if (user) return user
+  if (user && !user.deleted && user.status !== '禁用' && user.status !== '已删除') return user
   const error = new Error('未登录或账号未开通，请先使用内部中介账号登录')
   error.statusCode = 403
   throw error
@@ -1313,7 +1313,9 @@ function loginByPhone(db, phone, password) {
   }
   // 软删/停用账号禁止登录：与鉴权中间件 miniUserIdFromRequest 同口径排除 deleted 与 status==='禁用'，
   // 避免给停用账号发一个随即在鉴权处失效的无用 token。同号历史软删记录保留但不放行。
-  const user = (db.users || []).find((item) => String(item.phone || '') === target && !item.deleted && item.status !== '禁用')
+  const user = (db.users || []).find((item) => (
+    String(item.phone || '') === target && !item.deleted && item.status !== '禁用' && item.status !== '已删除'
+  ))
   if (!user) {
     const error = new Error('该手机号未开通内部中介账号，请联系管理员开通')
     error.statusCode = 403
@@ -1593,12 +1595,61 @@ function deleteManagedUser(db, payload = {}) {
     throw error
   }
   const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
+  // 软删本身已会被鉴权层拒绝；仍提升版本，避免将来恢复/误改 deleted 状态时旧 token 复活。
+  revokeUserTokens(user)
   user.deleted = true
   user.status = '已删除'
   user.brokerStatus = '已删除'
   user.deletedAt = nowText
   user.deletedBy = String(payload.operator || '') || 'admin'
   return clone(user)
+}
+
+// 主动退出采用现有账号级 tokenVersion 撤销全部设备。当前 token 身份只由路由层验签结果传入，
+// 不读取客户端 body 里的 userId、版本、角色或权限字段。
+function logoutUserSessions(db, userId) {
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === userId && !item.deleted && item.status !== '禁用' && item.status !== '已删除')
+  if (!user) {
+    const error = new Error('登录用户不存在或已停用')
+    error.statusCode = 401
+    throw error
+  }
+  revokeUserTokens(user)
+  return { loggedOut: true, scope: 'all-devices' }
+}
+
+// 中介/员工账号状态与后台管理员账号状态是两套独立权限域。停用只接受严格动作，首次停用
+// 提升 tokenVersion；重复停用幂等，恢复绝不回退版本，因此停用前 token 永远不能复活。
+function setManagedUserStatus(db, payload = {}) {
+  const targetId = String(payload.id || '').trim()
+  const action = String(payload.action || '').trim().toLowerCase()
+  if (action !== 'enable' && action !== 'disable') {
+    const error = new Error('账号状态操作只允许 enable 或 disable')
+    error.statusCode = 400
+    throw error
+  }
+  db.users = db.users || []
+  const user = db.users.find((item) => item.id === targetId && !item.deleted)
+  if (!user) {
+    const error = new Error('未找到该账号')
+    error.statusCode = 404
+    throw error
+  }
+  if (user.isAdmin || /管理员/.test(String(user.role || ''))) {
+    const error = new Error('管理员账号请在后台账号列表调整状态')
+    error.statusCode = 400
+    throw error
+  }
+
+  const disabled = user.status === '禁用'
+  if (action === 'disable' && !disabled) revokeUserTokens(user)
+  const nextStatus = action === 'disable' ? '禁用' : '启用'
+  user.status = nextStatus
+  user.brokerStatus = nextStatus
+  user.statusUpdatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+  user.statusUpdatedBy = String(payload.operator || '') || 'admin'
+  return withoutSecret(user)
 }
 
 // 注册申请里存了用户自设密码的哈希（审核通过时写入新账号），列表返回给后台前必须剥离，勿外泄。
@@ -5933,6 +5984,8 @@ module.exports = {
   registerUser,
   createManagedUser,
   deleteManagedUser,
+  logoutUserSessions,
+  setManagedUserStatus,
   setManagedUserPassword,
   syncLinkedAdminUserPasswordHash,
   changeOwnPassword,

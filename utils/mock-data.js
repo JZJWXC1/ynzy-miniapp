@@ -500,6 +500,31 @@
     return clone(user);
   }
 
+  function registerUser(form) {
+    var payload = form || {};
+    var name = String(payload.name || '').trim();
+    var phone = String(payload.phone || '').trim();
+    var password = String(payload.password || '');
+    if (!name || !/^1[3-9]\d{9}$/.test(phone) || password.length < 8) {
+      var invalid = new Error('请填写姓名、11 位手机号和至少 8 位密码');
+      invalid.statusCode = 400;
+      throw invalid;
+    }
+    var existed = state.users.some(function (item) {
+      return String(item.phone || '') === phone && !item.deleted;
+    });
+    var error = new Error(existed
+      ? '该手机号已开通账号，请直接用手机号和密码登录'
+      : '已收到您的注册信息，期待和您的合作，请联系寓你住一起管理员开通账号权限');
+    error.statusCode = existed ? 409 : 403;
+    throw error;
+  }
+
+  function logout() {
+    state.currentUserId = '';
+    return { loggedOut: true, scope: 'all-devices' };
+  }
+
   function getListing(id) {
     return state.listings.find(function (listing) {
       return listing.id === id;
@@ -3335,6 +3360,8 @@
   return {
     getCurrentUser: function () { return clone(getUser()); },
     loginByPhone: loginByPhone,
+    registerUser: registerUser,
+    logout: logout,
     getHomeListings: function () { return publicListings().slice(0, 3).map(formatHomeListing); },
     getListings: getListings,
     getFavoriteIds: getFavoriteIds,

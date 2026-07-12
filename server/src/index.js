@@ -35,7 +35,7 @@ const contentTypes = {
 const COMPANY_SOURCE = '公司房源'
 const GUEST_RATE_WINDOW_MS = 60 * 1000
 const GUEST_RATE_LIMIT = 80
-const MINI_AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const MINI_AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS = Number(process.env.ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS) || 24000
 const guestRateBuckets = new Map()
 let lastGuestBucketSweep = 0
@@ -53,23 +53,40 @@ function sweepGuestRateBuckets(now) {
 }
 
 function sendJson(res, data, statusCode = 200) {
-  res.writeHead(statusCode, {
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
-  })
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    'Access-Control-Expose-Headers': 'X-Trace-Id, X-Auth-Token, X-Auth-Token-Expires-At'
+  }
+  if (res.noStore) headers['Cache-Control'] = 'no-store'
+  if (res.varyAuthorization) headers.Vary = 'Authorization'
+  // 只有最终成功的已验签小程序响应才滑动续签。登录/改密仍在 body 返回 token；退出必须禁用
+  // 此处续签，避免刚提升 tokenVersion 又把旧版本 token 发回。错误响应统一走 sendError，不续签。
+  if (statusCode >= 200 && statusCode < 300 && res.miniAuthRefresh && !res.disableMiniAuthRefresh) {
+    const auth = issueMiniAuthToken(res.miniAuthRefresh.userId, res.miniAuthRefresh.tokenVersion)
+    headers['X-Auth-Token'] = auth.token
+    headers['X-Auth-Token-Expires-At'] = String(auth.tokenExpiresAt)
+    headers['Cache-Control'] = 'no-store'
+    headers.Vary = 'Authorization'
+  }
+  res.writeHead(statusCode, headers)
   res.end(JSON.stringify({ code: 0, message: 'ok', data }))
 }
 
 function sendError(res, error) {
   const statusCode = error.statusCode || 500
-  res.writeHead(statusCode, {
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
-  })
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    'Access-Control-Expose-Headers': 'X-Trace-Id, X-Auth-Token, X-Auth-Token-Expires-At'
+  }
+  if (res.noStore) headers['Cache-Control'] = 'no-store'
+  if (res.varyAuthorization) headers.Vary = 'Authorization'
+  res.writeHead(statusCode, headers)
   res.end(JSON.stringify({ code: statusCode, message: error.message || '服务异常', data: error.data || null }))
 }
 
@@ -250,6 +267,14 @@ function readFootprintsWithLockedPrune(snapshot, reader) {
   })
 }
 
+function readMiniFootprintsWithLockedPrune(req, snapshot, userId, reader) {
+  if (domain.expiredFootprintCount(snapshot) === 0) return reader(snapshot, userId)
+  return updateMiniDb(req, (nextDb, freshUserId) => {
+    domain.pruneExpiredFootprints(nextDb)
+    return reader(nextDb, freshUserId)
+  })
+}
+
 function isGuestUser(userId) {
   return !String(userId || '').trim()
 }
@@ -358,7 +383,8 @@ function sendOptions(res) {
   res.writeHead(204, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    'Access-Control-Expose-Headers': 'X-Trace-Id, X-Auth-Token, X-Auth-Token-Expires-At'
   })
   res.end()
 }
@@ -720,18 +746,60 @@ function verifyMiniAuthToken(token) {
   return { userId, exp, tokenVersion }
 }
 
-function miniUserIdFromRequest(req, db) {
+function miniAuthContextFromRequest(req, db) {
   const token = bearerTokenFromRequest(req)
-  if (!token) return ''
+  if (!token) return null
   const payload = verifyMiniAuthToken(token)
   // 软删/停用账号的旧 token 立即失效：与后台账号鉴权（assertAdminRequest/登录）同口径排除 deleted，
   // 否则删除/停用无法即时踢掉已登录设备（旧 token 在过期前仍可访问登录态接口）。
-  const user = (db.users || []).find((item) => item.id === payload.userId && item.status !== '禁用' && !item.deleted)
+  const user = (db.users || []).find((item) => (
+    item.id === payload.userId && item.status !== '禁用' && item.status !== '已删除' && !item.deleted
+  ))
   if (!user) throw miniAuthError('登录用户不存在或已停用')
   if (payload.tokenVersion !== miniAuthTokenVersion(user)) {
     throw miniAuthError('登录状态已失效，请使用新密码重新登录')
   }
-  return user.id
+  return {
+    userId: user.id,
+    tokenVersion: miniAuthTokenVersion(user),
+    exp: payload.exp
+  }
+}
+
+function miniUserIdFromRequest(req, db) {
+  const context = miniAuthContextFromRequest(req, db)
+  return context ? context.userId : ''
+}
+
+// 所有登录态数据库写都必须在 updateDb 持锁并从最新磁盘重读后重新验签。路由锁外的 userId 只可
+// 用于同步纯读；不能跨 parseBody/await 后捕获进写事务，否则退出/停用后的在途请求仍可能落库。
+function updateMiniDb(req, mutator) {
+  return dbStore.updateDb((nextDb) => {
+    const context = miniAuthContextFromRequest(req, nextDb)
+    assertMiniLogin(context && context.userId)
+    return mutator(nextDb, context.userId, context)
+  })
+}
+
+// 外部付费/签名能力没有业务写入，但同样需要在真正调用前基于 fresh DB 重验。inspectDb
+// 使用与写事务相同的跨进程锁完成只读线性化，不刷新文件时间、不制造无意义整库写入。
+function assertFreshMiniSession(req, expectedUserId) {
+  return dbStore.inspectDb((freshDb) => {
+    const context = miniAuthContextFromRequest(req, freshDb)
+    assertMiniLogin(context && context.userId)
+    if (expectedUserId && context.userId !== expectedUserId) throw miniAuthError()
+    return context.userId
+  })
+}
+
+function clientUploadPolicyInput(body = {}) {
+  // 对象键只能由服务端随机生成；客户端只可提供非敏感文件元数据。否则可指定已知 key，
+  // 借同目录上传策略覆盖他人视频、群截图或带看证据。
+  return {
+    fileName: body.fileName,
+    mimeType: body.mimeType,
+    size: body.size
+  }
 }
 
 function miniAuthResponse(user) {
@@ -824,6 +892,19 @@ function assertAdminCapability(account) {
     error.statusCode = 403
     throw error
   }
+}
+
+function assertFreshAdminCapability(req, freshDb) {
+  const account = assertAdminRequest(req, freshDb)
+  assertAdminCapability(account)
+  return account
+}
+
+function updateAdminDb(req, mutator) {
+  return dbStore.updateDb((nextDb) => {
+    const account = assertFreshAdminCapability(req, nextDb)
+    return mutator(nextDb, account)
+  })
 }
 
 // ---------- 客服反馈完整对话重建（需求3） ----------
@@ -1357,11 +1438,17 @@ function readDbForRequest() {
 
 async function handleMini(req, res, pathname, searchParams) {
   const method = req.method
+  // 所有鉴权入口（含登录失败、解析失败、过期 token）都可能携带或推断敏感会话状态。
+  // 必须在读库、验签和解析请求体之前标记，确保成功与错误响应统一禁止缓存并按 Authorization 隔离。
+  if (pathname.startsWith('/mini/auth/') || String(req.headers.authorization || '').trim()) {
+    res.noStore = true
+    res.varyAuthorization = true
+  }
   const db = readDbForRequest()
 
   if (method === 'POST' && pathname === '/mini/auth/login') {
     // 登录是免鉴权入口：按客户端 IP 限流防暴力破解。20/min 兼顾防爆破（scrypt 本就让在线爆破不可行）
-    // 与中介共享办公室 IP 的场景；登录后 token 缓存 7 天，正常登录频次很低。值可按需调整。
+    // 与中介共享办公室 IP 的场景；登录后 token 采用 30 天滑动续期，正常登录频次很低。值可按需调整。
     assertGuestRateLimit(req, 'mini-login', 20)
     const body = await parseBody(req)
     return sendJson(res, dbStore.updateDb((nextDb) => miniAuthResponse(domain.loginByPhone(nextDb, body.phone, body.password))))
@@ -1382,11 +1469,27 @@ async function handleMini(req, res, pathname, searchParams) {
     throw error
   }
 
-  const userId = miniUserIdFromRequest(req, db)
+  const authContext = miniAuthContextFromRequest(req, db)
+  const userId = authContext ? authContext.userId : ''
+  if (authContext) {
+    res.miniAuthRefresh = {
+      userId: authContext.userId,
+      tokenVersion: authContext.tokenVersion
+    }
+  }
 
   if (method === 'GET' && pathname === '/mini/auth/me') {
     assertMiniLogin(userId)
     return sendJson(res, domain.currentUser(db, userId))
+  }
+
+  if (method === 'POST' && pathname === '/mini/auth/logout') {
+    assertMiniLogin(userId)
+    // 主动退出提升账号 tokenVersion，撤销全部设备；请求体中的任何身份/权限字段都不会读取。
+    res.disableMiniAuthRefresh = true
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => (
+      domain.logoutUserSessions(nextDb, freshUserId)
+    )))
   }
 
   if (method === 'POST' && pathname === '/mini/auth/password') {
@@ -1395,9 +1498,10 @@ async function handleMini(req, res, pathname, searchParams) {
     // 已登录端点也按 IP 限流：防持有效 token 但不知原密码者在线爆破原密码、以及每次 scrypt 的 CPU 放大。
     assertGuestRateLimit(req, 'mini-change-password', 10)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      domain.changeOwnPassword(nextDb, userId, body)
-      const changedUser = (nextDb.users || []).find((item) => item.id === userId)
+    res.disableMiniAuthRefresh = true
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
+      domain.changeOwnPassword(nextDb, freshUserId, body)
+      const changedUser = (nextDb.users || []).find((item) => item.id === freshUserId)
       if (!changedUser) throw miniAuthError('登录用户不存在或已停用')
       // 当前设备拿到新版本 token 后继续登录；其他设备仍持有旧版本 token，会在下一次请求时 401。
       return miniAuthResponse(changedUser)
@@ -1412,9 +1516,10 @@ async function handleMini(req, res, pathname, searchParams) {
       error.statusCode = 400
       throw error
     }
+    assertFreshMiniSession(req, userId)
     const session = await fetchWechatOpenid(body.code)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      const user = (nextDb.users || []).find((item) => item.id === userId)
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
+      const user = (nextDb.users || []).find((item) => item.id === freshUserId)
       if (!user) {
         const error = new Error('未找到当前用户')
         error.statusCode = 404
@@ -1423,7 +1528,7 @@ async function handleMini(req, res, pathname, searchParams) {
       user.openid = session.openid
       if (session.unionid) user.unionid = session.unionid
       user.wechatBoundAt = new Date().toLocaleString('zh-CN', { hour12: false })
-      return domain.currentUser(nextDb, userId)
+      return domain.currentUser(nextDb, freshUserId)
     }))
   }
 
@@ -1489,6 +1594,7 @@ async function handleMini(req, res, pathname, searchParams) {
       assertGuestRateLimit(req, 'mini-listings-match')
       return sendJson(res, domain.matchListings(db, guestListingFilter(body)))
     }
+    assertFreshMiniSession(req, userId)
     return sendJson(res, domain.matchListings(db, body))
   }
 
@@ -1500,11 +1606,15 @@ async function handleMini(req, res, pathname, searchParams) {
       const resultDb = guest ? companyOnlyDb(db) : db
       const resultBody = guest ? guestListingFilter(body) : body
       if (guest) assertGuestRateLimit(req, 'mini-llm-match')
+      else assertFreshMiniSession(req, userId)
       const result = await llm.matchRentalNeed(resultDb, resultBody)
+      if (!guest) assertFreshMiniSession(req, userId)
       let response = { ...result }
       delete response.feedbackMessageId
       if (!guest && resultBody.stage === 'match' && resultBody.needId) {
-        response = dbStore.updateDb((nextDb) => assistantService.recordFeedbackResult(nextDb, resultBody, response, { userId }))
+        response = updateMiniDb(req, (nextDb, freshUserId) => (
+          assistantService.recordFeedbackResult(nextDb, resultBody, response, { userId: freshUserId })
+        ))
       }
       console.log(`[llm-match] status=200 durationMs=${Date.now() - startedAt} guest=${guest}`)
       return sendJson(res, response)
@@ -1526,8 +1636,11 @@ async function handleMini(req, res, pathname, searchParams) {
       const snapshot = dbStore.clone(db)
       const resultDb = guest ? companyOnlyDb(snapshot) : snapshot
       const resultBody = guest ? guestListingFilter(body) : body
-      const persistTrace = (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
+      const persistTrace = guest
+        ? (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
+        : (writeTraceLog) => updateMiniDb(req, (freshDb) => writeTraceLog(freshDb))
       if (guest) assertGuestRateLimit(req, 'mini-assistant-chat', 30)
+      else assertFreshMiniSession(req, userId)
       const context = { userId: guest ? '' : userId, persistTrace }
       const result = await Promise.race([
         assistantService.chat(resultDb, resultBody, context),
@@ -1541,6 +1654,7 @@ async function handleMini(req, res, pathname, searchParams) {
         }
         throw error
       })
+      if (!guest) assertFreshMiniSession(req, userId)
       console.log(`[assistant-chat] status=200 durationMs=${Date.now() - startedAt} guest=${guest} degraded=${Boolean(result && result.degraded)}`)
       return sendJson(res, result)
     } catch (error) {
@@ -1552,6 +1666,7 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/mini/asr/transcribe') {
     if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-asr-transcribe', 20)
     const form = await parseMultipartForm(req, { maxBytes: asrService.MAX_AUDIO_BYTES })
+    if (!isGuestUser(userId)) assertFreshMiniSession(req, userId)
     const file = (form.files || []).find((item) => item.name === 'file' || item.name === 'audio') || form.file
     return sendJson(res, await asrService.transcribeAudio(db, file, {
       fields: form.fields || {},
@@ -1561,8 +1676,13 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'POST' && pathname === '/mini/assistant/feedback') {
     const body = await parseBody(req)
-    if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-assistant-feedback', 30)
-    return sendJson(res, dbStore.updateDb((nextDb) => assistantService.feedback(nextDb, body, { userId })))
+    if (isGuestUser(userId)) {
+      assertGuestRateLimit(req, 'mini-assistant-feedback', 30)
+      return sendJson(res, dbStore.updateDb((nextDb) => assistantService.feedback(nextDb, body, { userId: '' })))
+    }
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => (
+      assistantService.feedback(nextDb, body, { userId: freshUserId })
+    )))
   }
 
   if (method === 'GET' && pathname === '/mini/map/communities') {
@@ -1609,24 +1729,23 @@ async function handleMini(req, res, pathname, searchParams) {
   const favoriteMatch = pathname.match(/^\/mini\/favorites\/([^/]+)$/)
   if (method === 'PUT' && favoriteMatch) {
     assertMiniLogin(userId)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      // 路由初验后账号可能被停用、删除或因改密提升 tokenVersion；在写锁内用最新数据库重新验签。
-      const freshUserId = miniUserIdFromRequest(req, nextDb)
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
       return domain.favoriteListing(nextDb, freshUserId, favoriteMatch[1])
     }))
   }
 
   if (method === 'DELETE' && favoriteMatch) {
     assertMiniLogin(userId)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      const freshUserId = miniUserIdFromRequest(req, nextDb)
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
       return domain.unfavoriteListing(nextDb, freshUserId, favoriteMatch[1])
     }))
   }
 
   if (method === 'GET' && pathname === '/mini/footprints') {
     assertMiniLogin(userId)
-    return sendJson(res, readFootprintsWithLockedPrune(db, (sourceDb) => domain.footprintRecords(sourceDb, userId)))
+    return sendJson(res, readMiniFootprintsWithLockedPrune(req, db, userId, (sourceDb, freshUserId) => (
+      domain.footprintRecords(sourceDb, freshUserId)
+    )))
   }
 
   if (method === 'GET' && pathname === '/mini/rental-needs') {
@@ -1637,7 +1756,7 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/mini/rental-needs') {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.createRentalNeed(nextDb, userId, body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.createRentalNeed(nextDb, freshUserId, body)))
   }
 
   if (method === 'GET' && pathname === '/mini/my/listings') {
@@ -1654,17 +1773,19 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'PUT' && myListingEditMatch) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, withSignedVideoUrl(dbStore.updateDb((nextDb) => domain.updateNormalListing(nextDb, userId, myListingEditMatch[1], body))))
+    return sendJson(res, withSignedVideoUrl(updateMiniDb(req, (nextDb, freshUserId) => (
+      domain.updateNormalListing(nextDb, freshUserId, myListingEditMatch[1], body)
+    ))))
   }
 
   const myListingVerifyMatch = pathname.match(/^\/mini\/my\/listings\/([^/]+)\/verify$/)
   if (method === 'POST' && myListingVerifyMatch) {
     assertMiniLogin(userId)
     const verifyBody = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
       // outcome: 未出租=已维护；已出租/不租了=下架进后台资产池。缺省兼容旧客户端=已维护。
-      domain.submitListingVerification(nextDb, userId, myListingVerifyMatch[1], verifyBody && verifyBody.outcome)
-      return domain.ownedListings(nextDb, userId)
+      domain.submitListingVerification(nextDb, freshUserId, myListingVerifyMatch[1], verifyBody && verifyBody.outcome)
+      return domain.ownedListings(nextDb, freshUserId)
     }))
   }
 
@@ -1712,8 +1833,8 @@ async function handleMini(req, res, pathname, searchParams) {
     const amount = count * 20
     const billId = `RC${Date.now()}`
     if (!config.wechatPay.enabled) {
-      return sendJson(res, dbStore.updateDb((nextDb) => {
-        const bill = domain.createRechargeBill(nextDb, userId, {
+      return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
+        const bill = domain.createRechargeBill(nextDb, freshUserId, {
           id: billId,
           outTradeNo: billId,
           points: count,
@@ -1723,23 +1844,26 @@ async function handleMini(req, res, pathname, searchParams) {
           time: '刚刚'
         })
         return {
-          profile: domain.profileState(nextDb, userId),
+          profile: domain.profileState(nextDb, freshUserId),
           bill,
           paymentMode: config.rechargePaymentMode || 'manual',
           message: '充值申请已提交，管理员确认到账后积分生效'
         }
       }))
     }
-    const user = (db.users || []).find((item) => item.id === userId) || {}
-    const openid = body.openid || user.openid || user.openId || config.wechatPay.testOpenid
+    const paymentIdentity = updateMiniDb(req, (nextDb, freshUserId) => {
+      const user = (nextDb.users || []).find((item) => item.id === freshUserId) || {}
+      return { userId: freshUserId, openid: user.openid || user.openId || config.wechatPay.testOpenid }
+    })
     const payOrder = await wxpay.createJsapiOrder({
       outTradeNo: billId,
       amountFen: amount * 100,
       description: `寓你住一起积分充值${count}分`,
-      openid
+      // 支付身份只取验签账号在服务端绑定的 openid；忽略客户端 body.openid。
+      openid: paymentIdentity.openid
     })
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      const bill = domain.createRechargeBill(nextDb, userId, {
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
+      const bill = domain.createRechargeBill(nextDb, freshUserId, {
         id: billId,
         outTradeNo: billId,
         points: count,
@@ -1749,7 +1873,7 @@ async function handleMini(req, res, pathname, searchParams) {
         prepayId: payOrder.prepayId
       })
       return {
-        profile: domain.profileState(nextDb, userId),
+        profile: domain.profileState(nextDb, freshUserId),
         bill,
         payment: payOrder.paymentParams
       }
@@ -1764,34 +1888,40 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/mini/groups/listings') {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.uploadGroupListing(nextDb, userId, body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.uploadGroupListing(nextDb, freshUserId, body)))
   }
 
   const unlockMatch = pathname.match(/^\/mini\/groups\/([^/]+)\/unlock$/)
   if (method === 'POST' && unlockMatch) {
     assertMiniLogin(userId)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.unlockGroup(nextDb, userId, unlockMatch[1])))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.unlockGroup(nextDb, freshUserId, unlockMatch[1])))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/video-policy') {
     assertMiniLogin(userId)
-    return sendJson(res, oss.createVideoUploadPolicy(await parseBody(req)))
+    const body = await parseBody(req)
+    assertFreshMiniSession(req, userId)
+    return sendJson(res, oss.createVideoUploadPolicy(clientUploadPolicyInput(body)))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/group-screenshot-policy') {
     assertMiniLogin(userId)
-    return sendJson(res, oss.createGroupScreenshotUploadPolicy(await parseBody(req)))
+    const body = await parseBody(req)
+    assertFreshMiniSession(req, userId)
+    return sendJson(res, oss.createGroupScreenshotUploadPolicy(clientUploadPolicyInput(body)))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/showing-photo-policy') {
     assertMiniLogin(userId)
-    return sendJson(res, oss.createShowingPhotoUploadPolicy(await parseBody(req)))
+    const body = await parseBody(req)
+    assertFreshMiniSession(req, userId)
+    return sendJson(res, oss.createShowingPhotoUploadPolicy(clientUploadPolicyInput(body)))
   }
 
   if (method === 'POST' && pathname === '/mini/listings') {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.addNormalListing(nextDb, userId, body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.addNormalListing(nextDb, freshUserId, body)))
   }
 
   const nearbyListingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/nearby$/)
@@ -1853,8 +1983,8 @@ async function handleMini(req, res, pathname, searchParams) {
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
   if (method === 'GET' && listingLogsMatch) {
     assertMiniLogin(userId)
-    return sendJson(res, readFootprintsWithLockedPrune(db, (sourceDb) => (
-      domain.listingLogs(sourceDb, listingLogsMatch[1], userId)
+    return sendJson(res, readMiniFootprintsWithLockedPrune(req, db, userId, (sourceDb, freshUserId) => (
+      domain.listingLogs(sourceDb, listingLogsMatch[1], freshUserId)
     )))
   }
 
@@ -1862,7 +1992,7 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && videoShareMatch) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.recordVideoShare(nextDb, userId, videoShareMatch[1], {
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.recordVideoShare(nextDb, freshUserId, videoShareMatch[1], {
       channel: body.channel,
       target: body.target,
       purpose: body.purpose,
@@ -1878,7 +2008,7 @@ async function handleMini(req, res, pathname, searchParams) {
     assertMiniLogin(userId)
     assertReportDealWritesEnabled()
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.createClientReport(nextDb, userId, reportMatch[1], body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.createClientReport(nextDb, freshUserId, reportMatch[1], body)))
   }
 
   const reportDealMatch = pathname.match(/^\/mini\/reports\/([^/]+)\/deals$/)
@@ -1886,28 +2016,28 @@ async function handleMini(req, res, pathname, searchParams) {
     assertMiniLogin(userId)
     assertReportDealWritesEnabled()
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.createDealFromReport(nextDb, userId, reportDealMatch[1], body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.createDealFromReport(nextDb, freshUserId, reportDealMatch[1], body)))
   }
 
   const showingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/showings$/)
   if (method === 'POST' && showingMatch) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.recordShowing(nextDb, userId, showingMatch[1], body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.recordShowing(nextDb, freshUserId, showingMatch[1], body)))
   }
 
   const dealMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/deals$/)
   if (method === 'POST' && dealMatch) {
     assertMiniLogin(userId)
     assertReportDealWritesEnabled()
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.registerDeal(nextDb, userId, dealMatch[1])))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.registerDeal(nextDb, freshUserId, dealMatch[1])))
   }
 
   const sensitiveMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/sensitive-view$/)
   if (method === 'POST' && sensitiveMatch) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.addSensitiveFootprint(nextDb, userId, sensitiveMatch[1], {
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.addSensitiveFootprint(nextDb, freshUserId, sensitiveMatch[1], {
       idempotencyKey: body.idempotencyKey
     })))
   }
@@ -1916,9 +2046,9 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && phoneCallOpenedMatch) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.recordPhoneCallOpened(
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.recordPhoneCallOpened(
       nextDb,
-      userId,
+      freshUserId,
       phoneCallOpenedMatch[1],
       { idempotencyKey: body.idempotencyKey }
     )))
@@ -2108,8 +2238,8 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const adminExpiredRestoreMatch = pathname.match(/^\/admin\/expired-listings\/([^/]+)\/restore$/)
   if (method === 'POST' && adminExpiredRestoreMatch) {
     assertAdminCapability(adminAccount)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
-      domain.restoreExpiredListing(nextDb, adminAccount.userId || adminAccount.id, adminExpiredRestoreMatch[1])
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
+      domain.restoreExpiredListing(nextDb, freshAdminAccount.userId || freshAdminAccount.id, adminExpiredRestoreMatch[1])
       return withSignedListingVideoUrls(domain.expiredListings(nextDb, {
         area: searchParams.get('area') || '',
         block: searchParams.get('block') || '',
@@ -2290,7 +2420,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
       error.statusCode = 400
       throw error
     }
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       nextDb.adminAccounts = nextDb.adminAccounts || defaultAdminAccounts(nextDb)
       if (nextDb.adminAccounts.some((item) => item.account === accountName)) {
         const error = new Error('后台账号已存在')
@@ -2314,7 +2444,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
         nextDb,
         account,
         passwordHash,
-        adminAccount.id || adminAccount.account
+        freshAdminAccount.id || freshAdminAccount.account
       )
       return {
         miniLoginSynced,
@@ -2329,7 +2459,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
     const body = await parseBody(req)
     const action = body.action || body.status
     const nextStatus = action === 'disable' || action === 'disabled' || action === '禁用' ? '禁用' : '启用'
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       nextDb.adminAccounts = nextDb.adminAccounts || defaultAdminAccounts(nextDb)
       const account = nextDb.adminAccounts.find((item) => item.id === adminStatusMatch[1] || item.account === adminStatusMatch[1])
       if (!account) {
@@ -2337,7 +2467,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
         error.statusCode = 404
         throw error
       }
-      if (account.id === adminAccount.id && nextStatus === '禁用') {
+      if (account.id === freshAdminAccount.id && nextStatus === '禁用') {
         const error = new Error('不能禁用当前登录账号')
         error.statusCode = 400
         throw error
@@ -2365,7 +2495,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
       error.statusCode = 400
       throw error
     }
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       nextDb.adminAccounts = nextDb.adminAccounts || defaultAdminAccounts(nextDb)
       const account = nextDb.adminAccounts.find((item) => item.id === adminPasswordMatch[1] || item.account === adminPasswordMatch[1])
       if (!account) {
@@ -2381,7 +2511,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
         nextDb,
         account,
         passwordHash,
-        adminAccount.id || adminAccount.account
+        freshAdminAccount.id || freshAdminAccount.account
       )
       return {
         miniLoginSynced,
@@ -2393,7 +2523,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const adminDeleteMatch = pathname.match(/^\/admin\/accounts\/([^/]+)$/)
   if (method === 'DELETE' && adminDeleteMatch) {
     assertAdminCapability(adminAccount)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       nextDb.adminAccounts = nextDb.adminAccounts || defaultAdminAccounts(nextDb)
       const target = nextDb.adminAccounts.find((item) => (
         (item.id === adminDeleteMatch[1] || item.account === adminDeleteMatch[1]) && !item.deleted
@@ -2404,7 +2534,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
         throw error
       }
       // 红线①：不能删除当前登录账号（防误删自己 + 防自锁）。
-      if (target.id === adminAccount.id) {
+      if (target.id === freshAdminAccount.id) {
         const error = new Error('不能删除当前登录账号')
         error.statusCode = 400
         throw error
@@ -2423,7 +2553,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
       target.deleted = true
       target.status = '已删除'
       target.deletedAt = new Date().toLocaleString('zh-CN', { hour12: false })
-      target.deletedBy = adminAccount.account || adminAccount.id
+      target.deletedBy = freshAdminAccount.account || freshAdminAccount.id
       return {
         users: domain.adminUsers(nextDb),
         admins: nextDb.adminAccounts.filter((item) => !item.deleted).map(publicAdminAccount)
@@ -2434,7 +2564,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/admin/users') {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       domain.createManagedUser(nextDb, {
         type: body.type,
         name: body.name,
@@ -2442,7 +2572,25 @@ async function handleAdmin(req, res, pathname, searchParams) {
         // 后台建号可给可选初始密码（domain 内校验强度并哈希）；不给则账号无密码、fail-closed 禁登，
         // 需管理员事后走 /admin/users/:id/password 设初始密码。
         password: body.password,
-        operator: adminAccount.account || adminAccount.id
+        operator: freshAdminAccount.account || freshAdminAccount.id
+      })
+      return {
+        users: domain.adminUsers(nextDb),
+        admins: (nextDb.adminAccounts || defaultAdminAccounts(nextDb)).filter((item) => !item.deleted).map(publicAdminAccount)
+      }
+    }))
+  }
+  const managedUserStatusMatch = pathname.match(/^\/admin\/users\/([^/]+)\/status$/)
+  if (method === 'POST' && managedUserStatusMatch) {
+    assertAdminCapability(adminAccount)
+    const body = await parseBody(req)
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
+      // 请求体读取期间管理员可能已被禁用或降权；真正写入前必须在同一写锁内重验最新账号，
+      // 且审计操作者也必须取 fresh 记录，不能沿用请求开始时的客户端可竞态快照。
+      domain.setManagedUserStatus(nextDb, {
+        id: decodeURIComponent(managedUserStatusMatch[1]),
+        action: body.action,
+        operator: freshAdminAccount.account || freshAdminAccount.id
       })
       return {
         users: domain.adminUsers(nextDb),
@@ -2455,11 +2603,11 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && managedUserPasswordMatch) {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       domain.setManagedUserPassword(nextDb, {
         id: decodeURIComponent(managedUserPasswordMatch[1]),
         password: body.password,
-        operator: adminAccount.account || adminAccount.id
+        operator: freshAdminAccount.account || freshAdminAccount.id
       })
       return {
         users: domain.adminUsers(nextDb),
@@ -2470,11 +2618,11 @@ async function handleAdmin(req, res, pathname, searchParams) {
   const managedUserDeleteMatch = pathname.match(/^\/admin\/users\/([^/]+)$/)
   if (method === 'DELETE' && managedUserDeleteMatch) {
     assertAdminCapability(adminAccount)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       // 软删：禁止登录 + 列表隐藏，名下房源/成交/分佣历史数据保留（domain 层处理，无悬挂引用）。
       domain.deleteManagedUser(nextDb, {
         id: decodeURIComponent(managedUserDeleteMatch[1]),
-        operator: adminAccount.account || adminAccount.id
+        operator: freshAdminAccount.account || freshAdminAccount.id
       })
       return {
         users: domain.adminUsers(nextDb),
@@ -2491,13 +2639,13 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && registrationReviewMatch) {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => {
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAdminAccount) => {
       const result = domain.reviewRegistration(nextDb, {
         id: decodeURIComponent(registrationReviewMatch[1]),
         action: body.action,
         type: body.type,
         reason: body.reason,
-        operator: adminAccount.account || adminAccount.id
+        operator: freshAdminAccount.account || freshAdminAccount.id
       })
       return {
         request: result.request,
@@ -2660,7 +2808,7 @@ function startFeishuSyncTimer() {
 // 停用 token 抛错即拒绝升级。
 function authorizeRealtimeAsrUpgrade(req) {
   try {
-    const userId = miniUserIdFromRequest(req, dbStore.readDb())
+    const userId = dbStore.inspectDb((freshDb) => miniUserIdFromRequest(req, freshDb))
     if (!userId) assertGuestRateLimit(req, 'asr-realtime', 20)
     return true
   } catch (error) {

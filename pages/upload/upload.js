@@ -1,4 +1,5 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const gongshuCommunities = require('../../utils/gongshu-communities')
 const {
   NO_FEATURE,
@@ -35,13 +36,18 @@ function uploadSuccessMessage(listing) {
   return '房源已发布，可在我的房源中查看最新状态。'
 }
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
 function currentAuthToken() {
-  try {
-    const app = typeof getApp === 'function' ? getApp() : null
-    if (app && app.globalData && app.globalData.authToken) return String(app.globalData.authToken)
-    if (typeof wx !== 'undefined' && wx.getStorageSync) return String(wx.getStorageSync('ynzy_auth_token') || '')
-  } catch (error) {}
-  return ''
+  return String(typeof apiClient.getAuthToken === 'function' ? apiClient.getAuthToken() : '')
+}
+
+function staleAuthSessionError() {
+  const error = new Error('登录账号已切换，本次上传已停止')
+  error.staleSession = true
+  return error
 }
 
 const UPLOAD_FEATURE_HIDDEN_OPTIONS = [DEPOSIT_FREE_FEATURE, NO_COMMISSION_FEATURE]
@@ -254,10 +260,11 @@ Page({
   },
 
   onLoad(options) {
-    this.authTokenSnapshot = currentAuthToken()
+    this.authTokenSnapshot = currentAuthSessionKey()
+    const id = options && options.id ? String(options.id) : ''
+    this.editingListingId = id
     this.loadCurrentUser()
     this.loadCommissionConfig()
-    const id = options && options.id ? options.id : ''
     if (id) {
       this.loadEditableListing(id)
       return
@@ -266,19 +273,73 @@ Page({
   },
 
   onShow() {
-    const nextToken = currentAuthToken()
+    const nextToken = currentAuthSessionKey()
     if (this.authTokenSnapshot === undefined) {
       this.authTokenSnapshot = nextToken
       return
     }
     if (nextToken === this.authTokenSnapshot) return
     this.authTokenSnapshot = nextToken
+    this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
+    if (wx.hideLoading) wx.hideLoading()
+
+    const editingListingId = String(this.editingListingId || (this.data.mode === 'edit' ? this.data.listingId : '') || '')
+    const resetPatch = {
+      currentUser: null,
+      isAdmin: false,
+      isStaff: false,
+      submitting: false
+    }
+    if (editingListingId) {
+      const resetForm = Object.assign({}, defaultForm, { features: (defaultForm.features || []).slice() })
+      Object.assign(resetPatch, {
+        mode: 'edit',
+        pageTitle: '修改房源',
+        listingId: editingListingId,
+        form: resetForm,
+        initialViewingMethod: '',
+        initialViewingKeyLocation: '',
+        initialViewingPassword: '',
+        featureOptions: buildFeatureOptions(resetForm.features),
+        communitySuggestions: [],
+        communityPanelVisible: false,
+        communityMatchMessage: '正在按当前账号重新读取房源',
+        communityReviewTip: '',
+        layoutPreview: buildLayout(resetForm),
+        addressPreview: '',
+        videoPath: '',
+        videoFile: null,
+        existingVideoUrl: '',
+        existingVideoKey: ''
+      })
+    } else if (this.data.form && this.data.form.companyListing) {
+      // 公司房源选择来自上一账号的管理员能力；换号后先收回，待当前账号资料返回后再由用户显式选择。
+      const resetForm = Object.assign({}, this.data.form, { companyListing: false })
+      Object.assign(resetPatch, {
+        form: resetForm,
+        featureOptions: buildFeatureOptions(resetForm.features)
+      })
+    }
+    this.setData(resetPatch, () => this.refreshPreview())
     this.loadCurrentUser()
+    if (editingListingId) this.loadEditableListing(editingListingId)
     if (this.data.commissionConfigFailed) this.loadCommissionConfig()
   },
 
+  onUnload() {
+    this._currentUserRequestSeq = Number(this._currentUserRequestSeq || 0) + 1
+    this._editableListingRequestSeq = Number(this._editableListingRequestSeq || 0) + 1
+    this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
+    if (wx.hideLoading) wx.hideLoading()
+  },
+
   loadCurrentUser() {
+    const requestSeq = Number(this._currentUserRequestSeq || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    const requestAuthToken = currentAuthToken()
+    this._currentUserRequestSeq = requestSeq
     return apiService.getCurrentUser().then((user) => {
+      if (this._currentUserRequestSeq !== requestSeq || currentAuthSessionKey() !== requestSessionKey) return
       const isStaff = isStaffAccount(user)
       const community = String(this.data.form.community || '').trim()
       const suggestions = getCommunitySuggestions(community)
@@ -290,6 +351,11 @@ Page({
         communityReviewTip: getCommunityReviewTip(community, isStaff)
       })
     }).catch((error) => {
+      if (this._currentUserRequestSeq !== requestSeq) return
+      const sameSession = currentAuthSessionKey() === requestSessionKey
+      // 游客请求的真实 401 可能让 api-client 生成新的 guest 会话键；仍需保留本页的显式登录引导。
+      const currentGuestAuthError = isAuthError(error) && !requestAuthToken && !currentAuthToken()
+      if (!sameSession && !currentGuestAuthError) return
       this.setData({
         currentUser: null,
         isAdmin: false,
@@ -547,8 +613,19 @@ Page({
   },
 
   loadEditableListing(id) {
+    const listingId = String(id || '')
+    const requestSeq = Number(this._editableListingRequestSeq || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    this._editableListingRequestSeq = requestSeq
+    this.editingListingId = listingId
+    const isCurrentRequest = () => (
+      this._editableListingRequestSeq === requestSeq &&
+      currentAuthSessionKey() === requestSessionKey &&
+      String(this.editingListingId || '') === listingId
+    )
     wx.showLoading({ title: '正在加载房源' })
-    apiService.getEditableListing(id).then((listing) => {
+    return apiService.getEditableListing(listingId).then((listing) => {
+      if (!isCurrentRequest()) return
       const nextForm = {
         city: listing.city || '杭州',
         area: listing.district || listing.area || '拱墅区',
@@ -578,7 +655,7 @@ Page({
       this.setData({
         mode: 'edit',
         pageTitle: '修改房源',
-        listingId: id,
+        listingId,
         form: nextForm,
         initialViewingMethod: nextForm.viewingMethod,
         initialViewingKeyLocation: nextForm.viewingKeyLocation,
@@ -591,14 +668,15 @@ Page({
         videoPath: '',
         videoFile: null
       }, () => this.refreshPreview(nextForm))
-      wx.hideLoading()
     }).catch((error) => {
-      wx.hideLoading()
+      if (!isCurrentRequest()) return
       wx.showModal({
         title: '加载失败',
         content: error.message || '无法读取该房源',
         showCancel: false
       })
+    }).finally(() => {
+      if (this._editableListingRequestSeq === requestSeq && wx.hideLoading) wx.hideLoading()
     })
   },
 
@@ -757,22 +835,39 @@ Page({
   async submitWithVideo(validation) {
     if (this.data.submitting) return
 
+    const requestSeq = Number(this._submitRequestSeq || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    const requestAuthToken = currentAuthToken()
+    const submitMode = this.data.mode
+    const submitListingId = this.data.listingId
+    this._submitRequestSeq = requestSeq
+    const isCurrentRequest = () => (
+      this._submitRequestSeq === requestSeq && currentAuthSessionKey() === requestSessionKey
+    )
+    const assertCurrentRequest = () => {
+      if (!isCurrentRequest()) throw staleAuthSessionError()
+    }
     this.setData({ submitting: true })
 
     try {
+      assertCurrentRequest()
       let video = null
       let savedListing = null
       if (this.data.videoPath && this.data.videoFile) {
+        const videoPath = this.data.videoPath
+        const videoFile = this.data.videoFile
         wx.showLoading({ title: '正在上传视频' })
-        const policy = await apiService.createVideoUploadPolicy(this.data.videoFile)
+        const policy = await apiService.createVideoUploadPolicy(videoFile)
+        assertCurrentRequest()
         // 以服务端策略返回的上限为准做二次校验
-        if (policy && policy.maxSize && this.data.videoFile.size > policy.maxSize) {
+        if (policy && policy.maxSize && videoFile.size > policy.maxSize) {
           const limitMB = Math.round(policy.maxSize / 1024 / 1024)
           throw new Error(`视频超过服务端 ${limitMB}MB 上限，请压缩后重试`)
         }
         let lastShownPercent = -5
-        video = await apiService.uploadVideo(this.data.videoPath, policy, {
+        video = await apiService.uploadVideo(videoPath, policy, {
           onProgress: (percent) => {
+            if (!isCurrentRequest()) return
             // 每 5% 刷新一次进度文案，避免 loading 高频闪烁
             if (percent - lastShownPercent >= 5 || percent >= 100) {
               lastShownPercent = percent
@@ -780,17 +875,21 @@ Page({
             }
           }
         })
+        assertCurrentRequest()
       }
 
-      wx.showLoading({ title: this.data.mode === 'edit' ? '正在保存修改' : '正在提交房源' })
+      assertCurrentRequest()
+      wx.showLoading({ title: submitMode === 'edit' ? '正在保存修改' : '正在提交房源' })
       const payload = this.buildSubmitPayload(validation, video)
-      if (this.data.mode === 'edit') {
-        savedListing = await apiService.updateNormalListing(this.data.listingId, payload)
+      assertCurrentRequest()
+      if (submitMode === 'edit') {
+        savedListing = await apiService.updateNormalListing(submitListingId, payload)
       } else {
         savedListing = await apiService.addNormalListing(payload)
       }
+      assertCurrentRequest()
       wx.hideLoading()
-      if (this.data.mode === 'edit') {
+      if (submitMode === 'edit') {
         wx.showModal({
           title: '保存成功',
           content: '房源信息已更新，返回后可在我的房源中查看最新状态。',
@@ -832,19 +931,27 @@ Page({
         })
       }
     } catch (error) {
-      wx.hideLoading()
+      const latestRequest = this._submitRequestSeq === requestSeq
+      if (latestRequest && wx.hideLoading) wx.hideLoading()
+      const currentGuestAuthError = isAuthError(error) && !requestAuthToken && !currentAuthToken()
+      if ((error && error.staleSession) || (!isCurrentRequest() && !currentGuestAuthError)) return
       // 兜底：提交时才暴露的 401（如游客未登录）给出「去登录」引导，而不是笼统的失败提示。
       if (isAuthError(error)) {
+        if (typeof apiClient.isStaleUnauthorized === 'function' && apiClient.isStaleUnauthorized(error)) {
+          // 写请求绝不自动重放；同账号已续签时只恢复按钮，交给用户明确重新提交。
+          wx.showToast({ title: '登录状态已更新，请重新提交', icon: 'none' })
+          return
+        }
         this.promptLoginGuide('登录后上传房源', '上传房源需要先登录内部中介账号。')
       } else {
         wx.showModal({
-          title: this.data.mode === 'edit' ? '修改失败' : '上传失败',
+          title: submitMode === 'edit' ? '修改失败' : '上传失败',
           content: error.message || '请检查视频存储配置和网络后重试',
           showCancel: false
         })
       }
     } finally {
-      this.setData({ submitting: false })
+      if (this._submitRequestSeq === requestSeq) this.setData({ submitting: false })
     }
   },
 

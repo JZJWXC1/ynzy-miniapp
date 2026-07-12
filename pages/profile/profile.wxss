@@ -93,6 +93,52 @@ page {
   margin: 0;
 }
 
+.public-help-section {
+  margin-top: 28rpx;
+}
+
+.section-title-note {
+  color: var(--brand-muted);
+  font-size: 22rpx;
+  font-weight: 700;
+}
+
+.faq-entry-card {
+  width: 100%;
+  min-height: 112rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  margin: 0;
+  padding: 24rpx 28rpx;
+  text-align: left;
+  background: var(--brand-card);
+  border: 1rpx solid var(--brand-line);
+  border-radius: 24rpx;
+  box-shadow: 0 12rpx 28rpx rgba(46, 81, 74, 0.07);
+}
+
+.faq-entry-title {
+  color: var(--brand-green-dark);
+  font-size: 28rpx;
+  font-weight: 900;
+}
+
+.faq-entry-desc {
+  margin-top: 8rpx;
+  color: var(--brand-muted);
+  font-size: 22rpx;
+  line-height: 1.45;
+}
+
+.faq-entry-arrow {
+  flex: 0 0 auto;
+  color: var(--brand-green);
+  font-size: 44rpx;
+  font-weight: 700;
+}
+
 .password-button {
   height: 64rpx;
   color: var(--brand-green-dark);

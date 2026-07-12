@@ -25,6 +25,10 @@ function isAuthError(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403)
 }
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
 function findStatValue(stats = [], keywords = [], fallback = 0) {
   const item = stats.find((stat) => {
     const label = String(stat.label || stat.title || '')
@@ -43,7 +47,8 @@ Page({
     profileReady: false,
     profileLoading: false,
     profileLoadFailed: false,
-    profileAccessRequired: false
+    profileAccessRequired: false,
+    logoutSubmitting: false
   },
 
   onShow() {
@@ -55,9 +60,14 @@ Page({
 
   onUnload() {
     this._profileRequestSeq = (this._profileRequestSeq || 0) + 1
+    this._logoutRequestSeq = (this._logoutRequestSeq || 0) + 1
   },
 
   resetProfileForAccount(token) {
+    if (this._profileAccountToken !== token) {
+      // A 的退出仍在途时切到 B：立即作废旧退出代次并释放按钮，B 不必等待 A 的网络结果。
+      this._logoutRequestSeq = (this._logoutRequestSeq || 0) + 1
+    }
     this._profileAccountToken = token
     this.setData({
       user: {},
@@ -67,7 +77,8 @@ Page({
       footprintCount: 0,
       profileReady: false,
       profileLoadFailed: false,
-      profileAccessRequired: false
+      profileAccessRequired: false,
+      logoutSubmitting: false
     })
   },
 
@@ -91,7 +102,17 @@ Page({
     this._profileRequestSeq = (this._profileRequestSeq || 0) + 1
     const requestSeq = this._profileRequestSeq
     const requestToken = String(apiClient.getAuthToken() || '')
-    if (this._profileAccountToken !== requestToken) this.resetProfileForAccount(requestToken)
+    const requestSessionKey = currentAuthSessionKey()
+    if (this._profileAccountToken !== requestSessionKey) this.resetProfileForAccount(requestSessionKey)
+    // “我的”包含公开 FAQ。游客无需先打两个受保护接口，更不能因预期 401 弹窗挡住帮助入口。
+    if (!requestToken) {
+      this.setData({
+        profileLoading: false,
+        profileLoadFailed: false,
+        profileAccessRequired: true
+      })
+      return Promise.resolve()
+    }
     this.setData({
       profileLoading: true,
       profileLoadFailed: false,
@@ -102,10 +123,13 @@ Page({
       apiService.getFootprintRecords()
     ]).then(([profile, footprints]) => {
       if (requestSeq !== this._profileRequestSeq) return
-      const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this.resetProfileForAccount(currentToken)
-        this.setData({ profileLoading: false })
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this.resetProfileForAccount(currentSessionKey)
+        this.setData({
+          profileLoading: false,
+          profileAccessRequired: !apiClient.getAuthToken()
+        })
         return
       }
       this.setData({
@@ -121,10 +145,20 @@ Page({
       });
     }).catch((error) => {
       if (requestSeq !== this._profileRequestSeq) return
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this.resetProfileForAccount(currentSessionKey)
+        this.setData({
+          profileLoading: false,
+          profileAccessRequired: !apiClient.getAuthToken()
+        })
+        return
+      }
       const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this.resetProfileForAccount(currentToken)
-        this.setData({ profileLoading: false })
+      if (isAuthError(error) && currentToken && currentToken !== requestToken) {
+        // 同一账号已由 A 滑动续签成 A′，旧 A 的迟到鉴权错误不能把 A′ 页面改成未登录。
+        // 读取接口由当前 token 重拉；写接口不在这里自动重放。
+        this.refreshProfile()
         return
       }
       if (isAuthError(error)) {
@@ -139,7 +173,6 @@ Page({
           profileLoadFailed: false,
           profileAccessRequired: true
         })
-        this.promptLoginGuide()
         return
       }
       this.setData({
@@ -172,10 +205,49 @@ Page({
   },
 
   logout() {
-    const app = typeof getApp === 'function' ? getApp() : null
-    if (app && typeof app.logout === 'function') app.logout()
-    wx.showToast({ title: '已退出登录', icon: 'none' })
-    wx.switchTab({ url: '/pages/index/index' })
+    if (this.data.logoutSubmitting) return
+    wx.showModal({
+      title: '退出全部设备？',
+      content: '退出后，本账号在其他设备也需要重新登录。',
+      confirmText: '确认退出',
+      success: (modal) => {
+        if (!modal.confirm) return
+        const requestSessionKey = currentAuthSessionKey()
+        const requestSeq = (this._logoutRequestSeq || 0) + 1
+        this._logoutRequestSeq = requestSeq
+        const isCurrentRequest = () => (
+          requestSeq === this._logoutRequestSeq && currentAuthSessionKey() === requestSessionKey
+        )
+        this.setData({ logoutSubmitting: true })
+        apiService.logout().then(() => {
+          if (!isCurrentRequest()) return
+          const app = typeof getApp === 'function' ? getApp() : null
+          if (app && typeof app.logout === 'function') app.logout()
+          wx.showToast({ title: '所有设备已退出', icon: 'none' })
+          wx.switchTab({ url: '/pages/index/index' })
+        }).catch((error) => {
+          if (!isCurrentRequest()) return
+          if (typeof apiClient.isStaleUnauthorized === 'function' && apiClient.isStaleUnauthorized(error)) {
+            wx.showToast({ title: '登录状态已更新，请重新退出', icon: 'none' })
+            return
+          }
+          if (Number(error && error.statusCode) === 401) {
+            const app = typeof getApp === 'function' ? getApp() : null
+            if (app && typeof app.logout === 'function') app.logout()
+            wx.showToast({ title: '登录已失效，已退出', icon: 'none' })
+            wx.switchTab({ url: '/pages/index/index' })
+            return
+          }
+          wx.showModal({
+            title: '退出失败',
+            content: (error && error.message) || '网络异常，服务端尚未确认退出，请检查网络后重试。',
+            showCancel: false
+          })
+        }).finally(() => {
+          if (requestSeq === this._logoutRequestSeq) this.setData({ logoutSubmitting: false })
+        })
+      }
+    })
   },
 
   handleTap(event) {

@@ -33,6 +33,39 @@ try {
   assert.strictEqual(after.listings[0].rent, 1000, 'clone 上的字段改动不得污染共享缓存')
   assert.strictEqual(after.listings.length, 1, 'clone 上新增的元素不得出现在缓存/后续读里')
 
+  // 2.1) inspectDb 是只读临界区：回调内修改、回调返回后继续修改都不得污染解析缓存或磁盘；
+  //      嵌套在 updateDb 内时也只能看见事务快照，不能借只读入口改动活动事务对象。
+  dbStore.writeDb({ guard: { value: 1 }, counter: 1 })
+  const inspected = dbStore.inspectDb((readonlyDb) => {
+    readonlyDb.guard.value = 999
+    return readonlyDb
+  })
+  assert.strictEqual(dbStore.readDb().guard.value, 1, 'inspectDb 回调内修改不得污染共享缓存或磁盘')
+  inspected.guard.value = 777
+  assert.strictEqual(dbStore.readDb().guard.value, 1, 'inspectDb 返回引用在锁释放后修改也不得污染共享状态')
+  dbStore.updateDb((txDb) => {
+    txDb.guard.value = 2
+    const nestedInspected = dbStore.inspectDb((readonlyDb) => {
+      assert.strictEqual(readonlyDb.guard.value, 2, '事务内 inspectDb 应看见当前事务快照')
+      readonlyDb.guard.value = 888
+      return readonlyDb
+    })
+    nestedInspected.guard.value = 666
+    assert.strictEqual(txDb.guard.value, 2, '事务内 inspectDb 不得借回调或返回引用污染活动事务')
+  })
+  assert.strictEqual(dbStore.readDb().guard.value, 2, '事务自己的合法修改必须正常落盘')
+  assert.throws(
+    () => dbStore.inspectDb(async () => true),
+    /同步只读回调/,
+    'inspectDb 必须拒绝跨 await 的异步回调，避免伪装成仍持锁的临界区'
+  )
+  assert.throws(
+    () => dbStore.inspectDb(() => { throw new Error('合成只读检查失败') }),
+    /合成只读检查失败/
+  )
+  dbStore.updateDb((db) => { db.afterInspectError = true })
+  assert.strictEqual(dbStore.readDb().afterInspectError, true, 'inspector 抛错后必须释放锁，后续写入仍可成功')
+
   // 3) 写后缓存刷新：writeDb / updateDb 后 readDb 必须反映最新数据。
   dbStore.updateDb((db) => { db.counter = 2 })
   assert.strictEqual(dbStore.readDb().counter, 2, 'writeDb 后 readDb 必须反映最新数据')

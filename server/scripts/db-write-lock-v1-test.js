@@ -219,6 +219,50 @@ async function run() {
     resetLockEnv()
   }
 
+  // 5.3) inspectDb 与跨进程撤销写线性化：worker 已持写锁但尚未提交时，主进程只读检查必须
+  //      等到提交完成并读到撤销后的 fresh 状态，绝不能绕锁返回旧 tokenVersion/status。
+  {
+    db.writeDb({ user: { id: 'U-INSPECT-RACE', status: '启用', tokenVersion: 0 } })
+    const inspectWorker = path.join(tempRoot, 'inspect-worker.js')
+    fs.writeFileSync(inspectWorker, [
+      'const db = require(' + JSON.stringify(DB_PATH) + ')',
+      'db.updateDb(function (data) {',
+      '  process.stdout.write("READY\\n")',
+      '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)',
+      '  data.user.status = "禁用"',
+      '  data.user.tokenVersion = 1',
+      '})'
+    ].join('\n'))
+    const child = cp.spawn(process.execPath, [inspectWorker], {
+      env: Object.assign({}, process.env, {
+        DATA_FILE: process.env.DATA_FILE,
+        DB_WRITE_LOCK: '1',
+        DB_LOCK_TIMEOUT_MS: '3000'
+      }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let childOutput = ''
+    const childExit = new Promise((resolve) => {
+      child.stdout.on('data', (chunk) => { childOutput += chunk.toString() })
+      child.stderr.on('data', (chunk) => { childOutput += chunk.toString() })
+      child.on('exit', (code) => resolve(code))
+      child.on('error', () => resolve(-1))
+    })
+    const readyDeadline = Date.now() + 3000
+    while (!childOutput.includes('READY') && Date.now() < readyDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.ok(childOutput.includes('READY'), `inspect worker 未进入持锁临界区：${childOutput}`)
+    const startedAt = Date.now()
+    const observed = db.inspectDb((data) => ({ ...data.user }))
+    const waited = Date.now() - startedAt
+    assert.strictEqual(await childExit, 0, `inspect worker 应正常提交：${childOutput}`)
+    assert.ok(waited >= 150, `inspectDb 应等待在途写提交，实等 ${waited}ms`)
+    assert.strictEqual(observed.status, '禁用', 'inspectDb 必须读到跨进程提交后的撤销状态')
+    assert.strictEqual(observed.tokenVersion, 1, 'inspectDb 必须读到撤销后的 tokenVersion')
+    resetLockEnv()
+  }
+
   // 6) 关闭开关：DB_WRITE_LOCK=0 → 正常写入、不创建锁文件（退回旧行为）。
   {
     fs.writeFileSync(process.env.DATA_FILE, '{}')

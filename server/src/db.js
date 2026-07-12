@@ -265,6 +265,33 @@ function updateDb(mutator) {
   }
 }
 
+// 在与 updateDb 相同的跨进程互斥锁内读取最新磁盘状态，但不写盘。用于权限/会话的临界点复验：
+// 既能与停用、退出等写事务线性化，又不会为了纯鉴权刷新文件时间或制造无意义整库写入。
+function inspectDb(inspector) {
+  if (typeof inspector !== 'function') throw new Error('inspectDb 需要只读回调')
+  const inspectSnapshot = (sourceDb) => {
+    const result = inspector(clone(sourceDb))
+    if (result && typeof result.then === 'function') {
+      // 锁是同步互斥，不能跨 await 持有；显式拒绝异步 inspector，避免调用者误以为 Promise
+      // 整段仍处于临界区。副本保证已启动的异步代码也无法污染真实数据库。
+      Promise.resolve(result).catch(() => {})
+      throw new Error('inspectDb 只支持同步只读回调')
+    }
+    return result
+  }
+  // 只把深拷贝交给回调：调用者即使误改参数，或把返回引用带出锁后继续修改，也不能污染
+  // 活动事务对象、解析缓存或磁盘状态。事务内仍以当前事务快照为基线，保持可见性一致。
+  if (activeTxDb !== null) return inspectSnapshot(activeTxDb)
+  ensureDataFile()
+  const fd = acquireDbLock()
+  try {
+    if (fd != null) parseCache = null
+    return inspectSnapshot(readCachedDb())
+  } finally {
+    releaseDbLock(fd)
+  }
+}
+
 // 是否为「带 id 的对象数组」。空数组也算（视作该类数组的空集），使 base/mutated 在空↔非空之间
 // 过渡时仍走元素级合并——否则空基线会退化成整键覆盖，把并发写整块抹掉。
 function isIdObjectArray(value) {
@@ -395,5 +422,6 @@ module.exports = {
   readDb,
   writeDb,
   updateDb,
+  inspectDb,
   commitDelta
 }

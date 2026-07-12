@@ -214,7 +214,7 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 
 数据库 JSON 默认紧凑写入以降低整库重写的磁盘写放大；如需人工排查可设置 `DB_JSON_PRETTY=1` 恢复两空格缩进（`/admin/data/export` 导出始终为美化格式，不受影响）。
 
-**并发写保护（P0-2）**：`server/src/db.js` 的写路径（`updateDb`/`writeDb`）加了一层零依赖的**跨进程 advisory 写锁**（同机 `db.json.lock` 文件锁），防止服务器与运维脚本（如 `backfill-listing-districts.js`、`geocode-listing-communities.js`）同时写库时后写覆盖先写、丢数据。单进程内 `updateDb` 本就被事件循环串行化、锁几乎无争用；锁持有仅毫秒级。锁按「持有者进程存活探测」回收陈旧锁（持有者存活绝不误删活锁），获取有界超时（拿不到就抛错、绝不死锁或无限自旋），并对 Windows 瞬时 `EPERM`/`EBUSY` 做重试。相关环境变量（一般无需设置）：`DB_WRITE_LOCK`（默认开；置 `0`/`off` 紧急退回无锁旧行为）、`DB_LOCK_TIMEOUT_MS`（默认 10000）、`DB_LOCK_STALE_MS`（默认 30000）。锁定测试：`server/scripts/db-write-lock-v1-test.js`。飞书同步这类「clone→长 await→落盘」路径仍由 `commitDelta` 的三方合并处理 await 窗口内的并发（与本锁互补）。
+**并发写保护（P0-2）**：`server/src/db.js` 的写路径（`updateDb`/`writeDb`）加了一层零依赖的**跨进程 advisory 写锁**（同机 `db.json.lock` 文件锁），防止服务器与运维脚本（如 `backfill-listing-districts.js`、`geocode-listing-communities.js`）同时写库时后写覆盖先写、丢数据。单进程内 `updateDb` 本就被事件循环串行化、锁几乎无争用；锁持有仅毫秒级。锁按「持有者进程存活探测」回收陈旧锁（持有者存活绝不误删活锁），获取有界超时（拿不到就抛错、绝不死锁或无限自旋），并对 Windows 瞬时 `EPERM`/`EBUSY` 做重试。相关环境变量（一般无需设置）：`DB_WRITE_LOCK`（默认开；置 `0`/`off` 紧急退回无锁旧行为）、`DB_LOCK_TIMEOUT_MS`（默认 10000）、`DB_LOCK_STALE_MS`（默认 30000）。**生产不得关闭 `DB_WRITE_LOCK`**：M6 的账号停用/退出与在途写、外部签名能力复验也依赖同一把锁完成跨进程线性化；关闭只允许作为明确知晓风险的短时应急退化。锁定测试：`server/scripts/db-write-lock-v1-test.js`。飞书同步这类「clone→长 await→落盘」路径仍由 `commitDelta` 的三方合并处理 await 窗口内的并发（与本锁互补）。
 
 游客限流按客户端 IP 分桶。`TRUST_PROXY` 默认开启，表示服务部署在 nginx 等可信反向代理之后，取 `X-Forwarded-For` 末段（由代理追加、客户端无法伪造）作为真实 IP；若直连暴露（无反向代理）务必设 `TRUST_PROXY=0`，改用 socket 远端地址，避免客户端伪造 XFF 绕过限流。
 
@@ -225,6 +225,8 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 ```http
 POST /mini/auth/login      body: { phone, password }
 POST /mini/auth/register   body: { name, phone, password }
+POST /mini/auth/password   body: { oldPassword, newPassword }  # 需 Bearer
+POST /mini/auth/logout     body: {}                              # 需 Bearer，撤销全部设备
 ```
 
 - **登录 = 手机号 + 密码**。服务端只匹配未软删用户，并用 `verifyPassword`（scrypt）校验密码。以下一律 403、不发 token：手机号未开通（引导联系管理员开通）、账号未设密码（fail-closed，引导联系管理员重置）、密码错误（统一提示「手机号或密码不正确」，不暴露命中与否）。缺密码返回 400。登录入口按客户端 IP 限流（20/min）防暴力破解。
@@ -246,9 +248,17 @@ Authorization: Bearer <token>
 AUTH_TOKEN_SECRET=
 ```
 
-token 有效期为 7 天。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在或被禁用都会返回 `401`。token 还签入账号级 `tokenVersion`：用户自助修改密码时版本递增，服务端向当前设备返回新版本 token，其他设备的旧 token 下一次请求立即 `401`；管理员重置密码同样递增版本，所有小程序旧会话立即失效，用户需用新密码重新登录。上线前签发、未携带版本号的存量 token 按版本 0 兼容，直到该账号首次改密。`tokenVersion` 只保存在服务端 DB 与签名载荷，不作为用户资料字段下发。
+token 采用 **30 天滑动有效期**。服务端用 HMAC-SHA256 校验 token，过期、签名错误、用户不存在、已删除或被禁用都会返回 `401`。携有效 Bearer 的成功 `2xx JSON` 或语音 multipart 响应会返回 `X-Auth-Token` 与 `X-Auth-Token-Expires-At`（epoch ms），把到期时间顺延到服务端当前时间后 30 天；所有 `/mini/auth/*` 响应及任何携 Authorization 的响应（成功或错误）都返回 `Cache-Control: no-store`、`Vary: Authorization`，续签头通过 `Access-Control-Expose-Headers` 暴露。游客、业务错误和鉴权错误不续签；登录与改密仍在 body 返回 token，退出响应明确不续签。旧客户端忽略新响应头仍可工作，但不会获得滑动延长。
 
-`X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id`、篡改 payload 沿用旧签名、换错误密钥重签的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端以 token 内的真实用户为准，忽略伪造请求头。
+客户端只在“请求实际发送的 token 仍是当前 token、稳定会话键未变化、到期时间合法且单调前移”时通过 App 的事务式方法替换本地 token；任一存储键写失败会回滚，API 层缺少该原子方法时直接拒绝续签。A 请求迟到时不能覆盖 B、退出或改密后的会话；旧 A 的 401 仅允许幂等 GET 用当前 A′ 自动重试一次，POST/上传写不自动重放。稳定会话键仅用于本机异步结果隔离，绝不作为服务端身份、维护人、权限或分佣依据。启动时明确已过期/畸形 expiry 的本地 token 会先清除；缺 expiry 的历史 token 保留并交给服务端兼容验证。
+
+token 还签入账号级 `tokenVersion`：`POST /mini/auth/logout`、用户自助改密、管理员重置密码、小程序账号首次停用和软删都会递增版本并撤销旧 token。当前无设备级 `sid`，因此主动退出的明确语义是**该账号所有设备一起退出**；恢复停用账号不会回退版本，旧 token 不能复活。改密成功仅向当前设备返回新版本 token；其他设备需重新登录。上线前签发、未携带版本号的存量 token 按版本 0 兼容，直到账号首次发生撤销事件。`tokenVersion` 只保存在服务端 DB 与签名载荷，不作为用户资料字段下发。
+
+小程序中介/员工停用与后台管理员账号停用是两套接口：`POST /admin/users/:id/status { action: "enable"|"disable" }` 只允许超级管理员操作；请求体中的 `userId`、角色或权限字段不会改变目标。小程序账号与后台账号的创建、停用、改密、删除及注册审核统一通过 `updateAdminDb` 在写锁内重新验证最新管理员身份/权限，管理员在请求在途时被停用或降权会零副作用拒绝。所有登录态数据库写统一通过 `updateMiniDb` 在 DB 写锁内从最新磁盘重新验签，避免请求通过锁外初验后，账号已退出/停用仍继续落库；外部签名或付费能力在真正调用前通过 `inspectDb` 同锁只读复验，不为纯鉴权制造整库写盘。
+
+三类 OSS 直传策略（视频、群截图、带看照片）的对象键只由服务端随机生成，HTTP 请求中的 `objectKey` 一律忽略；签名 policy 精确绑定这一个 key，不再只限制目录前缀，防止已登录客户端把 multipart `key` 改成同目录的已知对象并覆盖他人素材。
+
+`X-User-Id` 已废除，不能再作为鉴权来源。当前鉴权测试覆盖了伪造 `X-User-Id`、退出 body 中伪造 `userId/tokenVersion/role/permission`、篡改 payload 沿用旧签名、换错误密钥重签的场景：无 token 访问需登录接口返回 `401`；有合法 token 时，服务端只以验签身份和当前数据库账号状态为准。
 
 游客模式边界：
 
@@ -809,7 +819,7 @@ node scripts/smoke-test.js
 Remove-Item Env:SMOKE_BASE_URL, Env:SMOKE_ADMIN_ACCOUNT, Env:SMOKE_ADMIN_PASSWORD -ErrorAction SilentlyContinue
 ```
 
-当前 V1 验收脚本为以下八个：
+当前 V1 基础鉴权/找房验收加 M6 专项脚本如下；完整门禁仍以全部非 smoke 测试和 `v1-final-audit.js` 为准：
 
 ```bash
 cd server
@@ -820,6 +830,14 @@ node scripts/guest-mode-v1-test.js
 node scripts/auth-token-v1-test.js
 node scripts/mini-login-password-v1-test.js
 node scripts/mini-token-revocation-v1-test.js
+node scripts/mini-sliding-auth-v1-test.js
+node scripts/mini-sliding-auth-client-v1-test.js
+node scripts/admin-mini-user-revocation-race-v1-test.js
+node scripts/profile-loading-state-v1-test.js
+node scripts/profile-faq-v1-test.js
+node scripts/mini-page-resume-state-v1-test.js
+node scripts/db-cache-v1-test.js
+node scripts/db-write-lock-v1-test.js
 node scripts/mini-pending-no-data-v1-test.js
 ```
 
@@ -829,9 +847,11 @@ node scripts/mini-pending-no-data-v1-test.js
 - 助手需求解析与匹配。
 - 后端合同规则：视频、分佣、筛选、公司房源可见性、特点标签，以及报备/签单默认暂停与显式恢复兼容链路。
 - 游客模式：匿名公司房源可见、合作房源详情 `401`。
-- Bearer token 鉴权、7 天有效期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
+- Bearer token 鉴权、30 天滑动续期、伪造 `X-User-Id`/篡改 payload/换密钥重签无效。
 - 小程序账号密码登录：正确/错误/缺密/存量无密码/待审核/软删登录口径、`passwordHash` 不外泄、DB 只存 scrypt 哈希、后台设初始密码后可登录；显式 `userId` 绑定的管理账号创建/改密会单向同步小程序密码，未绑定账号不按手机号串绑。
 - 改密会话撤销：存量无版本 token 平滑兼容；自助改密后当前设备换发新 token、其他旧会话立即 `401`；管理员重置后全部旧会话失效；`tokenVersion` 不向客户端泄露。
+- M6 会话撤销：主动退出、首次停用和软删撤销全部旧 token，恢复不复活；退出/停用后的在途数据库写在事务内被 fresh 验签拒绝。
+- 客户端同账号续签保持稳定会话键，A→B、A→退出、并发迟到响应不能覆盖或清空当前会话；JSON 与 multipart 都覆盖续签/401，存储故障回滚、管理员慢正文撤权、上传 key 覆盖均有确定性对抗测试；“我的”公开 FAQ 未登录可读且不保留报备/签单活动旧口径。
 - 待审核/无密码账号拿不到任何 token，无 token 拿不到 `/mini` 数据（公司房源匿名可见口径不变）。
 
 找房助手另有真实需求行为基线：

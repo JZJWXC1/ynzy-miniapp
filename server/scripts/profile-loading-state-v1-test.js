@@ -10,16 +10,27 @@ const profileWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'profile', 'pro
 
 let modals = []
 let toasts = []
+let switchedTabs = []
 let authToken = 'TOKEN_A'
+let authSessionKey = 'SESSION_A'
+let appLogoutCalls = 0
+
+const appState = {
+  logout() {
+    appLogoutCalls += 1
+    authToken = ''
+    authSessionKey = `GUEST_${appLogoutCalls}`
+  }
+}
 
 global.wx = {
   showModal(options) { modals.push(options) },
   showToast(options) { toasts.push(options) },
   navigateTo() {},
-  switchTab() {}
+  switchTab(options) { switchedTabs.push(options && options.url) }
 }
 
-global.getApp = () => ({ logout() {} })
+global.getApp = () => appState
 
 function setAtPath(target, key, value) {
   const parts = key.split('.')
@@ -46,7 +57,11 @@ function loadDefinition(apiStub) {
     id: apiClientPath,
     filename: apiClientPath,
     loaded: true,
-    exports: { getAuthToken: () => authToken }
+    exports: {
+      getAuthToken: () => authToken,
+      getAuthSessionKey: () => authSessionKey,
+      isStaleUnauthorized: (error) => Boolean(error && error.authResponseStale)
+    }
   }
   require.cache[apiServicePath] = {
     id: apiServicePath,
@@ -80,6 +95,20 @@ function successApi(userName = '测试中介') {
 }
 
 async function run() {
+  let guestProtectedCalls = 0
+  authToken = ''
+  authSessionKey = 'GUEST_INITIAL'
+  const guestDefinition = loadDefinition({
+    getProfileState() { guestProtectedCalls += 1; return Promise.reject(new Error('游客不应调用')) },
+    getFootprintRecords() { guestProtectedCalls += 1; return Promise.reject(new Error('游客不应调用')) }
+  })
+  const guestPage = makePage(guestDefinition)
+  await guestPage.refreshProfile()
+  assert.strictEqual(guestProtectedCalls, 0, '游客打开“我的”不得先请求受保护工作台接口')
+  assert.strictEqual(guestPage.data.profileAccessRequired, true, '游客必须直接看到登录卡和公开 FAQ')
+
+  authToken = 'TOKEN_A'
+  authSessionKey = 'SESSION_A'
   let shouldFail = false
   const api = successApi('可信账号')
   const wrappedApi = {}
@@ -124,9 +153,11 @@ async function run() {
   assert.deepStrictEqual(initialFailurePage.data.reminders, [], '初次失败不得回退示例提醒')
 
   const authError = Object.assign(new Error('登录已失效'), { statusCode: 401 })
+  authToken = 'TOKEN_AUTH_EXPIRED'
+  authSessionKey = 'SESSION_AUTH_EXPIRED'
   const authDefinition = loadDefinition({
-    getProfileState() { return Promise.reject(authError) },
-    getFootprintRecords() { return Promise.reject(authError) }
+    getProfileState() { authToken = ''; authSessionKey = 'GUEST_AUTH_EXPIRED'; return Promise.reject(authError) },
+    getFootprintRecords() { authToken = ''; authSessionKey = 'GUEST_AUTH_EXPIRED'; return Promise.reject(authError) }
   })
   const authPage = makePage(authDefinition)
   authPage.setData({
@@ -140,8 +171,10 @@ async function run() {
   assert.strictEqual(authPage.data.profileAccessRequired, true, '401/403 必须显示明确登录入口')
   assert.strictEqual(authPage.data.profileReady, false, '登录失效必须隐藏旧账号业务区')
   assert.deepStrictEqual(authPage.data.user, {}, '登录失效必须清除旧账号资料')
-  assert.ok(modals.some((item) => /登录/.test(item.title)), '登录失效必须保留登录引导')
+  assert.ok(!modals.some((item) => /登录后进入我的/.test(item.title)), '登录失效后应直接显示登录卡与 FAQ，不得强弹窗遮挡')
 
+  authToken = 'TOKEN_A'
+  authSessionKey = 'SESSION_RACE_A'
   let resolveStaleProfile = null
   let profileCalls = 0
   const raceApi = successApi('最新账号')
@@ -178,7 +211,7 @@ async function run() {
     getFootprintRecords() { return new Promise((resolve) => { resolveSwitchedFootprints = resolve }) }
   })
   const switchPage = makePage(switchDefinition)
-  switchPage._profileAccountToken = 'TOKEN_A'
+  switchPage._profileAccountToken = 'SESSION_RACE_A'
   switchPage.setData({
     profileReady: true,
     user: { id: 'U-A', name: '账号A' },
@@ -188,6 +221,7 @@ async function run() {
     footprintCount: 9
   })
   authToken = 'TOKEN_B'
+  authSessionKey = 'SESSION_B'
   switchPage.refreshProfile()
   assert.strictEqual(switchPage.data.profileReady, false, '换号请求发出时必须立即隐藏 A 的工作台')
   assert.deepStrictEqual(switchPage.data.user, {}, '换号请求发出时必须立即清空 A 资料')
@@ -204,8 +238,10 @@ async function run() {
   assert.ok(switchPage.data.workbench.some((item) => item.title === '我的收藏' && item.value === '1 套'))
 
   authToken = 'TOKEN_B'
+  authSessionKey = 'SESSION_B'
   switchPage.refreshProfile()
   authToken = 'TOKEN_C'
+  authSessionKey = 'SESSION_C'
   resolveSwitchedProfile({
     user: { id: 'U-B-LATE', name: '迟到账号B', role: '中介', authed: '已实名' },
     favoriteCount: 99,
@@ -218,20 +254,119 @@ async function run() {
   assert.deepStrictEqual(switchPage.data.workbench, [], 'B 的收藏数量不得回填 C 工作台')
 
   authToken = 'TOKEN_B'
+  authSessionKey = 'SESSION_B'
   switchPage.refreshProfile()
   authToken = 'TOKEN_C'
+  authSessionKey = 'SESSION_C'
   const toastBeforeStaleFailure = toasts.length
   resolveSwitchedProfile(Promise.reject(new Error('unused')))
   resolveSwitchedFootprints(Promise.reject(new Error('unused')))
   await flushPromises()
   assert.deepStrictEqual(switchPage.data.user, {}, 'B 失败响应迟到时不得污染 C 页面')
   assert.strictEqual(toasts.length, toastBeforeStaleFailure, 'B 失败迟到不得在 C 弹加载失败')
+  assert.ok(toasts.some((item) => /加载失败/.test(item.title)), '资料网络失败必须有即时提示')
+
+  // 同账号滑动续签不改变稳定 session：旧 token 的迟到鉴权错误不得把新 token 会话误判为未登录。
+  authToken = 'TOKEN_OLD'
+  authSessionKey = 'SESSION_SLIDING'
+  let rejectOldProfile
+  let rejectOldFootprints
+  let slidingProfileCalls = 0
+  let slidingFootprintCalls = 0
+  const slidingDefinition = loadDefinition({
+    getProfileState() {
+      slidingProfileCalls += 1
+      if (slidingProfileCalls === 1) return new Promise((resolve, reject) => { rejectOldProfile = reject })
+      return Promise.resolve({
+        user: { id: 'U-SLIDING', name: '续签后账号', role: '中介', authed: '已实名' },
+        sourceStats: [],
+        reminders: []
+      })
+    },
+    getFootprintRecords() {
+      slidingFootprintCalls += 1
+      if (slidingFootprintCalls === 1) return new Promise((resolve, reject) => { rejectOldFootprints = reject })
+      return Promise.resolve([])
+    }
+  })
+  const slidingPage = makePage(slidingDefinition)
+  slidingPage.refreshProfile()
+  authToken = 'TOKEN_REFRESHED'
+  const staleAuthError = Object.assign(new Error('旧 token 迟到 401'), { statusCode: 401, authResponseStale: true })
+  rejectOldProfile(staleAuthError)
+  rejectOldFootprints(staleAuthError)
+  await flushPromises()
+  await flushPromises()
+  assert.strictEqual(slidingPage.data.profileAccessRequired, false, '同 session 续签后的旧 401 不得显示登录卡')
+  assert.strictEqual(slidingPage.data.user.name, '续签后账号', '旧 401 应触发当前 token 的资料重读')
+
+  // 主动退出只允许当前会话消费结果：A 请求在途切到 B 后，A 的 200/401 都必须静默丢弃。
+  for (const lateStatus of [200, 401]) {
+    modals = []
+    toasts = []
+    switchedTabs = []
+    appLogoutCalls = 0
+    authToken = 'TOKEN_LOGOUT_A'
+    authSessionKey = 'SESSION_LOGOUT_A'
+    let resolveLogout
+    let rejectLogout
+    const logoutDefinition = loadDefinition({
+      logout() { return new Promise((resolve, reject) => { resolveLogout = resolve; rejectLogout = reject }) },
+      getProfileState() { return Promise.resolve({ user: { id: 'U-B', name: '账号B' }, sourceStats: [], reminders: [] }) },
+      getFootprintRecords() { return Promise.resolve([]) }
+    })
+    const logoutPage = makePage(logoutDefinition)
+    logoutPage.logout()
+    const confirmModal = modals[modals.length - 1]
+    assert.ok(confirmModal && typeof confirmModal.success === 'function', '退出必须先显示确认框')
+    confirmModal.success({ confirm: true })
+    authToken = 'TOKEN_LOGOUT_B'
+    authSessionKey = 'SESSION_LOGOUT_B'
+    logoutPage.refreshProfile()
+    assert.strictEqual(logoutPage.data.logoutSubmitting, false, '切到 B 时必须立即解除 A 的退出 busy，允许 B 独立操作')
+    if (lateStatus === 200) resolveLogout({ revoked: true })
+    else rejectLogout(Object.assign(new Error('A 已失效'), { statusCode: 401 }))
+    await flushPromises()
+    await flushPromises()
+    assert.strictEqual(appLogoutCalls, 0, `切到 B 后 A 的迟到 ${lateStatus} 不得清除 B`)
+    assert.strictEqual(authToken, 'TOKEN_LOGOUT_B')
+    assert.strictEqual(toasts.length, 0, `切到 B 后 A 的迟到 ${lateStatus} 不得显示退出提示`)
+    assert.strictEqual(switchedTabs.length, 0, `切到 B 后 A 的迟到 ${lateStatus} 不得跳首页`)
+  }
+
+  // 当前会话的成功才真正清本地；普通网络失败保留 token 并明确提示失败。
+  modals = []
+  toasts = []
+  switchedTabs = []
+  appLogoutCalls = 0
+  authToken = 'TOKEN_LOGOUT_CURRENT'
+  authSessionKey = 'SESSION_LOGOUT_CURRENT'
+  const logoutSuccessDefinition = loadDefinition({ logout: () => Promise.resolve({ revoked: true }) })
+  const logoutSuccessPage = makePage(logoutSuccessDefinition)
+  logoutSuccessPage.logout()
+  modals[modals.length - 1].success({ confirm: true })
+  await flushPromises()
+  assert.strictEqual(appLogoutCalls, 1, '当前会话退出成功必须清除本地登录态')
+  assert.ok(toasts.some((item) => /所有设备已退出/.test(item.title)))
+
+  modals = []
+  toasts = []
+  switchedTabs = []
+  appLogoutCalls = 0
+  authToken = 'TOKEN_LOGOUT_FAIL'
+  authSessionKey = 'SESSION_LOGOUT_FAIL'
+  const logoutFailureDefinition = loadDefinition({ logout: () => Promise.reject(new Error('合成网络失败')) })
+  const logoutFailurePage = makePage(logoutFailureDefinition)
+  logoutFailurePage.logout()
+  modals[modals.length - 1].success({ confirm: true })
+  await flushPromises()
+  assert.strictEqual(appLogoutCalls, 0, '服务端未确认退出时不得清本地')
+  assert.strictEqual(authToken, 'TOKEN_LOGOUT_FAIL')
+  assert.ok(modals.some((item) => item.title === '退出失败'), '网络失败必须明确提示退出失败')
 
   assert.ok(/bindtap="retryProfile"/.test(profileWxml), '“我的”页模板必须绑定重试入口')
   assert.ok(/bindtap="goLogin"/.test(profileWxml), '未登录状态必须绑定登录入口')
   assert.ok(/wx:if="\{\{profileReady\}\}"/.test(profileWxml), '业务区必须在资料成功后才展示')
-  assert.ok(toasts.some((item) => /加载失败/.test(item.title)), '资料网络失败必须有即时提示')
-
   console.log('profile-loading-state-v1-test passed')
 }
 

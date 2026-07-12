@@ -1,15 +1,22 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 
 const MIN_PASSWORD_LENGTH = 8
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : (apiClient.getAuthToken ? apiClient.getAuthToken() : ''))
+}
+
 function finishWithUser(user) {
   const app = getApp()
+  let saved = false
   if (app && app.setCurrentUser) {
-    app.setCurrentUser(user)
+    saved = app.setCurrentUser(user) === true
   }
-  if (app && app.bindWechatOpenid) {
+  if (saved && app && app.bindWechatOpenid) {
     app.bindWechatOpenid()
   }
+  return saved
 }
 
 Page({
@@ -25,23 +32,39 @@ Page({
   },
 
   onLoad() {
+    this._authPageActive = true
+    this._editedPrefillFields = new Set()
+    if (!apiClient.getAuthToken()) return
+    const requestSeq = Number(this._prefillRequestSeq || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    this._prefillRequestSeq = requestSeq
     apiService.getCurrentUser().then((user) => {
+      if (!this._authPageActive || this._prefillRequestSeq !== requestSeq || currentAuthSessionKey() !== requestSessionKey) return
       if (user && user.id) {
-        this.setData({
-          'form.name': user.name || '',
-          'form.phone': user.phone || ''
-        })
+        const patch = {}
+        if (!this._editedPrefillFields.has('name')) patch['form.name'] = user.name || ''
+        if (!this._editedPrefillFields.has('phone')) patch['form.phone'] = user.phone || ''
+        if (Object.keys(patch).length > 0) this.setData(patch)
       }
     }).catch(() => {})
   },
 
+  onUnload() {
+    this._authPageActive = false
+    this._prefillRequestSeq = Number(this._prefillRequestSeq || 0) + 1
+    this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
+  },
+
   switchMode(event) {
+    if (this.data.submitting) return
     const mode = event.currentTarget.dataset.mode || 'login'
     this.setData({ mode })
   },
 
   updateField(event) {
     const field = event.currentTarget.dataset.field
+    if (!this._editedPrefillFields) this._editedPrefillFields = new Set()
+    this._editedPrefillFields.add(field)
     this.setData({
       [`form.${field}`]: event.detail.value
     })
@@ -76,6 +99,7 @@ Page({
   },
 
   submit() {
+    if (this.data.submitting) return
     const validation = this.validate()
     if (!validation.ok) {
       wx.showToast({ title: validation.message, icon: 'none' })
@@ -83,15 +107,27 @@ Page({
     }
 
     this.setData({ submitting: true })
-    const action = this.data.mode === 'register'
+    const submitMode = this.data.mode
+    const requestSessionKey = currentAuthSessionKey()
+    const requestSeq = Number(this._submitRequestSeq || 0) + 1
+    this._submitRequestSeq = requestSeq
+    const isCurrentRequest = () => (
+      this._authPageActive !== false &&
+      this._submitRequestSeq === requestSeq &&
+      currentAuthSessionKey() === requestSessionKey
+    )
+    const action = submitMode === 'register'
       ? apiService.registerUser({ name: validation.name, phone: validation.phone, password: validation.password })
       : apiService.loginByPhone(validation.phone, validation.password)
 
     action.then((user) => {
+      if (!isCurrentRequest()) return
       // 只有登录才会走到这里（注册一律不发 token，注册结果在 catch 里按状态码友好提示）。
-      finishWithUser(user)
+      if (!finishWithUser(user)) throw new Error('登录响应无有效会话，请重新登录')
+      const completedSessionKey = currentAuthSessionKey()
       wx.showToast({ title: '登录成功', icon: 'success' })
       setTimeout(() => {
+        if (!this._authPageActive || currentAuthSessionKey() !== completedSessionKey) return
         const pages = getCurrentPages()
         if (pages.length > 1) {
           wx.navigateBack()
@@ -100,9 +136,10 @@ Page({
         }
       }, 300)
     }).catch((error) => {
+      if (!isCurrentRequest()) return
       const code = Number(error && error.statusCode)
       const message = (error && error.message) || '请稍后重试'
-      if (this.data.mode === 'register') {
+      if (submitMode === 'register') {
         if (code === 403) {
           // 注册申请已受理（待管理员审核开通）——按成功语气提示，而非报错。
           wx.showModal({
@@ -139,7 +176,7 @@ Page({
         }
       })
     }).finally(() => {
-      this.setData({ submitting: false })
+      if (this._submitRequestSeq === requestSeq) this.setData({ submitting: false })
     })
   }
 })

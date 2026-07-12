@@ -242,7 +242,9 @@ function createVideoUploadPolicy(input = {}) {
     expiration,
     conditions: [
       ['content-length-range', 1, config.oss.maxVideoSize],
-      ['starts-with', '$key', `${config.oss.uploadDir}/`],
+      // 每张策略只允许上传到这一条服务端生成的 key；目录前缀条件会允许客户端改成同目录
+      // 任意已知对象并覆盖他人文件。
+      { key: objectKey },
       ['starts-with', '$Content-Type', 'video/'],
       { bucket: config.oss.bucket },
       { success_action_status: '200' }
@@ -305,7 +307,7 @@ function createImageUploadPolicy(input = {}, options = {}) {
     expiration,
     conditions: [
       ['content-length-range', 1, maxSize],
-      ['starts-with', '$key', `${uploadDir}/`],
+      { key: objectKey },
       ['starts-with', '$Content-Type', 'image/'],
       { bucket: config.oss.bucket },
       { success_action_status: '200' }

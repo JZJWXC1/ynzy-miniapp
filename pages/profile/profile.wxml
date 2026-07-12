@@ -46,7 +46,7 @@
       <view class="account-actions">
         <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
         <button wx:if="{{user.id}}" class="password-button" bindtap="handleTap" data-name="修改密码" data-url="/pages/change-password/change-password">修改密码</button>
-        <button wx:if="{{user.id}}" class="logout-button" bindtap="logout">退出登录</button>
+        <button wx:if="{{user.id}}" class="logout-button" bindtap="logout" loading="{{logoutSubmitting}}" disabled="{{logoutSubmitting}}">{{logoutSubmitting ? '正在退出' : '退出登录'}}</button>
       </view>
     </view>
 
@@ -85,5 +85,19 @@
       </view>
     </view>
     </block>
+
+    <view class="public-help-section">
+      <view class="section-title">
+        <view class="section-title-main">使用帮助</view>
+        <view class="section-title-note">无需登录</view>
+      </view>
+      <button class="faq-entry-card" bindtap="handleTap" data-name="常见问题" data-url="/pages/faq/faq">
+        <view>
+          <view class="faq-entry-title">常见问题</view>
+          <view class="faq-entry-desc">登录、佣金、收藏、足迹与暂停功能说明</view>
+        </view>
+        <view class="faq-entry-arrow">›</view>
+      </button>
+    </view>
   </view>
 </scroll-view>

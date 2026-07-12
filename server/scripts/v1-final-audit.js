@@ -48,6 +48,13 @@ const criticalScripts = [
   'server/scripts/mini-login-password-v1-test.js',
   // 改密会话撤销：自助改密给当前设备换发新 token、其他旧会话立即失效；管理员重置使全部旧会话失效。
   'server/scripts/mini-token-revocation-v1-test.js',
+  // M6：30 天滑动登录、全设备退出/停用/删除撤销、在途写 fresh 验签、稳定会话键与公开 FAQ。
+  'server/scripts/mini-sliding-auth-v1-test.js',
+  'server/scripts/mini-sliding-auth-client-v1-test.js',
+  'server/scripts/admin-mini-user-revocation-race-v1-test.js',
+  'server/scripts/profile-loading-state-v1-test.js',
+  'server/scripts/profile-faq-v1-test.js',
+  'server/scripts/mini-page-resume-state-v1-test.js',
   'server/scripts/mini-pending-no-data-v1-test.js',
   // 视频首帧封面：OSS 私有桶 video/snapshot 签名必须把 x-oss-process 纳入 subresource，否则 SignatureDoesNotMatch。
   'server/scripts/oss-video-snapshot-v1-test.js',
@@ -70,6 +77,7 @@ const criticalScripts = [
   'server/scripts/v1-acceptance-check.js',
   // db.json 解析缓存/clone 隔离/写后刷新/抛异常回滚的契约（飞书同步与助手长 await 路径依赖）。
   'server/scripts/db-cache-v1-test.js',
+  'server/scripts/db-write-lock-v1-test.js',
   // asr upgrade 处理器兜住畸形请求（单个坏请求不打崩进程）+ 未捕获异常记录后优雅退出的契约。
   'server/scripts/graceful-exit-v1-test.js',
   // 升级握手成功后，客户端一条畸形（未 mask）WS 帧不得逃逸成 uncaughtException 打死进程
@@ -488,9 +496,9 @@ function checkProfileLogout() {
   const profileJs = readText('pages/profile/profile.js')
   const profileWxml = readText('pages/profile/profile.wxml')
   assertOk(profileWxml.includes('退出登录'), '我的页面必须提供退出登录按钮')
-  assertOk(profileJs.includes('app.logout()'), '退出登录必须调用 app.logout 清除 token')
+  assertOk(/apiService\.logout\(\)[\s\S]*\.then\([\s\S]*app\.logout\(\)/.test(profileJs), '退出登录必须先由服务端撤销成功，再调用 app.logout 清除本地 token')
   assertOk(profileJs.includes("wx.switchTab({ url: '/pages/index/index' })"), '退出登录后必须跳回找房首页')
-  return '我的页面退出登录会清除本地 token 并回到找房首页'
+  return '我的页面主动退出会先撤销服务端全部设备会话，再清本地 token 并回到找房首页'
 }
 
 function checkMiniLoginPassword() {
@@ -509,6 +517,36 @@ function checkMiniLoginPassword() {
   assertOk(/revokeUserTokens\(user\)/.test(domainJs), '改密必须提升账号 tokenVersion 撤销旧会话')
   assertOk(/return miniAuthResponse\(changedUser\)/.test(indexJs), '自助改密后必须为当前设备换发新 token')
   return '小程序登录已接密码校验（scrypt）、无密码账号 fail-closed、敏感字段不外泄、改密撤销旧会话'
+}
+
+function checkSlidingAuthAndPublicFaq() {
+  const appJson = readJson('app.json')
+  const appJs = readText('app.js')
+  const apiClient = readText('utils/api-client.js')
+  const indexJs = readText('server/src/index.js')
+  const domainJs = readText('server/src/domain.js')
+  const ossJs = readText('server/src/oss.js')
+  const faqJs = readText('pages/faq/faq.js')
+  const faqWxml = readText('pages/faq/faq.wxml')
+  const profileWxml = readText('pages/profile/profile.wxml')
+  const businessFaq = readText('server/src/assistant/business-faq.js')
+  assertOk(appJson.pages.includes('pages/faq/faq'), '公开 FAQ 页面必须注册到 app.json')
+  assertOk(profileWxml.includes('public-help-section') && profileWxml.includes('/pages/faq/faq'), '我的页必须在公开区域提供 FAQ 入口')
+  assertOk(/30 天/.test(faqJs) && /最近 7 天/.test(faqJs) && /90 天/.test(faqJs), 'FAQ 必须覆盖 30 天登录与 7/90 天足迹')
+  assertOk(/当前已暂停|当前暂停/.test(faqJs) && !/签单必须从报备记录发起/.test(`${faqJs}\n${businessFaq}`), 'FAQ 必须使用报备/签单暂停口径')
+  assertOk(!/api-service|api-client|Authorization|ynzy_auth_token/.test(faqJs) && faqWxml.includes('faqItems'), 'FAQ 必须公开静态渲染且不读取登录态')
+  assertOk(/MINI_AUTH_TOKEN_TTL_MS\s*=\s*30\s*\*\s*24/.test(indexJs), '小程序 token 必须为 30 天 TTL')
+  assertOk(indexJs.includes('X-Auth-Token') && indexJs.includes('X-Auth-Token-Expires-At'), '服务端必须下发滑动续签响应头')
+  assertOk(indexJs.includes("pathname.startsWith('/mini/auth/')") && indexJs.includes("headers['Cache-Control'] = 'no-store'"), '鉴权成功与错误响应必须统一禁止缓存')
+  assertOk(indexJs.includes("pathname === '/mini/auth/logout'") && domainJs.includes('function logoutUserSessions'), '必须提供服务端主动退出撤销')
+  assertOk(indexJs.includes('function updateMiniDb(req, mutator)') && indexJs.includes('dbStore.inspectDb'), '登录态写与外部能力必须在临界点 fresh 验签')
+  assertOk(domainJs.includes('function setManagedUserStatus') && indexJs.includes('/status$/'), '必须提供小程序账号停用/恢复并撤销旧 token')
+  assertOk(appJs.includes('persistAuthStorageAtomically') && appJs.includes('authSessionKey'), 'App 必须事务式持久化续签并维护稳定会话键')
+  assertOk(apiClient.includes('requestAuthSessionKey') && apiClient.includes('isStaleUnauthorized'), 'API 客户端必须按稳定会话键识别旧 401，并仅安全重试读取')
+  assertOk(indexJs.includes('function updateAdminDb(req, mutator)') && indexJs.includes('assertFreshAdminCapability(req, nextDb)'), '后台账号管理写入必须在写锁内重验管理员最新权限')
+  assertOk(indexJs.includes('clientUploadPolicyInput(body)') && !ossJs.includes("['starts-with', '$key'"), '上传策略必须忽略客户端对象键并精确绑定服务端生成 key')
+  assertOk((ossJs.match(/\{ key: objectKey \}/g) || []).length >= 2, '视频与图片 OSS policy 都必须精确绑定单一对象键')
+  return '30 天滑动续签、鉴权禁缓存、全设备撤销、事务内重验、上传键隔离、竞态隔离与未登录 FAQ 均已固化'
 }
 
 function checkRunnableV1Scripts() {
@@ -531,6 +569,7 @@ const checks = [
   ['地图坐标分级链路存在', checkMapCoordinateGrading],
   ['我的页面退出登录存在', checkProfileLogout],
   ['小程序登录已接账号密码校验', checkMiniLoginPassword],
+  ['30 天滑动登录与公开 FAQ', checkSlidingAuthAndPublicFaq],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
 

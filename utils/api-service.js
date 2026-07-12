@@ -414,21 +414,29 @@ function normalizeAuthUser(result) {
   })
 }
 
+function mockAuthPayload(user) {
+  return {
+    user,
+    token: `synthetic-mock-token-${user.id}-${Date.now()}`,
+    tokenExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
+  }
+}
+
 function loginByPhone(phone, password) {
   return apiClient.call({
     path: '/mini/auth/login',
     method: 'POST',
     data: { phone, password },
-    mock: () => {
-      const user = mockData.loginByPhone(phone)
-      return {
-        user,
-        // 开发者工具 Mock 也返回与真实接口同形状的明显假 token，让收藏等登录态功能可验收。
-        token: `synthetic-mock-token-${user.id}`,
-        tokenExpiresAt: '2099-01-01T00:00:00.000Z'
-      }
-    }
+    mock: () => mockAuthPayload(mockData.loginByPhone(phone))
   }).then(normalizeAuthUser)
+}
+
+function logout() {
+  return apiClient.call({
+    path: '/mini/auth/logout',
+    method: 'POST',
+    mock: () => mockData.logout()
+  })
 }
 
 function registerUser(form) {
@@ -436,7 +444,7 @@ function registerUser(form) {
     path: '/mini/auth/register',
     method: 'POST',
     data: form,
-    mock: () => mockData.loginByPhone(form && form.phone)
+    mock: () => mockData.registerUser(form)
   }).then(normalizeAuthUser)
 }
 
@@ -461,8 +469,8 @@ function changePassword(oldPassword, newPassword) {
     path: '/mini/auth/password',
     method: 'POST',
     data: { oldPassword, newPassword },
-    mock: () => mockData.getCurrentUser()
-  })
+    mock: () => mockAuthPayload(mockData.getCurrentUser())
+  }).then(normalizeAuthUser)
 }
 
 function matchListings(condition) {
@@ -995,6 +1003,7 @@ module.exports = {
   setFavorite,
   getCompanySheetSnapshot,
   loginByPhone,
+  logout,
   registerUser,
   getCurrentUser,
   bindWechatOpenid,

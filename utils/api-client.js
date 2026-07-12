@@ -25,6 +25,14 @@ function headerValue(response, name) {
   return matched ? String(headers[matched] || '') : ''
 }
 
+function authExpiryTimestamp(value) {
+  if (value === undefined || value === null || value === '') return 0
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 function urlWithoutQuery(value) {
   const text = String(value || '')
   const queryAt = text.indexOf('?')
@@ -102,6 +110,39 @@ function getAuthToken(config) {
   return ''
 }
 
+function getAuthSessionKey(config) {
+  try {
+    if (typeof getApp === 'function') {
+      const app = getApp()
+      if (app && app.globalData && app.globalData.authSessionKey) {
+        return String(app.globalData.authSessionKey)
+      }
+    }
+  } catch (error) {}
+  // 兼容单元测试或极早启动阶段；真实小程序 onLaunch 会始终生成稳定会话键。
+  const token = getAuthToken(config)
+  return token ? `legacy:${token}` : 'guest'
+}
+
+function applyAuthRefresh(response, requestToken, requestSessionKey) {
+  const nextToken = headerValue(response, 'X-Auth-Token')
+  const nextExpiresAt = authExpiryTimestamp(headerValue(response, 'X-Auth-Token-Expires-At'))
+  if (!nextToken || nextToken.length > 4096 || !nextExpiresAt || nextExpiresAt <= Date.now()) return false
+  const config = getRuntimeConfig()
+  if (String(getAuthToken(config) || '') !== String(requestToken || '')) return false
+  if (String(getAuthSessionKey(config) || '') !== String(requestSessionKey || '')) return false
+
+  try {
+    const app = typeof getApp === 'function' ? getApp() : null
+    // 续签只能由 App 的事务式持久化方法落地；缺少该方法时 fail-closed，禁止在这里先改内存、
+    // 再逐键写 storage 形成 token/expiry/userId 半更新。
+    if (!app || typeof app.refreshAuthToken !== 'function') return false
+    return app.refreshAuthToken(nextToken, nextExpiresAt, requestToken) === true
+  } catch (error) {
+    return false
+  }
+}
+
 function authHeader(config) {
   const token = getAuthToken(config)
   return token ? { Authorization: `Bearer ${token}` } : {}
@@ -119,11 +160,13 @@ function clearAuthState() {
         app.globalData.user = null
         app.globalData.userId = ''
         app.globalData.authToken = ''
+        app.globalData.authTokenExpiresAt = ''
         if (app.globalData.apiConfig) app.globalData.apiConfig.token = ''
       }
     }
     if (typeof wx !== 'undefined') {
       if (wx.removeStorageSync) wx.removeStorageSync('ynzy_auth_token')
+      if (wx.removeStorageSync) wx.removeStorageSync('ynzy_auth_token_expires_at')
       if (wx.removeStorageSync) wx.removeStorageSync('ynzy_user_id')
     }
   } catch (error) {}
@@ -149,12 +192,20 @@ function redirectToAuth() {
   })
 }
 
-function handleUnauthorized(error, requestToken) {
+function handleUnauthorized(error, requestToken, requestSessionKey) {
   if (!error || Number(error.statusCode) !== 401) return
-  const currentToken = String(getAuthToken(getRuntimeConfig()) || '')
+  const config = getRuntimeConfig()
+  const currentToken = String(getAuthToken(config) || '')
+  const currentSessionKey = String(getAuthSessionKey(config) || '')
+  // bearer A 滑动续签成 A′ 时稳定 session 不变。旧 A 的迟到 401 只说明旧请求已陈旧，不能
+  // 撤销 A′；标记后仅允许幂等 GET 由 request 层自动重试一次，写请求交给页面提示人工重试。
+  if (requestSessionKey !== undefined && currentSessionKey !== String(requestSessionKey || '')) return
+  if (requestToken !== undefined && currentToken !== String(requestToken || '')) {
+    if (currentToken && requestToken) error.authResponseStale = true
+    return
+  }
   // 401 只能撤销发出该请求的同一会话。A 请求迟到时若用户已切到 B、刚从游客登录或主动退出，
   // 页面级序号还来不及拦住这里的全局副作用，因此必须先比较实际 Authorization token 快照。
-  if (requestToken !== undefined && currentToken !== String(requestToken || '')) return
   // 游客（从未登录、无 token）浏览时，不要因为某个后台请求 401（如详情页的 getProfileState、
   // 或点到非公司房源）就被强制弹去登录页——那正是「一直跳转登录」的根源。只有原本已登录、
   // token 失效的用户才自动跳登录重新认证；游客只清理状态、不跳转，敏感操作各页面会显式引导登录。
@@ -163,9 +214,13 @@ function handleUnauthorized(error, requestToken) {
   if (hadToken) redirectToAuth()
 }
 
+function isStaleUnauthorized(error) {
+  return Boolean(error && Number(error.statusCode) === 401 && error.authResponseStale === true)
+}
+
 function request(options) {
   const config = getRuntimeConfig()
-  const method = options.method || 'GET'
+  const method = String(options.method || 'GET').toUpperCase()
   const data = options.data || {}
 
   if (shouldUseMock(config)) {
@@ -185,6 +240,7 @@ function request(options) {
     const url = buildUrl(config.baseUrl, options.path)
     const timeout = options.timeout || config.timeout
     const requestAuthToken = String(getAuthToken(config) || '')
+    const requestAuthSessionKey = String(getAuthSessionKey(config) || '')
     const startedAt = Date.now()
     const context = (extra = {}) => ({
       requestType: 'request',
@@ -201,6 +257,16 @@ function request(options) {
         errorCode: rawError && (rawError.errno !== undefined ? rawError.errno : rawError.errorCode),
         networkError: true
       }))
+      reportRequestError(error)
+      reject(error)
+    }
+    const rejectOrRetryAuth = (error) => {
+      handleUnauthorized(error, requestAuthToken, requestAuthSessionKey)
+      const authRetryCount = Number(options._authRetryCount || 0)
+      if (method === 'GET' && isStaleUnauthorized(error) && authRetryCount < 1) {
+        request({ ...options, _authRetryCount: authRetryCount + 1 }).then(resolve, reject)
+        return
+      }
       reportRequestError(error)
       reject(error)
     }
@@ -222,9 +288,7 @@ function request(options) {
             traceId
           }))
           error.data = body.data || null
-          reportRequestError(error)
-          handleUnauthorized(error, requestAuthToken)
-          reject(error)
+          rejectOrRetryAuth(error)
           return
         }
         if (body.code && body.code !== 0) {
@@ -233,11 +297,10 @@ function request(options) {
             traceId
           }))
           error.data = body.data || null
-          reportRequestError(error)
-          handleUnauthorized(error, requestAuthToken)
-          reject(error)
+          rejectOrRetryAuth(error)
           return
         }
+        applyAuthRefresh(res, requestAuthToken, requestAuthSessionKey)
         resolve(body)
       },
       fail(error) {
@@ -276,6 +339,10 @@ function uploadFile(options) {
     const method = 'UPLOAD'
     const url = options.url
     const timeout = options.timeout || config.timeout
+    const authorization = headerValue({ header: options.header || {} }, 'Authorization')
+    const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i)
+    const requestAuthToken = bearerMatch ? String(bearerMatch[1] || '') : ''
+    const requestAuthSessionKey = requestAuthToken ? String(getAuthSessionKey(config) || '') : ''
     const startedAt = Date.now()
     const context = (extra = {}) => ({
       requestType: 'upload',
@@ -305,22 +372,26 @@ function uploadFile(options) {
       header: options.header || {},
       timeout,
       success(res) {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          const error = createRequestError(`文件上传失败：${res.statusCode}`, context({
-            statusCode: res.statusCode,
-            traceId: headerValue(res, 'X-Trace-Id')
-          }))
-          reportRequestError(error)
-          reject(error)
-          return
-        }
-
         let body = {}
         try {
           body = res.data ? JSON.parse(res.data) : {}
         } catch (error) {
           body = {}
         }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const normalized = normalizeResponse(body)
+          const error = createRequestError(normalized.message || `文件上传失败：${res.statusCode}`, context({
+            statusCode: res.statusCode,
+            traceId: headerValue(res, 'X-Trace-Id')
+          }))
+          error.data = normalized.data || null
+          if (requestAuthToken) handleUnauthorized(error, requestAuthToken, requestAuthSessionKey)
+          reportRequestError(error)
+          reject(error)
+          return
+        }
+
+        if (requestAuthToken) applyAuthRefresh(res, requestAuthToken, requestAuthSessionKey)
         resolve(normalizeResponse(body))
       },
       fail(error) {
@@ -348,8 +419,11 @@ module.exports = {
   buildUrl,
   uploadFile,
   getAuthToken,
+  getAuthSessionKey,
   authHeader,
+  applyAuthRefresh,
   handleUnauthorized,
+  isStaleUnauthorized,
   headerValue,
   urlWithoutQuery,
   sanitizeDiagnosticText,

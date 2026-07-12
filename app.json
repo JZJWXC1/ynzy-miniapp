@@ -14,7 +14,8 @@
     "pages/shared-video/shared-video",
     "pages/footprint/footprint",
     "pages/commissions/commissions",
-    "pages/profile/profile"
+    "pages/profile/profile",
+    "pages/faq/faq"
   ],
   "window": {
     "navigationBarTextStyle": "black",

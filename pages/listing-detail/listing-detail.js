@@ -1,4 +1,5 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const phoneFootprintOutbox = require('../../utils/footprint-outbox')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
@@ -28,12 +29,16 @@ function isAuthError(error) {
 }
 
 function currentAuthToken() {
-  try {
-    const app = typeof getApp === 'function' ? getApp() : null
-    if (app && app.globalData && app.globalData.authToken) return String(app.globalData.authToken)
-    if (typeof wx !== 'undefined' && wx.getStorageSync) return String(wx.getStorageSync('ynzy_auth_token') || '')
-  } catch (error) {}
-  return ''
+  return String(apiClient.getAuthToken() || '')
+}
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
+function profileSessionMatches(value, sessionKey) {
+  const stored = String(value || '')
+  return stored === String(sessionKey || '') || stored === currentAuthToken()
 }
 
 function decodeOption(value) {
@@ -145,7 +150,7 @@ Page({
       wx.showToast({ title: '请选择房源', icon: 'none' });
       return;
     }
-    this.authTokenSnapshot = currentAuthToken()
+    this.authTokenSnapshot = currentAuthSessionKey()
     this.listingId = id
     this.setData({
       needId,
@@ -156,7 +161,7 @@ Page({
 
   onShow() {
     this.hideNativeShareMenu()
-    const nextToken = currentAuthToken()
+    const nextToken = currentAuthSessionKey()
     if (this.authTokenSnapshot === undefined) {
       this.authTokenSnapshot = nextToken
       return
@@ -185,12 +190,12 @@ Page({
   loadListing(id) {
     this.listingId = id
     const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
-    const requestToken = currentAuthToken()
+    const requestSessionKey = currentAuthSessionKey()
     this.listingLoadGeneration = requestGeneration
-    this.profileAuthToken = ''
+    this.profileAuthToken = '' // 实际保存稳定会话键；保留属性名兼容既有页面测试与运行态对象
     this.sensitiveViewIdempotencyKey = ''
     const isCurrentRequest = () => (
-      this.listingLoadGeneration === requestGeneration && currentAuthToken() === requestToken
+      this.listingLoadGeneration === requestGeneration && currentAuthSessionKey() === requestSessionKey
     )
     this.setData({
       listing: {},
@@ -263,7 +268,7 @@ Page({
       const nearbyHasMore = nearbyListings.length > 0 && Boolean(
         nearby.hasMore || nearbyTotal > nearbyListings.length || nearbySourceRows.length > nearbyListings.length
       )
-      this.profileAuthToken = requestToken
+      this.profileAuthToken = requestSessionKey
       this.setData({
         listing,
         unavailableListing: {},
@@ -293,7 +298,7 @@ Page({
       if (user.id) this.flushPhoneFootprints(user.id)
       // 上传人自查自己上传的房源：直接拉取地址/房东电话填充，后端免留痕且不耗额度。
       if (ownListing && !companyListing) {
-        this.loadOwnSensitive(listing.id, { requestGeneration, requestToken })
+        this.loadOwnSensitive(listing.id, { requestGeneration, requestSessionKey })
       }
     }).catch((error) => {
       if (!isCurrentRequest()) return
@@ -562,11 +567,11 @@ Page({
     const requestGeneration = requestContext.requestGeneration === undefined
       ? this.listingLoadGeneration
       : requestContext.requestGeneration
-    const requestToken = requestContext.requestToken === undefined
-      ? currentAuthToken()
-      : requestContext.requestToken
+    const requestSessionKey = requestContext.requestSessionKey === undefined
+      ? currentAuthSessionKey()
+      : requestContext.requestSessionKey
     const isCurrentRequest = () => (
-      this.listingLoadGeneration === requestGeneration && currentAuthToken() === requestToken
+      this.listingLoadGeneration === requestGeneration && currentAuthSessionKey() === requestSessionKey
     )
     this.setData({
       ownSensitiveLoading: true,
@@ -602,12 +607,12 @@ Page({
   },
 
   flushPhoneFootprints(accountId) {
-    const flushToken = currentAuthToken()
-    if (!accountId || !flushToken || this.profileAuthToken !== flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
+    const flushSessionKey = currentAuthSessionKey()
+    if (!accountId || !currentAuthToken() || !profileSessionMatches(this.profileAuthToken, flushSessionKey) || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
     return phoneFootprintOutbox.flushPhoneCalls(
       accountId,
       (listingId, idempotencyKey) => {
-        if (currentAuthToken() !== flushToken || safeText(this.data.currentUserId) !== safeText(accountId)) {
+        if (currentAuthSessionKey() !== flushSessionKey || safeText(this.data.currentUserId) !== safeText(accountId)) {
           const error = new Error('账号已变化，停止本轮拨号足迹补发')
           error.stopOutboxFlush = true
           return Promise.reject(error)
@@ -620,8 +625,8 @@ Page({
   callLandlord() {
     const listing = this.data.listing || {}
     const accountId = safeText(this.data.currentUserId)
-    const dialToken = currentAuthToken()
-    if (!accountId || !dialToken || this.profileAuthToken !== dialToken) {
+    const dialSessionKey = currentAuthSessionKey()
+    if (!accountId || !currentAuthToken() || !profileSessionMatches(this.profileAuthToken, dialSessionKey)) {
       this.promptLoginGuide('登录后联系房东', '打开系统拨号页需要记录本人操作，请先登录内部中介账号。')
       return
     }
@@ -637,7 +642,7 @@ Page({
     if (this.data.phoneCallBusy) return
     const dialContext = {
       accountId,
-      token: dialToken,
+      sessionKey: dialSessionKey,
       listingId: safeText(listing.id),
       requestGeneration: this.listingLoadGeneration
     }
@@ -652,8 +657,8 @@ Page({
             listingId: dialContext.listingId,
             idempotencyKey
           })
-          const stillCurrent = currentAuthToken() === dialContext.token &&
-            this.profileAuthToken === dialContext.token &&
+          const stillCurrent = currentAuthSessionKey() === dialContext.sessionKey &&
+            profileSessionMatches(this.profileAuthToken, dialContext.sessionKey) &&
             safeText(this.data.currentUserId) === dialContext.accountId &&
             safeText(this.data.listing && this.data.listing.id) === dialContext.listingId &&
             this.listingLoadGeneration === dialContext.requestGeneration
@@ -688,9 +693,9 @@ Page({
     const listing = this.data.listing || {}
     if (this.data.sensitiveSubmitting || !listing.id) return
     const requestGeneration = this.listingLoadGeneration
-    const requestToken = currentAuthToken()
+    const requestSessionKey = currentAuthSessionKey()
     const listingId = listing.id
-    if (!requestToken || this.profileAuthToken !== requestToken) {
+    if (!currentAuthToken() || !profileSessionMatches(this.profileAuthToken, requestSessionKey)) {
       this.sensitiveViewIdempotencyKey = ''
       this.setData({ sensitiveConfirmVisible: false, sensitiveSubmitting: false })
       this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
@@ -700,7 +705,7 @@ Page({
     this.sensitiveViewIdempotencyKey = idempotencyKey
     const isCurrentRequest = () => (
       this.listingLoadGeneration === requestGeneration &&
-      currentAuthToken() === requestToken &&
+      currentAuthSessionKey() === requestSessionKey &&
       this.data.listing && this.data.listing.id === listingId
     )
     this.setData({ sensitiveSubmitting: true })
@@ -725,6 +730,11 @@ Page({
       this.setData({ sensitiveSubmitting: false })
       const message = error && error.message ? error.message : '足迹记录失败'
       if (isAuthError(error)) {
+        if (typeof apiClient.isStaleUnauthorized === 'function' && apiClient.isStaleUnauthorized(error)) {
+          // 写请求绝不自动重放；同账号已续签时保留确认态与幂等键，让用户明确再点一次。
+          wx.showToast({ title: '登录状态已更新，请重新确认', icon: 'none' })
+          return
+        }
         this.sensitiveViewIdempotencyKey = ''
         this.setData({ sensitiveConfirmVisible: false })
         this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')

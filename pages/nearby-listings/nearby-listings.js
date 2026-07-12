@@ -14,6 +14,10 @@ function isAuthError(error) {
   return error && (Number(error.statusCode) === 401 || Number(error.statusCode) === 403)
 }
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
 Page({
   data: {
     listings: [],
@@ -43,10 +47,10 @@ Page({
     const anchorId = String(this.anchorId || '')
     if (!anchorId) return Promise.resolve()
     const requestSeq = Number(this._nearbyRequestSeq || 0) + 1
-    const requestToken = String(apiClient.getAuthToken() || '')
+    const requestSessionKey = currentAuthSessionKey()
     this._nearbyRequestSeq = requestSeq
-    if (this._nearbyAccountToken !== requestToken) {
-      this._nearbyAccountToken = requestToken
+    if (this._nearbyAccountToken !== requestSessionKey) {
+      this._nearbyAccountToken = requestSessionKey
       // 换号/退出时先清旧账号结果，不能等新请求返回后再处理。
       this.setData({ listings: [], total: 0, loadFailed: false, accessRequired: false })
     }
@@ -54,9 +58,9 @@ Page({
 
     return apiService.getNearbyListings(anchorId).then((result) => {
       if (this._nearbyRequestSeq !== requestSeq) return
-      const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this._nearbyAccountToken = currentToken
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this._nearbyAccountToken = currentSessionKey
         this.setData({ listings: [], total: 0, loading: false, loadFailed: false, accessRequired: false })
         return
       }
@@ -70,9 +74,9 @@ Page({
       })
     }).catch((error) => {
       if (this._nearbyRequestSeq !== requestSeq) return
-      const currentToken = String(apiClient.getAuthToken() || '')
-      if (currentToken !== requestToken) {
-        this._nearbyAccountToken = currentToken
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this._nearbyAccountToken = currentSessionKey
         this.setData({ listings: [], total: 0, loading: false, loadFailed: false, accessRequired: false })
         return
       }

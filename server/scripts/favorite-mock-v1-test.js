@@ -83,7 +83,7 @@ async function run() {
     exports: {
       call(options) {
         captured.push(options)
-        if (options.path === '/mini/auth/login') return Promise.resolve(options.mock())
+        if (options.path.startsWith('/mini/auth/')) return Promise.resolve().then(() => options.mock())
         return Promise.resolve({ listingId: 'synthetic', isFavorited: options.method === 'PUT' })
       }
     }
@@ -93,7 +93,22 @@ async function run() {
   const login = await apiService.loginByPhone('13800010005', 'synthetic-password')
   assert.ok(login.id)
   assert.ok(/^synthetic-mock-token-/.test(login.token), 'Mock 登录必须返回明显假 token，供登录态收藏验收')
-  assert.ok(Number.isFinite(Date.parse(login.tokenExpiresAt)))
+  assert.ok(Number.isFinite(login.tokenExpiresAt) && login.tokenExpiresAt > Date.now(), 'Mock 登录 expiry 必须与真实 DTO 同为 epoch ms number')
+
+  const changed = await apiService.changePassword('synthetic-old-password', 'synthetic-new-password')
+  assert.ok(changed.id && /^synthetic-mock-token-/.test(changed.token), 'Mock 改密必须返回新会话 DTO')
+  assert.ok(Number.isFinite(changed.tokenExpiresAt) && changed.tokenExpiresAt > Date.now(), 'Mock 改密 expiry 必须为 epoch ms number')
+  assert.deepStrictEqual(await apiService.logout(), { loggedOut: true, scope: 'all-devices' }, 'Mock 退出必须与真实全设备撤销 DTO 同形')
+  await assert.rejects(
+    apiService.registerUser({ name: '合成已开通用户', phone: '13800010005', password: 'synthetic-password' }),
+    (error) => error && error.statusCode === 409,
+    'Mock 已开通手机号注册必须与真实接口一致返回 409，不能伪造登录成功'
+  )
+  await assert.rejects(
+    apiService.registerUser({ name: '合成待审核用户', phone: '19900009999', password: 'synthetic-password' }),
+    (error) => error && error.statusCode === 403,
+    'Mock 新手机号注册必须与真实接口一致进入待审核且不发 token'
+  )
 
   await apiService.setFavorite('L% synthetic', true)
   const favoriteCall = captured[captured.length - 1]
