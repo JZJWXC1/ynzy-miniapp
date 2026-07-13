@@ -24,6 +24,10 @@ const RENT_MODE_FILTERS = ['全部', '整租', '合租']
 const SOURCE_TYPE_FILTERS = ['全部', '公司房源', '业主房源', '二房东房源']
 const PARTNER_SOURCE_TYPES = ['业主房源', '二房东房源']
 
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
 function partnerLoginRequired(filters) {
   return !apiClient.getAuthToken() && PARTNER_SOURCE_TYPES.indexOf(filters && filters.sourceType) !== -1
 }
@@ -193,10 +197,15 @@ Page({
   },
 
   onShow() {
+    this._pageActive = true
+    const sessionState = this.syncAuthSession()
     this.setTabBarSelected()
     let pending = {}
+    if (sessionState.changed) {
+      try { wx.removeStorageSync(PENDING_MAP_FILTERS_KEY) } catch (error) {}
+    }
     try {
-      pending = parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
+      pending = sessionState.changed ? {} : parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
     } catch (error) {
       pending = {}
     }
@@ -212,6 +221,37 @@ Page({
       return
     }
     this.loadCommunities({ recenter: false })
+  },
+
+  onUnload() {
+    this._pageActive = false
+    this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+      const filters = Object.assign({}, this.data.filters || emptyFilters(), { needId: '', listingIds: [] })
+      this.setData({
+        communities: [],
+        markers: [],
+        markerCommunityMap: {},
+        selectedCommunityId: '',
+        selectedCommunity: null,
+        mapCenter: DEFAULT_CENTER,
+        mapScale: 13,
+        loading: false,
+        loadFailed: false,
+        loadErrorText: '',
+        filters,
+        loginRequired: partnerLoginRequired(filters),
+        summaryText: '正在加载可上图房源'
+      })
+    }
+    return { key: nextSessionKey, changed }
   },
 
   setTabBarSelected() {
@@ -266,6 +306,7 @@ Page({
 
   loadCommunities(options) {
     const loadOptions = options || {}
+    const requestSessionKey = this.syncAuthSession().key
     this.lastMapLoadOptions = {
       recenter: Boolean(loadOptions.recenter),
       bounds: loadOptions.bounds ? Object.assign({}, loadOptions.bounds) : undefined
@@ -281,6 +322,10 @@ Page({
     })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
       if (requestSeq !== this._mapRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       const communities = (items || []).map(normalizeCommunity).filter(validCommunity)
       this.applyCommunities(communities, loadOptions.recenter)
       this.setData({
@@ -291,6 +336,10 @@ Page({
       })
     }).catch(() => {
       if (requestSeq !== this._mapRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       wx.showToast({ title: '地图房源加载失败', icon: 'none' })
       const patch = {
         loading: false,

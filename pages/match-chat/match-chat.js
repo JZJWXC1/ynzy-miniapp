@@ -1,5 +1,6 @@
 const llmService = require('../../utils/llm-service')
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 const {
@@ -32,6 +33,18 @@ const CONFIRMATION_FIELD_CONFIG = [
   { key: 'layout', label: '户型/租法', emptyText: '待补充' },
   { key: 'features', label: '标签/偏好', emptyText: '不限' }
 ]
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
+function initialMessages() {
+  return [{
+    id: 'welcome',
+    role: 'assistant',
+    text: '直接说客户预算、位置和户型，我会按真实房源查；条件不够时只追问一个关键问题。'
+  }]
+}
 
 function decodeOption(value) {
   if (!value) return ''
@@ -289,13 +302,7 @@ function needIdFromResult(result) {
 
 Page({
   data: {
-    messages: [
-      {
-        id: 'welcome',
-        role: 'assistant',
-        text: '直接说客户预算、位置和户型，我会按真实房源查；条件不够时只追问一个关键问题。'
-      }
-    ],
+    messages: initialMessages(),
     inputText: '',
     needHistory: [],
     voiceMode: true,
@@ -314,6 +321,8 @@ Page({
   },
 
   onLoad(options) {
+    this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
     this.initVoiceInput()
     const text = decodeOption(options.text)
     const voiceText = decodeOption(options.voiceText)
@@ -327,12 +336,62 @@ Page({
     }
   },
 
+  onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
+  },
+
   onHide() {
     this.cleanupVoiceInput()
   },
 
   onUnload() {
+    this._pageActive = false
+    this.activeRequestId = createMessageId('unloaded')
     this.cleanupVoiceInput()
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    if (changed) this.resetForAuthSession(nextSessionKey)
+    else this.authSessionSnapshot = nextSessionKey
+    return { key: nextSessionKey, changed }
+  },
+
+  resetForAuthSession(nextSessionKey) {
+    this.authSessionSnapshot = nextSessionKey
+    this.activeRequestId = createMessageId('session-reset')
+    this.cleanupVoiceInput()
+    ;[
+      'currentThreadId',
+      'lastNeedContext',
+      'lastAssistantPayload',
+      'lastRecognizePayload',
+      'activeRecognizePayload',
+      'lastRequestPayload',
+      'lastAssistantResultSource',
+      'pendingNeed',
+      'lastVoiceRecognizedText'
+    ].forEach((key) => { delete this[key] })
+    this.setData({
+      messages: initialMessages(),
+      inputText: '',
+      needHistory: [],
+      voiceText: '',
+      isVoiceListening: false,
+      voiceCancelActive: false,
+      voicePhase: '',
+      loading: false,
+      scrollTarget: 'bottom-anchor'
+    })
+  },
+
+  isSessionRequestCurrent(requestId, requestSessionKey) {
+    if (this._pageActive === false || this.activeRequestId !== requestId) return false
+    if (currentAuthSessionKey() === requestSessionKey) return true
+    this.syncAuthSession()
+    return false
   },
 
   cleanupVoiceInput() {
@@ -521,15 +580,16 @@ Page({
   },
 
   executeAssistantChat(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('assistant-chat')
     this.activeRequestId = requestId
     this.lastAssistantPayload = payload
     llmService.chatAssistant(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -541,14 +601,15 @@ Page({
   },
 
   executeRecognize(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('recognize')
     this.activeRequestId = requestId
     this.activeRecognizePayload = payload
     llmService.recognizeRentalNeed(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.appendRecognitionResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.appendRecognitionResult({
         reply: '网络连接失败，请补充条件后重试。',
         warning: error.message || '网络连接失败',
@@ -560,14 +621,15 @@ Page({
   },
 
   executeMatch(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('request')
     this.activeRequestId = requestId
     llmService.matchRentalNeed(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -708,6 +770,7 @@ Page({
     const reasonOptions = MATCH_RESULT_FEEDBACK_REASONS[feedbackType] || []
     const reason = reasonOptions.find((item) => item.code === reasonCode)
     if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent || !reason) return
+    const requestSessionKey = this.syncAuthSession().key
     this.updateMessage(messageId, (item) => {
       item.feedbackLoading = true
       item.feedbackReasonCode = reasonCode
@@ -721,6 +784,10 @@ Page({
       feedbackType,
       reasonCode
     }).then(() => {
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.updateMessage(messageId, (item) => {
         item.feedbackLoading = false
         item.feedbackSent = true
@@ -731,6 +798,10 @@ Page({
       })
       wx.showToast({ title: '已记录反馈', icon: 'none' })
     }).catch(() => {
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.updateMessage(messageId, (item) => {
         item.feedbackLoading = false
         return item
@@ -829,6 +900,9 @@ Page({
   },
 
   createNeedAndMatch(payload, message) {
+    const requestSessionKey = this.syncAuthSession().key
+    const requestId = createMessageId('create-need')
+    this.activeRequestId = requestId
     const need = confirmFormToNeed(message.confirmForm, message.need)
     apiService.createRentalNeed({
       source: 'match-chat',
@@ -836,6 +910,7 @@ Page({
       need,
       form: payload.form
     }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       const needId = needIdFromResult(result)
       const needTemporary = Boolean(result && result.temporary)
       const nextPayload = Object.assign({}, payload, {
@@ -854,6 +929,7 @@ Page({
       }
       this.executeMatch(nextPayload)
     }).catch(() => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastRequestPayload = payload
       wx.showToast({ title: '需求单保存失败，继续本地匹配', icon: 'none' })
       this.executeMatch(payload)

@@ -41,6 +41,10 @@ const scenarios = [
 ]
 
 let toasts = []
+let authToken = 'TOKEN-RECORD-BASE'
+let authSessionKey = 'auth-record-base'
+
+global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
 global.wx = {
   showToast(options) { toasts.push(options) },
@@ -85,6 +89,16 @@ function loadDefinition(pagePath, apiStub) {
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 async function testScenario(scenario) {
@@ -172,6 +186,86 @@ async function run() {
   resolveStale([{ id: 'COMMISSION-STALE', role: '我是上传人', status: '已确认' }])
   await flushPromises()
   assert.strictEqual(racePage.data.records[0].id, 'COMMISSION-LATEST', '业务记录过期响应不得覆盖最新刷新结果')
+
+  for (const scenario of scenarios.filter((item) => item.name === '足迹' || item.name === '分佣')) {
+    for (const target of [
+      { token: '', sessionKey: `guest-${scenario.name}`, label: '退出到游客' },
+      { token: `TOKEN-${scenario.name}-B`, sessionKey: `auth-${scenario.name}-b`, label: '切换到账号B' }
+    ]) {
+      authToken = `TOKEN-${scenario.name}-A`
+      authSessionKey = `auth-${scenario.name}-a-${target.label}`
+      let mode = 'success'
+      const sessionDefinition = loadDefinition(scenario.pagePath, {
+        [scenario.apiMethod]() {
+          if (mode === 'fail') return Promise.reject(new Error('新会话记录请求失败'))
+          return Promise.resolve([{
+            id: `${scenario.name}-A-PRIVATE`,
+            role: '我是上传人',
+            status: '电话查看',
+            direction: '我的房源被查看'
+          }])
+        }
+      })
+      const sessionPage = makePage(sessionDefinition)
+      sessionPage.onShow()
+      await flushPromises()
+      assert.deepStrictEqual(sessionPage.data[scenario.dataKey].map((item) => item.id), [`${scenario.name}-A-PRIVATE`], `${scenario.name}账号A记录应先成功落地`)
+
+      mode = 'fail'
+      authToken = target.token
+      authSessionKey = target.sessionKey
+      sessionPage.onShow()
+      assert.strictEqual(sessionPage.data[scenario.dataKey].length, 0, `${scenario.name}${target.label}时必须在请求返回前清空旧账号记录`)
+      assert.strictEqual(sessionPage.data.stats.length, 0, `${scenario.name}${target.label}时必须清空旧账号统计`)
+      if (scenario.name === '足迹') {
+        assert.strictEqual(sessionPage.data.allRecords.length, 0, '足迹会话变化时必须同步清空未筛选原始记录')
+      }
+      await flushPromises()
+      assert.strictEqual(sessionPage.data[scenario.dataKey].length, 0, `${scenario.name}${target.label}后的失败请求不得恢复账号A记录`)
+    }
+
+    authToken = `TOKEN-${scenario.name}-LATE-A`
+    authSessionKey = `auth-${scenario.name}-late-a`
+    let resolveLateRecord = null
+    const lateDefinition = loadDefinition(scenario.pagePath, {
+      [scenario.apiMethod]() {
+        return new Promise((resolve) => { resolveLateRecord = resolve })
+      }
+    })
+    const latePage = makePage(lateDefinition)
+    latePage[scenario.refreshMethod]()
+    authToken = ''
+    authSessionKey = `guest-${scenario.name}-late`
+    resolveLateRecord([{
+      id: `${scenario.name}-A-LATE`,
+      role: '我是成交人',
+      status: '电话查看',
+      direction: '我的房源被查看'
+    }])
+    await flushPromises()
+    assert.strictEqual(latePage.data[scenario.dataKey].length, 0, `${scenario.name}会话变化后迟到的账号A响应不得被采纳`)
+
+    authToken = `TOKEN-${scenario.name}-UNLOAD`
+    authSessionKey = `auth-${scenario.name}-unload`
+    const unloadRequest = deferred()
+    const unloadDefinition = loadDefinition(scenario.pagePath, {
+      [scenario.apiMethod]() { return unloadRequest.promise }
+    })
+    const unloadPage = makePage(unloadDefinition)
+    const unloadToastCount = toasts.length
+    unloadPage[scenario.refreshMethod]()
+    assert.strictEqual(typeof unloadPage.onUnload, 'function', `${scenario.name}页卸载时必须作废在途请求`)
+    unloadPage.onUnload()
+    unloadRequest.resolve([{
+      id: `${scenario.name}-UNLOAD-LATE`,
+      role: '我是上传人',
+      status: '电话查看',
+      direction: '我的房源被查看'
+    }])
+    await flushPromises()
+    assert.strictEqual(unloadPage.data[scenario.dataKey].length, 0, `${scenario.name}页卸载后的迟到响应不得回写`)
+    assert.strictEqual(toasts.length, unloadToastCount, `${scenario.name}页卸载后的迟到失败不得弹提示`)
+  }
 
   assert.ok(toasts.some((item) => /加载失败/.test(item.title)), '业务记录请求失败必须有即时提示')
   console.log('mini-record-loading-state-v1-test passed')

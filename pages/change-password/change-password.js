@@ -15,6 +15,20 @@ Page({
 
   onLoad() {
     this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
+  },
+
+  onShow() {
+    this._pageActive = true
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (!changed) return
+    this._submitSeq = Number(this._submitSeq || 0) + 1
+    this.setData({
+      form: { oldPassword: '', newPassword: '', confirmPassword: '' },
+      submitting: false
+    })
   },
 
   onUnload() {

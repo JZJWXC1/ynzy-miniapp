@@ -1,5 +1,10 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
@@ -129,6 +134,8 @@ Page({
   },
 
   onLoad(options = {}) {
+    this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
     const isCompanyMode = options.scope === 'company' || options.company === '1'
     if (!isCompanyMode) return
     this.setData({
@@ -143,10 +150,40 @@ Page({
   },
 
   onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
     this.refresh();
   },
 
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._ownerRequestSeq = Number(this._ownerRequestSeq || 0) + 1
+      this.activeCompanyRequestId = `session-reset-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+      if (this.ownerFilterTimer) {
+        clearTimeout(this.ownerFilterTimer)
+        this.ownerFilterTimer = null
+      }
+      if (!this.data.isCompanyMode) {
+        this.allOwnerListings = []
+        this.setData({
+          stats: [],
+          listings: [],
+          ownerCommunityOptions: [],
+          ownerLoading: false,
+          loadFailed: false
+        })
+      }
+    }
+    return { key: nextSessionKey, changed }
+  },
+
   onUnload() {
+    this._pageActive = false
+    this._ownerRequestSeq = Number(this._ownerRequestSeq || 0) + 1
+    this.activeCompanyRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     if (this.companyFilterTimer) clearTimeout(this.companyFilterTimer)
     if (this.ownerFilterTimer) clearTimeout(this.ownerFilterTimer)
   },
@@ -156,6 +193,7 @@ Page({
       this.refreshCompanyListings()
       return
     }
+    const requestSessionKey = this.syncAuthSession().key
     this._ownerRequestSeq = (this._ownerRequestSeq || 0) + 1
     const requestSeq = this._ownerRequestSeq
     this.setData({ ownerLoading: true, loadFailed: false })
@@ -163,7 +201,11 @@ Page({
       apiService.getProfileState(),
       apiService.getOwnedListings()
     ]).then(([profile, listings]) => {
-      if (requestSeq !== this._ownerRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._ownerRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       // 统计基于我的全部房源（不随筛选变化）；筛选只改变下方展示的列表。
       const all = formatOwnerListings(listings)
       const sourceStats = profile.sourceStats || []
@@ -181,11 +223,16 @@ Page({
       });
       this.applyOwnerFilters();
     }).catch(() => {
-      if (requestSeq !== this._ownerRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._ownerRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ loadFailed: true })
       wx.showToast({ title: '我的房源加载失败', icon: 'none' })
     }).finally(() => {
-      if (requestSeq !== this._ownerRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._ownerRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) return
       this.setData({ ownerLoading: false })
     });
   },
@@ -252,7 +299,7 @@ Page({
       apiService.getListings(query),
       apiService.getListings(communityQuery)
     ]).then(([listings, communityRows]) => {
-      if (this.activeCompanyRequestId !== requestId) return
+      if (this._pageActive === false || this.activeCompanyRequestId !== requestId) return
       const companyListings = formatCompanyListings(listings)
       const companyCommunityOptions = uniqueCommunities(communityRows)
       const maintenanceCount = companyListings.filter((item) => item.needsVerify || (item.verifyStatus && item.verifyStatus !== '正常')).length
@@ -268,11 +315,11 @@ Page({
         companyCommunityOptions
       })
     }).catch(() => {
-      if (this.activeCompanyRequestId !== requestId) return
+      if (this._pageActive === false || this.activeCompanyRequestId !== requestId) return
       this.setData({ loadFailed: true })
       wx.showToast({ title: '公司房源加载失败', icon: 'none' })
     }).finally(() => {
-      if (this.activeCompanyRequestId !== requestId) return
+      if (this._pageActive === false || this.activeCompanyRequestId !== requestId) return
       this.setData({ companyLoading: false })
     })
   },

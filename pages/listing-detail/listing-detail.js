@@ -155,6 +155,7 @@ Page({
   },
 
   onLoad(options) {
+    this._pageActive = true
     this.hideNativeShareMenu()
     const id = options.id;
     const needId = decodeOption(options.needId)
@@ -172,6 +173,7 @@ Page({
   },
 
   onShow() {
+    this._pageActive = true
     this.hideNativeShareMenu()
     const nextToken = currentAuthSessionKey()
     if (this.authTokenSnapshot === undefined) {
@@ -181,6 +183,17 @@ Page({
     if (nextToken !== this.authTokenSnapshot) {
       // 换号后先以新 token 重新读取可信 profile；禁止用旧 currentUserId 队列配新 token 补发，避免串账号归属。
       this.authTokenSnapshot = nextToken
+      this.invalidateDetailOperations()
+      if (wx.hideLoading) wx.hideLoading()
+      this.setData({
+        needId: '',
+        needTemporary: false,
+        showingSubmitting: false,
+        showingPhotoPath: '',
+        shareVideoBusy: false,
+        phoneCallBusy: false,
+        shareStateText: '正在按当前账号重新读取房源'
+      })
       if (this.listingId) this.loadListing(this.listingId)
       return
     }
@@ -188,8 +201,41 @@ Page({
   },
 
   onUnload() {
+    this._pageActive = false
+    this.invalidateDetailOperations()
+    if (wx.hideLoading) wx.hideLoading()
     // 整份详情（含服务端内嵌 nearby）共用同一代次；卸载后任何迟到响应都不得再写页面。
     this.listingLoadGeneration = Number(this.listingLoadGeneration || 0) + 1
+  },
+
+  invalidateDetailOperations() {
+    this._shareVideoOperationSeq = Number(this._shareVideoOperationSeq || 0) + 1
+    this._showingOperationSeq = Number(this._showingOperationSeq || 0) + 1
+  },
+
+  beginDetailOperation(kind) {
+    const sequenceField = kind === 'showing' ? '_showingOperationSeq' : '_shareVideoOperationSeq'
+    const sequence = Number(this[sequenceField] || 0) + 1
+    const listing = this.data.listing || {}
+    this[sequenceField] = sequence
+    return {
+      sequenceField,
+      sequence,
+      sessionKey: currentAuthSessionKey(),
+      listingGeneration: Number(this.listingLoadGeneration || 0),
+      listingId: safeText(listing.id),
+      needId: safeText(this.data.needId),
+      needTemporary: Boolean(this.data.needTemporary)
+    }
+  },
+
+  isDetailOperationCurrent(operation) {
+    if (!operation || this._pageActive === false) return false
+    const listing = this.data.listing || {}
+    return this[operation.sequenceField] === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey &&
+      Number(this.listingLoadGeneration || 0) === operation.listingGeneration &&
+      safeText(listing.id) === operation.listingId
   },
 
   hideNativeShareMenu() {
@@ -486,31 +532,38 @@ Page({
     })
   },
 
-  recordVideoFileShare(channel) {
+  recordVideoFileShare(channel, operation) {
     const listing = this.data.listing || {}
-    return apiService.recordVideoShare(listing.id, {
+    const listingId = operation ? operation.listingId : listing.id
+    if (operation && !this.isDetailOperationCurrent(operation)) return Promise.resolve(null)
+    return apiService.recordVideoShare(listingId, {
       channel: channel || 'wechat-file',
       target: 'tenant',
       sharePath: '',
       shareTitle: '原视频文件'
     }).then((result) => {
-      if (result && result.logs) {
+      if ((!operation || this.isDetailOperationCurrent(operation)) && result && result.logs) {
         this.setData({ logs: result.logs })
       }
       return result
     })
   },
 
-  async fallbackSaveVideo(filePath) {
+  async fallbackSaveVideo(filePath, operation) {
     try {
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
       await this.saveVideoForManualShare(filePath)
-      await this.recordVideoFileShare('wechat-album-fallback')
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
+      await this.recordVideoFileShare('wechat-album-fallback', operation)
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
       wx.showModal({
         title: '视频已保存',
         content: '当前微信版本暂不支持直接发送文件，请从相册手动发送给租客。',
         showCancel: false
       })
+      return true
     } catch (error) {
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
       if (isAlbumAuthError(error)) {
         wx.showModal({
           title: '需要相册权限',
@@ -521,7 +574,7 @@ Page({
             if (res.confirm && wx.openSetting) wx.openSetting({})
           }
         })
-        return
+        return false
       }
       throw error
     }
@@ -538,6 +591,7 @@ Page({
       wx.showToast({ title: '这套房源暂无可转发视频', icon: 'none' })
       return
     }
+    const operation = this.beginDetailOperation('share')
     this.setData({
       shareVideoBusy: true,
       shareStateText: '正在准备原视频文件'
@@ -545,27 +599,36 @@ Page({
     wx.showLoading({ title: '准备视频' })
     try {
       const filePath = await this.downloadShareVideo(listing.videoUrl)
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.hideLoading()
       try {
         await this.shareVideoMessage(filePath)
-        await this.recordVideoFileShare('wechat-video')
+        if (!this.isDetailOperationCurrent(operation)) return
+        await this.recordVideoFileShare('wechat-video', operation)
+        if (!this.isDetailOperationCurrent(operation)) return
         wx.showToast({ title: '视频已发送', icon: 'none' })
       } catch (videoShareError) {
+        if (!this.isDetailOperationCurrent(operation)) return
         try {
           await this.shareVideoFile(filePath)
-          await this.recordVideoFileShare('wechat-file')
+          if (!this.isDetailOperationCurrent(operation)) return
+          await this.recordVideoFileShare('wechat-file', operation)
+          if (!this.isDetailOperationCurrent(operation)) return
           wx.showToast({ title: '视频已发送', icon: 'none' })
         } catch (fileShareError) {
-          await this.fallbackSaveVideo(filePath)
+          if (!this.isDetailOperationCurrent(operation)) return
+          await this.fallbackSaveVideo(filePath, operation)
         }
       }
     } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.hideLoading()
       wx.showToast({
         title: error && (error.message || error.errMsg) ? (error.message || error.errMsg) : '视频转发未完成',
         icon: 'none'
       })
     } finally {
+      if (!this.isDetailOperationCurrent(operation)) return
       this.setData({
         shareVideoBusy: false,
         shareStateText: '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
@@ -801,14 +864,19 @@ Page({
       return
     }
 
+    const operation = this.beginDetailOperation('showing')
+
     this.setData({ showingSubmitting: true })
     wx.showLoading({ title: '准备水印相机' })
 
     try {
       const photo = await chooseCameraImage()
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '生成水印照片' })
       const location = await this.getShowingLocationInfo()
+      if (!this.isDetailOperationCurrent(operation)) return
       const watermarked = await this.buildShowingWatermark(photo.tempFilePath, location)
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '上传水印照片' })
       const policy = await apiService.createShowingPhotoUploadPolicy({
         fileName: 'showing-proof.jpg',
@@ -816,7 +884,9 @@ Page({
         size: photo.size || 0,
         tempFilePath: watermarked.tempFilePath
       })
+      if (!this.isDetailOperationCurrent(operation)) return
       const uploaded = await apiService.uploadShowingPhoto(watermarked.tempFilePath, policy)
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '提交审核' })
       const showingPayload = {
         photoUrl: uploaded.fileUrl,
@@ -826,9 +896,10 @@ Page({
         latitude: location.latitude,
         longitude: location.longitude
       }
-      const relatedNeedId = this.data.needTemporary ? '' : safeText(this.data.needId)
+      const relatedNeedId = operation.needTemporary ? '' : operation.needId
       if (relatedNeedId) showingPayload.needId = relatedNeedId
-      const result = await apiService.recordShowing(listing.id, showingPayload)
+      const result = await apiService.recordShowing(operation.listingId, showingPayload)
+      if (!this.isDetailOperationCurrent(operation)) return
       this.setData({ showingPhotoPath: watermarked.tempFilePath })
       wx.hideLoading()
       wx.showToast({
@@ -836,6 +907,7 @@ Page({
         icon: 'none'
       })
     } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.hideLoading()
       wx.showModal({
         title: '提交失败',
@@ -843,6 +915,7 @@ Page({
         showCancel: false
       })
     } finally {
+      if (!this.isDetailOperationCurrent(operation)) return
       this.setData({ showingSubmitting: false })
     }
   },

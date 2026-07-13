@@ -9,9 +9,10 @@ const mapWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'map', 'map.wxml'),
 
 let storageShouldThrow = false
 let authToken = ''
+let authSessionKey = 'guest-map-start'
 let toasts = []
 
-global.getApp = () => ({ globalData: { authToken } })
+global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
 global.wx = {
   getStorageSync() {
@@ -62,6 +63,16 @@ function loadDefinition(apiStub) {
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 function mapCommunity(id = '可信小区') {
@@ -146,6 +157,64 @@ async function run() {
   assert.strictEqual(racePage.data.loadFailed, false, '过期请求失败不得覆盖最新成功状态')
   assert.strictEqual(racePage.data.communities[0].community, '最新筛选小区', '竞态下必须保留最新请求结果')
 
+  for (const target of [
+    { token: '', sessionKey: 'guest-map-after-a', label: '退出到游客' },
+    { token: 'TOKEN-MAP-B', sessionKey: 'auth-map-b', label: '切换到账号B' }
+  ]) {
+    authToken = 'TOKEN-MAP-A'
+    authSessionKey = `auth-map-a-${target.label}`
+    const sessionDefinition = loadDefinition({
+      getMapCommunities() { return Promise.reject(new Error('新会话地图请求失败')) }
+    })
+    const sessionPage = makePage(sessionDefinition)
+    sessionPage.setData({ 'filters.sourceType': '业主房源' })
+    sessionPage.applyCommunities([mapCommunity('账号A合作小区')], true)
+    sessionPage.loadCommunities({ recenter: false })
+    await flushPromises()
+    assert.strictEqual(sessionPage.data.communities.length, 1, '同一会话失败仍应保留账号A可信缓存，作为切换前提')
+
+    authToken = target.token
+    authSessionKey = target.sessionKey
+    sessionPage.onShow()
+    assert.strictEqual(sessionPage.data.communities.length, 0, `${target.label}时必须在请求返回前清空旧账号小区`)
+    assert.strictEqual(sessionPage.data.markers.length, 0, `${target.label}时必须在请求返回前清空旧账号点位`)
+    assert.strictEqual(sessionPage.data.selectedCommunity, null, `${target.label}时必须清空旧账号选中小区`)
+    await flushPromises()
+    assert.strictEqual(sessionPage.data.communities.length, 0, `${target.label}后的失败请求不得恢复旧账号缓存`)
+  }
+
+  authToken = 'TOKEN-MAP-LATE-A'
+  authSessionKey = 'auth-map-late-a'
+  let resolveLateMap = null
+  const lateDefinition = loadDefinition({
+    getMapCommunities() {
+      return new Promise((resolve) => { resolveLateMap = resolve })
+    }
+  })
+  const latePage = makePage(lateDefinition)
+  latePage.loadCommunities({ recenter: false })
+  authToken = ''
+  authSessionKey = 'guest-map-late'
+  resolveLateMap([mapCommunity('迟到的账号A小区')])
+  await flushPromises()
+  assert.strictEqual(latePage.data.communities.length, 0, '会话变化后迟到的账号A地图响应不得被采纳')
+
+  authToken = 'TOKEN-MAP-UNLOAD'
+  authSessionKey = 'auth-map-unload'
+  const unloadMap = deferred()
+  const unloadDefinition = loadDefinition({
+    getMapCommunities() { return unloadMap.promise }
+  })
+  const unloadPage = makePage(unloadDefinition)
+  const unloadToastCount = toasts.length
+  unloadPage.loadCommunities({ recenter: false })
+  assert.strictEqual(typeof unloadPage.onUnload, 'function', '地图页卸载时必须作废在途请求')
+  unloadPage.onUnload()
+  unloadMap.resolve([mapCommunity('卸载后迟到小区')])
+  await flushPromises()
+  assert.strictEqual(unloadPage.data.communities.length, 0, '地图页卸载后的迟到响应不得回写')
+  assert.strictEqual(toasts.length, unloadToastCount, '地图页卸载后的迟到失败不得弹提示')
+
   storageShouldThrow = true
   const storageDefinition = loadDefinition({
     getMapCommunities() { return Promise.resolve([]) }
@@ -157,6 +226,7 @@ async function run() {
 
   for (const sourceType of ['业主房源', '二房东房源']) {
     authToken = ''
+    authSessionKey = `guest-${sourceType}`
     const guestDefinition = loadDefinition({
       getMapCommunities() { return Promise.resolve([]) }
     })
@@ -167,6 +237,7 @@ async function run() {
     assert.strictEqual(guestPage.data.loginRequired, true, `游客筛选${sourceType}且结果为空时必须明确引导登录`)
 
     authToken = 'TOKEN-MAP-LOGIN'
+    authSessionKey = `auth-${sourceType}`
     guestPage.onShow()
     await flushPromises()
     assert.strictEqual(guestPage.data.loginRequired, false, `登录返回地图后必须清除${sourceType}游客提示`)

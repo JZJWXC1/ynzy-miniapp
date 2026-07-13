@@ -808,7 +808,14 @@ function rechargePoints(points) {
 function getCommissionRecords() {
   return apiClient.call({
     path: '/mini/commissions',
-    mock: () => mockData.getCommissionRecords()
+    mock: () => {
+      if (!apiClient.getAuthToken()) {
+        const error = new Error('请先登录内部中介账号')
+        error.statusCode = 401
+        throw error
+      }
+      return mockData.getCommissionRecords()
+    }
   })
 }
 

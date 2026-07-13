@@ -190,6 +190,12 @@ async function run() {
   })
 
   await check('Mock 分佣记录必须走数据层而非硬编码空数组', async () => {
+    authToken = ''
+    await assert.rejects(
+      apiService.getCommissionRecords(),
+      (error) => error && error.statusCode === 401,
+      '未登录 Mock 必须与生产一致拒绝读取账号分佣记录'
+    )
     authToken = 'synthetic-preview-token'
     const fixture = [{ id: 'MOCK-COMMISSION-1', role: '我是上传人', status: '待确认' }]
     const original = mockData.getCommissionRecords

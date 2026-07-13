@@ -106,7 +106,7 @@ assert(prepareStart !== -1 && prepareEnd > prepareStart, '必须存在 prepareVi
 const prepareVideoShareSource = detailJs.slice(prepareStart, prepareEnd)
 const videoShareIndex = prepareVideoShareSource.indexOf('this.shareVideoMessage(filePath)')
 const fileShareIndex = prepareVideoShareSource.indexOf('this.shareVideoFile(filePath)')
-const albumShareIndex = prepareVideoShareSource.indexOf('this.fallbackSaveVideo(filePath)')
+const albumShareIndex = prepareVideoShareSource.indexOf('this.fallbackSaveVideo(filePath')
 assert(videoShareIndex !== -1 && fileShareIndex !== -1 && albumShareIndex !== -1, '必须实现视频气泡、文件、相册三级降级')
 assert(videoShareIndex < fileShareIndex && fileShareIndex < albumShareIndex, '三级降级顺序必须是 shareVideoMessage -> shareFileMessage -> 保存相册')
 

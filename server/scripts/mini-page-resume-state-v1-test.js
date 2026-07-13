@@ -312,6 +312,65 @@ async function testUploadSubmitAccountSwitch() {
   assert.strictEqual(loginPromptCalls, 0, '同 session 已续签时不得误提示重新登录')
 }
 
+async function testUploadCreateDraftSessionReset() {
+  installApiStub({
+    getCurrentUser() { return Promise.resolve({ id: authSessionKey, isAdmin: false }) },
+    getCommissionConfig() { return Promise.resolve(validCommissionConfig()) }
+  })
+
+  authToken = 'TOKEN_DRAFT_A'
+  authSessionKey = 'SESSION_DRAFT_A'
+  const draftPage = makePage(loadPage(uploadPagePath))
+  draftPage.authTokenSnapshot = authSessionKey
+  draftPage.authHadLoginSnapshot = true
+  draftPage.data.form = {
+    ...draftPage.data.form,
+    district: '拱墅区',
+    community: '账号A私有小区',
+    building: '8',
+    roomNumber: '801',
+    contact: '13900000001',
+    remark: '账号A敏感备注',
+    viewingMethod: '密码',
+    viewingKeyLocation: '账号A钥匙位置',
+    viewingPassword: 'A-VIEWING-PASSWORD'
+  }
+  draftPage.data.addressPreview = '账号A精确地址预览'
+  draftPage.data.videoPath = '/tmp/account-a.mp4'
+  draftPage.data.videoFile = { tempFilePath: '/tmp/account-a.mp4', fileName: 'account-a.mp4', size: 1024 }
+
+  authToken = 'TOKEN_DRAFT_B'
+  authSessionKey = 'SESSION_DRAFT_B'
+  draftPage.onShow()
+  assert.strictEqual(draftPage.data.form.contact, '', 'A→B 时必须立即清空新建草稿房东电话')
+  assert.strictEqual(draftPage.data.form.remark, '', 'A→B 时必须立即清空新建草稿备注')
+  assert.strictEqual(draftPage.data.form.viewingKeyLocation, '', 'A→B 时必须立即清空新建草稿钥匙位置')
+  assert.strictEqual(draftPage.data.form.viewingPassword, '', 'A→B 时必须立即清空新建草稿看房密码')
+  assert.notStrictEqual(draftPage.data.addressPreview, '账号A精确地址预览', 'A→B 时必须清除账号A精确地址预览；允许回落为默认城市区域提示')
+  assert.strictEqual(draftPage.data.videoPath, '', 'A→B 时必须清空本地视频路径')
+  assert.strictEqual(draftPage.data.videoFile, null, 'A→B 时必须清空本地视频对象')
+
+  authToken = ''
+  authSessionKey = 'GUEST_DRAFT'
+  const guestDraftPage = makePage(loadPage(uploadPagePath))
+  guestDraftPage.authTokenSnapshot = authSessionKey
+  guestDraftPage.authHadLoginSnapshot = false
+  guestDraftPage.data.form = {
+    ...guestDraftPage.data.form,
+    community: '游客登录前填写的小区',
+    contact: '13900000088',
+    remark: '游客主动填写后去登录'
+  }
+  guestDraftPage.data.videoPath = '/tmp/guest-draft.mp4'
+  guestDraftPage.data.videoFile = { tempFilePath: '/tmp/guest-draft.mp4', fileName: 'guest-draft.mp4', size: 1024 }
+  authToken = 'TOKEN_GUEST_LOGIN'
+  authSessionKey = 'SESSION_GUEST_LOGIN'
+  guestDraftPage.onShow()
+  assert.strictEqual(guestDraftPage.data.form.contact, '13900000088', '纯游客→登录必须保留本人登录前草稿，避免破坏原上传流程')
+  assert.strictEqual(guestDraftPage.data.form.remark, '游客主动填写后去登录', '纯游客→登录不得误清本人草稿')
+  assert.strictEqual(guestDraftPage.data.videoPath, '/tmp/guest-draft.mp4', '纯游客→登录不得误清本人待传视频')
+}
+
 async function testChangePasswordUnloadFailure() {
   const changePasswordResult = deferred()
   const originalShowModal = wx.showModal
@@ -342,6 +401,28 @@ async function testChangePasswordUnloadFailure() {
   }
 }
 
+async function testChangePasswordSessionReset() {
+  authToken = 'TOKEN_PASSWORD_A'
+  authSessionKey = 'SESSION_PASSWORD_A'
+  installApiStub({ changePassword() { return Promise.resolve({}) } })
+  const page = makePage(loadPage(changePasswordPagePath))
+  page.onLoad()
+  page.setData({
+    form: {
+      oldPassword: 'account-a-old-password',
+      newPassword: 'account-a-new-password',
+      confirmPassword: 'account-a-new-password'
+    },
+    submitting: true
+  })
+  authToken = 'TOKEN_PASSWORD_B'
+  authSessionKey = 'SESSION_PASSWORD_B'
+  assert.strictEqual(typeof page.onShow, 'function', '改密页必须监听登录会话变化')
+  page.onShow()
+  assert.deepStrictEqual(page.data.form, { oldPassword: '', newPassword: '', confirmPassword: '' }, 'A→B 时必须清空 A 的全部密码输入')
+  assert.strictEqual(page.data.submitting, false, 'A→B 时必须作废 A 的提交状态')
+}
+
 async function testAuthPrefillDoesNotOverwriteEdits() {
   const currentUserResult = deferred()
   authToken = 'TOKEN_AUTH_PREFILL'
@@ -367,7 +448,9 @@ async function run() {
       'upload-profile-race': testUploadProfileRace,
       'upload-edit-race': testUploadEditableRaceAndReset,
       'upload-submit-switch': testUploadSubmitAccountSwitch,
+      'upload-create-draft-switch': testUploadCreateDraftSessionReset,
       'change-password-unload': testChangePasswordUnloadFailure,
+      'change-password-session-switch': testChangePasswordSessionReset,
       'auth-prefill-dirty': testAuthPrefillDoesNotOverwriteEdits
     }
     assert.ok(cases[selectedCase], `未知 MINI_PAGE_RESUME_CASE：${selectedCase}`)
@@ -451,7 +534,9 @@ async function run() {
   await testUploadProfileRace()
   await testUploadEditableRaceAndReset()
   await testUploadSubmitAccountSwitch()
+  await testUploadCreateDraftSessionReset()
   await testChangePasswordUnloadFailure()
+  await testChangePasswordSessionReset()
   await testAuthPrefillDoesNotOverwriteEdits()
 
   console.log('mini-page-resume-state-v1-test passed')

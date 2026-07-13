@@ -14,6 +14,10 @@ const listingsWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listings', 'l
 const myListingsWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'my-listings', 'my-listings.wxml'), 'utf8')
 
 let toasts = []
+let authToken = 'TOKEN-LIST-BASE'
+let authSessionKey = 'auth-list-base'
+
+global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
 global.wx = {
   showToast(options) { toasts.push(options) },
@@ -62,6 +66,16 @@ function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
+}
+
 async function run() {
   let homeShouldFail = true
   const homeApi = {
@@ -108,6 +122,95 @@ async function run() {
   await flushPromises()
   assert.strictEqual(racePage.data.listings[0].id, 'HOME-LATEST', '首页过期响应不得覆盖最新刷新结果')
 
+  for (const target of [
+    { token: '', sessionKey: 'guest-home-after-a', label: '退出到游客' },
+    { token: 'TOKEN-HOME-B', sessionKey: 'auth-home-b', label: '切换到账号B' }
+  ]) {
+    authToken = 'TOKEN-HOME-A'
+    authSessionKey = `auth-home-a-${target.label}`
+    let mode = 'success'
+    const homeSessionDefinition = loadDefinition(indexPagePath, {
+      getHomeListings() {
+        return mode === 'success'
+          ? Promise.resolve([{ id: 'HOME-A-PRIVATE' }])
+          : Promise.reject(new Error('新会话首页请求失败'))
+      },
+      getTodayTasks() {
+        return mode === 'success'
+          ? Promise.resolve({
+            tasks: [{ type: 'maintenance', title: '账号A维护任务', count: 1 }],
+            summary: { pendingCount: 1, updatedAt: 'synthetic' }
+          })
+          : Promise.reject(new Error('新会话任务请求失败'))
+      },
+      getCompanySheetSnapshot() { return Promise.resolve({ rows: [] }) }
+    })
+    const homeSessionPage = makePage(homeSessionDefinition)
+    homeSessionPage.authSessionSnapshot = authSessionKey
+    homeSessionPage.loadHomeListings()
+    homeSessionPage.loadTodayTasks()
+    await flushPromises()
+    assert.deepStrictEqual(homeSessionPage.data.listings.map((item) => item.id), ['HOME-A-PRIVATE'])
+    assert.strictEqual(homeSessionPage.data.todayTasks.length, 1, '账号A任务应先成功落地')
+
+    mode = 'fail'
+    homeSessionPage._heavyLoadedAt = Date.now()
+    authToken = target.token
+    authSessionKey = target.sessionKey
+    homeSessionPage.onShow()
+    assert.strictEqual(homeSessionPage.data.listings.length, 0, `${target.label}时必须立即清空账号A首页合作房源`)
+    assert.strictEqual(homeSessionPage.data.todayTasks.length, 0, `${target.label}时必须绕过60秒缓存并立即清空账号A任务`)
+    assert.strictEqual(homeSessionPage.data.visibleTodayTasks.length, 0, `${target.label}时不得保留账号A任务视图`)
+    assert.strictEqual(homeSessionPage.data.taskSummary.pendingCount, 0, `${target.label}时不得保留账号A任务统计`)
+    await flushPromises()
+    assert.strictEqual(homeSessionPage.data.listings.length, 0, `${target.label}后的失败请求不得恢复账号A首页房源`)
+    assert.strictEqual(homeSessionPage.data.todayTasks.length, 0, `${target.label}后的失败请求不得恢复账号A任务`)
+  }
+
+  authToken = 'TOKEN-HOME-LATE-A'
+  authSessionKey = 'auth-home-late-a'
+  const lateHome = deferred()
+  const lateTasks = deferred()
+  const lateHomeDefinition = loadDefinition(indexPagePath, {
+    getHomeListings() { return lateHome.promise },
+    getTodayTasks() { return lateTasks.promise },
+    getCompanySheetSnapshot() { return Promise.resolve({ rows: [] }) }
+  })
+  const lateHomePage = makePage(lateHomeDefinition)
+  lateHomePage.authSessionSnapshot = authSessionKey
+  lateHomePage.loadHomeListings()
+  lateHomePage.loadTodayTasks()
+  authToken = 'TOKEN-HOME-LATE-B'
+  authSessionKey = 'auth-home-late-b'
+  lateHome.resolve([{ id: 'HOME-A-LATE' }])
+  lateTasks.resolve({
+    tasks: [{ type: 'maintenance', title: '迟到的账号A任务', count: 1 }],
+    summary: { pendingCount: 1, updatedAt: 'synthetic' }
+  })
+  await flushPromises()
+  assert.strictEqual(lateHomePage.data.listings.length, 0, '账号变化后迟到的首页房源不得落地')
+  assert.strictEqual(lateHomePage.data.todayTasks.length, 0, '账号变化后迟到的首页任务不得落地')
+
+  authToken = 'TOKEN-HOME-UNLOAD'
+  authSessionKey = 'auth-home-unload'
+  const unloadHome = deferred()
+  const unloadTasks = deferred()
+  const unloadHomeDefinition = loadDefinition(indexPagePath, {
+    getHomeListings() { return unloadHome.promise },
+    getTodayTasks() { return unloadTasks.promise },
+    getCompanySheetSnapshot() { return Promise.resolve({ rows: [] }) }
+  })
+  const unloadHomePage = makePage(unloadHomeDefinition)
+  unloadHomePage.authSessionSnapshot = authSessionKey
+  unloadHomePage.loadHomeListings()
+  unloadHomePage.loadTodayTasks()
+  unloadHomePage.onUnload()
+  unloadHome.resolve([{ id: 'HOME-UNLOAD-LATE' }])
+  unloadTasks.resolve({ tasks: [{ type: 'maintenance', title: '卸载后任务' }], summary: { pendingCount: 1 } })
+  await flushPromises()
+  assert.strictEqual(unloadHomePage.data.listings.length, 0, '首页卸载后的迟到房源不得回写')
+  assert.strictEqual(unloadHomePage.data.todayTasks.length, 0, '首页卸载后的迟到任务不得回写')
+
   let listingShouldFail = true
   const listingsDefinition = loadDefinition(listingsPagePath, {
     getListings() {
@@ -129,6 +232,65 @@ async function run() {
   await flushPromises()
   assert.strictEqual(listingsPage.data.loadFailed, false, '全部房源真实空结果必须清除失败态')
   assert.strictEqual(listingsPage.data.listings.length, 0, '服务端成功返回空数组时才允许显示真实空结果')
+
+  for (const target of [
+    { token: '', sessionKey: 'guest-list-after-a', label: '退出到游客' },
+    { token: 'TOKEN-LIST-B', sessionKey: 'auth-list-b', label: '切换到账号B' }
+  ]) {
+    authToken = 'TOKEN-LIST-A'
+    authSessionKey = `auth-list-a-${target.label}`
+    let listMode = 'success'
+    const sessionDefinition = loadDefinition(listingsPagePath, {
+      getListings() {
+        if (listMode === 'fail') return Promise.reject(new Error('新会话列表请求失败'))
+        return Promise.resolve([{ id: 'LIST-A-PRIVATE', community: '账号A合作小区', source: '业主房源' }])
+      }
+    })
+    const sessionPage = makePage(sessionDefinition)
+    sessionPage.loadListings()
+    await flushPromises()
+    assert.deepStrictEqual(sessionPage.data.listings.map((item) => item.id), ['LIST-A-PRIVATE'], '账号A可信列表应先成功落地')
+    assert.deepStrictEqual(sessionPage.data.communityOptions, ['账号A合作小区'])
+
+    listMode = 'fail'
+    authToken = target.token
+    authSessionKey = target.sessionKey
+    sessionPage.onShow()
+    assert.strictEqual(sessionPage.data.listings.length, 0, `${target.label}时必须在请求返回前清空旧账号房源卡`)
+    assert.strictEqual(sessionPage.data.communityOptions.length, 0, `${target.label}时必须清空旧账号小区选项`)
+    await flushPromises()
+    assert.strictEqual(sessionPage.data.listings.length, 0, `${target.label}后的失败请求不得恢复账号A列表`)
+  }
+
+  authToken = 'TOKEN-LIST-LATE-A'
+  authSessionKey = 'auth-list-late-a'
+  const lateListResolvers = []
+  const lateListDefinition = loadDefinition(listingsPagePath, {
+    getListings() {
+      return new Promise((resolve) => { lateListResolvers.push(resolve) })
+    }
+  })
+  const lateListPage = makePage(lateListDefinition)
+  lateListPage.loadListings()
+  authToken = ''
+  authSessionKey = 'guest-list-late'
+  lateListResolvers.forEach((resolve) => resolve([{ id: 'LIST-A-LATE', community: '迟到账号A小区', source: '二房东房源' }]))
+  await flushPromises()
+  assert.strictEqual(lateListPage.data.listings.length, 0, '会话变化后迟到的账号A列表响应不得被采纳')
+  assert.strictEqual(lateListPage.data.communityOptions.length, 0, '迟到响应不得写入旧账号小区选项')
+
+  authToken = 'TOKEN-LIST-UNLOAD'
+  authSessionKey = 'auth-list-unload'
+  const unloadListingResolvers = []
+  const unloadListingDefinition = loadDefinition(listingsPagePath, {
+    getListings() { return new Promise((resolve) => { unloadListingResolvers.push(resolve) }) }
+  })
+  const unloadListingPage = makePage(unloadListingDefinition)
+  unloadListingPage.loadListings()
+  unloadListingPage.onUnload()
+  unloadListingResolvers.forEach((resolve) => resolve([{ id: 'LIST-UNLOAD-LATE' }]))
+  await flushPromises()
+  assert.strictEqual(unloadListingPage.data.listings.length, 0, '房源列表卸载后的迟到响应不得回写')
 
   let ownerShouldFail = true
   const ownerDefinition = loadDefinition(myListingsPagePath, {
@@ -158,6 +320,80 @@ async function run() {
   await flushPromises()
   assert.strictEqual(ownerPage.data.loadFailed, false, '我的房源真实空结果必须清除失败态')
   assert.strictEqual(ownerPage.data.listings.length, 0, '我的房源成功空数组才允许显示暂无')
+
+  for (const target of [
+    { token: '', sessionKey: 'guest-owner-after-a', label: '退出到游客' },
+    { token: 'TOKEN-OWNER-B', sessionKey: 'auth-owner-b', label: '切换到账号B' }
+  ]) {
+    authToken = 'TOKEN-OWNER-A'
+    authSessionKey = `auth-owner-a-${target.label}`
+    let ownerMode = 'success'
+    const ownerSessionDefinition = loadDefinition(myListingsPagePath, {
+      getProfileState() {
+        return ownerMode === 'success'
+          ? Promise.resolve({ sourceStats: [{ value: '1' }] })
+          : Promise.reject(new Error('新会话资料失败'))
+      },
+      getOwnedListings() {
+        return ownerMode === 'success'
+          ? Promise.resolve([{ id: 'OWNER-A-PRIVATE', community: '账号A小区', landlordPhone: '13900000001' }])
+          : Promise.reject(new Error('新会话我的房源失败'))
+      },
+      getListings() { return Promise.resolve([]) }
+    })
+    const ownerSessionPage = makePage(ownerSessionDefinition)
+    ownerSessionPage.refresh()
+    await flushPromises()
+    assert.deepStrictEqual(ownerSessionPage.data.listings.map((item) => item.id), ['OWNER-A-PRIVATE'])
+    assert.deepStrictEqual(ownerSessionPage.data.ownerCommunityOptions, ['账号A小区'])
+
+    ownerMode = 'fail'
+    authToken = target.token
+    authSessionKey = target.sessionKey
+    ownerSessionPage.onShow()
+    assert.strictEqual(ownerSessionPage.data.listings.length, 0, `${target.label}时必须立即清空账号A我的房源`)
+    assert.strictEqual(ownerSessionPage.data.stats.length, 0, `${target.label}时必须清空账号A统计`)
+    assert.strictEqual(ownerSessionPage.data.ownerCommunityOptions.length, 0, `${target.label}时必须清空账号A小区选项`)
+    assert.deepStrictEqual(ownerSessionPage.allOwnerListings || [], [], `${target.label}时必须清空账号A未筛选原始房源`)
+    await flushPromises()
+    assert.strictEqual(ownerSessionPage.data.listings.length, 0, `${target.label}后的失败请求不得恢复账号A我的房源`)
+  }
+
+  authToken = 'TOKEN-OWNER-LATE-A'
+  authSessionKey = 'auth-owner-late-a'
+  const lateOwnerProfile = deferred()
+  const lateOwnerListings = deferred()
+  const lateOwnerDefinition = loadDefinition(myListingsPagePath, {
+    getProfileState() { return lateOwnerProfile.promise },
+    getOwnedListings() { return lateOwnerListings.promise },
+    getListings() { return Promise.resolve([]) }
+  })
+  const lateOwnerPage = makePage(lateOwnerDefinition)
+  lateOwnerPage.refresh()
+  authToken = 'TOKEN-OWNER-LATE-B'
+  authSessionKey = 'auth-owner-late-b'
+  lateOwnerProfile.resolve({ sourceStats: [{ value: '1' }] })
+  lateOwnerListings.resolve([{ id: 'OWNER-A-LATE', community: '迟到账号A小区', landlordPhone: '13900000001' }])
+  await flushPromises()
+  assert.strictEqual(lateOwnerPage.data.listings.length, 0, '账号变化后迟到的我的房源不得落地')
+  assert.deepStrictEqual(lateOwnerPage.allOwnerListings || [], [], '迟到响应不得写入账号A原始房源缓存')
+
+  authToken = 'TOKEN-OWNER-UNLOAD'
+  authSessionKey = 'auth-owner-unload'
+  const unloadOwnerProfile = deferred()
+  const unloadOwnerListings = deferred()
+  const unloadOwnerDefinition = loadDefinition(myListingsPagePath, {
+    getProfileState() { return unloadOwnerProfile.promise },
+    getOwnedListings() { return unloadOwnerListings.promise },
+    getListings() { return Promise.resolve([]) }
+  })
+  const unloadOwnerPage = makePage(unloadOwnerDefinition)
+  unloadOwnerPage.refresh()
+  unloadOwnerPage.onUnload()
+  unloadOwnerProfile.resolve({ sourceStats: [{ value: '1' }] })
+  unloadOwnerListings.resolve([{ id: 'OWNER-UNLOAD-LATE' }])
+  await flushPromises()
+  assert.strictEqual(unloadOwnerPage.data.listings.length, 0, '我的房源卸载后的迟到响应不得回写')
 
   let companyShouldFail = true
   const companyDefinition = loadDefinition(myListingsPagePath, {

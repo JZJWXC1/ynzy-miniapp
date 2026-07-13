@@ -7,6 +7,10 @@ const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
 const categories = ['全部', '公司房源', '业主房源', '二房东房源']
 const partnerCategories = ['业主房源', '二房东房源']
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
   { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
@@ -112,15 +116,40 @@ Page({
   },
 
   onLoad(options) {
+    this._pageActive = true
     this.setListingState(normalizeOptions(options))
   },
 
   onShow() {
+    this._pageActive = true
+    const sessionState = this.syncAuthSession()
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 1 })
     }
-    if (this.applyPendingListingFilters()) return
+    if (sessionState.changed) {
+      try { wx.removeStorageSync(pendingListingFiltersKey) } catch (error) {}
+    }
+    if (!sessionState.changed && this.applyPendingListingFilters()) return
     this.loadListings()
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this.activeListingRequestId = `session-reset-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+      const filters = Object.assign({}, this.data.filters || emptyFilters, { needId: '' })
+      this.setData({
+        listings: [],
+        communityOptions: [],
+        filters,
+        loading: false,
+        loadFailed: false,
+        loginRequired: !apiClient.getAuthToken() && partnerCategories.includes(this.data.category)
+      })
+    }
+    return { key: nextSessionKey, changed }
   },
 
   setListingState(nextState, callback) {
@@ -157,6 +186,8 @@ Page({
   },
 
   onUnload() {
+    this._pageActive = false
+    this.activeListingRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
   },
 
@@ -201,6 +232,7 @@ Page({
   },
 
   loadListings() {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeListingRequestId = requestId
     const loginRequired = !apiClient.getAuthToken() && partnerCategories.includes(this.data.category)
@@ -220,6 +252,10 @@ Page({
       apiService.getListings(communityQuery)
     ]).then(([listings, communityRows]) => {
       if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({
         listings,
         communityOptions: uniqueCommunities(communityRows),
@@ -228,10 +264,15 @@ Page({
       })
     }).catch(() => {
       if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ loadFailed: true })
       wx.showToast({ title: '房源加载失败', icon: 'none' })
     }).finally(() => {
       if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) return
       this.setData({ loading: false })
     })
   },

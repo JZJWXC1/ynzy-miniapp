@@ -261,6 +261,7 @@ Page({
 
   onLoad(options) {
     this.authTokenSnapshot = currentAuthSessionKey()
+    this.authHadLoginSnapshot = Boolean(currentAuthToken())
     const id = options && options.id ? String(options.id) : ''
     this.editingListingId = id
     this.loadCurrentUser()
@@ -274,12 +275,16 @@ Page({
 
   onShow() {
     const nextToken = currentAuthSessionKey()
+    const previousHadLogin = this.authHadLoginSnapshot === true
+    const nextHadLogin = Boolean(currentAuthToken())
     if (this.authTokenSnapshot === undefined) {
       this.authTokenSnapshot = nextToken
+      this.authHadLoginSnapshot = nextHadLogin
       return
     }
     if (nextToken === this.authTokenSnapshot) return
     this.authTokenSnapshot = nextToken
+    this.authHadLoginSnapshot = nextHadLogin
     this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
     if (wx.hideLoading) wx.hideLoading()
 
@@ -290,12 +295,12 @@ Page({
       isStaff: false,
       submitting: false
     }
-    if (editingListingId) {
+    if (editingListingId || previousHadLogin) {
       const resetForm = Object.assign({}, defaultForm, { features: (defaultForm.features || []).slice() })
       Object.assign(resetPatch, {
-        mode: 'edit',
-        pageTitle: '修改房源',
-        listingId: editingListingId,
+        mode: editingListingId ? 'edit' : 'create',
+        pageTitle: editingListingId ? '修改房源' : '上传房源',
+        listingId: editingListingId || '',
         form: resetForm,
         initialViewingMethod: '',
         initialViewingKeyLocation: '',
@@ -303,7 +308,9 @@ Page({
         featureOptions: buildFeatureOptions(resetForm.features),
         communitySuggestions: [],
         communityPanelVisible: false,
-        communityMatchMessage: '正在按当前账号重新读取房源',
+        communityMatchMessage: editingListingId
+          ? '正在按当前账号重新读取房源'
+          : '输入小区名后显示匹配结果，也可以直接使用手填名称',
         communityReviewTip: '',
         layoutPreview: buildLayout(resetForm),
         addressPreview: '',

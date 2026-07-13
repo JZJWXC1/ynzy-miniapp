@@ -1,5 +1,6 @@
 // index.js
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
@@ -12,6 +13,10 @@ const tabBarPages = [
   '/pages/map/map',
   '/pages/profile/profile'
 ]
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 function textWeight(value) {
   return String(value || '').split('').reduce((sum, char) => {
@@ -634,10 +639,14 @@ Page({
   },
 
   onLoad() {
+    this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
     this.initVoiceInput();
   },
 
   onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
@@ -651,19 +660,53 @@ Page({
     this.loadHomeListings();
   },
 
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
+      this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+      this._heavyLoadedAt = 0
+      this.setData({
+        listings: [],
+        listingsLoading: false,
+        listingsLoadFailed: false,
+        todayTasks: [],
+        visibleTodayTasks: [],
+        collapsedTaskCount: 0,
+        taskFoldText: '展开其他任务',
+        taskFoldMeta: '',
+        maintenanceWorkbench: { count: 0, unit: '套', foldedText: '0 项已折叠' },
+        taskSummary: { pendingCount: 0, updatedAt: '' },
+        taskLoading: false
+      })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
   loadHomeListings() {
+    const requestSessionKey = this.syncAuthSession().key
     this._homeListingsRequestSeq = (this._homeListingsRequestSeq || 0) + 1
     const requestSeq = this._homeListingsRequestSeq
     this.setData({ listingsLoading: true, listingsLoadFailed: false })
     apiService.getHomeListings().then((listings) => {
-      if (requestSeq !== this._homeListingsRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({
         listings: listings || [],
         listingsLoading: false,
         listingsLoadFailed: false
       })
     }).catch(() => {
-      if (requestSeq !== this._homeListingsRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ listingsLoading: false, listingsLoadFailed: true })
       wx.showToast({ title: '首页房源加载失败', icon: 'none' })
     })
@@ -678,6 +721,10 @@ Page({
   },
 
   onUnload() {
+    this._pageActive = false
+    this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
+    this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+    this._sheetSnapshotRequestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
     this.cleanupVoiceInput();
   },
 
@@ -766,8 +813,11 @@ Page({
   },
 
   loadCompanySheetSnapshot() {
+    const requestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
+    this._sheetSnapshotRequestSeq = requestSeq
     this.setData({ sheetSnapshotStatus: '正在同步飞书表格' });
     apiService.getCompanySheetSnapshot().then((snapshot) => {
+      if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
       const metrics = buildSnapshotMetrics(snapshot);
       const sheetPreview = buildSheetPreview(snapshot);
       this.setData({
@@ -777,8 +827,9 @@ Page({
         sheetSnapshotStatus: snapshot && snapshot.rows && snapshot.rows.length ? '正在生成截图' : '飞书表格暂无内容',
         snapshotCanvasWidth: metrics.width,
         snapshotCanvasHeight: metrics.height
-      }, () => this.renderCompanySheetSnapshot(metrics));
+      }, () => this.renderCompanySheetSnapshot(metrics, requestSeq));
     }).catch(() => {
+      if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
       this.setData({
         companySheetSnapshot: null,
         sheetPreview: null,
@@ -789,7 +840,12 @@ Page({
     });
   },
 
-  renderCompanySheetSnapshot(metrics) {
+  renderCompanySheetSnapshot(metrics, requestSeq) {
+    const isCurrentRequest = () => (
+      this._pageActive !== false &&
+      (requestSeq === undefined || this._sheetSnapshotRequestSeq === requestSeq)
+    )
+    if (!isCurrentRequest()) return
     const snapshot = this.data.companySheetSnapshot;
     if (!snapshot || !snapshot.rows || !snapshot.rows.length) return;
     wx.createSelectorQuery()
@@ -797,6 +853,7 @@ Page({
       .select('#companySheetCanvas')
       .fields({ node: true, size: true })
       .exec((result) => {
+        if (!isCurrentRequest()) return
         const canvas = result && result[0] && result[0].node;
         if (!canvas) {
           this.setData({ sheetSnapshotStatus: '当前环境暂不支持生成截图' });
@@ -812,12 +869,14 @@ Page({
           destWidth: metrics.width * pixelRatio,
           destHeight: metrics.height * pixelRatio,
           success: (res) => {
+            if (!isCurrentRequest()) return
             this.setData({
               sheetSnapshotImagePath: res.tempFilePath,
               sheetSnapshotStatus: ''
             });
           },
           fail: () => {
+            if (!isCurrentRequest()) return
             this.setData({ sheetSnapshotStatus: '截图生成失败，请下拉刷新重试' });
           }
         }, this);
@@ -878,8 +937,16 @@ Page({
   },
 
   loadTodayTasks() {
+    const requestSessionKey = this.syncAuthSession().key
+    const requestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+    this._todayTasksRequestSeq = requestSeq
     this.setData({ taskLoading: true });
     apiService.getTodayTasks().then((result) => {
+      if (this._pageActive === false || this._todayTasksRequestSeq !== requestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       const todayTasks = (result && result.tasks) || [];
       this.setData({
         taskLoading: false,
@@ -888,6 +955,11 @@ Page({
         ...this.buildTaskView(todayTasks, this.data.taskExpanded)
       });
     }).catch(() => {
+      if (this._pageActive === false || this._todayTasksRequestSeq !== requestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ taskLoading: false });
       wx.showToast({ title: '今日任务加载失败', icon: 'none' });
     });

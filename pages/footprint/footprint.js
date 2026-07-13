@@ -1,5 +1,10 @@
 // footprint.js
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 Page({
   data: {
@@ -18,15 +23,38 @@ Page({
   },
 
   onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
     this.refreshRecords();
   },
 
+  onUnload() {
+    this._pageActive = false
+    this._recordsRequestSeq = Number(this._recordsRequestSeq || 0) + 1
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._recordsRequestSeq = Number(this._recordsRequestSeq || 0) + 1
+      this.setData({ allRecords: [], records: [], stats: [], loading: false, loadFailed: false })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
   refreshRecords() {
+    const requestSessionKey = this.syncAuthSession().key
     this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
     const requestSeq = this._recordsRequestSeq
     this.setData({ loading: true, loadFailed: false })
     apiService.getFootprintRecords().then((records) => {
       if (requestSeq !== this._recordsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       const phoneCount = records.filter((item) => String(item.status || '').indexOf('电话') !== -1).length;
       const addressCount = records.filter((item) => String(item.status || '').indexOf('地址') !== -1).length;
       const myViewCount = records.filter((item) => item.direction === '我查看的').length;
@@ -45,6 +73,10 @@ Page({
       this.applyFilter(this.data.activeFilter);
     }).catch(() => {
       if (requestSeq !== this._recordsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '足迹加载失败', icon: 'none' })
     });

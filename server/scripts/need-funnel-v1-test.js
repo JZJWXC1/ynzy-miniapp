@@ -311,9 +311,9 @@ function testClientAndAuditContracts() {
   const recordStart = pageSource.indexOf('const showingPayload =')
   const recordBlock = pageSource.slice(recordStart, recordStart + 800)
   assert.ok(
-    /relatedNeedId\s*=\s*this\.data\.needTemporary\s*\?\s*['"]{2}\s*:\s*safeText\(this\.data\.needId\)/.test(recordBlock) &&
+    /relatedNeedId\s*=\s*operation\.needTemporary\s*\?\s*['"]{2}\s*:\s*operation\.needId/.test(recordBlock) &&
       /if\s*\(relatedNeedId\)\s*showingPayload\.needId\s*=\s*relatedNeedId/.test(recordBlock),
-    '客户端带看只允许携带当前持久 needId，临时需求保持兼容但不计漏斗'
+    '客户端带看只允许携带操作发起会话冻结的持久 needId，临时需求保持兼容但不计漏斗'
   )
 
   const auditSource = fs.readFileSync(path.join(__dirname, 'v1-final-audit.js'), 'utf8')
