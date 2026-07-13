@@ -118,6 +118,22 @@ function run() {
   assert.deepStrictEqual(mockData.getCommissionConfig(), configBeforeNegative, 'mock negative config rejection must not mutate config')
   assert.strictEqual(mockData.getAdminLogs().length, logsBeforeNegative, 'mock negative config rejection must not append audit records')
 
+  ;[
+    { ownerRate: 'abc' },
+    { uploaderRates: { [TEXT.secondLandlord]: '-1e999' } },
+    { platformRates: { [TEXT.owner]: Infinity } }
+  ].forEach((payload) => {
+    const beforeInvalidConfig = mockData.getCommissionConfig()
+    const beforeInvalidLogs = mockData.getAdminLogs().length
+    assert.throws(
+      () => mockData.updateCommissionConfig(payload),
+      (error) => error && error.statusCode === 400 && /有限数字/.test(error.message),
+      'mock malformed commission rate must match server 400 behavior'
+    )
+    assert.deepStrictEqual(mockData.getCommissionConfig(), beforeInvalidConfig, 'mock malformed config rejection must not mutate config')
+    assert.strictEqual(mockData.getAdminLogs().length, beforeInvalidLogs, 'mock malformed config rejection must not append audit records')
+  })
+
   const configurable = mockData.addNormalListing(listingPayload({
     roomNumber: '1202',
     ownerType: TEXT.secondLandlord,

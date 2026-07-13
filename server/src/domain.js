@@ -5527,7 +5527,12 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
   suppliedRates.forEach(([label, value]) => {
     if (value === undefined || value === null) return
     const number = Number(value)
-    if (Number.isFinite(number) && number < 0) {
+    if (!Number.isFinite(number)) {
+      const error = new Error(`${label}必须是有限数字`)
+      error.statusCode = 400
+      throw error
+    }
+    if (number < 0) {
       const error = new Error(`${label}不能小于 0`)
       error.statusCode = 400
       throw error
@@ -6046,6 +6051,12 @@ function verifyListingAvailability(db, userId, listingId, options = {}) {
     throw error
   }
 
+  if (isPendingOwnerReview(listing)) {
+    const error = new Error('该房源仍在等待管理员审核，不能通过房态核验直接上架')
+    error.statusCode = 409
+    throw error
+  }
+
   if (!options.admin) assertClientFootprintRateLimit(db, userId, 'listing_verified')
 
   listing.status = options.status || '在租'
@@ -6084,11 +6095,6 @@ function submitListingVerification(db, userId, listingId, outcome, options = {})
   // 未出租 / available（含缺省，兼容旧客户端只点确认）→ 已维护，重置核验周期。
   if (normalized === '' || normalized === '未出租' || normalized === 'available') {
     assertListingActive(listing)
-    if (isPendingOwnerReview(listing)) {
-      const error = new Error('该房源仍在等待管理员审核，不能通过房态核验直接上架')
-      error.statusCode = 409
-      throw error
-    }
     return { outcome: 'available', freshness: verifyListingAvailability(db, userId, listingId, options) }
   }
   assertListingActive(listing)

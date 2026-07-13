@@ -189,16 +189,26 @@ async function assertEndpointBehavior() {
   try {
     assert.ok(await waitForServer(), `测试服务未启动：${output}`)
 
-    const active = await request('GET', '/mini/listings/ACTIVE?queryId=active-q')
+    let guestDetailRequests = 0
+    async function requestGuestDetail(listingId, queryId) {
+      guestDetailRequests += 1
+      return request('GET', `/mini/listings/${listingId}?queryId=${queryId}`)
+    }
+
+    const active = await requestGuestDetail('ACTIVE', 'active-q')
     assert.strictEqual(active.statusCode, 200, '有效房源详情应返回 200')
     assert.strictEqual(dataOf(active).id, 'ACTIVE', '有效房源详情应返回正常详情')
 
-    const unavailable = await request('GET', '/mini/listings/DOWN?queryId=down-q')
+    const unavailable = await requestGuestDetail('DOWN', 'down-q')
     assert.strictEqual(unavailable.statusCode, 200, '已下架房源应返回结构化 200，不再裸 404')
     assert.strictEqual(dataOf(unavailable).reason, 'down', '已下架房源应标记 down')
     assertUnavailableSafe(dataOf(unavailable), '已下架房源')
 
-    const missing = await request('GET', '/mini/listings/MISSING?queryId=missing-q')
+    const pendingPartner = await requestGuestDetail('PENDING', 'pending-partner-q')
+    assert.strictEqual(pendingPartner.statusCode, 401, '游客不得借失效详情旁路枚举待审核合作房源')
+    assert.ok(!JSON.stringify(pendingPartner.body).includes('updatedAt'), '游客被拒时不得拿到合作房源状态或同步时间')
+
+    const missing = await requestGuestDetail('MISSING', 'missing-q')
     assert.strictEqual(missing.statusCode, 404, '查无此 id 仍应返回 404')
     assert.strictEqual(missing.body.message, '房源不存在', '查无此 id 不应混用已下架文案')
 
@@ -207,6 +217,13 @@ async function assertEndpointBehavior() {
     assert.ok(output.includes('queryId=down-q'), '诊断日志应包含 queryId')
     assert.ok(output.includes('feishuAction=down'), '诊断日志应包含最近飞书同步动作')
     assert.ok(output.includes('availability=not-found'), '查无 id 也应记录诊断日志')
+
+    while (guestDetailRequests < 80) {
+      const withinLimit = await requestGuestDetail('DOWN', `rate-${guestDetailRequests}`)
+      assert.strictEqual(withinLimit.statusCode, 200, '游客公司失效详情在 80 次/分钟内应保持可用')
+    }
+    const limited = await requestGuestDetail('DOWN', 'rate-limited')
+    assert.strictEqual(limited.statusCode, 429, '游客不得借失效详情绕过详情接口限流')
   } finally {
     server.kill()
   }

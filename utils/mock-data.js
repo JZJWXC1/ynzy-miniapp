@@ -626,7 +626,12 @@
       var value = entry[1];
       if (value === undefined || value === null) return;
       var number = Number(value);
-      if (Number.isFinite(number) && number < 0) {
+      if (!Number.isFinite(number)) {
+        var invalidError = new Error(entry[0] + '必须是有限数字');
+        invalidError.statusCode = 400;
+        throw invalidError;
+      }
+      if (number < 0) {
         var error = new Error(entry[0] + '不能小于 0');
         error.statusCode = 400;
         throw error;
@@ -738,6 +743,13 @@
 
   function isPendingOwnerReview(listing) {
     return requiresListingReview(listing) && ownerReviewStatus(listing) !== '已通过';
+  }
+
+  function assertListingVerificationAllowed(listing) {
+    if (!isPendingOwnerReview(listing)) return;
+    var error = new Error('该房源仍在等待管理员审核，不能通过房态核验直接上架');
+    error.statusCode = 409;
+    throw error;
   }
 
   function rawActiveListings() {
@@ -1606,13 +1618,13 @@
       notFoundError.statusCode = 404;
       throw notFoundError;
     }
-    if (!isMockFrontendEffectiveListing(listing)) return unavailableListingDetail(listing, id);
     var settings = options || {};
     if (settings.companyOnly && !isCompanyListing(listing)) {
       var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
       accessError.statusCode = 401;
       throw accessError;
     }
+    if (!isMockFrontendEffectiveListing(listing)) return unavailableListingDetail(listing, id);
     var location = listingLocationFields(listing);
     var companyListing = isCompanyListing(listing);
     var companyContactText = COMPANY_CONTACT_PHONES[0] || '';
@@ -3341,6 +3353,7 @@
         listing.expiredReason = normalized === '已出租' ? '房东反馈已出租' : '房东反馈不租了';
       } else {
         // 未出租（含缺省）→ 已维护，重置核验周期。
+        assertListingVerificationAllowed(listing);
         listing.status = '在租';
         listing.lifecycleStatus = 'active';
         listing.lastVerifiedAt = '刚刚';
@@ -3353,6 +3366,7 @@
   function verifyAdminListing(id) {
     var listing = getListing(id);
     if (listing && !isExpiredListing(listing)) {
+      assertListingVerificationAllowed(listing);
       listing.status = '在租';
       listing.lifecycleStatus = 'active';
       listing.lastVerifiedAt = '刚刚';

@@ -133,6 +133,27 @@ function makeDb() {
   assert.strictEqual(domain.commissionConfig(zero).ownerRate, 0, '0 仍是合法比例，不能误伤原规则')
 }
 
+// 7.2) 显式畸形比例不能假成功后静默回退旧值；拒绝后配置与审计足迹零变化。
+{
+  const cases = [
+    { label: '顶层非数字', payload: { ownerRate: 'abc' } },
+    { label: '别名负无穷', payload: { secondLandlordUploaderRate: '-1e999' } },
+    { label: '嵌套正无穷', payload: { platformRates: { [OWNER]: Infinity } } }
+  ]
+  cases.forEach(({ label, payload }) => {
+    const d = makeDb()
+    d.commissionConfig = { ownerRate: 25, ownerPlatformRate: 15, secondLandlordRate: 18, secondLandlordPlatformRate: 12, updatedBy: 'OLD' }
+    d.footprints = [{ id: 'EXISTING' }]
+    const before = JSON.parse(JSON.stringify(d))
+    assert.throws(
+      () => domain.setCommissionConfig(d, 'ADM', payload),
+      (error) => error && error.statusCode === 400 && /有限数字/.test(error.message),
+      `${label}必须返回 400`
+    )
+    assert.deepStrictEqual(d, before, `${label}拒绝后不得改配置或新增足迹`)
+  })
+}
+
 // 8) 上传人比例可配到 >30%（不再被默认总分出卡死）——阻断1 规则层。
 {
   const d = makeDb()

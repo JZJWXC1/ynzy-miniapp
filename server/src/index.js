@@ -1893,6 +1893,8 @@ async function handleMini(req, res, pathname, searchParams) {
   const listingMatch = pathname.match(/^\/mini\/listings\/([^/]+)$/)
   if (method === 'GET' && listingMatch) {
     const listingId = listingMatch[1]
+    const guest = isGuestUser(userId)
+    if (guest) assertGuestRateLimit(req, 'mini-listing-detail')
     const detailState = domain.listingDetailState(db, listingId, userId)
     if (detailState.status === 'not-found') {
       logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
@@ -1901,15 +1903,16 @@ async function handleMini(req, res, pathname, searchParams) {
       throw error
     }
     if (detailState.status === 'unavailable') {
+      if (guest) {
+        assertGuestListingAllowed({ companyListing: domain.isCompanyListing(detailState.listing) })
+      }
       logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
       return sendJson(res, detailState.unavailable)
     }
     const detail = detailState.detail
     // 标记是否为上传人自查（服务端判定），供详情页免留痕直接展示地址/房东电话。
     detail.ownListing = domain.isOwnListing(db, listingId, userId)
-    const guest = isGuestUser(userId)
     if (guest) {
-      assertGuestRateLimit(req, 'mini-listing-detail')
       assertGuestListingAllowed(detail)
     }
     const scopedDb = guest ? companyOnlyDb(db) : db

@@ -169,6 +169,26 @@ async function run() {
     assert.ok(result.tasks.every((item) => Number(item.count || 0) === 0))
   })
 
+  await check('小程序 Mock 公开分佣配置使用白名单且后台审计字段仍保留', async () => {
+    const internalConfig = mockData.getCommissionConfig()
+    assert.ok(Object.prototype.hasOwnProperty.call(internalConfig, 'updatedAt'), '后台 Mock 配置仍需保留更新时间')
+    assert.ok(Object.prototype.hasOwnProperty.call(internalConfig, 'updatedBy'), '后台 Mock 配置仍需保留操作人')
+
+    const publicConfig = await apiService.getCommissionConfig()
+    assert.deepStrictEqual(Object.keys(publicConfig).sort(), [
+      'companyRate',
+      'ownerPlatformRate',
+      'ownerRate',
+      'platformRates',
+      'secondLandlordPlatformRate',
+      'secondLandlordRate',
+      'totalRate',
+      'uploaderRates'
+    ].sort(), '小程序 Mock 公开配置必须与生产白名单字段完全一致')
+    assert.ok(!Object.prototype.hasOwnProperty.call(publicConfig, 'updatedAt'))
+    assert.ok(!Object.prototype.hasOwnProperty.call(publicConfig, 'updatedBy'))
+  })
+
   await check('Mock 分佣记录必须走数据层而非硬编码空数组', async () => {
     authToken = 'synthetic-preview-token'
     const fixture = [{ id: 'MOCK-COMMISSION-1', role: '我是上传人', status: '待确认' }]
@@ -201,6 +221,11 @@ async function run() {
     ;['address', 'landlordPhone', 'contact', 'videoUrl', 'videoKey', 'uploaderId'].forEach((field) => {
       assert.ok(!Object.prototype.hasOwnProperty.call(unavailable, field), `unavailable 不得包含 ${field}`)
     })
+    assert.throws(
+      () => mockData.getListingDetail(secondLandlord.id, { companyOnly: true }),
+      (error) => error && error.statusCode === 401,
+      '游客 Mock 不得借 unavailable 旁路枚举合作房源'
+    )
   })
 
   await check('API Mock 不存在详情继续抛出 404', async () => {
@@ -209,6 +234,29 @@ async function run() {
       apiService.getListingDetail('MOCK-MISSING-LISTING'),
       (error) => error && error.statusCode === 404
     )
+  })
+
+  await check('Mock 本人和后台核验入口都不能把待审核房源旁路上架', () => {
+    mockData.loginByPhone('13800010004')
+    const pending = addListing('9815', '业主房源')
+    assert.strictEqual(pending.status, '待审核', '管理员上传业主房源应进入待审核，作为稳定测试前提')
+    assert.strictEqual(pending.reviewStatus, '待审核')
+
+    const beforeMyVerify = mockData.getEditableListing(pending.id)
+    assert.throws(
+      () => mockData.verifyMyListing(pending.id, '未出租'),
+      (error) => error && error.statusCode === 409 && /审核/.test(error.message),
+      'Mock 本人核验不得旁路上架待审核房源'
+    )
+    assert.deepStrictEqual(mockData.getEditableListing(pending.id), beforeMyVerify, 'Mock 本人核验被拒后必须零变化')
+
+    const beforeAdminVerify = mockData.getEditableListing(pending.id)
+    assert.throws(
+      () => mockData.verifyAdminListing(pending.id),
+      (error) => error && error.statusCode === 409 && /审核/.test(error.message),
+      'Mock 后台核验不得旁路上架待审核房源'
+    )
+    assert.deepStrictEqual(mockData.getEditableListing(pending.id), beforeAdminVerify, 'Mock 后台核验被拒后必须零变化')
   })
 
   if (failures.length) {

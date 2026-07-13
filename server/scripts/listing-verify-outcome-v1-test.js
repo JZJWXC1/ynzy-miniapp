@@ -123,6 +123,16 @@ function makeDb() {
     '管理员也必须走审核接口，不能用房态核验旁路上架待审核房源'
   )
 
+  const adminRouteDb = makeDb()
+  Object.assign(adminRouteDb.listings[0], { status: '待审核', reviewStatus: '待审核', requiresManualReview: true })
+  const adminRouteBefore = JSON.parse(JSON.stringify(adminRouteDb))
+  assert.throws(
+    () => domain.verifyListingAvailability(adminRouteDb, 'ADMIN', 'L1', { admin: true }),
+    (error) => error && error.statusCode === 409 && /审核/.test(error.message),
+    '后台核验路由直接调用 verifyListingAvailability 时也必须阻止待审核房源上架'
+  )
+  assert.deepStrictEqual(adminRouteDb, adminRouteBefore, '后台核验路由被拒后必须保持房源、推荐资料与足迹零变化')
+
   const withdrawDb = makeDb()
   Object.assign(withdrawDb.listings[0], { status: '待审核', reviewStatus: '待审核', requiresManualReview: true })
   const withdrawn = domain.submitListingVerification(withdrawDb, 'U1', 'L1', '不租了')

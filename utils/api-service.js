@@ -812,10 +812,24 @@ function getCommissionRecords() {
   })
 }
 
+function publicCommissionConfigMock(config) {
+  const source = config || {}
+  return {
+    uploaderRates: Object.assign({}, source.uploaderRates || {}),
+    platformRates: Object.assign({}, source.platformRates || {}),
+    secondLandlordRate: source.secondLandlordRate,
+    ownerRate: source.ownerRate,
+    companyRate: 0,
+    secondLandlordPlatformRate: source.secondLandlordPlatformRate,
+    ownerPlatformRate: source.ownerPlatformRate,
+    totalRate: Number.isFinite(Number(source.totalRate)) ? Number(source.totalRate) : 30
+  }
+}
+
 function getCommissionConfig() {
   return apiClient.call({
     path: '/mini/commission-config',
-    mock: () => mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
+    mock: () => publicCommissionConfigMock(mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
       secondLandlordRate: 20,
       ownerRate: 20,
       companyRate: 0,
@@ -831,7 +845,7 @@ function getCommissionConfig() {
         '业主房源': 10,
         '公司房源': 0
       }
-    }
+    })
   })
 }
 
