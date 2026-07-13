@@ -1,10 +1,12 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 const { LISTING_FEATURE_OPTIONS, NO_FEATURE } = require('../../utils/listing-features')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
 const categories = ['全部', '公司房源', '业主房源', '二房东房源']
+const partnerCategories = ['业主房源', '二房东房源']
 const regionOptions = [
   { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
   { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
@@ -105,6 +107,7 @@ Page({
     listings: [],
     loading: false,
     loadFailed: false,
+    loginRequired: false,
     emptyText: '暂无符合条件的房源'
   },
 
@@ -200,7 +203,8 @@ Page({
   loadListings() {
     const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeListingRequestId = requestId
-    this.setData({ loading: true, loadFailed: false })
+    const loginRequired = !apiClient.getAuthToken() && partnerCategories.includes(this.data.category)
+    this.setData({ loading: true, loadFailed: false, loginRequired })
     const query = {
       category: this.data.category === '全部' ? '' : this.data.category,
       ...this.data.filters
@@ -234,6 +238,10 @@ Page({
 
   retryListings() {
     this.loadListings()
+  },
+
+  goLogin() {
+    wx.navigateTo({ url: '/pages/auth/auth' })
   },
 
   openListing(event) {

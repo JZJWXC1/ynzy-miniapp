@@ -308,13 +308,17 @@ function normalizeOwnerType(value, fallback = SECOND_LANDLORD_SOURCE) {
     SECOND_LANDLORD_SOURCE
 }
 
+function nonCompanyListingSourceType(listing = {}) {
+  const structured = listing.ownerType || listing.houseSourceType || listing.source || ''
+  return normalizeOwnerType(structured, SECOND_LANDLORD_SOURCE)
+}
+
+function listingSourceType(listing = {}) {
+  return isCompanyListing(listing) ? COMPANY_SOURCE : nonCompanyListingSourceType(listing)
+}
+
 function isOwnerListing(listing = {}) {
-  if (isCompanyListing(listing)) return false
-  return [
-    listing.ownerType,
-    listing.houseSourceType,
-    listing.source
-  ].some((item) => normalizeOwnerType(item || '', '') === OWNER_SOURCE)
+  return listingSourceType(listing) === OWNER_SOURCE
 }
 
 function requiresListingReview(listing = {}) {
@@ -633,6 +637,11 @@ function truthyFlag(value) {
   return value === true || value === 1 || ['true', '1', 'yes', '是'].indexOf(String(value || '').trim().toLowerCase()) !== -1
 }
 
+function companyListingFlag(value) {
+  if (truthyFlag(value)) return true
+  return ['y', '公司', COMPANY_SOURCE].indexOf(String(value || '').trim().toLowerCase()) !== -1
+}
+
 function isCompanyListing(listing = {}) {
   const sourceText = [
     listing.source,
@@ -641,8 +650,8 @@ function isCompanyListing(listing = {}) {
     listing.inventoryType
   ].map((item) => String(item || '')).join(' ')
   return Boolean(
-    listing.companyListing ||
-    listing.isCompanyListing ||
+    companyListingFlag(listing.companyListing) ||
+    companyListingFlag(listing.isCompanyListing) ||
     truthyFlag(listing.companyOwned) ||
     /公司房源|company/.test(sourceText)
   )
@@ -1034,7 +1043,7 @@ function featuresWithNoCommission(value, listing = {}) {
 }
 
 function featuresWithCompanyDefaults(value, listing = {}) {
-  const companyListing = isCompanyListing(listing) || listing.companyListing
+  const companyListing = isCompanyListing(listing)
   const features = featuresWithNoCommission(value, listing).filter((item) => item !== NO_FEATURE)
   if (companyListing && features.indexOf(DEPOSIT_FREE_FEATURE) === -1) {
     features.push(DEPOSIT_FREE_FEATURE)
@@ -1047,10 +1056,8 @@ function featuresWithCompanyDefaults(value, listing = {}) {
 }
 
 function listingSourceFields(listing = {}, db = {}) {
-  const companyListing = isCompanyListing(listing)
-  const ownerType = companyListing
-    ? COMPANY_SOURCE
-    : normalizeOwnerType(listing.ownerType || listing.houseSourceType || listing.source || '', SECOND_LANDLORD_SOURCE)
+  const ownerType = listingSourceType(listing)
+  const companyListing = ownerType === COMPANY_SOURCE
   const reviewStatus = ownerReviewStatus({ ...listing, ownerType })
   const sourceLabel = companyListing ? COMPANY_SOURCE : ownerType
   const noCommission = companyListing
@@ -2167,8 +2174,9 @@ function homeListings(db) {
 
 function matchesCategory(listing, category) {
   if (!category || category === '全部') return true
-  if (category === OWNER_SOURCE) return isOwnerListing(listing)
-  if (category === COMPANY_SOURCE) return isCompanyListing(listing)
+  if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(category) !== -1) {
+    return listingSourceType(listing) === category
+  }
   const display = listingDisplayFields(listing)
   const type = `${listing.type || ''}${listing.layout || ''}${listing.source || ''}${display.ownerType || ''}${display.sourceLabel || ''}`
   return type.indexOf(category) !== -1
@@ -3371,6 +3379,7 @@ function normalizeMapFilter(filter = {}) {
     layout: String(filter.layout || '').trim(),
     rentMode: String(filter.rentMode || '').trim(),
     sourceType: String(filter.sourceType || '').trim(),
+    companyOnly: truthyFlag(filter.companyOnly),
     area: String(filter.area || filter.region || '').trim(),
     listingIds: new Set(mapFilterList(filter.listingIds))
   }
@@ -3400,12 +3409,20 @@ function sourceTextForListing(listing = {}, display = {}) {
 
 function listingMatchesMapFilter(listing = {}, filter, display = {}) {
   if (filter.listingIds.size && !filter.listingIds.has(String(listing.id || ''))) return false
+  const sourceType = listingSourceType(listing)
+  if (filter.companyOnly && sourceType !== COMPANY_SOURCE) return false
   const rent = Number(listing.rent || 0)
   if (filter.rentMin !== null && rent < filter.rentMin) return false
   if (filter.rentMax !== null && rent > filter.rentMax) return false
   if (filter.layout && String(listing.layout || '').indexOf(filter.layout) === -1) return false
   if (filter.rentMode && String(listing.rentMode || listing.type || listing.layout || '').indexOf(filter.rentMode) === -1) return false
-  if (filter.sourceType && sourceTextForListing(listing, display).indexOf(filter.sourceType) === -1) return false
+  if (filter.sourceType && filter.sourceType !== '全部') {
+    if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(filter.sourceType) !== -1) {
+      if (sourceType !== filter.sourceType) return false
+    } else if (sourceTextForListing(listing, display).indexOf(filter.sourceType) === -1) {
+      return false
+    }
+  }
   if (filter.area) {
     const locationText = [
       listing.city,
@@ -3563,11 +3580,10 @@ function adminListingDetailFields(listing = {}, uploader = {}, location = listin
 function matchListingSourceFilter(listing, source) {
   if (!source) return true
   const requested = String(source || '').trim()
-  const company = isCompanyListing(listing)
-  const owner = isOwnerListing(listing)
-  if (requested === COMPANY_SOURCE || requested === '公司') return company
-  if (requested === OWNER_SOURCE || requested === '业主') return owner
-  if (requested === SECOND_LANDLORD_SOURCE || requested === '二房东') return !company && !owner
+  const actual = listingSourceType(listing)
+  if (requested === COMPANY_SOURCE || requested === '公司') return actual === COMPANY_SOURCE
+  if (requested === OWNER_SOURCE || requested === '业主') return actual === OWNER_SOURCE
+  if (requested === SECOND_LANDLORD_SOURCE || requested === '二房东') return actual === SECOND_LANDLORD_SOURCE
   return true
 }
 

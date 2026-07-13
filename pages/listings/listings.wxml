@@ -1,4 +1,4 @@
-<navigation-bar title="{{category}}房源" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<navigation-bar title="{{category === '全部' ? '全部房源' : category}}" back="{{false}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell listings-page">
     <view class="category-tabs">
@@ -60,8 +60,9 @@
     </view>
 
     <view wx:elif="{{!loading && !loadFailed}}" class="empty-card">
-      <view class="empty-title">{{emptyText}}</view>
-      <view class="empty-desc">可以调整区域、户型或租金条件后重新筛选。</view>
+      <view class="empty-title">{{loginRequired ? '登录后查看合作房源' : emptyText}}</view>
+      <view class="empty-desc">{{loginRequired ? '公司房源可直接浏览；业主和二房东房源需要登录内部中介账号后查看。' : '可以调整区域、户型或租金条件后重新筛选。'}}</view>
+      <button wx:if="{{loginRequired}}" class="brand-button" bindtap="goLogin">去登录</button>
     </view>
   </view>
 </scroll-view>

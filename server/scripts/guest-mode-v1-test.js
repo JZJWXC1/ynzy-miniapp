@@ -90,6 +90,21 @@ function seedDb() {
         source: '普通上传',
         mapLatitude: 30.36,
         mapLongitude: 120.17
+      }),
+      listing({
+        id: 'GUEST_OWNER',
+        title: '游客不可见业主房源',
+        shortTitle: '游客业主小区',
+        community: '游客业主小区',
+        ownerType: '业主房源',
+        houseSourceType: '业主房源',
+        source: '业主房源',
+        companyListing: false,
+        isCompanyListing: false,
+        requiresManualReview: true,
+        reviewStatus: '已通过',
+        mapLatitude: 30.37,
+        mapLongitude: 120.18
       })
     ],
     rentalNeeds: [
@@ -177,6 +192,10 @@ function assertOnlyCompanyRows(rows, context) {
   })
 }
 
+function listingIdsFromPins(rows) {
+  return Array.from(new Set((rows || []).flatMap((item) => item.activeListingIds || []))).sort()
+}
+
 async function run() {
   seedDb()
   const server = spawn(process.execPath, ['src/index.js'], {
@@ -207,6 +226,13 @@ async function run() {
     assert.strictEqual(guestListings.statusCode, 200, '匿名列表接口应返回 200')
     assertOnlyCompanyRows(dataOf(guestListings), '匿名列表')
 
+    const guestCompanyListings = await request('GET', '/mini/listings?category=%E5%85%AC%E5%8F%B8%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(dataOf(guestCompanyListings).map((item) => item.id), ['GUEST_COMPANY'], '游客选择公司房源应只返回公司房源')
+    const guestOwnerListings = await request('GET', '/mini/listings?category=%E4%B8%9A%E4%B8%BB%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(dataOf(guestOwnerListings), [], '游客选择业主房源必须返回空结果，不能把筛选改写成公司房源')
+    const guestSecondLandlordListings = await request('GET', '/mini/listings?category=%E4%BA%8C%E6%88%BF%E4%B8%9C%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(dataOf(guestSecondLandlordListings), [], '游客选择二房东房源必须返回空结果，不能把筛选改写成公司房源')
+
     const guestHome = await request('GET', '/mini/home/listings')
     assert.strictEqual(guestHome.statusCode, 200, '匿名首页房源接口应返回 200')
     assertOnlyCompanyRows(dataOf(guestHome), '匿名首页房源')
@@ -225,6 +251,14 @@ async function run() {
     const companyPin = pins.find((item) => (item.activeListingIds || []).indexOf('GUEST_COMPANY') !== -1)
     assert.ok(companyPin && companyPin.listings && companyPin.listings[0] && companyPin.listings[0].hasVideo === false, '匿名地图无视频公司房源不能显示视频标签')
     assert.ok(!pinText.includes('GUEST_PARTNER'), '匿名地图不能包含合作房源点位')
+    assert.ok(!pinText.includes('GUEST_OWNER'), '匿名地图不能包含业主房源点位')
+
+    const guestCompanyPins = await request('GET', '/mini/map/pins?sourceType=%E5%85%AC%E5%8F%B8%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(listingIdsFromPins(dataOf(guestCompanyPins)), ['GUEST_COMPANY'], '游客地图选择公司房源应只返回公司点位')
+    const guestOwnerPins = await request('GET', '/mini/map/pins?sourceType=%E4%B8%9A%E4%B8%BB%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(dataOf(guestOwnerPins), [], '游客地图选择业主房源必须为空，不能回退公司点位')
+    const guestSecondLandlordPins = await request('GET', '/mini/map/pins?sourceType=%E4%BA%8C%E6%88%BF%E4%B8%9C%E6%88%BF%E6%BA%90')
+    assert.deepStrictEqual(dataOf(guestSecondLandlordPins), [], '游客地图选择二房东房源必须为空，不能回退公司点位')
 
     const companyDetail = await request('GET', '/mini/listings/GUEST_COMPANY')
     assert.strictEqual(companyDetail.statusCode, 200, '匿名公司房源详情应返回 200')
@@ -260,6 +294,7 @@ async function run() {
     })
     assert.strictEqual(assistant.statusCode, 200, '匿名找房助手应返回 200')
     assert.ok(!JSON.stringify(dataOf(assistant)).includes('GUEST_PARTNER'), '匿名找房助手候选不能包含合作房源')
+    assert.ok(!JSON.stringify(dataOf(assistant)).includes('GUEST_OWNER'), '匿名找房助手候选不能包含业主房源')
     assert.strictEqual(dataOf(assistant).feedbackMessageId || '', '', '匿名找房助手不得返回服务端反馈结果 ID')
 
     const profile = await request('GET', '/mini/profile')
@@ -278,6 +313,21 @@ async function run() {
       Authorization: `Bearer ${dataOf(login).token}`
     })
     assert.strictEqual(loggedPartnerDetail.statusCode, 200, '登录后可查看合作房源脱敏详情')
+
+    const authHeaders = { Authorization: `Bearer ${dataOf(login).token}` }
+    const loggedCompanyListings = await request('GET', '/mini/listings?category=%E5%85%AC%E5%8F%B8%E6%88%BF%E6%BA%90', null, authHeaders)
+    const loggedOwnerListings = await request('GET', '/mini/listings?category=%E4%B8%9A%E4%B8%BB%E6%88%BF%E6%BA%90', null, authHeaders)
+    const loggedSecondLandlordListings = await request('GET', '/mini/listings?category=%E4%BA%8C%E6%88%BF%E4%B8%9C%E6%88%BF%E6%BA%90', null, authHeaders)
+    assert.deepStrictEqual(dataOf(loggedCompanyListings).map((item) => item.id), ['GUEST_COMPANY'], '登录列表公司分类必须互斥')
+    assert.deepStrictEqual(dataOf(loggedOwnerListings).map((item) => item.id), ['GUEST_OWNER'], '登录列表业主分类必须互斥')
+    assert.deepStrictEqual(dataOf(loggedSecondLandlordListings).map((item) => item.id), ['GUEST_PARTNER'], '登录列表二房东分类必须互斥')
+
+    const loggedCompanyPins = await request('GET', '/mini/map/pins?sourceType=%E5%85%AC%E5%8F%B8%E6%88%BF%E6%BA%90', null, authHeaders)
+    const loggedOwnerPins = await request('GET', '/mini/map/pins?sourceType=%E4%B8%9A%E4%B8%BB%E6%88%BF%E6%BA%90', null, authHeaders)
+    const loggedSecondLandlordPins = await request('GET', '/mini/map/pins?sourceType=%E4%BA%8C%E6%88%BF%E4%B8%9C%E6%88%BF%E6%BA%90', null, authHeaders)
+    assert.deepStrictEqual(listingIdsFromPins(dataOf(loggedCompanyPins)), ['GUEST_COMPANY'], '登录地图公司分类必须互斥')
+    assert.deepStrictEqual(listingIdsFromPins(dataOf(loggedOwnerPins)), ['GUEST_OWNER'], '登录地图业主分类必须互斥')
+    assert.deepStrictEqual(listingIdsFromPins(dataOf(loggedSecondLandlordPins)), ['GUEST_PARTNER'], '登录地图二房东分类必须互斥')
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })

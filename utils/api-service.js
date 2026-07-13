@@ -4,6 +4,14 @@ const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
 
 const ASSISTANT_CHAT_TIMEOUT_MS = 60000
+const LISTING_SOURCE_TYPES = ['公司房源', '业主房源', '二房东房源']
+
+function mockListingAccessFilter(filter) {
+  const authenticated = Boolean(
+    typeof apiClient.getAuthToken === 'function' && apiClient.getAuthToken()
+  )
+  return Object.assign({}, filter || {}, { companyOnly: !authenticated })
+}
 
 function isMissingEndpoint(error) {
   const message = error && error.message ? error.message : ''
@@ -197,6 +205,7 @@ function normalizeMapMockFilter(filter = {}) {
     layout: String(filter.layout || '').trim(),
     rentMode: String(filter.rentMode || '').trim(),
     sourceType: String(filter.sourceType || '').trim(),
+    companyOnly: filter.companyOnly === true || filter.companyOnly === 'true' || filter.companyOnly === 1 || filter.companyOnly === '1',
     area: String(filter.area || filter.region || '').trim(),
     listingIds: mapFilterList(filter.listingIds)
   }
@@ -258,6 +267,7 @@ function safeMapMockListing(item = {}) {
     layout: listing.layout || '',
     rentMode: listing.rentMode || listing.type || item.type || '',
     sourceType: listing.sourceType || listing.sourceLabel || listing.source || item.source || '',
+    companyListing: Boolean(listing.companyListing),
     maintenanceText: listing.maintenanceText || item.maintenanceText || '',
     lastVerifiedAt: listing.lastVerifiedAt || item.lastVerifiedAt || '',
     hasVideo: Boolean(listing.hasVideo || listing.video || listing.videoUrl || listing.videoKey || item.videoUrl || item.videoKey)
@@ -266,12 +276,19 @@ function safeMapMockListing(item = {}) {
 
 function mapMockMatchesFilter(item = {}, listing = {}, filter) {
   if (filter.listingIds.length && filter.listingIds.indexOf(String(listing.id || item.id || '')) === -1) return false
+  if (filter.companyOnly && !listing.companyListing) return false
   const rent = mapRent(listing.rent || item.rent || item.price)
   if (filter.rentMin !== null && rent < filter.rentMin) return false
   if (filter.rentMax !== null && rent > filter.rentMax) return false
   if (filter.layout && String(listing.layout || item.layout || '').indexOf(filter.layout) === -1) return false
   if (filter.rentMode && String(listing.rentMode || item.rentMode || item.type || item.layout || '').indexOf(filter.rentMode) === -1) return false
-  if (filter.sourceType && mapMockSourceText(item, listing).indexOf(filter.sourceType) === -1) return false
+  if (filter.sourceType && filter.sourceType !== '全部') {
+    if (LISTING_SOURCE_TYPES.indexOf(filter.sourceType) !== -1) {
+      if (listing.sourceType !== filter.sourceType) return false
+    } else if (mapMockSourceText(item, listing).indexOf(filter.sourceType) === -1) {
+      return false
+    }
+  }
   if (filter.area && mapMockLocationText(item).indexOf(filter.area) === -1) return false
   return true
 }
@@ -284,7 +301,7 @@ function pushUnique(list, value) {
 function mockMapCommunities(filter = {}) {
   const normalizedFilter = normalizeMapMockFilter(filter)
   const groups = {}
-  ;(mockData.getMapPins() || []).forEach((item) => {
+  ;(mockData.getMapPins(filter) || []).forEach((item) => {
     const coordinate = mapMockCoordinate(item)
     if (!coordinate) return
     if (!mapMockCoordinateInBounds(coordinate, normalizedFilter)) return
@@ -330,7 +347,7 @@ function mockMapCommunities(filter = {}) {
 function getHomeListings() {
   return apiClient.call({
     path: '/mini/home/listings',
-    mock: () => mockData.getHomeListings()
+    mock: () => mockData.getHomeListings(mockListingAccessFilter())
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
@@ -352,7 +369,7 @@ function getListings(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/listings${query}`,
-    mock: () => mockData.getListings(filter || {})
+    mock: () => mockData.getListings(mockListingAccessFilter(filter))
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
@@ -478,7 +495,7 @@ function matchListings(condition) {
     path: '/mini/listings/match',
     method: 'POST',
     data: condition,
-    mock: () => mockData.matchListings(condition)
+    mock: () => mockData.matchListings(mockListingAccessFilter(condition))
   }).then((result) => Object.assign({}, result, {
     listings: listingDisplay.normalizeListings((result && result.listings) || [])
   }))
@@ -493,7 +510,7 @@ function chatAssistant(payload) {
     timeout: ASSISTANT_CHAT_TIMEOUT_MS,
     mock: () => {
       const need = data.need || data.form || {}
-      const result = mockData.matchListings(need)
+      const result = mockData.matchListings(mockListingAccessFilter(need))
       const listings = listingDisplay.normalizeListings((result && result.listings) || [])
       const nextQuestion = listings.length ? '' : '预算、区域和户型里先补充两个条件？'
       return {
@@ -533,7 +550,7 @@ function getMapCommunities(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/map/communities${query}`,
-    mock: () => mockMapCommunities(filter || {})
+    mock: () => mockMapCommunities(mockListingAccessFilter(filter))
   })
 }
 
@@ -541,7 +558,7 @@ function getMapPins(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/map/pins${query}`,
-    mock: () => mockData.getMapPins()
+    mock: () => mockData.getMapPins(mockListingAccessFilter(filter))
   })
 }
 

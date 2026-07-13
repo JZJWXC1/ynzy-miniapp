@@ -283,8 +283,6 @@ function isGuestUser(userId) {
 function guestListingFilter(filter = {}) {
   return {
     ...filter,
-    category: COMPANY_SOURCE,
-    sourceType: COMPANY_SOURCE,
     companyOnly: true
   }
 }

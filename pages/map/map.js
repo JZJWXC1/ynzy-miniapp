@@ -159,9 +159,7 @@ function emptyFilters() {
 
 function listingCategoryFromMapFilters(filters) {
   const sourceType = filters && filters.sourceType
-  const rentMode = filters && filters.rentMode
-  if (sourceType === '业主房源') return sourceType
-  if (rentMode === '整租' || rentMode === '合租') return rentMode
+  if (SOURCE_TYPE_FILTERS.indexOf(sourceType) !== -1 && sourceType !== '全部') return sourceType
   return '全部'
 }
 

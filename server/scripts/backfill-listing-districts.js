@@ -1,24 +1,9 @@
 const dbStore = require('../src/db')
 const locationMap = require('../src/location-map')
+const domain = require('../src/domain')
 
 function text(value) {
   return String(value || '').trim()
-}
-
-function isCompanyListing(listing = {}) {
-  const sourceText = [
-    listing.source,
-    listing.sourceType,
-    listing.listingType,
-    listing.inventoryType,
-    listing.ownerType,
-    listing.houseSourceType
-  ].map(text).join(' ')
-  return Boolean(
-    listing.companyListing ||
-    listing.isCompanyListing ||
-    /公司房源|company/.test(sourceText)
-  )
 }
 
 function inferDistrict(listing = {}) {
@@ -30,7 +15,7 @@ function inferDistrict(listing = {}) {
     district: current
   })
   if (mapped && mapped !== '待分区') return mapped
-  if (isCompanyListing(listing) && block && block !== '待板块') return '拱墅区'
+  if (domain.isCompanyListing(listing) && block && block !== '待板块') return '拱墅区'
   return mapped || current || '待分区'
 }
 

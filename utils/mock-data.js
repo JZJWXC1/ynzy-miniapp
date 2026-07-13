@@ -560,6 +560,16 @@
       SECOND_LANDLORD_SOURCE;
   }
 
+  function nonCompanyListingSourceType(listing) {
+    var data = listing || {};
+    var structured = data.ownerType || data.houseSourceType || data.source || '';
+    return normalizeOwnerType(structured, SECOND_LANDLORD_SOURCE);
+  }
+
+  function listingSourceType(listing) {
+    return isCompanyListing(listing || {}) ? COMPANY_SOURCE : nonCompanyListingSourceType(listing || {});
+  }
+
   function boundedRate(value, fallback) {
     var number = Number(value);
     if (!Number.isFinite(number)) return fallback;
@@ -662,7 +672,7 @@
       return { rate: 0, uploaderRate: 0, platformRate: 0 };
     }
     var uploader = getUser(item.uploaderId) || {};
-    var ownerType = item.ownerType || item.houseSourceType || item.source || SECOND_LANDLORD_SOURCE;
+    var ownerType = listingSourceType(item);
     var uploaderRate = uploader.isAdmin ? 0 : commissionRateByOwnerType(ownerType);
     var platformRate = platformRateByOwnerType(ownerType);
     return { rate: uploaderRate + platformRate, uploaderRate: uploaderRate, platformRate: platformRate };
@@ -687,12 +697,7 @@
   }
 
   function isOwnerListing(listing) {
-    var data = listing || {};
-    var values = [data.ownerType, data.houseSourceType, data.source];
-    if (isCompanyListing(data)) return false;
-    return values.some(function (item) {
-      return ownerTypeFromStructuredValue(item) === OWNER_SOURCE;
-    });
+    return listingSourceType(listing || {}) === OWNER_SOURCE;
   }
 
   function requiresListingReview(listing) {
@@ -924,12 +929,17 @@
     return value === true || value === 1 || ['true', '1', 'yes', '是'].indexOf(String(value || '').trim().toLowerCase()) !== -1;
   }
 
+  function companyListingFlag(value) {
+    if (truthyFlag(value)) return true;
+    return ['y', '公司', COMPANY_SOURCE].indexOf(String(value || '').trim().toLowerCase()) !== -1;
+  }
+
   function isCompanyListing(listing) {
     var data = listing || {};
     var sourceText = [data.source, data.sourceType, data.listingType, data.inventoryType].map(function (item) {
       return String(item || '');
     }).join(' ');
-    return Boolean(data.companyListing || data.isCompanyListing || truthyFlag(data.companyOwned) || /公司房源|company/.test(sourceText));
+    return Boolean(companyListingFlag(data.companyListing) || companyListingFlag(data.isCompanyListing) || truthyFlag(data.companyOwned) || /公司房源|company/.test(sourceText));
   }
 
   function isNoCommissionListing(listing) {
@@ -949,7 +959,7 @@
 
   function featuresWithCompanyDefaults(value, listing) {
     var data = listing || {};
-    var companyListing = isCompanyListing(data) || data.companyListing;
+    var companyListing = isCompanyListing(data);
     var features = featuresWithNoCommission(value, data).filter(function (item) {
       return item !== NO_FEATURE;
     });
@@ -961,11 +971,9 @@
 
   function listingSourceFields(listing) {
     var data = listing || {};
-    var companyListing = isCompanyListing(data);
+    var ownerType = listingSourceType(data);
+    var companyListing = ownerType === COMPANY_SOURCE;
     var noCommission = companyListing;
-    var ownerType = companyListing
-      ? COMPANY_SOURCE
-      : normalizeOwnerType(data.ownerType || data.houseSourceType || data.source || '', SECOND_LANDLORD_SOURCE);
     var reviewStatus = ownerReviewStatus(Object.assign({}, data, { ownerType: ownerType }));
     var sourceLabel = companyListing ? COMPANY_SOURCE : ownerType;
     return {
@@ -1140,8 +1148,9 @@
 
   function matchesCategory(listing, category) {
     if (!category || category === '全部') return true;
-    if (category === OWNER_SOURCE) return isOwnerListing(listing);
-    if (category === COMPANY_SOURCE) return isCompanyListing(listing);
+    if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(category) !== -1) {
+      return listingSourceType(listing) === category;
+    }
     var display = listingDisplayFields(listing);
     var text = String((listing.type || '') + (listing.layout || '') + (listing.source || '') + (display.ownerType || '') + (display.sourceLabel || ''));
     return text.indexOf(category) !== -1;
@@ -1151,6 +1160,7 @@
     var query = filter || {};
     return publicListings().filter(function (listing) {
       var areaText = String((listing.city || '') + (listing.district || '') + (listing.area || '') + (listing.block || '') + (listing.community || '') + (listing.building || '') + (listing.unit || '') + (listing.roomNumber || '') + (listing.address || ''));
+      if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
       if (query.area && areaText.indexOf(query.area) === -1) return false;
       if (query.block && areaText.indexOf(query.block) === -1) return false;
@@ -1373,7 +1383,9 @@
       return item !== NO_FEATURE;
     });
     var hasCondition = budget || area || layout || requestedFeatures.length;
-    var availableListings = publicListings();
+    var availableListings = publicListings().filter(function (listing) {
+      return !truthyFlag(condition.companyOnly) || listingSourceType(listing) === COMPANY_SOURCE;
+    });
     var scored = availableListings.map(function (listing) {
       var score = 40;
       var reasons = [];
@@ -2182,8 +2194,13 @@
     return clearListingRecommendationProfile(listing, reason || recommendationUnavailableReason(listing));
   }
 
-  function getMapPins() {
-    return publicListings().map(function (listing) {
+  function getMapPins(filter) {
+    var query = filter || {};
+    return publicListings().filter(function (listing) {
+      if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
+      if (query.sourceType && query.sourceType !== '全部' && !matchesCategory(listing, query.sourceType)) return false;
+      return true;
+    }).map(function (listing) {
       var coordinate = mapCoordinateFromListing(listing);
       return Object.assign({
         id: listing.id,
@@ -3362,7 +3379,7 @@
     loginByPhone: loginByPhone,
     registerUser: registerUser,
     logout: logout,
-    getHomeListings: function () { return publicListings().slice(0, 3).map(formatHomeListing); },
+    getHomeListings: function (filter) { return getListings(filter || {}).slice(0, 3); },
     getListings: getListings,
     getFavoriteIds: getFavoriteIds,
     getFavorites: getFavorites,

@@ -271,6 +271,15 @@ function run() {
   assert.strictEqual(backfillDb.listings[0].area, '余杭区', '回填应同步更新 area')
   assert.strictEqual(backfillDb.listings[0].block, '城北万象城', '回填应把小区覆盖房源改为城北万象城板块')
   assert.deepStrictEqual(backfillResult.distribution, { '余杭区': 1, '拱墅区': 1, '上城区': 1 }, '回填分布应覆盖三区')
+  assert.strictEqual(backfillDistricts.inferDistrict({
+    community: '未收录测试小区',
+    block: '未收录测试板块',
+    district: '',
+    area: '',
+    source: '业主房源',
+    companyListing: 'false',
+    isCompanyListing: '0'
+  }), '待分区', '区域回填不得把公司字符串假值当真并套用公司区域兜底')
 
   const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     communityName: '半山家苑',

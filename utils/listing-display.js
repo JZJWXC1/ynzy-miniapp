@@ -60,7 +60,17 @@ function listingText(listing) {
     data.commission,
     data.commissionText,
     data.commissionRate,
-    data.companyListing ? COMPANY_SOURCE : ''
+    truthyFlag(data.companyListing) ? COMPANY_SOURCE : ''
+  ].map((item) => String(item || '')).join(' ')
+}
+
+function listingSourceText(listing) {
+  const data = listing || {}
+  return [
+    data.source,
+    data.sourceType,
+    data.listingType,
+    data.inventoryType
   ].map((item) => String(item || '')).join(' ')
 }
 
@@ -68,6 +78,12 @@ function truthyFlag(value) {
   if (value === true || value === 1) return true
   if (value === false || value === 0 || value === undefined || value === null) return false
   return /^(true|1|yes|y|是|公司|公司房源)$/i.test(String(value).trim())
+}
+
+function standardTruthyFlag(value) {
+  if (value === true || value === 1) return true
+  if (value === false || value === 0 || value === undefined || value === null) return false
+  return /^(true|1|yes|是)$/i.test(String(value).trim())
 }
 
 function numberFrom(value) {
@@ -80,13 +96,13 @@ function numberFrom(value) {
 
 function isCompanyListing(listing, options) {
   const data = listing || {}
-  const text = listingText(data)
+  const sourceText = listingSourceText(data)
   return Boolean(
     options && options.forceCompany ||
     truthyFlag(data.companyListing) ||
     truthyFlag(data.isCompanyListing) ||
-    truthyFlag(data.companyOwned) ||
-    /公司房源|公司自营|company/i.test(text)
+    standardTruthyFlag(data.companyOwned) ||
+    /公司房源|company/.test(sourceText)
   )
 }
 
