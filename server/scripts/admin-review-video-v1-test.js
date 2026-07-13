@@ -127,11 +127,13 @@ function waitTurn() {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
-async function waitUntil(predicate, message, maxTurns = 50) {
-  for (let index = 0; index < maxTurns; index += 1) {
+async function waitUntil(predicate, message, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
     if (predicate()) return
-    await waitTurn()
+    await new Promise((resolve) => setTimeout(resolve, 1))
   }
+  if (predicate()) return
   throw new Error(message)
 }
 
