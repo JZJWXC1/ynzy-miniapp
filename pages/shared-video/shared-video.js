@@ -1,4 +1,9 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 function decodeOption(value) {
   if (!value) return ''
@@ -21,6 +26,8 @@ Page({
 
   onLoad(options) {
     const id = options.id || ''
+    this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
     this.setData({
       broker: decodeOption(options.broker)
     })
@@ -33,8 +40,32 @@ Page({
     this.loadListing(id)
   },
 
+  onShow() {
+    const nextSessionKey = currentAuthSessionKey()
+    if (this.authSessionSnapshot === undefined) {
+      this.authSessionSnapshot = nextSessionKey
+      return
+    }
+    if (nextSessionKey === this.authSessionSnapshot) return
+    this.authSessionSnapshot = nextSessionKey
+    if (this.listingId) this.loadListing(this.listingId)
+  },
+
+  onUnload() {
+    this._pageActive = false
+    this._listingRequestSeq = Number(this._listingRequestSeq || 0) + 1
+  },
+
   loadListing(id) {
     this.listingId = id
+    const requestSeq = Number(this._listingRequestSeq || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    this._listingRequestSeq = requestSeq
+    const requestIsCurrent = () => (
+      this._pageActive !== false &&
+      this._listingRequestSeq === requestSeq &&
+      currentAuthSessionKey() === requestSessionKey
+    )
     this.setData({
       listing: {},
       loading: true,
@@ -42,14 +73,24 @@ Page({
       accessRequired: false,
       unavailable: false
     })
-    apiService.getListingDetail(id).then((listing) => {
+    return apiService.getListingDetail(id).then((listing) => {
+      if (!requestIsCurrent()) return
       if (listing && listing.unavailable) {
         this.setData({ listing: {}, loading: false, unavailable: true })
         return
       }
       this.setData({ listing, loading: false })
     }).catch((error) => {
+      if (this._pageActive === false || this._listingRequestSeq !== requestSeq) return
       const statusCode = Number(error && error.statusCode)
+      const currentSessionKey = currentAuthSessionKey()
+      if (currentSessionKey !== requestSessionKey) {
+        this.authSessionSnapshot = currentSessionKey
+        if (statusCode === 401 || statusCode === 403) {
+          this.setData({ listing: {}, loading: false, accessRequired: true })
+        }
+        return
+      }
       if (statusCode === 401 || statusCode === 403) {
         this.setData({ loading: false, accessRequired: true })
         return

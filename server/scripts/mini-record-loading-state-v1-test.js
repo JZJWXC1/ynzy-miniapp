@@ -132,6 +132,25 @@ async function run() {
     await testScenario(scenario)
   }
 
+  const footprintScenario = scenarios.find((item) => item.name === '足迹')
+  let footprintLoads = 0
+  let footprintTabBarReads = 0
+  const footprintDefinition = loadDefinition(footprintScenario.pagePath, {
+    getFootprintRecords() {
+      footprintLoads += 1
+      return Promise.resolve([])
+    }
+  })
+  const footprintPage = makePage(footprintDefinition)
+  footprintPage.getTabBar = () => {
+    footprintTabBarReads += 1
+    return { setData() {} }
+  }
+  footprintPage.onShow()
+  await flushPromises()
+  assert.strictEqual(footprintLoads, 1, '足迹页每次 onShow 只能发起一次刷新')
+  assert.strictEqual(footprintTabBarReads, 0, '足迹页不是 tabBar 页面，不得残留 getTabBar 操作')
+
   let resolveStale = null
   let raceCount = 0
   const commissionScenario = scenarios.find((item) => item.name === '分佣')

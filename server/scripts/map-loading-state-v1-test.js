@@ -8,7 +8,10 @@ const mapPagePath = require.resolve(path.join(repoRoot, 'pages', 'map', 'map.js'
 const mapWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'map', 'map.wxml'), 'utf8')
 
 let storageShouldThrow = false
+let authToken = ''
 let toasts = []
+
+global.getApp = () => ({ globalData: { authToken } })
 
 global.wx = {
   getStorageSync() {
@@ -18,6 +21,7 @@ global.wx = {
   removeStorageSync() {},
   showToast(options) { toasts.push(options) },
   createMapContext() { return {} },
+  navigateTo() {},
   switchTab() {}
 }
 
@@ -151,9 +155,27 @@ async function run() {
   storageShouldThrow = false
   await flushPromises()
 
+  for (const sourceType of ['业主房源', '二房东房源']) {
+    authToken = ''
+    const guestDefinition = loadDefinition({
+      getMapCommunities() { return Promise.resolve([]) }
+    })
+    const guestPage = makePage(guestDefinition)
+    guestPage.setData({ 'filters.sourceType': sourceType })
+    guestPage.loadCommunities({ recenter: false })
+    await flushPromises()
+    assert.strictEqual(guestPage.data.loginRequired, true, `游客筛选${sourceType}且结果为空时必须明确引导登录`)
+
+    authToken = 'TOKEN-MAP-LOGIN'
+    guestPage.onShow()
+    await flushPromises()
+    assert.strictEqual(guestPage.data.loginRequired, false, `登录返回地图后必须清除${sourceType}游客提示`)
+  }
+
   assert.ok(/wx:if="\{\{loadFailed\}\}"/.test(mapWxml), '地图模板必须持续显示加载失败状态')
   assert.ok(/bindtap="retryMap"/.test(mapWxml), '地图模板必须绑定重试入口')
   assert.ok(/!loading && !loadFailed && !communities\.length/.test(mapWxml), '地图故障时不得显示零房源空态')
+  assert.ok(/loginRequired/.test(mapWxml) && /bindtap="goLogin"/.test(mapWxml), '地图合作房源空态必须提供登录按钮')
 
   console.log('map-loading-state-v1-test passed')
 }

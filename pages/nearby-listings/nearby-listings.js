@@ -18,6 +18,18 @@ function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
 }
 
+function navigateWithStackFallback(url) {
+  wx.navigateTo({
+    url,
+    fail: () => {
+      wx.redirectTo({
+        url,
+        fail: () => wx.showToast({ title: '页面打开失败，请重试', icon: 'none' })
+      })
+    }
+  })
+}
+
 Page({
   data: {
     listings: [],
@@ -98,9 +110,7 @@ Page({
   openListing(event) {
     const id = String((event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.id) || '')
     if (!id || !(this.data.listings || []).some((item) => String(item.id) === id)) return
-    wx.navigateTo({
-      url: `/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby-all`
-    })
+    navigateWithStackFallback(`/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby-all`)
   },
 
   goLogin() {

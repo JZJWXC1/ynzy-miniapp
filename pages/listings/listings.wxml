@@ -41,8 +41,8 @@
             <text wx:if="{{item.rentMode === '整租'}}" class="rent-mode-badge">整</text>
             <text class="listing-title">{{item.title}}</text>
           </view>
-          <view class="listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
-          <view class="listing-sub">{{item.layout}} · {{item.sourceLabel || item.source}} · {{item.status}}</view>
+          <view wx:if="{{item.listingMetaText}}" class="listing-meta">{{item.listingMetaText}}</view>
+          <view wx:if="{{item.listingSubText}}" class="listing-sub">{{item.listingSubText}}</view>
           <view wx:if="{{item.features}}" class="listing-feature-row">
             <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
             <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>

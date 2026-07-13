@@ -139,11 +139,14 @@ async function runApiContract() {
 
 async function runDetailBehavior() {
   let token = 'TOKEN_A'
+  const navigationAttempts = []
+  const redirectAttempts = []
+  const navigationToasts = []
   global.getApp = () => ({ globalData: { authToken: token } })
   global.wx = {
     hideShareMenu() {},
     getStorageSync() { return token },
-    showToast() {},
+    showToast(options) { navigationToasts.push(options) },
     showModal() {},
     navigateTo() {},
     navigateBack() {},
@@ -164,6 +167,19 @@ async function runDetailBehavior() {
   assert.strictEqual(page.data.nearbyListings.length, 6, '详情 UI 必须二次限制最多 6 条')
   assert.strictEqual(page.data.nearbyHasMore, true)
   assert.strictEqual(page.data.nearbyTotal, 7)
+
+  global.wx.navigateTo = (options) => {
+    navigationAttempts.push(options.url)
+    options.fail({ errMsg: 'navigateTo:fail page limit exceeded' })
+  }
+  global.wx.redirectTo = (options) => {
+    redirectAttempts.push(options.url)
+    options.fail({ errMsg: 'redirectTo:fail synthetic' })
+  }
+  page.openNearbyListing({ currentTarget: { dataset: { id: 'DETAIL-1' } } })
+  page.goNearbyListings()
+  assert.deepStrictEqual(redirectAttempts, navigationAttempts, '详情进入附近房源时 navigateTo 栈满必须用相同 URL redirectTo 回退')
+  assert.strictEqual(navigationToasts.length, 2, '详情导航两种路径双重失败时都必须明确提示')
 
   const emptyDefinition = loadPage(detailPagePath, detailApi(() => Promise.resolve({
     id: 'NO-COORDINATE',
@@ -258,6 +274,16 @@ async function runNearbyPageBehavior() {
   assert.deepStrictEqual(navigations, [], '不得信任数据集导航到服务端结果外的房源')
   page.openListing({ currentTarget: { dataset: { id: 'B-1' } } })
   assert.ok(navigations[0].includes('B-1'))
+
+  const redirectUrls = []
+  global.wx.navigateTo = (options) => options.fail({ errMsg: 'navigateTo:fail page limit exceeded' })
+  global.wx.redirectTo = (options) => {
+    redirectUrls.push(options.url)
+    options.fail({ errMsg: 'redirectTo:fail synthetic' })
+  }
+  page.openListing({ currentTarget: { dataset: { id: 'B-1' } } })
+  assert.ok(redirectUrls[0].includes('B-1'), '全部附近页返回详情时栈满必须保留原房源 URL 并 redirectTo')
+  assert.ok(toasts.some((item) => /打开失败/.test(item.title || '')), '全部附近页导航双重失败必须明确 toast')
 
   page.onShow()
   const lateRequest = requests[2].request

@@ -64,6 +64,13 @@ function listingText(listing) {
   ].map((item) => String(item || '')).join(' ')
 }
 
+function compactJoin(values) {
+  return (values || [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(' · ')
+}
+
 function listingSourceText(listing) {
   const data = listing || {}
   return [
@@ -208,6 +215,7 @@ function normalizeListing(listing, options) {
   const relevanceSource = data.relevancePercent || data.matchScore || data.relevanceScore || (/匹配|相关性/.test(tagText) ? tagText : '')
   const relevance = formatRelevance(relevanceSource)
   const commissionText = companyListing ? COMPANY_COMMISSION_TEXT : (data.commissionText || V1_COMMISSION_TEXT)
+  const sourceLabel = companyListing ? COMPANY_SOURCE : (data.sourceLabel || data.source || '')
   const normalized = {
     ...data,
     features,
@@ -215,7 +223,9 @@ function normalizeListing(listing, options) {
     companyListing,
     isCompanyListing: companyListing,
     noCommission,
-    sourceLabel: companyListing ? COMPANY_SOURCE : (data.sourceLabel || data.source || ''),
+    sourceLabel,
+    listingMetaText: compactJoin([data.locationSummary || data.community, data.roomAddress || data.roomNumber]),
+    listingSubText: compactJoin([data.layout, sourceLabel, data.status]),
     commissionText,
     commission: commissionText,
     displayRelevance: relevance,

@@ -7,6 +7,7 @@ const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service
 const indexPagePath = require.resolve(path.join(repoRoot, 'pages', 'index', 'index.js'))
 const listingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'listings', 'listings.js'))
 const myListingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'my-listings', 'my-listings.js'))
+const listingDisplay = require(path.join(repoRoot, 'utils', 'listing-display.js'))
 
 const indexWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'index', 'index.wxml'), 'utf8')
 const listingsWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listings', 'listings.wxml'), 'utf8')
@@ -186,6 +187,19 @@ async function run() {
   assert.ok(/!listings\.length && !listingsLoading && !listingsLoadFailed/.test(indexWxml), '首页只有成功空结果才可显示暂无')
   assert.ok(/bindtap="retryListings"/.test(listingsWxml), '全部房源模板必须绑定重试入口')
   assert.ok(/!loading && !loadFailed/.test(listingsWxml), '全部房源加载或故障时不得显示暂无')
+  const sparseListing = listingDisplay.normalizeListing({
+    id: 'LIST-SPARSE',
+    locationSummary: '测试小区',
+    roomAddress: '',
+    layout: '',
+    source: '公司房源',
+    status: ''
+  })
+  assert.strictEqual(sparseListing.listingMetaText, '测试小区', '卡片位置行缺字段时不得留下悬空分隔点')
+  assert.strictEqual(sparseListing.listingSubText, '公司房源', '卡片来源行缺字段时不得留下首尾分隔点')
+  assert.ok(/\{\{item\.listingMetaText\}\}/.test(listingsWxml), '全部房源卡必须使用紧凑位置展示字段')
+  assert.ok(/\{\{item\.listingSubText\}\}/.test(listingsWxml), '全部房源卡必须使用紧凑来源展示字段')
+  assert.ok(!/\}\}\s*·\s*\{\{/.test(listingsWxml), '全部房源卡模板不得再硬编码可能悬空的分隔点')
   assert.ok(/bindtap="retryListings"/.test(myListingsWxml), '我的房源模板必须绑定重试入口')
   assert.ok(/!companyLoading && !ownerLoading && !loadFailed/.test(myListingsWxml), '我的房源加载或故障时不得显示暂无')
 

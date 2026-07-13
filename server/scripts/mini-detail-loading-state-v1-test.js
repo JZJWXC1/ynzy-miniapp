@@ -11,11 +11,12 @@ const detailWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listing-detail'
 const sharedVideoWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'shared-video', 'shared-video.wxml'), 'utf8')
 
 let authToken = ''
+let authSessionKey = ''
 let toasts = []
 let modals = []
 
 global.getApp = () => ({
-  globalData: { authToken }
+  globalData: { authToken, authSessionKey }
 })
 
 global.wx = {
@@ -83,6 +84,16 @@ function statusError(statusCode, message) {
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 async function settlePage() {
@@ -283,6 +294,32 @@ async function run() {
   await settlePage()
   assert.strictEqual(sharedMissingPage.data.unavailable, true, '租客视频 404 必须进入真实失效态')
   assert.strictEqual(sharedMissingPage.data.loadFailed, false, '租客视频 404 不应显示网络重试态')
+
+  authToken = ''
+  authSessionKey = 'guest-shared-video'
+  const sharedRequests = []
+  const sharedResumeDefinition = loadPage(sharedVideoPagePath, {
+    getListingDetail() {
+      const request = deferred()
+      sharedRequests.push(request)
+      return request.promise
+    }
+  })
+  const sharedResumePage = makePage(sharedResumeDefinition)
+  sharedResumePage.onLoad({ id: 'L-SHARED-RESUME' })
+  sharedResumePage.onShow()
+  assert.strictEqual(sharedRequests.length, 1, '租客视频首次 onShow 不得重复首屏请求')
+
+  authToken = 'TOKEN-SHARED-RESUME'
+  authSessionKey = 'user-shared-video'
+  sharedResumePage.onShow()
+  assert.strictEqual(sharedRequests.length, 2, '游客登录返回租客视频页后必须按新会话自动重载')
+  sharedRequests[1].resolve({ id: 'L-SHARED-RESUME', title: '登录后可见视频' })
+  await settlePage()
+  sharedRequests[0].resolve({ id: 'L-SHARED-RESUME', title: '游客旧响应' })
+  await settlePage()
+  assert.strictEqual(sharedResumePage.data.listing.title, '登录后可见视频', '游客旧请求迟到不得覆盖登录后的可信视频详情')
+  authSessionKey = ''
 
   assert.ok(/bindtap="retryListing"/.test(detailWxml), '详情故障卡必须绑定重试入口')
   assert.ok(/bindtap="retryOwnSensitive"/.test(detailWxml), '上传人敏感信息故障必须绑定重试入口')

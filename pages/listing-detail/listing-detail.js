@@ -36,6 +36,18 @@ function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
 }
 
+function navigateWithStackFallback(url) {
+  wx.navigateTo({
+    url,
+    fail: () => {
+      wx.redirectTo({
+        url,
+        fail: () => wx.showToast({ title: '页面打开失败，请重试', icon: 'none' })
+      })
+    }
+  })
+}
+
 function profileSessionMatches(value, sessionKey) {
   const stored = String(value || '')
   return stored === String(sessionKey || '') || stored === currentAuthToken()
@@ -358,17 +370,13 @@ Page({
   openNearbyListing(event) {
     const id = String((event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.id) || '')
     if (!id || !(this.data.nearbyListings || []).some((item) => String(item.id) === id)) return
-    wx.navigateTo({
-      url: `/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby`
-    })
+    navigateWithStackFallback(`/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby`)
   },
 
   goNearbyListings() {
     const anchorId = String((this.data.listing && this.data.listing.id) || '')
     if (!anchorId || !this.data.nearbyHasMore) return
-    wx.navigateTo({
-      url: `/pages/nearby-listings/nearby-listings?id=${encodeURIComponent(anchorId)}`
-    })
+    navigateWithStackFallback(`/pages/nearby-listings/nearby-listings?id=${encodeURIComponent(anchorId)}`)
   },
 
   onNearbyCoverError(event) {

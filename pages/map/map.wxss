@@ -214,6 +214,19 @@ page {
   line-height: 1.45;
   text-align: center;
   transform: translate(-50%, -50%);
+  z-index: 40;
+}
+
+.map-login-button {
+  width: 240rpx;
+  min-height: 76rpx;
+  margin: 18rpx auto 0;
+  color: #ffffff;
+  background: #2f6f60;
+  border-radius: 38rpx;
+  font-size: 26rpx;
+  font-weight: 800;
+  line-height: 76rpx;
 }
 
 .community-sheet {
