@@ -121,10 +121,11 @@
           <input value="{{form.viewingPassword}}" data-field="viewingPassword" bindinput="updateField" placeholder="如 1234#" />
         </view>
         <view class="field">
-          <view class="label">房东手机号（必填）</view>
+          <view class="label">房东手机号（{{form.companyListing ? '选填' : '必填'}}）</view>
           <input value="{{form.contact}}" data-field="contact" type="number" maxlength="11" bindinput="updateField" placeholder="11 位房东手机号" />
         </view>
-        <view class="hint">所有房源和看房方式都必须填写房东手机号；选钥匙还需填写钥匙在哪，选密码还需填写看房密码。</view>
+        <view class="hint" wx:if="{{form.companyListing}}">公司房源可不填房东手机号，详情继续展示服务器配置的三个统一联系电话；若填写仍须为合法 11 位手机号。</view>
+        <view class="hint" wx:else>业主、二房东房源在所有看房方式下都必须填写房东手机号；选钥匙还需填写钥匙在哪，选密码还需填写看房密码。</view>
       </view>
 
       <view class="field">

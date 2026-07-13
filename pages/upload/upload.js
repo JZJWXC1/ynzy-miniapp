@@ -79,7 +79,7 @@ const defaultForm = {
   features: [],
   companyListing: false,
   ownerType: '二房东房源',
-  // 看房方式：钥匙/密码/联系房东；房东手机号对所有方式均必填
+  // 看房方式：钥匙/密码/联系房东；合作房源所有方式均需房东手机号，公司房源可留空
   viewingMethod: '联系房东',
   viewingKeyLocation: '',
   viewingPassword: ''
@@ -777,10 +777,10 @@ Page({
     if (isBlank(building)) missingFields.push('几栋')
     if (isBlank(roomNumber)) missingFields.push('房间号')
     if (isBlank(rentMode)) missingFields.push('租法')
-    // 房东手机号对所有方式必填；钥匙/密码还需填写各自操作信息
+    // 合作房源所有方式都必须填写房东手机号；公司详情只使用服务器统一号码，允许留空
     if (viewingMethod === '钥匙' && isBlank(form.viewingKeyLocation)) missingFields.push('钥匙在哪')
     if (viewingMethod === '密码' && isBlank(form.viewingPassword)) missingFields.push('看房密码')
-    if (isBlank(contact)) missingFields.push('房东手机号')
+    if (!form.companyListing && isBlank(contact)) missingFields.push('房东手机号')
     if (isBlank(form.landlordCommissionPercent)) missingFields.push('房东佣金占月租比例')
     if (isBlank(rent)) missingFields.push('租金')
     if (videoRequired && !hasVideo) missingFields.push(this.data.mode === 'edit' ? '房源视频（原房源无视频时需补传）' : '房源视频')
@@ -791,7 +791,7 @@ Page({
       }
     }
 
-    if (!/^1[3-9]\d{9}$/.test(String(contact || '').trim())) {
+    if (!isBlank(contact) && !/^1[3-9]\d{9}$/.test(String(contact).trim())) {
       return {
         ok: false,
         message: '请输入 11 位房东手机号'

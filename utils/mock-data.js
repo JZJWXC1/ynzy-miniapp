@@ -3123,11 +3123,14 @@
     if (viewingMethod && VIEWING_METHOD_OPTIONS.indexOf(viewingMethod) === -1) {
       throw new Error('看房方式只能是钥匙、密码或联系房东');
     }
-    if (!address || !form.rent || !layout || !hasListingVideo(form) || !rawCommunity || !building || !roomNumber) {
-      throw new Error('城市、区域、小区、几栋、房间号、租金、户型和视频必填');
+    if (!address || !form.rent || !layout || (!sourceState.companyListing && !hasListingVideo(form)) || !rawCommunity || !building || !roomNumber) {
+      throw new Error('城市、区域、小区、几栋、房间号、租金和户型必填；业主、二房东房源还必须上传视频');
     }
-    // 与生产后端同口径：所有来源、所有看房方式均要求合法房东手机号
-    if (!/^1[3-9]\d{9}$/.test(contact)) {
+    // 与生产后端同口径：合作房源所有方式必填；公司房源可空，非空时仍校验格式
+    if (!sourceState.companyListing && !contact) {
+      throw new Error('请填写房东手机号');
+    }
+    if (contact && !/^1[3-9]\d{9}$/.test(contact)) {
       throw new Error('请输入 11 位房东手机号');
     }
     if (viewingMethod === '钥匙' && !viewingKeyLocation) {
@@ -3284,11 +3287,20 @@
     var sourceState = prepareSourceFields(form, listing, featureState);
     var communityReview = normalizeCommunityReviewState(form, listing);
     var mapCoordinate = listingMapCoordinateFields(community, form, listing);
-    var nextContact = firstText(form.contact, form.landlordPhone, listing.landlordPhone);
+    var contactInput = firstOwnValue(form, ['contact', 'landlordPhone']);
+    var nextContact = sourceState.companyListing && contactInput !== undefined
+      ? String(contactInput === null || contactInput === undefined ? '' : contactInput).trim()
+      : firstText(form.contact, form.landlordPhone, listing.landlordPhone);
+    var nextVideoUrl = firstText(form.videoUrl, listing.videoUrl);
+    var nextVideoKey = firstText(form.videoKey, listing.videoKey);
     var remarkInput = firstOwnValue(form, ['remark', 'note', 'memo']);
     var nextRemark = remarkInput !== undefined ? normalizeListingRemark(remarkInput) : normalizeListingRemark(listing.remark);
     var nextLandlordCommissionPercent = landlordCommissionPercentFrom(form, listing);
-    if (!/^1[3-9]\d{9}$/.test(nextContact)) throw new Error('请输入 11 位房东手机号');
+    if (!sourceState.companyListing && !nextContact) throw new Error('请填写房东手机号');
+    if (nextContact && !/^1[3-9]\d{9}$/.test(nextContact)) throw new Error('请输入 11 位房东手机号');
+    if (!sourceState.companyListing && !hasListingVideo({ videoUrl: nextVideoUrl, videoKey: nextVideoKey })) {
+      throw new Error('二房东房源和业主房源必须上传真实视频，公司房源可不上传视频');
+    }
     if (remarkInput !== undefined && Array.from(nextRemark).length > 200) throw new Error('房源备注最多 200 字');
     if (remarkInput !== undefined && listingRemarkContainsContact(nextRemark)) throw new Error('房源备注不能包含手机号、微信号等联系方式');
     validateLandlordCommissionPercent(nextLandlordCommissionPercent);
@@ -3334,8 +3346,8 @@
       listing.showingPassword = listing.viewingPassword;
     }
     listing.commissionRate = sourceState.commissionRate;
-    listing.videoUrl = firstText(form.videoUrl, listing.videoUrl);
-    listing.videoKey = firstText(form.videoKey, listing.videoKey);
+    listing.videoUrl = nextVideoUrl;
+    listing.videoKey = nextVideoKey;
     listing.ownerType = sourceState.ownerType;
     listing.houseSourceType = sourceState.ownerType;
     listing.type = rentMode;

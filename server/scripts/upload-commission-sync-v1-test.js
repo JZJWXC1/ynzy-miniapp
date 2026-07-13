@@ -92,6 +92,24 @@ async function run() {
   assert.strictEqual(successPage.data.commissionConfigFailed, false, '分佣配置成功必须清除失败态')
   assert.ok(successPage.data.commissionRuleText.includes('37%'), '上传页必须原样展示服务端当前二房东比例')
 
+  const companyWithoutContactPage = makePage(successDefinition)
+  companyWithoutContactPage.setData({
+    isAdmin: true,
+    form: {
+      ...companyWithoutContactPage.data.form,
+      community: '测试公司小区',
+      building: '1',
+      roomNumber: '101',
+      rent: '3000',
+      features: ['电梯'],
+      companyListing: true,
+      contact: ''
+    }
+  })
+  assert.strictEqual(companyWithoutContactPage.validateForm().ok, true, '管理员公司房源应允许不填房东手机号且不上传视频')
+  companyWithoutContactPage.setData({ 'form.contact': 'TEST-PHONE' })
+  assert.match(companyWithoutContactPage.validateForm().message, /11 位房东手机号/, '公司房源非空手机号仍必须校验格式')
+
   let requestShouldFail = true
   const retryApi = {
     getCommissionConfig() {

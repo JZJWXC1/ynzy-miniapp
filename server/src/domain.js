@@ -5314,11 +5314,9 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const address = firstText(form.address, hasLocationInput ? builtAddress : '', current.address, builtAddress)
   const layout = firstText(form.layout, hasLayoutInput ? builtLayout : '', current.layout, builtLayout)
   const contactInput = firstOwnValue(form, ['contact', 'landlordPhone'])
-  // 普通编辑显式空值仍沿用旧号码，避免误清敏感联系方式；只有飞书内部缺号同步需要把
-  // 已有非法占位值真正清空，否则 firstText 会回退到旧非法值并再次触发 400、冻结库存更新。
-  const contact = options.allowMissingLandlordPhone && contactInput !== undefined
-    ? String(contactInput === null || contactInput === undefined ? '' : contactInput).trim()
-    : firstText(form.contact, form.landlordPhone, current.landlordPhone)
+  // 合作房源普通编辑显式空值仍沿用旧号码，避免旧客户端误清敏感联系方式；公司房源及
+  // 飞书内部同步允许显式清空。最终来源在后文规范化后再决定是否接受空值。
+  let contact = firstText(form.contact, form.landlordPhone, current.landlordPhone)
   const remarkInput = firstOwnValue(form, ['remark', 'note', 'memo'])
   const remark = remarkInput !== undefined
     ? normalizeListingRemark(remarkInput)
@@ -5378,6 +5376,9 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
   const companyListing = companyFlagInput !== undefined
     ? truthyFlag(companyFlagInput)
     : (sourceInput ? /公司房源|company/.test(sourceInput) : currentCompany)
+  if (contactInput !== undefined && (companyListing || options.allowMissingLandlordPhone)) {
+    contact = String(contactInput === null || contactInput === undefined ? '' : contactInput).trim()
+  }
   const ownerType = companyListing ? COMPANY_SOURCE : normalizedOwnerType
   const featureFields = ['features', 'featureTags', 'tags']
   const formFeatureInput = firstOwnValue(form, featureFields)
@@ -5626,13 +5627,9 @@ function validateListingFields(fields, user = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
-  // 房东手机号对所有客户端上传/编辑、后台人工上传/编辑及所有看房方式均为必填。
-  // 唯一例外是服务端内部飞书公司库存同步：历史表可能暂缺电话，但公开租金/房态不能因此冻结。
-  // 该例外必须同时具备 admin + 显式内部开关 + 公司房源三项，路由客户端无法提交 options。
-  const allowMissingCompanyLandlordPhone = Boolean(
-    options.admin && options.allowMissingLandlordPhone && fields.companyListing
-  )
-  if (!fields.contact && !allowMissingCompanyLandlordPhone) {
+  // 合作房源在所有看房方式下都必须提供房东手机号；公司房源详情只使用服务器统一联系电话，
+  // 因而允许不保存房东手机号。任何来源只要显式填写了号码，仍必须通过统一格式校验。
+  if (!fields.contact && !fields.companyListing) {
     const error = new Error('请填写房东手机号')
     error.statusCode = 400
     throw error

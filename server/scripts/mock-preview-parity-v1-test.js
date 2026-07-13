@@ -265,6 +265,53 @@ async function run() {
     assert.deepStrictEqual(mockData.getEditableListing(pending.id), beforeAdminVerify, 'Mock 后台核验被拒后必须零变化')
   })
 
+  await check('Mock 公司房源与生产一致允许缺房东手机号和视频', () => {
+    mockData.loginByPhone('13800010004')
+    const optionalContactCompany = addListing('9816', '公司房源', {
+      companyListing: true,
+      isCompanyListing: true,
+      contact: '',
+      landlordPhone: '',
+      videoKey: '',
+      videoUrl: ''
+    })
+    assert.strictEqual(optionalContactCompany.companyListing, true)
+    assert.strictEqual(optionalContactCompany.landlordPhone, '')
+    assert.strictEqual(optionalContactCompany.videoKey, '')
+    const companyRow = mockData.getListings({}).find((item) => item.id === optionalContactCompany.id)
+    assert.ok(companyRow)
+    assert.strictEqual(companyRow.hasVideo, false)
+    const editedWithoutContact = mockData.updateNormalListing(optionalContactCompany.id, { rent: 3300 })
+    assert.strictEqual(Number(editedWithoutContact.rent), 3300)
+    assert.strictEqual(editedWithoutContact.landlordPhone, '', '编辑无号公司房源时不得反向强制补号')
+    const clearedContact = mockData.updateNormalListing(company.id, { contact: '' })
+    assert.strictEqual(clearedContact.landlordPhone, '', 'Mock 应与生产一致允许显式清空公司房源已有手机号')
+    assert.throws(
+      () => mockData.updateNormalListing(company.id, { contact: 'TEST-PHONE' }),
+      /11 位房东手机号/,
+      '公司房源非空手机号仍必须校验格式'
+    )
+    assert.throws(
+      () => mockData.updateNormalListing(optionalContactCompany.id, {
+        companyListing: false,
+        ownerType: '二房东房源',
+        source: '二房东房源',
+        contact: '19900000061'
+      }),
+      /视频/,
+      'Mock 不得允许无视频公司房源直接切换为合作来源'
+    )
+    const converted = mockData.updateNormalListing(optionalContactCompany.id, {
+      companyListing: false,
+      ownerType: '二房东房源',
+      source: '二房东房源',
+      contact: '19900000061',
+      videoKey: 'house-videos/synthetic/mock-company-converted.mp4'
+    })
+    assert.strictEqual(converted.companyListing, false)
+    assert.strictEqual(converted.videoKey, 'house-videos/synthetic/mock-company-converted.mp4')
+  })
+
   if (failures.length) {
     const error = new Error(`Mock/预览契约仍有 ${failures.length} 项未满足：${failures.map((item) => item.name).join('；')}`)
     error.failures = failures

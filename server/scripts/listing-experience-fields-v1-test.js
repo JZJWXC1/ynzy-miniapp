@@ -10,6 +10,8 @@ const matchService = require('../src/match-service')
 const repoRoot = path.resolve(__dirname, '..', '..')
 const uploadJs = fs.readFileSync(path.join(repoRoot, 'pages', 'upload', 'upload.js'), 'utf8')
 const uploadWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'upload', 'upload.wxml'), 'utf8')
+const adminHtml = fs.readFileSync(path.join(repoRoot, 'admin-web', 'index.html'), 'utf8')
+const faqJs = fs.readFileSync(path.join(repoRoot, 'pages', 'faq', 'faq.js'), 'utf8')
 
 let roomSeed = 8000
 
@@ -109,12 +111,43 @@ function run() {
       `${viewing.viewingMethod}方式也必须填写房东手机号`
     )
   }
-  expectBad(
-    listingForm({ companyListing: true, source: '公司房源', contact: '', videoKey: '', allowMissingLandlordPhone: true }),
-    /房东手机号/,
-    '公司房源也必须填写房东手机号',
-    { userId: 'ADMIN', domainOptions: { admin: true } }
+  const companyWithoutLandlordPhoneDb = makeDb()
+  const companyWithoutLandlordPhone = domain.addNormalListing(
+    companyWithoutLandlordPhoneDb,
+    'ADMIN',
+    listingForm({ companyListing: true, source: '公司房源', contact: '', videoKey: '' }),
+    { admin: true }
   )
+  assert.strictEqual(companyWithoutLandlordPhone.landlordPhone, '', '公司房源可不填写房东手机号')
+  assert.strictEqual(companyWithoutLandlordPhone.companyListing, true, '缺房东手机号不得改变公司来源')
+  assert.throws(
+    () => domain.updateNormalListing(companyWithoutLandlordPhoneDb, 'ADMIN', companyWithoutLandlordPhone.id, {
+      companyListing: false,
+      ownerType: '二房东房源',
+      source: '二房东房源',
+      contact: '13911112222'
+    }, { admin: true }),
+    (error) => error && error.statusCode === 400 && /视频/.test(error.message),
+    '无视频公司房源切换为合作来源时必须补传真实视频'
+  )
+  const convertedCompany = domain.updateNormalListing(companyWithoutLandlordPhoneDb, 'ADMIN', companyWithoutLandlordPhone.id, {
+    companyListing: false,
+    ownerType: '二房东房源',
+    source: '二房东房源',
+    contact: '13911112222',
+    videoKey: 'house-videos/m1-company-converted.mp4'
+  }, { admin: true })
+  assert.strictEqual(convertedCompany.companyListing, false)
+  assert.strictEqual(convertedCompany.videoKey, 'house-videos/m1-company-converted.mp4')
+  const companyWithPhoneDb = makeDb()
+  const companyWithPhone = domain.addNormalListing(
+    companyWithPhoneDb,
+    'ADMIN',
+    listingForm({ companyListing: true, source: '公司房源', videoKey: '' }),
+    { admin: true }
+  )
+  const companyWithClearedPhone = domain.updateNormalListing(companyWithPhoneDb, 'ADMIN', companyWithPhone.id, { contact: '' }, { admin: true })
+  assert.strictEqual(companyWithClearedPhone.landlordPhone, '', '管理员应能显式清空公司房源已有房东手机号')
   expectBad(
     listingForm({ contact: '' }),
     /房东手机号/,
@@ -124,8 +157,8 @@ function run() {
   expectBad(
     listingForm({ companyListing: true, source: '公司房源', contact: 'invalid-phone', videoKey: '' }),
     /11 位.*手机号/,
-    '飞书内部开关只允许缺失，不能把非空非法值写入公司房源',
-    { userId: 'ADMIN', domainOptions: { admin: true, allowMissingLandlordPhone: true } }
+    '公司房源非空手机号仍必须是合法 11 位号码',
+    { userId: 'ADMIN', domainOptions: { admin: true } }
   )
   expectBad(listingForm({ viewingMethod: '钥匙', viewingKeyLocation: '前台', contact: 'TEST-PHONE' }), /11 位.*手机号/, '所有方式都必须校验手机号格式')
 
@@ -153,7 +186,14 @@ function run() {
   assert.match(uploadJs, /remark:\s*''/, '上传表单必须包含备注字段')
   assert.match(uploadWxml, /data-field="landlordCommissionPercent"/, '上传页必须渲染房东佣金占月租比例输入')
   assert.match(uploadWxml, /data-field="remark"/, '上传页必须渲染备注输入')
-  assert.doesNotMatch(uploadWxml, /房东手机号仅在「联系房东」时必填/, '上传页不得保留条件必填旧文案')
+  assert.match(uploadJs, /!form\.companyListing\s*&&\s*isBlank\(contact\)/, '上传页只对合作房源强制房东手机号')
+  assert.match(uploadJs, /!isBlank\(contact\)\s*&&\s*!\/\^1\[3-9\]/, '公司房源填写非空手机号时仍必须校验格式')
+  assert.match(uploadWxml, /form\.companyListing\s*\?\s*'选填'\s*:\s*'必填'/, '上传页必须明确公司房源手机号选填')
+  assert.match(adminHtml, /const companyListing = document\.getElementById\('editCompanyListing'\)\.checked;/, '后台保存前必须冻结当前公司来源选项')
+  assert.match(adminHtml, /if \(\(!companyListing && !contact\) \|\| \(contact && !\/\^1\[3-9\]/, '后台只对合作房源强制手机号，公司非空值仍校验')
+  assert.doesNotMatch(adminHtml, /所有房源和看房方式均必填 11 位手机号/, '后台不得继续展示所有来源必填旧文案')
+  assert.match(faqJs, /业主、二房东房源.*所有看房方式.*合法房东手机号.*公司房源可不填/, 'FAQ 必须同步公司手机号选填口径')
+  assert.doesNotMatch(faqJs, /所有房源类型和看房方式都要填写合法房东手机号/, 'FAQ 不得保留所有来源必填旧口径')
 
   console.log('listing-experience-fields-v1-test passed')
 }

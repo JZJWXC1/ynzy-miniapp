@@ -1786,7 +1786,7 @@
         </label>
         <label class="form-item">
           <span>房东电话</span>
-          <input id="editContact" placeholder="所有房源和看房方式均必填 11 位手机号">
+          <input id="editContact" placeholder="合作房源必填；公司房源可留空">
         </label>
         <label class="form-item">
           <span>房东佣金占月租比例（%）</span>
@@ -4078,9 +4078,12 @@
         errorBox.textContent = '请至少选择一个房源特点，无特点请选“无”';
         return;
       }
+      const companyListing = document.getElementById('editCompanyListing').checked;
       const contact = document.getElementById('editContact').value.trim();
-      if (!/^1[3-9]\d{9}$/.test(contact)) {
-        errorBox.textContent = '请输入 11 位房东手机号；所有看房方式均为必填';
+      if ((!companyListing && !contact) || (contact && !/^1[3-9]\d{9}$/.test(contact))) {
+        errorBox.textContent = companyListing
+          ? '公司房源房东手机号可留空；填写时必须是合法 11 位手机号'
+          : '业主、二房东房源在所有看房方式下都必须填写合法 11 位手机号';
         return;
       }
       const remark = document.getElementById('editRemark').value.trim();
@@ -4115,7 +4118,7 @@
         viewingPassword: document.getElementById('editViewingPassword').value.trim(),
         viewingKeyLocation: document.getElementById('editViewingKeyLocation').value.trim(),
         ownerType: document.getElementById('editOwnerType').value,
-        companyListing: document.getElementById('editCompanyListing').checked,
+        companyListing,
         features
       };
       const videoUrl = document.getElementById('editVideoUrl').value.trim();
