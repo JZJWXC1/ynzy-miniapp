@@ -717,6 +717,22 @@ function commissionConfig(db = {}) {
   }
 }
 
+// 小程序公开端只需要业务比例；后台操作人和更新时间属于审计元数据，不能通过免登录接口暴露。
+// 使用显式白名单而不是删除字段，避免后续 commissionConfig 新增内部字段时被默认带出。
+function publicCommissionConfig(db = {}) {
+  const config = commissionConfig(db)
+  return {
+    uploaderRates: { ...config.uploaderRates },
+    platformRates: { ...config.platformRates },
+    secondLandlordRate: config.secondLandlordRate,
+    ownerRate: config.ownerRate,
+    companyRate: 0,
+    secondLandlordPlatformRate: config.secondLandlordPlatformRate,
+    ownerPlatformRate: config.ownerPlatformRate,
+    totalRate: config.totalRate
+  }
+}
+
 function commissionRateByOwnerType(ownerType = SECOND_LANDLORD_SOURCE, db = {}) {
   const normalized = normalizeOwnerType(ownerType, SECOND_LANDLORD_SOURCE)
   const config = commissionConfig(db)
@@ -5496,10 +5512,35 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
   const current = commissionConfig(db)
   const upRates = payload.uploaderRates || {}
   const platRates = payload.platformRates || {}
-  const secondLandlordRate = boundedRate(payload.secondLandlordRate ?? payload.secondLandlordUploaderRate ?? upRates[SECOND_LANDLORD_SOURCE], current.secondLandlordRate)
-  const ownerRate = boundedRate(payload.ownerRate ?? payload.ownerUploaderRate ?? upRates[OWNER_SOURCE], current.ownerRate)
-  const secondLandlordPlatformRate = boundedRate(payload.secondLandlordPlatformRate ?? platRates[SECOND_LANDLORD_SOURCE], current.secondLandlordPlatformRate)
-  const ownerPlatformRate = boundedRate(payload.ownerPlatformRate ?? platRates[OWNER_SOURCE], current.ownerPlatformRate)
+  const suppliedRates = [
+    ['二房东上传人比例', payload.secondLandlordRate],
+    ['二房东上传人比例', payload.secondLandlordUploaderRate],
+    ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE]],
+    ['业主上传人比例', payload.ownerRate],
+    ['业主上传人比例', payload.ownerUploaderRate],
+    ['业主上传人比例', upRates[OWNER_SOURCE]],
+    ['二房东平台比例', payload.secondLandlordPlatformRate],
+    ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE]],
+    ['业主平台比例', payload.ownerPlatformRate],
+    ['业主平台比例', platRates[OWNER_SOURCE]]
+  ]
+  suppliedRates.forEach(([label, value]) => {
+    if (value === undefined || value === null) return
+    const number = Number(value)
+    if (Number.isFinite(number) && number < 0) {
+      const error = new Error(`${label}不能小于 0`)
+      error.statusCode = 400
+      throw error
+    }
+  })
+  const secondLandlordRateInput = payload.secondLandlordRate ?? payload.secondLandlordUploaderRate ?? upRates[SECOND_LANDLORD_SOURCE]
+  const ownerRateInput = payload.ownerRate ?? payload.ownerUploaderRate ?? upRates[OWNER_SOURCE]
+  const secondLandlordPlatformRateInput = payload.secondLandlordPlatformRate ?? platRates[SECOND_LANDLORD_SOURCE]
+  const ownerPlatformRateInput = payload.ownerPlatformRate ?? platRates[OWNER_SOURCE]
+  const secondLandlordRate = boundedRate(secondLandlordRateInput, current.secondLandlordRate)
+  const ownerRate = boundedRate(ownerRateInput, current.ownerRate)
+  const secondLandlordPlatformRate = boundedRate(secondLandlordPlatformRateInput, current.secondLandlordPlatformRate)
+  const ownerPlatformRate = boundedRate(ownerPlatformRateInput, current.ownerPlatformRate)
   // money 守恒：同一房源类型 上传人比例 + 平台比例 不得超过 100%，否则带看成交中介净留为负、
   // confirmDeal 会超发（uploaderCommissionFen + platformCommissionFen > landlordCommissionFen）。
   // 直接 400 拒绝，不静默改用户配置（若产品要自动压缩，需第三裁判/用户确认）。
@@ -6042,6 +6083,12 @@ function submitListingVerification(db, userId, listingId, outcome, options = {})
   const normalized = String(outcome == null ? '' : outcome).trim()
   // 未出租 / available（含缺省，兼容旧客户端只点确认）→ 已维护，重置核验周期。
   if (normalized === '' || normalized === '未出租' || normalized === 'available') {
+    assertListingActive(listing)
+    if (isPendingOwnerReview(listing)) {
+      const error = new Error('该房源仍在等待管理员审核，不能通过房态核验直接上架')
+      error.statusCode = 409
+      throw error
+    }
     return { outcome: 'available', freshness: verifyListingAvailability(db, userId, listingId, options) }
   }
   assertListingActive(listing)
@@ -6084,6 +6131,7 @@ module.exports = {
   setListingMaintenanceRule,
   enforceListingMaintenanceRule,
   commissionConfig,
+  publicCommissionConfig,
   setCommissionConfig,
   commissionRuleForListing,
   commissionBreakdownForListing,

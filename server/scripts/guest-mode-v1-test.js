@@ -120,6 +120,14 @@ function seedDb() {
     clientReports: [],
     dealRecords: [],
     commissionRecords: [],
+    commissionConfig: {
+      secondLandlordRate: 21,
+      secondLandlordPlatformRate: 9,
+      ownerRate: 22,
+      ownerPlatformRate: 8,
+      updatedAt: nowText(),
+      updatedBy: 'PRIVATE_ADMIN_ID'
+    },
     companySheetSnapshot: {
       title: '游客模式公司房源表',
       updatedAt: nowText(),
@@ -236,6 +244,18 @@ async function run() {
     const guestHome = await request('GET', '/mini/home/listings')
     assert.strictEqual(guestHome.statusCode, 200, '匿名首页房源接口应返回 200')
     assertOnlyCompanyRows(dataOf(guestHome), '匿名首页房源')
+
+    const publicCommission = await request('GET', '/mini/commission-config')
+    assert.strictEqual(publicCommission.statusCode, 200, '游客仍可读取公开分佣比例')
+    assert.strictEqual(dataOf(publicCommission).ownerRate, 22, '公开比例必须保留业务配置')
+    assert.ok(!Object.prototype.hasOwnProperty.call(dataOf(publicCommission), 'updatedBy'), '游客公开配置不得泄露后台操作人')
+    assert.ok(!Object.prototype.hasOwnProperty.call(dataOf(publicCommission), 'updatedAt'), '游客公开配置不得泄露后台审计时间')
+    for (let index = 1; index < 30; index += 1) {
+      const allowed = await request('GET', '/mini/commission-config')
+      assert.strictEqual(allowed.statusCode, 200, `游客公开配置限流窗口内第 ${index + 1} 次仍应允许`)
+    }
+    const limitedCommission = await request('GET', '/mini/commission-config')
+    assert.strictEqual(limitedCommission.statusCode, 429, '游客公开配置第 31 次必须限流，不能成为无界探测接口')
 
     const sheetSnapshot = await request('GET', '/mini/company-sheet-snapshot')
     assert.strictEqual(sheetSnapshot.statusCode, 200, '匿名飞书快照接口应返回 200')

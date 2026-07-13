@@ -96,4 +96,38 @@ function makeDb() {
   assert.strictEqual(domain.submitListingVerification(db, 'U1', 'L1', '未出租').outcome, 'available', '一分钟窗口结束后应恢复核验')
 }
 
+// 9) 待审核房源不能通过“未出租”或旧客户端缺省确认绕过审核重新上架；拒绝必须零变化。
+{
+  ;['未出租', undefined].forEach((outcome) => {
+    const db = makeDb()
+    Object.assign(db.listings[0], {
+      status: '待审核',
+      reviewStatus: '待审核',
+      requiresManualReview: true,
+      lifecycleStatus: 'active'
+    })
+    const before = JSON.parse(JSON.stringify(db))
+    assert.throws(
+      () => domain.submitListingVerification(db, 'U1', 'L1', outcome),
+      (error) => error && error.statusCode === 409 && /审核/.test(error.message),
+      '待审核房源确认“未出租”必须 409'
+    )
+    assert.deepStrictEqual(db, before, '待审核房源被拒后状态、推荐资料和足迹必须零变化')
+  })
+
+  const adminDb = makeDb()
+  Object.assign(adminDb.listings[0], { status: '待审核', reviewStatus: '待审核', requiresManualReview: true })
+  assert.throws(
+    () => domain.submitListingVerification(adminDb, 'ADMIN', 'L1', '未出租', { admin: true }),
+    (error) => error && error.statusCode === 409,
+    '管理员也必须走审核接口，不能用房态核验旁路上架待审核房源'
+  )
+
+  const withdrawDb = makeDb()
+  Object.assign(withdrawDb.listings[0], { status: '待审核', reviewStatus: '待审核', requiresManualReview: true })
+  const withdrawn = domain.submitListingVerification(withdrawDb, 'U1', 'L1', '不租了')
+  assert.strictEqual(withdrawn.outcome, 'withdrawn', '待审核上传人仍可撤回不租，保留原下架通道')
+  assert.strictEqual(withdrawDb.listings[0].status, '已下架')
+}
+
 console.log('listing-verify-outcome-v1-test passed')

@@ -301,68 +301,6 @@ function assertGuestListingAllowed(detail) {
   throw error
 }
 
-function sheetCellText(value) {
-  return String(value === undefined || value === null ? '' : value).trim()
-}
-
-function findCompanySheetHeaderIndex(rows = []) {
-  return rows.findIndex((row) => {
-    const text = (row || []).map(sheetCellText).join('|')
-    return /区域/.test(text) && /小区/.test(text)
-  })
-}
-
-function sheetColumnIndex(header = [], aliases = []) {
-  const normalizedHeader = header.map((cell) => sheetCellText(cell).replace(/\s+/g, ''))
-  return aliases.reduce((matched, alias) => {
-    if (matched !== -1) return matched
-    const key = String(alias || '').replace(/\s+/g, '')
-    return normalizedHeader.findIndex((cell) => cell === key || cell.indexOf(key) !== -1)
-  }, -1)
-}
-
-function guestCompanySheetSnapshot(snapshot = {}) {
-  const rows = Array.isArray(snapshot.rows) ? snapshot.rows : []
-  const headerIndex = findCompanySheetHeaderIndex(rows)
-  if (headerIndex < 0) {
-    return {
-      ...snapshot,
-      rows: [],
-      rowCount: 0,
-      columnCount: 0,
-      guestSanitized: true
-    }
-  }
-
-  const sourceHeader = rows[headerIndex] || []
-  const columns = [
-    { title: '区域', aliases: ['区域', '区', '片区', '商圈', 'district', 'area'] },
-    { title: '小区', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'] },
-    { title: '户型描述', aliases: ['户型描述', '描述', '房源描述', '户型信息', '房源信息', '房源详情', 'layoutDescription', 'description'] },
-    { title: '户型分类', aliases: ['户型分类', '户型', '格局', '分类', 'category', 'layoutCategory'] },
-    { title: '押一付一', aliases: ['押一付一', '押一', '月租', '租金', '价格', 'rent', 'price'] },
-    { title: '押二付一', aliases: ['押二付一', '押二', '押二付一价格', '押二价格'] }
-  ].map((column) => ({
-    ...column,
-    index: sheetColumnIndex(sourceHeader, column.aliases)
-  }))
-
-  const sanitizedRows = [
-    columns.map((column) => column.title),
-    ...rows.slice(headerIndex + 1)
-      .map((row) => columns.map((column) => (column.index >= 0 ? sheetCellText((row || [])[column.index]) : '')))
-      .filter((row) => row.some(Boolean))
-  ]
-
-  return {
-    ...snapshot,
-    rows: sanitizedRows,
-    rowCount: Math.max(0, sanitizedRows.length - 1),
-    columnCount: columns.length,
-    guestSanitized: true
-  }
-}
-
 function parseRawBody(req) {
   return new Promise((resolve, reject) => {
     let raw = ''
@@ -1584,7 +1522,8 @@ async function handleMini(req, res, pathname, searchParams) {
   }
 
   if (method === 'GET' && pathname === '/mini/commission-config') {
-    return sendJson(res, domain.commissionConfig(db))
+    if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-commission-config', 30)
+    return sendJson(res, domain.publicCommissionConfig(db))
   }
 
   if (method === 'POST' && pathname === '/mini/listings/match') {

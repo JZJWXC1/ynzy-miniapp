@@ -107,6 +107,32 @@ function makeDb() {
   assert.ok(upFen + platFen <= landlordFen, '分佣合计不得超过成交总佣金（money 守恒）')
 }
 
+// 7.1) 负比例必须明确 400，不能静默夹成 0；拒绝后配置和审计足迹都必须零变化。
+{
+  const cases = [
+    { label: '顶层业主上传人比例', payload: { ownerRate: -1 } },
+    { label: '顶层二房东平台比例字符串', payload: { secondLandlordPlatformRate: '-0.01' } },
+    { label: '嵌套业主上传人比例', payload: { uploaderRates: { [OWNER]: -5 } } },
+    { label: '嵌套二房东平台比例', payload: { platformRates: { [SUBLEASE]: -10 } } }
+  ]
+  cases.forEach(({ label, payload }) => {
+    const d = makeDb()
+    d.commissionConfig = { ownerRate: 25, ownerPlatformRate: 15, secondLandlordRate: 18, secondLandlordPlatformRate: 12, updatedBy: 'OLD' }
+    d.footprints = [{ id: 'EXISTING' }]
+    const before = JSON.parse(JSON.stringify(d))
+    assert.throws(
+      () => domain.setCommissionConfig(d, 'ADM', payload),
+      (error) => error && error.statusCode === 400 && /不能小于 0/.test(error.message),
+      `${label}必须返回 400`
+    )
+    assert.deepStrictEqual(d, before, `${label}拒绝后不得改配置或新增足迹`)
+  })
+
+  const zero = makeDb()
+  domain.setCommissionConfig(zero, 'ADM', { ownerRate: 0, ownerPlatformRate: 0 })
+  assert.strictEqual(domain.commissionConfig(zero).ownerRate, 0, '0 仍是合法比例，不能误伤原规则')
+}
+
 // 8) 上传人比例可配到 >30%（不再被默认总分出卡死）——阻断1 规则层。
 {
   const d = makeDb()

@@ -785,7 +785,7 @@ check('游客模式仅开放公司房源脱敏浏览', () => {
   assertIncludes(serverIndex, 'function assertMiniLogin', '受保护接口必须有统一登录拦截')
   assertIncludes(serverIndex, 'function assertGuestRateLimit', '匿名 GET/助手接口必须限频')
   assertIncludes(serverIndex, 'function guestListingFilter', '匿名列表和地图必须强制公司房源过滤')
-  assertIncludes(serverIndex, 'function guestCompanySheetSnapshot', '匿名飞书快照必须返回脱敏版本')
+  assert.ok(!serverIndex.includes('function guestCompanySheetSnapshot'), '已废弃的匿名快照裁剪函数不得残留；当前规则是游客与登录用户读取同一份完整公司快照')
   assertIncludes(serverIndex, 'const resultDb = guest ? companyOnlyDb(snapshot) : snapshot', '匿名找房助手候选必须只来自公司房源（在 clone 的私有快照上）')
   assertIncludes(serverIndex, 'assistantService.chat(resultDb, resultBody, context)', '匿名找房助手必须用已过滤的候选快照执行')
   assertIncludes(serverIndex, 'assertGuestListingAllowed(detail)', '匿名详情必须拦截合作房源')
