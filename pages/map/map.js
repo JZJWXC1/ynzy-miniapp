@@ -1,6 +1,10 @@
 const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
 const listingDisplay = require('../../utils/listing-display')
+const {
+  createPendingFilterEnvelope,
+  consumePendingFilterEnvelope
+} = require('../../utils/pending-filter-storage')
 
 const PENDING_MAP_FILTERS_KEY = 'ynzy_pending_map_filters'
 const PENDING_LISTING_FILTERS_KEY = 'ynzy_pending_listing_filters'
@@ -45,18 +49,6 @@ function numberValue(value) {
   if (value === undefined || value === null || value === '') return ''
   const number = Number(value)
   return Number.isFinite(number) ? number : ''
-}
-
-function parsePendingFilters(value) {
-  if (!value) return {}
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value)
-    } catch (error) {
-      return {}
-    }
-  }
-  return value || {}
 }
 
 function parseBudget(value) {
@@ -201,20 +193,16 @@ Page({
     const sessionState = this.syncAuthSession()
     this.setTabBarSelected()
     let pending = {}
-    if (sessionState.changed) {
-      try { wx.removeStorageSync(PENDING_MAP_FILTERS_KEY) } catch (error) {}
-    }
     try {
-      pending = sessionState.changed ? {} : parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
+      const storedPending = wx.getStorageSync(PENDING_MAP_FILTERS_KEY)
+      if (storedPending) {
+        try { wx.removeStorageSync(PENDING_MAP_FILTERS_KEY) } catch (error) {}
+      }
+      pending = sessionState.changed ? {} : (consumePendingFilterEnvelope(storedPending, sessionState.key) || {})
     } catch (error) {
       pending = {}
     }
     if (Object.keys(pending).length) {
-      try {
-        wx.removeStorageSync(PENDING_MAP_FILTERS_KEY)
-      } catch (error) {
-        // 清理失败不阻断本次筛选，下一次进入仍会按同一筛选重新读取。
-      }
       const filters = this.mergePendingFilters(this.data.filters, pending)
       this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
       this.loadCommunities({ recenter: true })
@@ -226,6 +214,7 @@ Page({
   onUnload() {
     this._pageActive = false
     this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+    this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
   },
 
   syncAuthSession() {
@@ -234,6 +223,7 @@ Page({
     this.authSessionSnapshot = nextSessionKey
     if (changed) {
       this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+      this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
       const filters = Object.assign({}, this.data.filters || emptyFilters(), { needId: '', listingIds: [] })
       this.setData({
         communities: [],
@@ -305,6 +295,7 @@ Page({
   },
 
   loadCommunities(options) {
+    if (this._pageActive === false) return
     const loadOptions = options || {}
     const requestSessionKey = this.syncAuthSession().key
     this.lastMapLoadOptions = {
@@ -321,7 +312,7 @@ Page({
       loginRequired: partnerLoginRequired(this.data.filters)
     })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
-      if (requestSeq !== this._mapRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
         this.syncAuthSession()
         return
@@ -335,7 +326,7 @@ Page({
         loginRequired: partnerLoginRequired(this.data.filters)
       })
     }).catch(() => {
-      if (requestSeq !== this._mapRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
         this.syncAuthSession()
         return
@@ -460,9 +451,11 @@ Page({
   },
 
   searchCurrentRegion() {
+    const operation = this.beginMapNativeOperation()
     const mapContext = wx.createMapContext('houseMap', this)
     mapContext.getRegion({
       success: (region) => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         const northeast = region.northeast || {}
         const southwest = region.southwest || {}
         this.loadCommunities({
@@ -476,6 +469,7 @@ Page({
         })
       },
       fail: () => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         wx.showToast({ title: '获取当前地图范围失败', icon: 'none' })
       }
     })
@@ -508,9 +502,11 @@ Page({
   },
 
   locateToMe() {
+    const operation = this.beginMapNativeOperation()
     wx.getLocation({
       type: 'gcj02',
       success: (res) => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         this.setData({
           selectedCommunityId: '',
           selectedCommunity: null,
@@ -523,6 +519,7 @@ Page({
         })
       },
       fail: () => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         this.setData({
           selectedCommunityId: '',
           selectedCommunity: null,
@@ -533,6 +530,19 @@ Page({
         wx.showToast({ title: '未获得定位权限，已停留在默认位置', icon: 'none' })
       }
     })
+  },
+
+  beginMapNativeOperation() {
+    const sequence = Number(this._mapNativeOperationSeq || 0) + 1
+    this._mapNativeOperationSeq = sequence
+    return { sequence, sessionKey: currentAuthSessionKey() }
+  },
+
+  isMapNativeOperationCurrent(operation) {
+    return Boolean(operation) &&
+      this._pageActive !== false &&
+      this._mapNativeOperationSeq === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey
   },
 
   openListing(event) {
@@ -566,7 +576,10 @@ Page({
       }
     }
     try {
-      wx.setStorageSync(PENDING_LISTING_FILTERS_KEY, listingFilters)
+      wx.setStorageSync(
+        PENDING_LISTING_FILTERS_KEY,
+        createPendingFilterEnvelope(listingFilters, currentAuthSessionKey())
+      )
     } catch (error) {
       wx.showToast({ title: '筛选条件保存失败', icon: 'none' })
       return

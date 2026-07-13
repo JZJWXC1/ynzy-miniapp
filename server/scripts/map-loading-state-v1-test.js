@@ -6,20 +6,22 @@ const repoRoot = path.join(__dirname, '..', '..')
 const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
 const mapPagePath = require.resolve(path.join(repoRoot, 'pages', 'map', 'map.js'))
 const mapWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'map', 'map.wxml'), 'utf8')
+const { createPendingFilterEnvelope } = require(path.join(repoRoot, 'utils', 'pending-filter-storage.js'))
 
 let storageShouldThrow = false
 let authToken = ''
 let authSessionKey = 'guest-map-start'
 let toasts = []
+let storageValues = {}
 
 global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
 global.wx = {
-  getStorageSync() {
+  getStorageSync(key) {
     if (storageShouldThrow) throw new Error('模拟存储读取失败')
-    return ''
+    return storageValues[key] || ''
   },
-  removeStorageSync() {},
+  removeStorageSync(key) { delete storageValues[key] },
   showToast(options) { toasts.push(options) },
   createMapContext() { return {} },
   navigateTo() {},
@@ -214,6 +216,82 @@ async function run() {
   await flushPromises()
   assert.strictEqual(unloadPage.data.communities.length, 0, '地图页卸载后的迟到响应不得回写')
   assert.strictEqual(toasts.length, unloadToastCount, '地图页卸载后的迟到失败不得弹提示')
+
+  let regionSuccess = null
+  let nativeRequestCalls = 0
+  const originalCreateMapContext = wx.createMapContext
+  const originalGetLocation = wx.getLocation
+  wx.createMapContext = () => ({
+    getRegion(options) { regionSuccess = options.success }
+  })
+  const nativeDefinition = loadDefinition({
+    getMapCommunities() {
+      nativeRequestCalls += 1
+      return Promise.resolve([mapCommunity('不应加载的小区')])
+    }
+  })
+  const nativePage = makePage(nativeDefinition)
+  nativePage._pageActive = true
+  nativePage.searchCurrentRegion()
+  nativePage.onUnload()
+  regionSuccess({
+    northeast: { latitude: 31, longitude: 121 },
+    southwest: { latitude: 30, longitude: 120 }
+  })
+  await flushPromises()
+  assert.strictEqual(nativeRequestCalls, 0, '地图页卸载后的 getRegion 回调不得重新发请求')
+
+  let locationOptions = null
+  wx.getLocation = (options) => { locationOptions = options }
+  const locationPage = makePage(nativeDefinition)
+  locationPage._pageActive = true
+  const centerBeforeUnload = JSON.parse(JSON.stringify(locationPage.data.mapCenter))
+  const locationToastCount = toasts.length
+  locationPage.locateToMe()
+  locationPage.onUnload()
+  locationOptions.success({ latitude: 30.99, longitude: 120.99 })
+  assert.deepStrictEqual(locationPage.data.mapCenter, centerBeforeUnload, '地图页卸载后的定位成功不得写回中心点')
+  locationOptions.fail()
+  assert.deepStrictEqual(locationPage.data.mapCenter, centerBeforeUnload, '地图页卸载后的定位失败不得写回默认中心点')
+  assert.strictEqual(toasts.length, locationToastCount, '地图页卸载后的定位失败不得弹提示')
+  wx.createMapContext = originalCreateMapContext
+  wx.getLocation = originalGetLocation
+
+  const pendingMapKey = 'ynzy_pending_map_filters'
+  authToken = 'TOKEN-PENDING-MAP-B'
+  authSessionKey = 'SESSION-PENDING-MAP-B'
+  storageValues[pendingMapKey] = createPendingFilterEnvelope({
+    needId: 'NEED-MAP-A',
+    listingIds: ['LISTING-MAP-A'],
+    sourceType: '业主房源'
+  }, 'SESSION-PENDING-MAP-A')
+  const pendingMapQueries = []
+  const pendingMapDefinition = loadDefinition({
+    getMapCommunities(query) {
+      pendingMapQueries.push(query || {})
+      return Promise.resolve([])
+    }
+  })
+  const pendingMapPage = makePage(pendingMapDefinition)
+  pendingMapPage.onShow()
+  await flushPromises()
+  assert.strictEqual(pendingMapPage.data.filters.needId, '', '账号B首次创建地图页不得消费账号A遗留 needId')
+  assert.deepStrictEqual(pendingMapPage.data.filters.listingIds, [], '账号B不得消费账号A遗留房源 ID')
+  assert.ok(pendingMapQueries.every((query) => !query.listingIds || !query.listingIds.length), '账号A房源 ID 不得进入账号B地图请求')
+  assert.strictEqual(storageValues[pendingMapKey], undefined, 'owner 不匹配的地图筛选也必须一次性清理')
+
+  authToken = 'TOKEN-PENDING-MAP-A'
+  authSessionKey = 'SESSION-PENDING-MAP-A'
+  storageValues[pendingMapKey] = createPendingFilterEnvelope({
+    needId: 'NEED-MAP-A',
+    listingIds: ['LISTING-MAP-A'],
+    sourceType: '业主房源'
+  }, 'SESSION-PENDING-MAP-A')
+  const ownPendingMapPage = makePage(pendingMapDefinition)
+  ownPendingMapPage.onShow()
+  await flushPromises()
+  assert.strictEqual(ownPendingMapPage.data.filters.needId, 'NEED-MAP-A', '同会话地图必须消费自己的 needId')
+  assert.deepStrictEqual(ownPendingMapPage.data.filters.listingIds, ['LISTING-MAP-A'], '同会话地图必须消费自己的房源 ID')
 
   storageShouldThrow = true
   const storageDefinition = loadDefinition({

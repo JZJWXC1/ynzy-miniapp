@@ -8,6 +8,7 @@ const indexPagePath = require.resolve(path.join(repoRoot, 'pages', 'index', 'ind
 const listingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'listings', 'listings.js'))
 const myListingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'my-listings', 'my-listings.js'))
 const listingDisplay = require(path.join(repoRoot, 'utils', 'listing-display.js'))
+const { createPendingFilterEnvelope } = require(path.join(repoRoot, 'utils', 'pending-filter-storage.js'))
 
 const indexWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'index', 'index.wxml'), 'utf8')
 const listingsWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listings', 'listings.wxml'), 'utf8')
@@ -16,13 +17,14 @@ const myListingsWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'my-listings
 let toasts = []
 let authToken = 'TOKEN-LIST-BASE'
 let authSessionKey = 'auth-list-base'
+let storageValues = {}
 
 global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
 global.wx = {
   showToast(options) { toasts.push(options) },
-  getStorageSync() { return '' },
-  removeStorageSync() {},
+  getStorageSync(key) { return storageValues[key] || '' },
+  removeStorageSync(key) { delete storageValues[key] },
   navigateTo() {},
   switchTab() {}
 }
@@ -232,6 +234,40 @@ async function run() {
   await flushPromises()
   assert.strictEqual(listingsPage.data.loadFailed, false, '全部房源真实空结果必须清除失败态')
   assert.strictEqual(listingsPage.data.listings.length, 0, '服务端成功返回空数组时才允许显示真实空结果')
+
+  const pendingListingKey = 'ynzy_pending_listing_filters'
+  authToken = 'TOKEN-PENDING-B'
+  authSessionKey = 'SESSION-PENDING-B'
+  storageValues[pendingListingKey] = createPendingFilterEnvelope({
+    category: '业主房源',
+    filters: { needId: 'NEED-ACCOUNT-A', community: '账号A私有小区' }
+  }, 'SESSION-PENDING-A')
+  const pendingQueries = []
+  const pendingDefinition = loadDefinition(listingsPagePath, {
+    getListings(query) {
+      pendingQueries.push(query || {})
+      return Promise.resolve([])
+    }
+  })
+  const pendingPage = makePage(pendingDefinition)
+  pendingPage.onLoad({})
+  pendingPage.onShow()
+  await flushPromises()
+  assert.strictEqual(pendingPage.data.filters.needId, '', '账号B首次创建列表页不得消费账号A遗留 needId')
+  assert.ok(pendingQueries.every((query) => !query.needId), '账号A遗留 needId 不得进入账号B列表请求')
+  assert.strictEqual(storageValues[pendingListingKey], undefined, 'owner 不匹配的待处理筛选也必须一次性清理')
+
+  authToken = 'TOKEN-PENDING-A'
+  authSessionKey = 'SESSION-PENDING-A'
+  storageValues[pendingListingKey] = createPendingFilterEnvelope({
+    category: '业主房源',
+    filters: { needId: 'NEED-ACCOUNT-A', community: '账号A私有小区' }
+  }, 'SESSION-PENDING-A')
+  const ownPendingPage = makePage(pendingDefinition)
+  ownPendingPage.onLoad({})
+  ownPendingPage.onShow()
+  await flushPromises()
+  assert.strictEqual(ownPendingPage.data.filters.needId, 'NEED-ACCOUNT-A', '同一会话仍必须消费自己的待处理筛选')
 
   for (const target of [
     { token: '', sessionKey: 'guest-list-after-a', label: '退出到游客' },

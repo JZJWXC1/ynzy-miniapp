@@ -81,6 +81,7 @@ async function run() {
     chatAssistant: llmService.chatAssistant,
     recognizeRentalNeed: llmService.recognizeRentalNeed,
     matchRentalNeed: llmService.matchRentalNeed,
+    submitAssistantFeedback: llmService.submitAssistantFeedback,
     createRentalNeed: apiService.createRentalNeed
   }
 
@@ -165,11 +166,44 @@ async function run() {
     assert.strictEqual(matchCalls, 0, '会话变化后迟到的账号A需求单不得继续触发匹配')
     assertReset(createPage, 'createNeedAndMatch 迟到响应')
 
+    authToken = 'TOKEN-MATCH-FEEDBACK'
+    authSessionKey = 'auth-match-feedback'
+    const feedbackPage = makePage(definition)
+    const feedbackWaiter = deferred()
+    let feedbackToasts = 0
+    const originalShowToast = wx.showToast
+    wx.showToast = () => { feedbackToasts += 1 }
+    llmService.submitAssistantFeedback = () => feedbackWaiter.promise
+    feedbackPage.setData({
+      messages: feedbackPage.data.messages.concat({
+        id: 'assistant-feedback',
+        role: 'assistant',
+        canFeedback: true,
+        feedbackLoading: false,
+        feedbackSent: false,
+        feedbackType: 'helpful',
+        feedbackMessageId: 'MESSAGE-FEEDBACK',
+        needId: 'NEED-FEEDBACK',
+        threadId: 'THREAD-FEEDBACK'
+      })
+    })
+    feedbackPage.submitAssistantFeedback({
+      currentTarget: { dataset: { messageId: 'assistant-feedback', reasonCode: 'price' } }
+    })
+    feedbackPage.onUnload()
+    feedbackWaiter.resolve({ ok: true })
+    await flushPromises()
+    const lateFeedbackMessage = feedbackPage.findMessage('assistant-feedback') || {}
+    assert.strictEqual(lateFeedbackMessage.feedbackSent, false, '找房助手卸载后迟到反馈不得回写已销毁页面')
+    assert.strictEqual(feedbackToasts, 0, '找房助手卸载后迟到反馈不得弹成功提示')
+    wx.showToast = originalShowToast
+
     console.log('match-chat-session-isolation-v1-test passed')
   } finally {
     llmService.chatAssistant = originals.chatAssistant
     llmService.recognizeRentalNeed = originals.recognizeRentalNeed
     llmService.matchRentalNeed = originals.matchRentalNeed
+    llmService.submitAssistantFeedback = originals.submitAssistantFeedback
     apiService.createRentalNeed = originals.createRentalNeed
   }
 }

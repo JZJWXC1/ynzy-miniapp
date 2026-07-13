@@ -741,7 +741,14 @@ Page({
         } catch (error) {}
       },
       fail: () => {},
-      complete: () => this.setData({ phoneCallBusy: false })
+      complete: () => {
+        const stillCurrent = this._pageActive !== false &&
+          currentAuthSessionKey() === dialContext.sessionKey &&
+          safeText(this.data.currentUserId) === dialContext.accountId &&
+          safeText(this.data.listing && this.data.listing.id) === dialContext.listingId &&
+          this.listingLoadGeneration === dialContext.requestGeneration
+        if (stillCurrent) this.setData({ phoneCallBusy: false })
+      }
     })
   },
 
@@ -846,25 +853,27 @@ Page({
       this.promptLoginGuide('登录后记录带看', '带看水印照片会进入后台审核，需要先登录内部中介账号。')
       return
     }
+    const operation = this.beginDetailOperation('showing')
     wx.showModal({
       title: '拍摄带看水印照片',
       content: '请现场拍摄带时间和地点水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
       confirmText: '开始拍照',
       success: (res) => {
         if (!res.confirm) return
-        this.submitShowingProof()
+        if (!this.isDetailOperationCurrent(operation)) return
+        this.submitShowingProof(operation)
       }
     })
   },
 
-  async submitShowingProof() {
+  async submitShowingProof(existingOperation) {
+    const operation = existingOperation || this.beginDetailOperation('showing')
+    if (!this.isDetailOperationCurrent(operation)) return
     const listing = this.data.listing || {}
-    if (!listing.id) {
+    if (!operation.listingId || safeText(listing.id) !== operation.listingId) {
       wx.showToast({ title: '请选择房源', icon: 'none' })
       return
     }
-
-    const operation = this.beginDetailOperation('showing')
 
     this.setData({ showingSubmitting: true })
     wx.showLoading({ title: '准备水印相机' })

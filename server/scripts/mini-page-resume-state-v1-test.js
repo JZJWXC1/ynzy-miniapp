@@ -371,6 +371,130 @@ async function testUploadCreateDraftSessionReset() {
   assert.strictEqual(guestDraftPage.data.videoPath, '/tmp/guest-draft.mp4', '纯游客→登录不得误清本人待传视频')
 }
 
+async function testUploadConfirmationSessionBoundary() {
+  installApiStub({})
+  const definition = loadPage(uploadPagePath)
+  const originalShowModal = wx.showModal
+  const confirmationModals = []
+  wx.showModal = (options) => { confirmationModals.push(options) }
+
+  const makeConfirmationPage = (label) => {
+    const page = makePage(definition)
+    page._pageActive = true
+    page.data.mode = 'create'
+    page.data.commissionRuleText = '合成分佣规则'
+    page.data.form = {
+      ...page.data.form,
+      companyListing: false,
+      ownerType: '二房东房源',
+      community: `${label}小区`,
+      contact: '13900000001'
+    }
+    page.ensureCommissionConfigReady = () => true
+    page.validateForm = () => ({
+      ok: true,
+      address: `${label}合成地址`,
+      layout: '整租一室0厅公卫',
+      communityMatched: true,
+      communityMatchStatus: '已匹配',
+      needsManualReview: false,
+      manualReviewReason: ''
+    })
+    return page
+  }
+
+  try {
+    authToken = 'TOKEN-CONFIRM-A'
+    authSessionKey = 'SESSION-CONFIRM-A'
+    const switchedPage = makeConfirmationPage('账号A')
+    let switchedSubmitCalls = 0
+    switchedPage.submitWithVideo = () => { switchedSubmitCalls += 1 }
+    switchedPage.submitListing()
+    const switchedModal = confirmationModals.pop()
+    assert.ok(switchedModal && typeof switchedModal.success === 'function', '上传前必须显示确认框')
+    authToken = 'TOKEN-CONFIRM-B'
+    authSessionKey = 'SESSION-CONFIRM-B'
+    switchedModal.success({ confirm: true })
+    assert.strictEqual(switchedSubmitCalls, 0, 'A 打开的旧确认框不得在 B 会话发起上传')
+
+    authToken = 'TOKEN-CONFIRM-UNLOAD'
+    authSessionKey = 'SESSION-CONFIRM-UNLOAD'
+    const unloadedPage = makeConfirmationPage('卸载')
+    let unloadedSubmitCalls = 0
+    unloadedPage.submitWithVideo = () => { unloadedSubmitCalls += 1 }
+    unloadedPage.submitListing()
+    const unloadedModal = confirmationModals.pop()
+    unloadedPage.onUnload()
+    unloadedModal.success({ confirm: true })
+    assert.strictEqual(unloadedSubmitCalls, 0, '上传页卸载后旧确认框不得继续发起上传')
+
+    authToken = 'TOKEN-CONFIRM-CURRENT'
+    authSessionKey = 'SESSION-CONFIRM-CURRENT'
+    const currentPage = makeConfirmationPage('当前')
+    let currentSubmitCalls = 0
+    currentPage.submitWithVideo = () => { currentSubmitCalls += 1 }
+    currentPage.submitListing()
+    confirmationModals.pop().success({ confirm: true })
+    assert.strictEqual(currentSubmitCalls, 1, '同页面同会话确认仍必须正常提交一次')
+
+    authToken = 'TOKEN-CONFIRM-RULE'
+    authSessionKey = 'SESSION-CONFIRM-RULE'
+    const changedRulePage = makeConfirmationPage('规则变化')
+    let changedRuleSubmitCalls = 0
+    changedRulePage.submitWithVideo = () => { changedRuleSubmitCalls += 1 }
+    changedRulePage.submitListing()
+    const changedRuleModal = confirmationModals.pop()
+    changedRulePage.data.commissionRuleText = '服务端已刷新为另一套合成规则'
+    changedRuleModal.success({ confirm: true })
+    assert.strictEqual(changedRuleSubmitCalls, 0, '确认框展示后分佣规则变化时必须要求用户重新确认')
+  } finally {
+    wx.showModal = originalShowModal
+  }
+}
+
+async function testUploadMediaPickerSessionBoundary() {
+  installApiStub({})
+  const definition = loadPage(uploadPagePath)
+  const originalChooseMedia = wx.chooseMedia
+  let pickerOptions = null
+  wx.chooseMedia = (options) => { pickerOptions = options }
+  const syntheticVideo = {
+    tempFiles: [{ tempFilePath: '/tmp/account-a-private.mp4', size: 1024 }]
+  }
+
+  try {
+    authToken = 'TOKEN-MEDIA-A'
+    authSessionKey = 'SESSION-MEDIA-A'
+    const switchedPage = makePage(definition)
+    switchedPage._pageActive = true
+    switchedPage.chooseVideo()
+    authToken = 'TOKEN-MEDIA-B'
+    authSessionKey = 'SESSION-MEDIA-B'
+    pickerOptions.success(syntheticVideo)
+    assert.strictEqual(switchedPage.data.videoPath, '', 'A 打开的旧视频选择器不得把本地文件写进 B 草稿')
+    assert.strictEqual(switchedPage.data.videoFile, null, 'A→B 后迟到视频对象必须被丢弃')
+
+    authToken = 'TOKEN-MEDIA-UNLOAD'
+    authSessionKey = 'SESSION-MEDIA-UNLOAD'
+    const unloadedPage = makePage(definition)
+    unloadedPage._pageActive = true
+    unloadedPage.chooseVideo()
+    unloadedPage.onUnload()
+    pickerOptions.success(syntheticVideo)
+    assert.strictEqual(unloadedPage.data.videoPath, '', '上传页卸载后迟到视频选择结果不得回写')
+
+    authToken = 'TOKEN-MEDIA-CURRENT'
+    authSessionKey = 'SESSION-MEDIA-CURRENT'
+    const currentPage = makePage(definition)
+    currentPage._pageActive = true
+    currentPage.chooseVideo()
+    pickerOptions.success(syntheticVideo)
+    assert.strictEqual(currentPage.data.videoPath, '/tmp/account-a-private.mp4', '同页面同会话选择视频仍必须正常回填')
+  } finally {
+    wx.chooseMedia = originalChooseMedia
+  }
+}
+
 async function testChangePasswordUnloadFailure() {
   const changePasswordResult = deferred()
   const originalShowModal = wx.showModal
@@ -449,6 +573,8 @@ async function run() {
       'upload-edit-race': testUploadEditableRaceAndReset,
       'upload-submit-switch': testUploadSubmitAccountSwitch,
       'upload-create-draft-switch': testUploadCreateDraftSessionReset,
+      'upload-confirmation-switch': testUploadConfirmationSessionBoundary,
+      'upload-media-picker-switch': testUploadMediaPickerSessionBoundary,
       'change-password-unload': testChangePasswordUnloadFailure,
       'change-password-session-switch': testChangePasswordSessionReset,
       'auth-prefill-dirty': testAuthPrefillDoesNotOverwriteEdits
@@ -535,6 +661,8 @@ async function run() {
   await testUploadEditableRaceAndReset()
   await testUploadSubmitAccountSwitch()
   await testUploadCreateDraftSessionReset()
+  await testUploadConfirmationSessionBoundary()
+  await testUploadMediaPickerSessionBoundary()
   await testChangePasswordUnloadFailure()
   await testChangePasswordSessionReset()
   await testAuthPrefillDoesNotOverwriteEdits()

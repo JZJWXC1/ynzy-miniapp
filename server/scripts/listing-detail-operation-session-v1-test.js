@@ -12,6 +12,7 @@ let authSessionKey = 'SESSION-DETAIL-A'
 let toasts = []
 let modals = []
 let hideLoadingCalls = 0
+let phoneCallOptions = null
 
 global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 global.wx = {
@@ -23,6 +24,7 @@ global.wx = {
   navigateTo() {},
   redirectTo() {},
   switchTab() {},
+  makePhoneCall(options) { phoneCallOptions = options },
   chooseMedia(options) {
     options.success({ tempFiles: [{ tempFilePath: '/tmp/showing-a.jpg', size: 1024 }] })
   }
@@ -62,6 +64,7 @@ function makePage(definition) {
   const page = Object.assign({}, definition)
   page.data = JSON.parse(JSON.stringify(definition.data || {}))
   page.setData = function setData(patch, callback) {
+    if (page._pageActive === false) page._writesAfterUnload = Number(page._writesAfterUnload || 0) + 1
     Object.keys(patch || {}).forEach((key) => setAtPath(page.data, key, patch[key]))
     if (typeof callback === 'function') callback()
   }
@@ -155,6 +158,52 @@ async function testShowingSessionBoundary() {
   assert.strictEqual(page.data.showingPhotoPath, '', '会话变化后的迟到带看结果不得写入页面')
 }
 
+async function testShowingConfirmationBoundary() {
+  const definition = loadDefinition({})
+
+  authToken = 'TOKEN-SHOWING-MODAL-A'
+  authSessionKey = 'SESSION-SHOWING-MODAL-A'
+  const switchedPage = makePage(definition)
+  switchedPage.authTokenSnapshot = authSessionKey
+  switchedPage.setData({ listing: { id: 'L-SHOWING-MODAL-A' }, isVerified: true })
+  let switchedSubmitCalls = 0
+  switchedPage.submitShowingProof = () => { switchedSubmitCalls += 1 }
+  modals = []
+  switchedPage.recordShowing()
+  const switchedModal = modals.pop()
+  assert.ok(switchedModal && typeof switchedModal.success === 'function', '记录带看前必须显示拍照确认框')
+  authToken = 'TOKEN-SHOWING-MODAL-B'
+  authSessionKey = 'SESSION-SHOWING-MODAL-B'
+  switchedModal.success({ confirm: true })
+  assert.strictEqual(switchedSubmitCalls, 0, 'A 打开的旧带看确认框不得在 B 会话启动相机')
+
+  authToken = 'TOKEN-SHOWING-MODAL-UNLOAD'
+  authSessionKey = 'SESSION-SHOWING-MODAL-UNLOAD'
+  const unloadedPage = makePage(definition)
+  unloadedPage.authTokenSnapshot = authSessionKey
+  unloadedPage.setData({ listing: { id: 'L-SHOWING-MODAL-UNLOAD' }, isVerified: true })
+  let unloadedSubmitCalls = 0
+  unloadedPage.submitShowingProof = () => { unloadedSubmitCalls += 1 }
+  modals = []
+  unloadedPage.recordShowing()
+  const unloadedModal = modals.pop()
+  unloadedPage.onUnload()
+  unloadedModal.success({ confirm: true })
+  assert.strictEqual(unloadedSubmitCalls, 0, '详情页卸载后旧带看确认框不得启动相机')
+
+  authToken = 'TOKEN-SHOWING-MODAL-CURRENT'
+  authSessionKey = 'SESSION-SHOWING-MODAL-CURRENT'
+  const currentPage = makePage(definition)
+  currentPage.authTokenSnapshot = authSessionKey
+  currentPage.setData({ listing: { id: 'L-SHOWING-MODAL-CURRENT' }, isVerified: true })
+  let currentOperation = null
+  currentPage.submitShowingProof = (operation) => { currentOperation = operation }
+  modals = []
+  currentPage.recordShowing()
+  modals.pop().success({ confirm: true })
+  assert.ok(currentOperation && currentOperation.listingId === 'L-SHOWING-MODAL-CURRENT', '同会话确认必须把点击时冻结的房源上下文传给拍照链路')
+}
+
 async function testSessionResetAndUnload() {
   authToken = 'TOKEN-RESET-A'
   authSessionKey = 'SESSION-RESET-A'
@@ -199,13 +248,36 @@ async function testSessionResetAndUnload() {
   assert.strictEqual(unloadShareCalls, 0, '详情页卸载后不得继续迟到的视频分享链路')
 }
 
+async function testPhoneCompleteUnloadBoundary() {
+  authToken = 'TOKEN-PHONE-UNLOAD'
+  authSessionKey = 'SESSION-PHONE-UNLOAD'
+  const definition = loadDefinition({})
+  const page = makePage(definition)
+  page.authTokenSnapshot = authSessionKey
+  page.profileAuthToken = authSessionKey
+  page.setData({
+    currentUserId: 'U-PHONE-UNLOAD',
+    listing: { id: 'L-PHONE-UNLOAD', landlordPhone: '13900000001' },
+    sensitiveVisible: true,
+    phoneCallBusy: false
+  })
+  phoneCallOptions = null
+  page.callLandlord()
+  assert.ok(phoneCallOptions && typeof phoneCallOptions.complete === 'function', '拨号必须注册完成回调')
+  page.onUnload()
+  phoneCallOptions.complete()
+  assert.strictEqual(page._writesAfterUnload || 0, 0, '详情页卸载后拨号完成回调不得写已销毁页面')
+}
+
 async function run() {
   toasts = []
   modals = []
   hideLoadingCalls = 0
   await testVideoShareSessionBoundary()
   await testShowingSessionBoundary()
+  await testShowingConfirmationBoundary()
   await testSessionResetAndUnload()
+  await testPhoneCompleteUnloadBoundary()
   console.log('listing-detail-operation-session-v1-test passed')
 }
 

@@ -2,6 +2,7 @@ const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 const { LISTING_FEATURE_OPTIONS, NO_FEATURE } = require('../../utils/listing-features')
+const { consumePendingFilterEnvelope } = require('../../utils/pending-filter-storage')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
@@ -163,18 +164,20 @@ Page({
   applyPendingListingFilters() {
     let pendingFilters = null
     try {
-      pendingFilters = wx.getStorageSync(pendingListingFiltersKey)
+      const storedPending = wx.getStorageSync(pendingListingFiltersKey)
+      if (storedPending) {
+        try { wx.removeStorageSync(pendingListingFiltersKey) } catch (error) {}
+      }
+      pendingFilters = consumePendingFilterEnvelope(
+        storedPending,
+        currentAuthSessionKey()
+      )
     } catch (error) {
       pendingFilters = null
     }
     if (!pendingFilters || typeof pendingFilters !== 'object') return false
 
     this.setListingState(normalizeListingState(pendingFilters), () => {
-      try {
-        wx.removeStorageSync(pendingListingFiltersKey)
-      } catch (error) {
-        // 存储清理失败不阻断房源筛选展示。
-      }
       this.loadListings()
     })
     return true

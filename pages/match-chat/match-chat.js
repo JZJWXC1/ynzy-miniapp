@@ -3,6 +3,7 @@ const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
+const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
 const {
   NO_FEATURE,
   parseFeatureInput
@@ -405,7 +406,7 @@ Page({
     } else if (typeof controller.release === 'function') {
       controller.release()
     }
-    if (this.data.isVoiceListening) {
+    if (this._pageActive !== false && this.data.isVoiceListening) {
       this.setData({ isVoiceListening: false })
     }
   },
@@ -418,12 +419,18 @@ Page({
   },
 
   initVoiceInput() {
+    const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
+    this._voiceControllerGeneration = voiceControllerGeneration
+    const isCurrentVoiceController = () => (
+      this._pageActive !== false && this._voiceControllerGeneration === voiceControllerGeneration
+    )
     if (this.voiceController && typeof this.voiceController.release === 'function') {
       this.voiceController.release()
     }
     const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        if (!isCurrentVoiceController()) return
         this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: true, voicePhase: 'recording', voiceCancelActive: false, voiceText: '' })
         // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
@@ -432,15 +439,18 @@ Page({
         }
       },
       onRecognize: (text) => {
+        if (!isCurrentVoiceController()) return
         const recognizedText = String(text || '').trim()
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText
-        // 录音中实时字幕只进浮层，松开确认后再发送（仿微信按住说话）。
+        // 录音中实时字幕只进浮层；识别完成后填入输入框，找房仍由用户单独发送。
         this.setData({ voiceText: text })
       },
       onTranscribing: () => {
+        if (!isCurrentVoiceController()) return
         if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' })
       },
       onStop: (text) => {
+        if (!isCurrentVoiceController()) return
         const content = String(text || this.lastVoiceRecognizedText || '').trim()
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
         if (!content) {
@@ -448,15 +458,15 @@ Page({
           return
         }
         this.lastVoiceRecognizedText = ''
-        this.setData({ voiceText: content, inputText: '' }, () => {
-          this.submitNeed(content, 'voice')
-        })
+        this.setData({ voiceText: content, inputText: content })
       },
       onCancel: () => {
+        if (!isCurrentVoiceController()) return
         this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false, voiceText: '' })
       },
       onError: (error) => {
+        if (!isCurrentVoiceController()) return
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
         wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
@@ -771,6 +781,13 @@ Page({
     const reason = reasonOptions.find((item) => item.code === reasonCode)
     if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent || !reason) return
     const requestSessionKey = this.syncAuthSession().key
+    const requestFeedbackMessageId = String(message.feedbackMessageId || '')
+    const isCurrentFeedback = () => {
+      if (this._pageActive === false || currentAuthSessionKey() !== requestSessionKey) return false
+      const currentMessage = this.findMessage(messageId) || {}
+      return String(currentMessage.feedbackMessageId || '') === requestFeedbackMessageId &&
+        !currentMessage.feedbackSent
+    }
     this.updateMessage(messageId, (item) => {
       item.feedbackLoading = true
       item.feedbackReasonCode = reasonCode
@@ -784,8 +801,8 @@ Page({
       feedbackType,
       reasonCode
     }).then(() => {
-      if (currentAuthSessionKey() !== requestSessionKey) {
-        this.syncAuthSession()
+      if (!isCurrentFeedback()) {
+        if (this._pageActive !== false && currentAuthSessionKey() !== requestSessionKey) this.syncAuthSession()
         return
       }
       this.updateMessage(messageId, (item) => {
@@ -798,8 +815,8 @@ Page({
       })
       wx.showToast({ title: '已记录反馈', icon: 'none' })
     }).catch(() => {
-      if (currentAuthSessionKey() !== requestSessionKey) {
-        this.syncAuthSession()
+      if (!isCurrentFeedback()) {
+        if (this._pageActive !== false && currentAuthSessionKey() !== requestSessionKey) this.syncAuthSession()
         return
       }
       this.updateMessage(messageId, (item) => {
@@ -946,7 +963,7 @@ Page({
       const id = event.currentTarget.dataset.id
       if (id) filters.listingIds = [id]
     }
-    wx.setStorageSync('ynzy_pending_map_filters', filters)
+    wx.setStorageSync('ynzy_pending_map_filters', createPendingFilterEnvelope(filters, currentAuthSessionKey()))
     wx.switchTab({ url: '/pages/map/map' })
   }
 })

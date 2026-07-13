@@ -260,6 +260,7 @@ Page({
   },
 
   onLoad(options) {
+    this._pageActive = true
     this.authTokenSnapshot = currentAuthSessionKey()
     this.authHadLoginSnapshot = Boolean(currentAuthToken())
     const id = options && options.id ? String(options.id) : ''
@@ -274,6 +275,7 @@ Page({
   },
 
   onShow() {
+    this._pageActive = true
     const nextToken = currentAuthSessionKey()
     const previousHadLogin = this.authHadLoginSnapshot === true
     const nextHadLogin = Boolean(currentAuthToken())
@@ -286,6 +288,8 @@ Page({
     this.authTokenSnapshot = nextToken
     this.authHadLoginSnapshot = nextHadLogin
     this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
+    this._submitConfirmationSeq = Number(this._submitConfirmationSeq || 0) + 1
+    this._mediaOperationSeq = Number(this._mediaOperationSeq || 0) + 1
     if (wx.hideLoading) wx.hideLoading()
 
     const editingListingId = String(this.editingListingId || (this.data.mode === 'edit' ? this.data.listingId : '') || '')
@@ -334,10 +338,71 @@ Page({
   },
 
   onUnload() {
+    this._pageActive = false
     this._currentUserRequestSeq = Number(this._currentUserRequestSeq || 0) + 1
     this._editableListingRequestSeq = Number(this._editableListingRequestSeq || 0) + 1
     this._submitRequestSeq = Number(this._submitRequestSeq || 0) + 1
+    this._submitConfirmationSeq = Number(this._submitConfirmationSeq || 0) + 1
+    this._mediaOperationSeq = Number(this._mediaOperationSeq || 0) + 1
+    this.activeCommissionRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     if (wx.hideLoading) wx.hideLoading()
+  },
+
+  beginUploadPageOperation(sequenceField, extra = {}) {
+    const sequence = Number(this[sequenceField] || 0) + 1
+    this[sequenceField] = sequence
+    return Object.assign({
+      sequenceField,
+      sequence,
+      sessionKey: currentAuthSessionKey()
+    }, extra)
+  },
+
+  isUploadPageOperationCurrent(operation) {
+    return Boolean(operation) &&
+      this._pageActive !== false &&
+      this[operation.sequenceField] === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey
+  },
+
+  submitDraftFingerprint() {
+    const file = this.data.videoFile || {}
+    return JSON.stringify({
+      mode: this.data.mode,
+      listingId: this.data.listingId,
+      form: this.data.form || {},
+      videoPath: this.data.videoPath || '',
+      videoFile: {
+        tempFilePath: file.tempFilePath || '',
+        fileName: file.fileName || '',
+        size: Number(file.size || 0)
+      },
+      existingVideoUrl: this.data.existingVideoUrl || '',
+      existingVideoKey: this.data.existingVideoKey || '',
+      commissionConfigReady: Boolean(this.data.commissionConfigReady),
+      commissionRuleText: this.data.commissionRuleText || '',
+      commissionConfig: this.data.commissionConfig || null,
+      commissionRequestId: this.activeCommissionRequestId || ''
+    })
+  },
+
+  beginSubmitConfirmation(validation) {
+    return this.beginUploadPageOperation('_submitConfirmationSeq', {
+      draftFingerprint: this.submitDraftFingerprint(),
+      validationFingerprint: JSON.stringify({
+        address: validation.address,
+        layout: validation.layout,
+        communityMatched: Boolean(validation.communityMatched),
+        communityMatchStatus: validation.communityMatchStatus || '',
+        needsManualReview: Boolean(validation.needsManualReview),
+        manualReviewReason: validation.manualReviewReason || ''
+      })
+    })
+  },
+
+  isSubmitConfirmationCurrent(operation) {
+    return this.isUploadPageOperationCurrent(operation) &&
+      operation.draftFingerprint === this.submitDraftFingerprint()
   },
 
   loadCurrentUser() {
@@ -388,8 +453,11 @@ Page({
   },
 
   loadCommissionConfig() {
+    if (this._pageActive === false) return
     const requestId = `commission-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeCommissionRequestId = requestId
+    this._submitConfirmationSeq = Number(this._submitConfirmationSeq || 0) + 1
+    this._commissionRetryPromptSeq = Number(this._commissionRetryPromptSeq || 0) + 1
     this.setData({
       commissionConfigLoading: true,
       commissionConfigReady: false,
@@ -397,7 +465,7 @@ Page({
       commissionRuleText: this.data.form.companyListing ? '公司房源成交不抽佣，带看中介全佣' : '正在同步分佣规则'
     })
     apiService.getCommissionConfig().then((config) => {
-      if (this.activeCommissionRequestId !== requestId) return
+      if (this._pageActive === false || this.activeCommissionRequestId !== requestId) return
       const normalized = normalizeCommissionConfig(config)
       this.setData({
         commissionConfig: normalized,
@@ -407,7 +475,7 @@ Page({
         commissionRuleText: commissionRuleText(this.data.form, normalized)
       })
     }).catch(() => {
-      if (this.activeCommissionRequestId !== requestId) return
+      if (this._pageActive === false || this.activeCommissionRequestId !== requestId) return
       this.setData({
         commissionConfig: null,
         commissionConfigLoading: false,
@@ -420,6 +488,7 @@ Page({
   },
 
   retryCommissionConfig() {
+    if (this._pageActive === false) return
     if (!this.data.commissionConfigLoading) this.loadCommissionConfig()
   },
 
@@ -429,13 +498,14 @@ Page({
       wx.showToast({ title: '正在同步分佣规则，请稍候', icon: 'none' })
       return false
     }
+    const retryOperation = this.beginUploadPageOperation('_commissionRetryPromptSeq')
     wx.showModal({
       title: '分佣规则尚未同步',
       content: '为避免展示错误比例，请先重新读取后台当前分佣规则。',
       cancelText: '暂不提交',
       confirmText: '重新加载',
       success: (res) => {
-        if (res.confirm) this.retryCommissionConfig()
+        if (res.confirm && this.isUploadPageOperationCurrent(retryOperation)) this.retryCommissionConfig()
       }
     })
     return false
@@ -582,6 +652,7 @@ Page({
   },
 
   chooseVideo() {
+    const operation = this.beginUploadPageOperation('_mediaOperationSeq')
     wx.chooseMedia({
       count: 1,
       mediaType: ['video'],
@@ -590,6 +661,7 @@ Page({
       sizeType: ['compressed'],
       maxDuration: 60,
       success: (res) => {
+        if (!this.isUploadPageOperationCurrent(operation)) return
         const file = res.tempFiles && res.tempFiles[0]
         const tempFilePath = file ? file.tempFilePath : ''
         // 大小预检：超过上限直接拦下，避免弱网白传几分钟后失败
@@ -839,8 +911,26 @@ Page({
     return payload
   },
 
-  async submitWithVideo(validation) {
+  async submitWithVideo(validation, confirmationOperation) {
     if (this.data.submitting) return
+
+    if (confirmationOperation) {
+      if (!this.isSubmitConfirmationCurrent(confirmationOperation)) return
+      const currentValidation = this.validateForm()
+      if (!currentValidation.ok) return
+      const currentValidationFingerprint = JSON.stringify({
+        address: currentValidation.address,
+        layout: currentValidation.layout,
+        communityMatched: Boolean(currentValidation.communityMatched),
+        communityMatchStatus: currentValidation.communityMatchStatus || '',
+        needsManualReview: Boolean(currentValidation.needsManualReview),
+        manualReviewReason: currentValidation.manualReviewReason || ''
+      })
+      if (currentValidationFingerprint !== confirmationOperation.validationFingerprint) return
+      validation = currentValidation
+      // 消费确认上下文，防止同一原生回调被重复触发而二次写入。
+      this._submitConfirmationSeq = Number(this._submitConfirmationSeq || 0) + 1
+    }
 
     const requestSeq = Number(this._submitRequestSeq || 0) + 1
     const requestSessionKey = currentAuthSessionKey()
@@ -849,7 +939,9 @@ Page({
     const submitListingId = this.data.listingId
     this._submitRequestSeq = requestSeq
     const isCurrentRequest = () => (
-      this._submitRequestSeq === requestSeq && currentAuthSessionKey() === requestSessionKey
+      this._pageActive !== false &&
+      this._submitRequestSeq === requestSeq &&
+      currentAuthSessionKey() === requestSessionKey
     )
     const assertCurrentRequest = () => {
       if (!isCurrentRequest()) throw staleAuthSessionError()
@@ -983,6 +1075,7 @@ Page({
     const listingTip = this.data.form.companyListing
       ? '公司房源仅管理员维护。'
       : `合作房源 / ${this.data.form.ownerType || '二房东房源'}，${reviewReasons.length ? `${reviewReasons.join('；')}。` : normalTip}`
+    const confirmationOperation = this.beginSubmitConfirmation(validation)
 
     wx.showModal({
       title: this.data.mode === 'edit' ? '确认修改房源' : '确认上传房源',
@@ -990,7 +1083,8 @@ Page({
       confirmText: this.data.mode === 'edit' ? '保存修改' : '确认上传',
       success: (res) => {
         if (!res.confirm) return
-        this.submitWithVideo(validation)
+        if (!this.isSubmitConfirmationCurrent(confirmationOperation)) return
+        this.submitWithVideo(validation, confirmationOperation)
       }
     })
   }

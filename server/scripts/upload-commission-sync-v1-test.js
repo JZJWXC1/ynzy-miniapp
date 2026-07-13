@@ -9,10 +9,12 @@ const uploadWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'upload', 'uploa
 
 let toasts = []
 let modals = []
+let authToken = 'test-token'
+let authSessionKey = 'test-session'
 
-global.getApp = () => ({ globalData: { authToken: 'test-token' } })
+global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 global.wx = {
-  getStorageSync() { return 'test-token' },
+  getStorageSync() { return authToken },
   showToast(options) { toasts.push(options) },
   showModal(options) { modals.push(options) },
   showLoading() {},
@@ -67,6 +69,16 @@ function validConfig(secondLandlordRate = 37) {
 
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 async function run() {
@@ -148,6 +160,58 @@ async function run() {
   resolveStaleConfig(validConfig(44))
   await flushPromises()
   assert.ok(racePage.data.commissionRuleText.includes('33%'), '过期配置响应不得覆盖最新服务端比例')
+
+  const unloadConfig = deferred()
+  const unloadDefinition = loadDefinition({
+    getCommissionConfig() { return unloadConfig.promise }
+  })
+  const unloadPage = makePage(unloadDefinition)
+  unloadPage.loadCommissionConfig()
+  unloadPage.onUnload()
+  unloadConfig.resolve(validConfig(41))
+  await flushPromises()
+  assert.strictEqual(unloadPage.data.commissionConfigReady, false, '上传页卸载后迟到配置不得写回已销毁页面')
+  assert.ok(!unloadPage.data.commissionRuleText.includes('41%'), '上传页卸载后迟到配置不得覆盖页面状态')
+
+  let retryRequestCalls = 0
+  const retryPromptDefinition = loadDefinition({
+    getCommissionConfig() {
+      retryRequestCalls += 1
+      return Promise.resolve(validConfig(32))
+    }
+  })
+  authToken = 'TOKEN-RETRY-A'
+  authSessionKey = 'SESSION-RETRY-A'
+  const switchedRetryPage = makePage(retryPromptDefinition)
+  switchedRetryPage._pageActive = true
+  switchedRetryPage.setData({ commissionConfigReady: false, commissionConfigLoading: false, commissionConfigFailed: true })
+  switchedRetryPage.ensureCommissionConfigReady()
+  const switchedRetryModal = modals.pop()
+  authToken = 'TOKEN-RETRY-B'
+  authSessionKey = 'SESSION-RETRY-B'
+  switchedRetryModal.success({ confirm: true })
+  assert.strictEqual(retryRequestCalls, 0, 'A 打开的分佣重试框不得在 B 会话发请求')
+
+  authToken = 'TOKEN-RETRY-UNLOAD'
+  authSessionKey = 'SESSION-RETRY-UNLOAD'
+  const unloadedRetryPage = makePage(retryPromptDefinition)
+  unloadedRetryPage._pageActive = true
+  unloadedRetryPage.setData({ commissionConfigReady: false, commissionConfigLoading: false, commissionConfigFailed: true })
+  unloadedRetryPage.ensureCommissionConfigReady()
+  const unloadedRetryModal = modals.pop()
+  unloadedRetryPage.onUnload()
+  unloadedRetryModal.success({ confirm: true })
+  assert.strictEqual(retryRequestCalls, 0, '上传页卸载后旧分佣重试框不得发请求')
+
+  authToken = 'TOKEN-RETRY-CURRENT'
+  authSessionKey = 'SESSION-RETRY-CURRENT'
+  const currentRetryPage = makePage(retryPromptDefinition)
+  currentRetryPage._pageActive = true
+  currentRetryPage.setData({ commissionConfigReady: false, commissionConfigLoading: false, commissionConfigFailed: true })
+  currentRetryPage.ensureCommissionConfigReady()
+  modals.pop().success({ confirm: true })
+  await flushPromises()
+  assert.strictEqual(retryRequestCalls, 1, '同页面同会话确认重试仍必须请求一次')
 
   const payload = successPage.buildSubmitPayload({
     address: '测试地址',

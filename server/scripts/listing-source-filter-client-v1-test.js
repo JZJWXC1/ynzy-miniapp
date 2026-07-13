@@ -171,8 +171,9 @@ async function run() {
     }
     mapPage.openAreaListings()
     assert.ok(storedListingFilters, `地图 ${sourceType} 必须把筛选条件写给列表页`)
-    assert.strictEqual(storedListingFilters.category, sourceType, `地图 ${sourceType} 返回列表时不得丢失来源`)
-    assert.strictEqual(storedListingFilters.filters.rentMode, '整租', '整租/合租必须继续放在筛选面板，不得冒充顶部来源分类')
+    assert.ok(storedListingFilters.ownerSessionKey, `地图 ${sourceType} 筛选必须绑定发起会话`)
+    assert.strictEqual(storedListingFilters.payload.category, sourceType, `地图 ${sourceType} 返回列表时不得丢失来源`)
+    assert.strictEqual(storedListingFilters.payload.filters.rentMode, '整租', '整租/合租必须继续放在筛选面板，不得冒充顶部来源分类')
     assert.strictEqual(switchedTab, '/pages/listings/listings')
   })
 

@@ -161,6 +161,7 @@ Page({
     this.authSessionSnapshot = nextSessionKey
     if (changed) {
       this._ownerRequestSeq = Number(this._ownerRequestSeq || 0) + 1
+      this._ownerVerificationSeq = Number(this._ownerVerificationSeq || 0) + 1
       this.activeCompanyRequestId = `session-reset-${Date.now()}-${Math.floor(Math.random() * 10000)}`
       if (this.ownerFilterTimer) {
         clearTimeout(this.ownerFilterTimer)
@@ -183,6 +184,7 @@ Page({
   onUnload() {
     this._pageActive = false
     this._ownerRequestSeq = Number(this._ownerRequestSeq || 0) + 1
+    this._ownerVerificationSeq = Number(this._ownerVerificationSeq || 0) + 1
     this.activeCompanyRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     if (this.companyFilterTimer) clearTimeout(this.companyFilterTimer)
     if (this.ownerFilterTimer) clearTimeout(this.ownerFilterTimer)
@@ -373,9 +375,12 @@ Page({
     if (!id) return;
     const item = (this.data.listings || []).find((row) => row.id === id) || {};
     const phone = dataset.phone || item.landlordPhone || '';
+    const operation = this.beginOwnerVerification(id)
 
     const submitOutcome = (outcome) => {
+      if (!this.isOwnerVerificationCurrent(operation)) return
       apiService.verifyMyListing(id, outcome).then(() => {
+        if (!this.isOwnerVerificationCurrent(operation)) return
         wx.showToast({
           title: outcome === '未出租' ? '已更新·房态已维护' : '已下架该房源',
           icon: 'success'
@@ -383,15 +388,18 @@ Page({
         // 重新拉取并按当前筛选重算，避免直接展示未过滤的全量列表。
         this.refresh();
       }).catch(() => {
+        if (!this.isOwnerVerificationCurrent(operation)) return
         wx.showToast({ title: '房态更新失败', icon: 'none' });
       });
     };
 
     // 电话联系房东后，按结果三选一：未出租=已维护（重置核验周期）；已出租/不租了=自动下架进后台资产池。
     const askOutcome = () => {
+      if (!this.isOwnerVerificationCurrent(operation)) return
       wx.showActionSheet({
         itemList: ['已出租', '未出租', '不租了'],
         success: (res) => {
+          if (!this.isOwnerVerificationCurrent(operation)) return
           const outcome = ['已出租', '未出租', '不租了'][res.tapIndex];
           if (!outcome) return;
           submitOutcome(outcome);
@@ -403,12 +411,33 @@ Page({
     if (phone) {
       wx.makePhoneCall({
         phoneNumber: String(phone),
-        complete: () => askOutcome()
+        complete: () => {
+          if (this.isOwnerVerificationCurrent(operation)) askOutcome()
+        }
       });
     } else {
       wx.showToast({ title: '未登记房东电话，请先补充', icon: 'none' });
       askOutcome();
     }
+  },
+
+  beginOwnerVerification(listingId) {
+    const sequence = Number(this._ownerVerificationSeq || 0) + 1
+    this._ownerVerificationSeq = sequence
+    return {
+      sequence,
+      sessionKey: currentAuthSessionKey(),
+      listingId: String(listingId || '')
+    }
+  },
+
+  isOwnerVerificationCurrent(operation) {
+    return Boolean(operation) &&
+      this._pageActive !== false &&
+      !this.data.isCompanyMode &&
+      this._ownerVerificationSeq === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey &&
+      (this.allOwnerListings || []).some((item) => String(item.id || '') === operation.listingId)
   },
 
   editListing(event) {

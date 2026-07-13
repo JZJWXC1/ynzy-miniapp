@@ -3,6 +3,7 @@ const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
@@ -739,7 +740,7 @@ Page({
     } else if (typeof controller.release === 'function') {
       controller.release();
     }
-    if (this.data.isVoiceListening) {
+    if (this._pageActive !== false && this.data.isVoiceListening) {
       this.setData({ isVoiceListening: false });
     }
   },
@@ -752,11 +753,17 @@ Page({
   },
 
   initVoiceInput() {
+    const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
+    this._voiceControllerGeneration = voiceControllerGeneration
+    const isCurrentVoiceController = () => (
+      this._pageActive !== false && this._voiceControllerGeneration === voiceControllerGeneration
+    )
     if (this.voiceController && typeof this.voiceController.release === 'function') {
       this.voiceController.release();
     }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        if (!isCurrentVoiceController()) return
         this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: true,
@@ -771,15 +778,18 @@ Page({
         }
       },
       onRecognize: (text) => {
+        if (!isCurrentVoiceController()) return
         const recognizedText = String(text || '').trim();
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText;
-        // 录音中实时字幕只更新浮层，松开确认后再填入框并搜索（仿微信按住说话）。
+        // 录音中实时字幕只更新浮层；识别完成后仅填入输入框，找房仍由用户单独点击发起。
         this.setData({ voiceText: text });
       },
       onTranscribing: () => {
+        if (!isCurrentVoiceController()) return
         if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' });
       },
       onStop: (text) => {
+        if (!isCurrentVoiceController()) return
         const content = String(text || this.lastVoiceRecognizedText || '').trim();
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
         if (!content) {
@@ -787,9 +797,10 @@ Page({
           return;
         }
         this.lastVoiceRecognizedText = '';
-        this.applyVoiceText(content, true);
+        this.applyVoiceText(content);
       },
       onCancel: () => {
+        if (!isCurrentVoiceController()) return
         this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: false,
@@ -800,6 +811,7 @@ Page({
         });
       },
       onError: (error) => {
+        if (!isCurrentVoiceController()) return
         this.setData({
           isVoiceListening: false,
           voicePhase: '',
@@ -1040,7 +1052,7 @@ Page({
     if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp });
   },
 
-  // 按住说话：松开——取消态则丢弃，否则停止录音并发送识别结果
+  // 按住说话：松开——取消态则丢弃，否则停止录音并等待识别文字回填
   onVoiceTouchEnd() {
     this.voicePressing = false;
     const controller = this.voiceController;
@@ -1052,7 +1064,7 @@ Page({
       controller.cancel();
       return;
     }
-    // 已在录音则停止发送；若极快点按（start 回调还没来）由 onStart 里的 voicePressing 守卫收尾。
+    // 已在录音则停止；若极快点按（start 回调还没来）由 onStart 里的 voicePressing 守卫收尾。
     if (this.data.voicePhase === 'recording') {
       try { controller.stop(); } catch (error) { controller.cancel(); }
     }
@@ -1070,15 +1082,13 @@ Page({
 
   noop() {},
 
-  applyVoiceText(text, shouldMatch) {
+  applyVoiceText(text) {
     const nextData = {
       assistantText: text,
       voiceText: text,
       voiceTip: '已识别，可继续修改'
     };
-    this.setData(nextData, () => {
-      if (shouldMatch) this.runTextMatch();
-    });
+    this.setData(nextData);
   },
 
   handleAssistantInput(event) {
@@ -1157,7 +1167,7 @@ Page({
       }
     };
     try {
-      wx.setStorageSync(pendingListingFiltersKey, filters);
+      wx.setStorageSync(pendingListingFiltersKey, createPendingFilterEnvelope(filters));
     } catch (error) {
       wx.showToast({ title: '筛选条件保存失败', icon: 'none' });
       return;
