@@ -96,7 +96,7 @@ assert.ok(api.includes('function getFavorites'), '客户端 API 必须提供服�
 assert.ok(api.includes('function setFavorite'), '客户端 API 必须提供幂等目标态写入')
 assert.ok(api.includes("method: desired ? 'PUT' : 'DELETE'"), '收藏接口必须使用 PUT/DELETE 目标态，不得使用 toggle')
 const favoriteApiStart = api.indexOf('function getFavoriteIds')
-const favoriteApiEnd = api.indexOf('function getProfileState')
+const favoriteApiEnd = api.indexOf('function buildMockCompanySheetSnapshot')
 assert.ok(favoriteApiStart >= 0 && favoriteApiEnd > favoriteApiStart, '收藏 API 安全扫描切片边界必须有效')
 assert.ok(!/userId\s*:|viewerId\s*:|role\s*:|maintainerId\s*:/.test(
   api.slice(favoriteApiStart, favoriteApiEnd)

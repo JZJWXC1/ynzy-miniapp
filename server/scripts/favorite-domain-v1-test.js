@@ -350,4 +350,22 @@ function makeDb() {
   assert.ok(!/parseBody\s*\(/.test(routeBlock), '收藏写路由不得解析客户端身份正文')
 }
 
+// 登录收藏卡的内部展示字段和历史状态仍需做值级脱敏，不能因字段名“非敏感”就信任存量文本。
+{
+  const db = makeDb()
+  db.listings[0].manualReviewReason = 'SYNTHETIC-INTERNAL-REASON contact privateid 19900000001 1栋1单元101室'
+  db.listings[0].status = '在租 19900000001'
+  db.favorites = [
+    { id: 'FV-SAFE-DISPLAY', userId: 'U1', listingId: 'L1', createdAt: '2026-07-10T13:00:00.000Z' }
+  ]
+  const row = domain.favoriteListings(db, 'U1')[0]
+  const text = JSON.stringify(row)
+  assert.ok(row, '登录收藏必须返回现存房源')
+  assert.ok(!text.includes('privateid'), '收藏内部展示字段必须值级清除联系方式')
+  assert.ok(!text.includes('19900000001'), '收藏内部展示字段和状态不得夹带私号')
+  assert.ok(!text.includes('1栋1单元101室'), '收藏内部展示字段不得夹带精确房号')
+  assert.strictEqual(row.status, '在租', '收藏状态必须使用受控枚举投影')
+  assert.ok(!String(row.sub || '').includes('19900000001'), '收藏 sub 不得拼入原始历史状态')
+}
+
 console.log('favorite-domain-v1-test passed')

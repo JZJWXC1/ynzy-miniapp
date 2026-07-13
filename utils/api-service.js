@@ -2,15 +2,52 @@ const apiClient = require('./api-client')
 const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
+const { anonymousPublicRequestData } = require('./public-request-safety')
 
 const ASSISTANT_CHAT_TIMEOUT_MS = 60000
 const LISTING_SOURCE_TYPES = ['公司房源', '业主房源', '二房东房源']
 
 function mockListingAccessFilter(filter) {
-  const authenticated = Boolean(
-    typeof apiClient.getAuthToken === 'function' && apiClient.getAuthToken()
-  )
-  return Object.assign({}, filter || {}, { companyOnly: !authenticated })
+  const viewer = assertMockOptionalAuthorization()
+  return Object.assign({}, filter || {}, {
+    publicGuest: !viewer,
+    viewerId: viewer && viewer.id ? viewer.id : ''
+  })
+}
+
+function currentMockToken() {
+  return String(typeof apiClient.getAuthToken === 'function' ? (apiClient.getAuthToken() || '') : '').trim()
+}
+
+function resolveMockViewer() {
+  const token = currentMockToken()
+  if (typeof mockData.resolveAuthSession !== 'function') return null
+  return mockData.resolveAuthSession(token)
+}
+
+function mockUnauthorizedError() {
+  const error = new Error('请先登录内部中介账号')
+  error.statusCode = 401
+  error.data = { authFailurePhase: 'pre_execution' }
+  return error
+}
+
+function requireMockLogin() {
+  const currentUser = resolveMockViewer()
+  if (currentUser && currentUser.id) return currentUser
+  throw mockUnauthorizedError()
+}
+
+function runAuthenticatedMock(action) {
+  const user = requireMockLogin()
+  return action(user)
+}
+
+function assertMockOptionalAuthorization() {
+  const token = currentMockToken()
+  const viewer = resolveMockViewer()
+  if (token && !viewer) throw mockUnauthorizedError()
+  return viewer
 }
 
 function isMissingEndpoint(error) {
@@ -327,17 +364,18 @@ function mockMapCommunities(filter = {}) {
     const community = String(item.community || '').trim()
     if (!community) return
     if (!groups[community]) {
+      const approximate = /guest-community-approximate|block-center|approximate/i.test(String(coordinate.source || ''))
       groups[community] = {
         community,
         latitude: coordinate.latitude,
         longitude: coordinate.longitude,
         coordinateSource: coordinate.source,
-        coordinateVerified: true,
-        coordinateLevel: 'verified',
-        coordinateAccuracy: 'verified',
-        coordinateStatus: '已确认小区坐标',
-        coordinateLabel: '已确认小区坐标',
-        coordinateCalloutNote: '',
+        coordinateVerified: !approximate,
+        coordinateLevel: approximate ? 'approximate' : 'verified',
+        coordinateAccuracy: approximate ? 'approximate' : 'verified',
+        coordinateStatus: approximate ? '小区位置' : '已确认小区坐标',
+        coordinateLabel: approximate ? '小区位置' : '已确认小区坐标',
+        coordinateCalloutNote: approximate ? '近似位置' : '',
         listingCount: 0,
         minRent: 0,
         maxRent: 0,
@@ -368,6 +406,7 @@ function mockMapCommunities(filter = {}) {
 function getHomeListings() {
   return apiClient.call({
     path: '/mini/home/listings',
+    publicReadAuthFallback: true,
     mock: () => mockData.getHomeListings(mockListingAccessFilter())
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
@@ -390,6 +429,7 @@ function getListings(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/listings${query}`,
+    publicReadAuthFallback: true,
     mock: () => mockData.getListings(mockListingAccessFilter(filter))
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
@@ -401,15 +441,28 @@ function getCompanyListings() {
 function getFavoriteIds() {
   return apiClient.call({
     path: '/mini/favorites/ids',
-    mock: () => mockData.getFavoriteIds()
-  }).then((ids) => (ids || []).map((id) => String(id || '')).filter(Boolean))
+    // 首页/列表卡片只把收藏态作为可选个性化；失效 token 不得阻断公共房源渲染。
+    publicReadAuthFallback: true,
+    mock: () => {
+      requireMockLogin()
+      return mockData.getFavoriteIds()
+    }
+  }).then((ids) => (ids || []).map((id) => String(id || '')).filter(Boolean)).catch((error) => {
+    // 公开读取降级完成后，匿名访问收藏端点仍会收到 401。仅在当前已无登录态时回退空集合；
+    // 若用户已切换到另一账号，则保留错误，禁止旧响应吞掉新会话异常。
+    if (error && Number(error.statusCode) === 401 && !currentMockToken()) return []
+    throw error
+  })
 }
 
 function getFavorites(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/favorites${query}`,
-    mock: () => mockData.getFavorites(filter || {})
+    mock: () => {
+      requireMockLogin()
+      return mockData.getFavorites(filter || {})
+    }
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
@@ -418,29 +471,33 @@ function setFavorite(listingId, desired) {
   return apiClient.call({
     path: `/mini/favorites/${encodeURIComponent(id)}`,
     method: desired ? 'PUT' : 'DELETE',
-    mock: () => mockData.setFavorite(id, Boolean(desired))
+    mock: () => {
+      requireMockLogin()
+      return mockData.setFavorite(id, Boolean(desired))
+    }
   })
 }
 
 function buildMockCompanySheetSnapshot() {
   return {
     title: '寓你住一起房源表',
-    sheetUrl: 'https://ccn9urs7d60k.feishu.cn/sheets/H7f8sxOrUhYCK8tev29cwSimnsl',
-    range: '',
-    updatedAt: '未连接真实飞书',
+    updatedAt: '',
     rows: [],
     rowCount: 0,
     columnCount: 9,
-    startRow: 1,
-    startCol: 1,
-    unavailable: true
+    unavailable: true,
+    sensitiveStripped: true
   }
 }
 
 function getCompanySheetSnapshot() {
   return apiClient.call({
     path: '/mini/company-sheet-snapshot',
-    mock: () => buildMockCompanySheetSnapshot()
+    publicReadAuthFallback: true,
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return buildMockCompanySheetSnapshot()
+    }
   })
 }
 
@@ -453,11 +510,9 @@ function normalizeAuthUser(result) {
 }
 
 function mockAuthPayload(user) {
-  return {
-    user,
-    token: `synthetic-mock-token-${user.id}-${Date.now()}`,
-    tokenExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000
-  }
+  if (!user || !user.id || typeof mockData.issueAuthSession !== 'function') throw mockUnauthorizedError()
+  const session = mockData.issueAuthSession(user.id)
+  return Object.assign({ user }, session)
 }
 
 function loginByPhone(phone, password) {
@@ -465,7 +520,10 @@ function loginByPhone(phone, password) {
     path: '/mini/auth/login',
     method: 'POST',
     data: { phone, password },
-    mock: () => mockAuthPayload(mockData.loginByPhone(phone))
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return mockAuthPayload(mockData.loginByPhone(phone))
+    }
   }).then(normalizeAuthUser)
 }
 
@@ -473,7 +531,10 @@ function logout() {
   return apiClient.call({
     path: '/mini/auth/logout',
     method: 'POST',
-    mock: () => mockData.logout()
+    mock: () => {
+      requireMockLogin()
+      return mockData.logout(currentMockToken())
+    }
   })
 }
 
@@ -482,14 +543,17 @@ function registerUser(form) {
     path: '/mini/auth/register',
     method: 'POST',
     data: form,
-    mock: () => mockData.registerUser(form)
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return mockData.registerUser(form)
+    }
   }).then(normalizeAuthUser)
 }
 
 function getCurrentUser() {
   return apiClient.call({
     path: '/mini/auth/me',
-    mock: () => mockData.getCurrentUser()
+    mock: () => requireMockLogin()
   })
 }
 
@@ -498,7 +562,7 @@ function bindWechatOpenid(code) {
     path: '/mini/auth/wechat-openid',
     method: 'POST',
     data: { code },
-    mock: () => mockData.getCurrentUser()
+    mock: () => requireMockLogin()
   })
 }
 
@@ -507,7 +571,11 @@ function changePassword(oldPassword, newPassword) {
     path: '/mini/auth/password',
     method: 'POST',
     data: { oldPassword, newPassword },
-    mock: () => mockAuthPayload(mockData.getCurrentUser())
+    mock: () => {
+      const user = requireMockLogin()
+      mockData.revokeAuthSessionsForUser(user.id)
+      return mockAuthPayload(user)
+    }
   }).then(normalizeAuthUser)
 }
 
@@ -516,7 +584,10 @@ function matchListings(condition) {
     path: '/mini/listings/match',
     method: 'POST',
     data: condition,
-    mock: () => mockData.matchListings(mockListingAccessFilter(condition))
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    mock: (requestData) => mockData.matchListings(mockListingAccessFilter(requestData || condition))
   }).then((result) => Object.assign({}, result, {
     listings: listingDisplay.normalizeListings((result && result.listings) || [])
   }))
@@ -529,13 +600,20 @@ function chatAssistant(payload) {
     method: 'POST',
     data,
     timeout: ASSISTANT_CHAT_TIMEOUT_MS,
-    mock: () => {
-      const need = data.need || data.form || {}
-      const result = mockData.matchListings(mockListingAccessFilter(need))
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    mock: (requestData) => {
+      assertMockOptionalAuthorization()
+      const safeData = requestData || data
+      const need = safeData.need || safeData.form || {}
+      // 助手结果始终使用公共投影：登录只影响写操作和后续敏感查看，不能让
+      // 本地 Mock 在普通对话中提前下发合作房源精确地址或内部审核字段。
+      const result = mockData.matchListings(Object.assign({}, need, { publicGuest: true }))
       const listings = listingDisplay.normalizeListings((result && result.listings) || [])
       const nextQuestion = listings.length ? '' : '预算、区域和户型里先补充两个条件？'
       return {
-        threadId: data.threadId || makeTempThreadId(),
+        threadId: safeData.threadId || makeTempThreadId(),
         reply: listings.length ? `先看这${listings.length}套真实房源。` : nextQuestion,
         nextQuestion,
         intent: 'rental_match',
@@ -559,11 +637,18 @@ function submitAssistantFeedback(payload) {
     path: '/mini/assistant/feedback',
     method: 'POST',
     data,
-    mock: () => ({
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    mock: (requestData) => {
+      assertMockOptionalAuthorization()
+      const currentData = requestData || {}
+      return ({
       id: makeTempThreadId().replace('LOCAL-AST', 'LOCAL-AF'),
       status: 'open',
-      feedbackType: data.feedbackType || 'other'
-    })
+        feedbackType: currentData.feedbackType || 'other'
+      })
+    }
   })
 }
 
@@ -571,6 +656,7 @@ function getMapCommunities(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/map/communities${query}`,
+    publicReadAuthFallback: true,
     mock: () => mockMapCommunities(mockListingAccessFilter(filter))
   })
 }
@@ -579,6 +665,7 @@ function getMapPins(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/map/pins${query}`,
+    publicReadAuthFallback: true,
     mock: () => mockMapCommunities(mockListingAccessFilter(filter))
   })
 }
@@ -595,10 +682,17 @@ function normalizeNearbyResult(result) {
   }
 }
 
-function getListingDetail(id) {
+function getListingDetail(id, options = {}) {
   return apiClient.call({
     path: `/mini/listings/${id}`,
-    mock: () => mockData.getListingDetail(id, { companyOnly: !apiClient.getAuthToken() })
+    omitAuth: options.anonymous === true,
+    publicReadAuthFallback: true,
+    mock: () => mockData.getListingDetail(
+      id,
+      options.anonymous === true
+        ? { publicGuest: true, viewerId: '' }
+        : mockListingAccessFilter()
+    )
   }).then((listing) => {
     if (listing && listing.unavailable) return listing
     const normalized = listingDisplay.normalizeListing(listing)
@@ -611,17 +705,18 @@ function getNearbyListings(id) {
   const listingId = String(id || '').trim()
   return apiClient.call({
     path: `/mini/listings/${encodeURIComponent(listingId)}/nearby?all=1`,
-    mock: () => mockData.getNearbyListings(listingId, {
-      all: true,
-      companyOnly: !apiClient.getAuthToken()
-    })
+    publicReadAuthFallback: true,
+    mock: () => mockData.getNearbyListings(listingId, mockListingAccessFilter({ all: true }))
   }).then(normalizeNearbyResult)
 }
 
 function getListingLogs(id) {
   return apiClient.call({
     path: `/mini/listings/${id}/footprints`,
-    mock: () => mockData.getListingLogs(id)
+    mock: () => {
+      requireMockLogin()
+      return mockData.getListingLogs(id)
+    }
   })
 }
 
@@ -632,7 +727,10 @@ function addSensitiveFootprint(listingId, idempotencyKey) {
     path: `/mini/listings/${listingId}/sensitive-view`,
     method: 'POST',
     data: payload,
-    mock: () => mockData.addSensitiveFootprint(listingId, payload)
+    mock: () => {
+      requireMockLogin()
+      return mockData.addSensitiveFootprint(listingId, payload)
+    }
   })
 }
 
@@ -641,16 +739,23 @@ function recordPhoneCallOpened(listingId, idempotencyKey) {
     path: `/mini/listings/${listingId}/phone-call-opened`,
     method: 'POST',
     data: { idempotencyKey },
-    mock: () => mockData.recordPhoneCallOpened(listingId, { idempotencyKey })
+    mock: () => {
+      requireMockLogin()
+      return mockData.recordPhoneCallOpened(listingId, { idempotencyKey })
+    }
   })
 }
 
-function recordVideoShare(listingId, payload) {
+function recordVideoShare(listingId, payload, options = {}) {
   return apiClient.call({
     path: `/mini/listings/${listingId}/video-share`,
     method: 'POST',
     data: payload || {},
-    mock: () => mockData.recordVideoShare(listingId, payload || {})
+    silentAuthFailure: options.silentAuthFailure === true,
+    mock: () => {
+      requireMockLogin()
+      return mockData.recordVideoShare(listingId, payload || {})
+    }
   })
 }
 
@@ -659,7 +764,10 @@ function recordShowing(listingId, payload) {
     path: `/mini/listings/${listingId}/showings`,
     method: 'POST',
     data: payload || {},
-    mock: () => mockData.recordShowing(listingId, payload || {})
+    mock: () => {
+      requireMockLogin()
+      return mockData.recordShowing(listingId, payload || {})
+    }
   }).catch((error) => {
     if (isMissingEndpoint(error)) {
       throw new Error('线上后端还没有水印带看审核接口，请先发布或重启后端服务。')
@@ -671,7 +779,7 @@ function recordShowing(listingId, payload) {
 function getClientReports() {
   return apiClient.call({
     path: '/mini/reports',
-    mock: () => mockData.getClientReports()
+    mock: () => runAuthenticatedMock(() => mockData.getClientReports())
   })
 }
 
@@ -680,14 +788,14 @@ function createClientReport(listingId, payload) {
     path: `/mini/listings/${listingId}/reports`,
     method: 'POST',
     data: payload || {},
-    mock: () => mockData.createClientReport(listingId, payload || {})
+    mock: () => runAuthenticatedMock(() => mockData.createClientReport(listingId, payload || {}))
   })
 }
 
 function getDealRecords() {
   return apiClient.call({
     path: '/mini/deals',
-    mock: () => mockData.getDealRecords()
+    mock: () => runAuthenticatedMock(() => mockData.getDealRecords())
   })
 }
 
@@ -696,7 +804,7 @@ function createDealFromReport(reportId, payload) {
     path: `/mini/reports/${reportId}/deals`,
     method: 'POST',
     data: payload || {},
-    mock: () => mockData.createDealFromReport(reportId, payload || {})
+    mock: () => runAuthenticatedMock(() => mockData.createDealFromReport(reportId, payload || {}))
   })
 }
 
@@ -706,6 +814,7 @@ function registerDeal(listingId) {
     method: 'POST',
     data: {},
     mock: () => {
+      requireMockLogin()
       const error = new Error('客户报备与签单功能已暂停')
       error.statusCode = 410
       error.data = { reason: 'REPORT_DEAL_PAUSED' }
@@ -717,14 +826,14 @@ function registerDeal(listingId) {
 function getFootprintRecords() {
   return apiClient.call({
     path: '/mini/footprints',
-    mock: () => mockData.getFootprintRecords()
+    mock: () => runAuthenticatedMock(() => mockData.getFootprintRecords())
   })
 }
 
 function getOwnedListings() {
   return apiClient.call({
     path: '/mini/my/listings',
-    mock: () => mockData.getOwnedListings()
+    mock: () => runAuthenticatedMock(() => mockData.getOwnedListings())
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
@@ -733,14 +842,14 @@ function verifyMyListing(id, outcome) {
     path: `/mini/my/listings/${id}/verify`,
     method: 'POST',
     data: outcome ? { outcome: outcome } : {},
-    mock: () => mockData.verifyMyListing(id, outcome)
+    mock: () => runAuthenticatedMock(() => mockData.verifyMyListing(id, outcome))
   }).then((listings) => listingDisplay.normalizeListings(listings))
 }
 
 function getEditableListing(id) {
   return apiClient.call({
     path: `/mini/my/listings/${id}`,
-    mock: () => mockData.getEditableListing(id)
+    mock: () => runAuthenticatedMock(() => mockData.getEditableListing(id))
   })
 }
 
@@ -749,14 +858,14 @@ function updateNormalListing(id, form) {
     path: `/mini/my/listings/${id}`,
     method: 'PUT',
     data: form,
-    mock: () => mockData.updateNormalListing(id, form)
+    mock: () => runAuthenticatedMock(() => mockData.updateNormalListing(id, form))
   })
 }
 
 function getProfileState() {
   return apiClient.call({
     path: '/mini/profile',
-    mock: () => mockData.getProfileState()
+    mock: () => runAuthenticatedMock(() => mockData.getProfileState())
   })
 }
 
@@ -766,7 +875,7 @@ function getTodayTasks() {
   }
   return apiClient.call({
     path: '/mini/today-tasks',
-    mock: () => buildTodayTasksFromProfile(mockData.getProfileState())
+    mock: () => runAuthenticatedMock(() => buildTodayTasksFromProfile(mockData.getProfileState()))
   }).then((result) => {
     if (result && result.tasks) return result
     return buildTodayTasksFromProfile(result || {})
@@ -779,11 +888,12 @@ function createRentalNeed(payload) {
     path: '/mini/rental-needs',
     method: 'POST',
     data,
-    mock: () => normalizeNeedResponse({
+    mock: () => runAuthenticatedMock(() => normalizeNeedResponse({
       message: '本地临时需求单已创建',
       temporary: true
-    }, data, true)
+    }, data, true))
   }).then((result) => normalizeNeedResponse(result, data, false)).catch((error) => {
+    if (error && (error.statusCode === 401 || error.statusCode === 403)) throw error
     if (!shouldUseMock(getRuntimeConfig())) {
       throw error
     }
@@ -801,21 +911,14 @@ function rechargePoints(points) {
     path: '/mini/points/recharge',
     method: 'POST',
     data: { points },
-    mock: () => mockData.rechargePoints(points)
+    mock: () => runAuthenticatedMock(() => mockData.rechargePoints(points))
   })
 }
 
 function getCommissionRecords() {
   return apiClient.call({
     path: '/mini/commissions',
-    mock: () => {
-      if (!apiClient.getAuthToken()) {
-        const error = new Error('请先登录内部中介账号')
-        error.statusCode = 401
-        throw error
-      }
-      return mockData.getCommissionRecords()
-    }
+    mock: () => runAuthenticatedMock(() => mockData.getCommissionRecords())
   })
 }
 
@@ -836,30 +939,34 @@ function publicCommissionConfigMock(config) {
 function getCommissionConfig() {
   return apiClient.call({
     path: '/mini/commission-config',
-    mock: () => publicCommissionConfigMock(mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
-      secondLandlordRate: 20,
-      ownerRate: 20,
-      companyRate: 0,
-      secondLandlordPlatformRate: 10,
-      ownerPlatformRate: 10,
-      uploaderRates: {
-        '二房东房源': 20,
-        '业主房源': 20,
-        '公司房源': 0
-      },
-      platformRates: {
-        '二房东房源': 10,
-        '业主房源': 10,
-        '公司房源': 0
-      }
-    })
+    publicReadAuthFallback: true,
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return publicCommissionConfigMock(mockData.getCommissionConfig ? mockData.getCommissionConfig() : {
+        secondLandlordRate: 20,
+        ownerRate: 20,
+        companyRate: 0,
+        secondLandlordPlatformRate: 10,
+        ownerPlatformRate: 10,
+        uploaderRates: {
+          '二房东房源': 20,
+          '业主房源': 20,
+          '公司房源': 0
+        },
+        platformRates: {
+          '二房东房源': 10,
+          '业主房源': 10,
+          '公司房源': 0
+        }
+      })
+    }
   })
 }
 
 function getGroupState() {
   return apiClient.call({
     path: '/mini/groups',
-    mock: () => mockData.getGroupState()
+    mock: () => runAuthenticatedMock(() => mockData.getGroupState())
   }).then((state) => listingDisplay.normalizeGroupState(state))
 }
 
@@ -868,7 +975,7 @@ function uploadGroupListing(form) {
     path: '/mini/groups/listings',
     method: 'POST',
     data: form || {},
-    mock: () => mockData.uploadGroupListing(form)
+    mock: () => runAuthenticatedMock(() => mockData.uploadGroupListing(form))
   }).then((state) => listingDisplay.normalizeGroupState(state))
 }
 
@@ -882,7 +989,7 @@ function createGroupScreenshotUploadPolicy(fileInfo) {
       mimeType: info.mimeType || 'image/jpeg',
       size: info.size || 0
     },
-    mock: () => ({
+    mock: () => runAuthenticatedMock(() => ({
       uploadMode: 'mock',
       uploadUrl: '',
       objectKey: `mock-group-screenshots/${Date.now()}.jpg`,
@@ -890,7 +997,7 @@ function createGroupScreenshotUploadPolicy(fileInfo) {
       maxSize: 20 * 1024 * 1024,
       formData: {},
       note: '本地模拟上传，正式环境由后端返回 OSS 截图直传凭证。'
-    })
+    }))
   })
 }
 
@@ -904,7 +1011,7 @@ function createShowingPhotoUploadPolicy(fileInfo) {
       mimeType: info.mimeType || 'image/jpeg',
       size: info.size || 0
     },
-    mock: () => ({
+    mock: () => runAuthenticatedMock(() => ({
       uploadMode: 'mock',
       uploadUrl: '',
       objectKey: `mock-showing-photos/${Date.now()}.jpg`,
@@ -912,7 +1019,7 @@ function createShowingPhotoUploadPolicy(fileInfo) {
       maxSize: 20 * 1024 * 1024,
       formData: {},
       note: '本地模拟上传，正式环境由后端返回带看水印照片直传凭证。'
-    })
+    }))
   }).catch((error) => {
     if (!isMissingEndpoint(error)) throw error
     return createGroupScreenshotUploadPolicy({
@@ -938,15 +1045,16 @@ function createVideoUploadPolicy(fileInfo) {
       mimeType: info.mimeType || 'video/mp4',
       size: info.size || 0
     },
-    mock: () => ({
+    mock: () => runAuthenticatedMock(() => ({
       uploadMode: 'mock',
       uploadUrl: '',
       objectKey: `mock-videos/${Date.now()}.mp4`,
       fileUrl: info.tempFilePath || '',
+      uploadTicket: `mock-video-upload-ticket-${Date.now()}`,
       maxSize: 300 * 1024 * 1024,
       formData: {},
       note: '本地模拟上传，正式环境由后端返回 OSS 直传凭证。'
-    })
+    }))
   })
 }
 
@@ -964,12 +1072,15 @@ function transcribeVoice(filePath, metadata) {
       context: info.context || '找房小程序中介语音输入'
     },
     header: apiClient.authHeader(config),
-    mock: () => ({
-      text: info.mockText || '拱墅万达附近2000左右的单间',
-      provider: 'mock-asr',
-      model: 'mock-qwen3-asr-flash',
-      mode: 'mock'
-    })
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return {
+        text: info.mockText || '拱墅万达附近2000左右的单间',
+        provider: 'mock-asr',
+        model: 'mock-qwen3-asr-flash',
+        mode: 'mock'
+      }
+    }
   }).then((result) => result && result.data ? result.data : result)
 }
 
@@ -1009,7 +1120,8 @@ function uploadOssFile(filePath, policy, missingMessage, options) {
   if (uploadPolicy.uploadMode === 'mock') {
     return Promise.resolve({
       fileUrl: uploadPolicy.fileUrl || filePath,
-      objectKey: uploadPolicy.objectKey || ''
+      objectKey: uploadPolicy.objectKey || '',
+      uploadTicket: uploadPolicy.uploadTicket || ''
     })
   }
 
@@ -1032,7 +1144,8 @@ function uploadOssFile(filePath, policy, missingMessage, options) {
     })
   }).then(() => ({
     fileUrl: uploadPolicy.fileUrl,
-    objectKey: uploadPolicy.objectKey
+    objectKey: uploadPolicy.objectKey,
+    uploadTicket: uploadPolicy.uploadTicket || ''
   }))
 }
 
@@ -1041,7 +1154,7 @@ function unlockGroup(id) {
     path: `/mini/groups/${id}/unlock`,
     method: 'POST',
     data: {},
-    mock: () => mockData.unlockGroup(id)
+    mock: () => runAuthenticatedMock(() => mockData.unlockGroup(id))
   }).then((result) => result && result.data
     ? Object.assign({}, result, { data: listingDisplay.normalizeGroupState(result.data) })
     : result)
@@ -1052,7 +1165,7 @@ function addNormalListing(form) {
     path: '/mini/listings',
     method: 'POST',
     data: form,
-    mock: () => mockData.addNormalListing(form)
+    mock: () => runAuthenticatedMock(() => mockData.addNormalListing(form))
   })
 }
 

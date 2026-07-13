@@ -88,6 +88,12 @@ page {
   flex: 1 1 auto;
 }
 
+.video-share-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 12rpx;
+}
+
 .video-share-title {
   color: #182E2A;
   font-size: 28rpx;
@@ -103,7 +109,7 @@ page {
 }
 
 .video-share-button {
-  flex: 0 0 188rpx;
+  width: 150rpx;
   height: 72rpx;
   margin: 0;
   padding: 0 12rpx;
@@ -113,6 +119,11 @@ page {
   line-height: 72rpx;
   background: #C9A45D;
   border-radius: 22rpx;
+}
+
+.video-share-button.secondary {
+  color: #2E514A;
+  background: #EDF3EF;
 }
 
 .video-share-button[disabled] {

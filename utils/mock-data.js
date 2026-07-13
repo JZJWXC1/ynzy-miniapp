@@ -16,6 +16,8 @@
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
   // 开发者工具预览专用明显假值；生产号码只从服务端环境配置读取。
   var COMPANY_CONTACT_PHONES = ['19900000001', '19900000002', '19900000003'];
+  var MOCK_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  var issuedAuthSessions = {};
   var OWNER_SOURCE = '业主房源';
   var SECOND_LANDLORD_SOURCE = '二房东房源';
   var OWNER_SOURCE_ALIASES = [OWNER_SOURCE, '业主'];
@@ -438,6 +440,1268 @@
     };
   }
 
+  function isKnownMockCommunity(name) {
+    var normalized = normalizeCommunityName(name);
+    if (!normalized) return false;
+    return Object.keys(communityCoordinates).some(function (item) {
+      return normalizeCommunityName(item) === normalized;
+    });
+  }
+
+  function publicListingLocationFields(listing) {
+    var rawCity = listing.city || '杭州';
+    var rawArea = normalizeDistrict(listing.district || listing.area || '待分区');
+    if (isCompanyListing(listing)) {
+      var companyCity = safeCompanyPublicText(rawCity, '杭州', { kind: 'address' }) || '杭州';
+      var companyArea = safeCompanyPublicText(rawArea, '待分区', { kind: 'address' }) || '待分区';
+      var companyBlock = safeCompanyPublicText(listing.block, companyArea || '待板块', { kind: 'address' }) || companyArea || '待板块';
+      var companyCommunity = safeCompanyPublicText(listing.community, '', { kind: 'address' });
+      var companyBuilding = safeCompanyPublicText(firstText(listing.building, listing.buildingNo, listing.buildingNumber), '', { kind: 'address' });
+      var companyUnit = safeCompanyPublicText(firstText(listing.unit, listing.unitNo, listing.unitNumber), '', { kind: 'address' });
+      var companyRoomNumber = safeCompanyPublicText(firstText(listing.roomNumber, listing.roomNo, listing.houseNo, listing.doorNo), '', { kind: 'address' });
+      return {
+        city: companyCity,
+        district: companyArea,
+        area: companyArea,
+        block: companyBlock,
+        community: companyCommunity,
+        locationSummary: structuredLocation({
+          city: companyCity,
+          area: companyArea,
+          block: companyBlock,
+          community: companyCommunity,
+          building: companyBuilding,
+          unit: companyUnit,
+          roomNumber: companyRoomNumber
+        })
+      };
+    }
+    var city = safeGuestPublicText(rawCity, listing, '杭州') || '杭州';
+    var area = safeGuestPublicText(rawArea, listing, '待分区') || '待分区';
+    var block = safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块';
+    var community = safeGuestPublicText(listing.community, listing, '');
+    return {
+      city: city,
+      district: area,
+      area: area,
+      block: block,
+      community: community,
+      locationSummary: [city, area, community].filter(Boolean).join('')
+    };
+  }
+
+  var GUEST_PUBLIC_CHINESE_DIGITS = Object.freeze({
+      '零': '0', '〇': '0', '○': '0',
+      '一': '1', '壹': '1', '幺': '1',
+      '二': '2', '两': '2', '兩': '2', '贰': '2', '貳': '2',
+      '三': '3', '叁': '3', '參': '3',
+      '四': '4', '肆': '4',
+      '五': '5', '伍': '5',
+      '六': '6', '陆': '6', '陸': '6',
+      '七': '7', '柒': '7',
+      '八': '8', '捌': '8',
+      '九': '9', '玖': '9'
+  });
+  var GUEST_PUBLIC_DECIMAL_BASES = Object.freeze([
+      0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66,
+      0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20,
+      0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
+      0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0,
+      0xA9F0, 0xAA50, 0xABF0, 0x104A0, 0x10D30, 0x10D40, 0x11066, 0x110F0,
+      0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0,
+      0x116D0, 0x116DA, 0x11730, 0x118E0, 0x11950, 0x11BF0, 0x11C50,
+      0x11D50, 0x11DA0, 0x11DE0, 0x11F50, 0x16130, 0x16A60, 0x16AC0,
+      0x16B50, 0x16D70, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E5F1, 0x1E950,
+      0x1FBF0
+  ]);
+
+  function guestPublicDigitValue(character) {
+    var text = String(character || '');
+    var codePoint = text.codePointAt(0);
+    if (codePoint >= 0x30 && codePoint <= 0x39) return String(codePoint - 0x30);
+    var chineseDigit = GUEST_PUBLIC_CHINESE_DIGITS[character];
+    if (chineseDigit !== undefined) return chineseDigit;
+    var base = GUEST_PUBLIC_DECIMAL_BASES.find(function (item) { return codePoint >= item && codePoint <= item + 9; });
+    if (base !== undefined) return String(codePoint - base);
+    var normalized = text.normalize('NFKC');
+    return /^[0-9]$/.test(normalized) ? normalized : '';
+  }
+
+  function guestPublicChineseDigitValue(character) {
+    var digit = GUEST_PUBLIC_CHINESE_DIGITS[character];
+    return digit === undefined ? '' : digit;
+  }
+
+  function guestPublicInvisibleOrCombiningCodePoint(codePoint) {
+    return codePoint === 0x00AD ||
+      (codePoint >= 0x0300 && codePoint <= 0x036F) ||
+      codePoint === 0x061C ||
+      (codePoint >= 0x115F && codePoint <= 0x1160) ||
+      (codePoint >= 0x17B4 && codePoint <= 0x17B5) ||
+      (codePoint >= 0x180B && codePoint <= 0x180F) ||
+      (codePoint >= 0x1AB0 && codePoint <= 0x1AFF) ||
+      (codePoint >= 0x1DC0 && codePoint <= 0x1DFF) ||
+      (codePoint >= 0x200B && codePoint <= 0x200F) ||
+      (codePoint >= 0x202A && codePoint <= 0x202E) ||
+      (codePoint >= 0x2060 && codePoint <= 0x206F) ||
+      (codePoint >= 0x20D0 && codePoint <= 0x20FF) ||
+      codePoint === 0x3164 ||
+      (codePoint >= 0xFE00 && codePoint <= 0xFE0F) ||
+      (codePoint >= 0xFE20 && codePoint <= 0xFE2F) ||
+      codePoint === 0xFEFF || codePoint === 0xFFA0 ||
+      (codePoint >= 0xFFF0 && codePoint <= 0xFFFB) ||
+      (codePoint >= 0x1BCA0 && codePoint <= 0x1BCA3) ||
+      (codePoint >= 0x1D173 && codePoint <= 0x1D17A) ||
+      (codePoint >= 0xE0000 && codePoint <= 0xE0FFF);
+  }
+
+  function stripGuestPublicInvisibleText(value) {
+    return Array.from(String(value === undefined || value === null ? '' : value).normalize('NFC')).filter(function (character) {
+      return !guestPublicInvisibleOrCombiningCodePoint(character.codePointAt(0));
+    }).join('');
+  }
+
+  function guestPublicSecurityNoise(character) {
+    var codePoint = String(character || '').codePointAt(0);
+    if (guestPublicInvisibleOrCombiningCodePoint(codePoint) || /\s/.test(character)) return true;
+    if ((codePoint >= 0x21 && codePoint <= 0x2F) || (codePoint >= 0x3A && codePoint <= 0x40) ||
+      (codePoint >= 0x5B && codePoint <= 0x60) || (codePoint >= 0x7B && codePoint <= 0x7E)) return true;
+    return (codePoint >= 0x2000 && codePoint <= 0x2BFF) ||
+      (codePoint >= 0x3000 && codePoint <= 0x303F) ||
+      (codePoint >= 0x3200 && codePoint <= 0x33FF) ||
+      (codePoint >= 0xFE10 && codePoint <= 0xFE1F) ||
+      (codePoint >= 0xFE30 && codePoint <= 0xFE6F) ||
+      (codePoint >= 0x1F000 && codePoint <= 0x1FAFF);
+  }
+
+  function guestPublicProjectionContext(source) {
+    return {
+      chineseDigitCount: source.reduce(function (count, item) {
+        return count + (guestPublicChineseDigitValue(item) ? 1 : 0);
+      }, 0)
+    };
+  }
+
+  function guestPublicProjectedDigit(source, sourceIndex, context) {
+    var character = source[sourceIndex];
+    var digit = guestPublicDigitValue(character);
+    var chineseDigit = guestPublicChineseDigitValue(character);
+    if (digit && !chineseDigit) return digit;
+    if (chineseDigit) {
+      var chineseDigitCount = context && Number.isInteger(context.chineseDigitCount)
+        ? context.chineseDigitCount
+        : guestPublicProjectionContext(source).chineseDigitCount;
+      return chineseDigitCount >= 7 ? chineseDigit : '';
+    }
+    var normalized = String(character || '').normalize('NFKC');
+    if (normalized !== 'O' && normalized !== 'o') return '';
+    var previousIndex = sourceIndex - 1;
+    while (previousIndex >= 0 && guestPublicSecurityNoise(source[previousIndex])) previousIndex -= 1;
+    var nextIndex = sourceIndex + 1;
+    while (nextIndex < source.length && guestPublicSecurityNoise(source[nextIndex])) nextIndex += 1;
+    return previousIndex >= 0 && nextIndex < source.length &&
+      guestPublicDigitValue(source[previousIndex]) && guestPublicDigitValue(source[nextIndex]) ? '0' : '';
+  }
+
+  function guestPublicSecurityProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (digit) {
+        skeleton += digit;
+        positions.push(sourceIndex);
+        return;
+      }
+      if (character === '㎡') {
+        skeleton += character;
+        positions.push(sourceIndex);
+        return;
+      }
+      if (guestPublicSecurityNoise(character)) return;
+      Array.from(character.normalize('NFKC')).forEach(function (normalizedCharacter) {
+        skeleton += normalizedCharacter;
+        positions.push(sourceIndex);
+      });
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicDigitOnlyProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (!digit) return;
+      skeleton += digit;
+      positions.push(sourceIndex);
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicLocalPhoneProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (digit) {
+        skeleton += digit;
+        positions.push(sourceIndex);
+        return;
+      }
+      if (guestPublicSecurityNoise(character)) return;
+      if (skeleton.slice(-1) !== '\u0001') {
+        skeleton += '\u0001';
+        positions.push(sourceIndex);
+      }
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicDateProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (digit) {
+        skeleton += digit;
+        positions.push(sourceIndex);
+        return;
+      }
+      var normalized = character.normalize('NFKC');
+      if (/^[-/:.TtZz ]$/.test(normalized)) {
+        skeleton += normalized.toLowerCase();
+        positions.push(sourceIndex);
+        return;
+      }
+      if (skeleton.slice(-1) !== '\u0001') {
+        skeleton += '\u0001';
+        positions.push(sourceIndex);
+      }
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicAddressProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (digit) {
+        skeleton += digit;
+        positions.push(sourceIndex);
+        return;
+      }
+      if (!/[\u3400-\u9fff]/u.test(character)) return;
+      skeleton += character;
+      positions.push(sourceIndex);
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicContactProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var context = guestPublicProjectionContext(source);
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      if (digit) {
+        skeleton += digit;
+        positions.push(sourceIndex);
+        return;
+      }
+      var normalized = character.normalize('NFKC');
+      if (/^[A-Za-z]$/.test(normalized)) {
+        skeleton += normalized.toLowerCase();
+        positions.push(sourceIndex);
+        return;
+      }
+      if (/[\u3400-\u9fff]/u.test(character)) {
+        skeleton += character;
+        positions.push(sourceIndex);
+        return;
+      }
+      // 数字后的原文分隔必须保留，避免 `Room 701 near` 把 near 的 n 贪作门牌后缀；
+      // 标签内部空白继续折叠，紧邻的 701A / 2nd 仍保持同一个地址 token。
+      if (!/\d/.test(skeleton.slice(-1))) return;
+      var nextSignificantIndex = source.slice(sourceIndex + 1).findIndex(function (nextCharacter, offset) {
+        if (guestPublicProjectedDigit(source, sourceIndex + 1 + offset, context)) return true;
+        var nextNormalized = nextCharacter.normalize('NFKC');
+        return /^[A-Za-z]$/.test(nextNormalized) || /[\u3400-\u9fff]/u.test(nextCharacter);
+      });
+      if (nextSignificantIndex >= 0 && skeleton.slice(-1) !== '\u0001') {
+        skeleton += '\u0001';
+        positions.push(sourceIndex);
+      }
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicProtectedNumericGroups(value) {
+    var groups = [];
+    var addressGroups = [];
+    function markMatchDigits(targetProjection, match) {
+      var positions = {};
+      for (var index = match.index; index < match.index + match[0].length; index += 1) {
+        if (/\d/.test(targetProjection.skeleton[index] || '')) positions[targetProjection.positions[index]] = true;
+      }
+      return positions;
+    }
+    function addGroup(targetProjection, match) {
+      var positions = markMatchDigits(targetProjection, match);
+      if (Object.keys(positions).length) groups.push(positions);
+    }
+    var securityProjection = guestPublicSecurityProjection(value);
+    var dateProjection = guestPublicDateProjection(value);
+    function addValidDateMatches(pattern) {
+      var dateMatch;
+      while ((dateMatch = pattern.exec(dateProjection.skeleton)) !== null) {
+        var year = Number(dateMatch[1]);
+        var month = Number(dateMatch[2]);
+        var day = Number(dateMatch[3]);
+        var hour = dateMatch[4] === undefined ? 0 : Number(dateMatch[4]);
+        var minute = dateMatch[5] === undefined ? 0 : Number(dateMatch[5]);
+        var second = dateMatch[6] === undefined ? 0 : Number(dateMatch[6]);
+        var daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+        if (year >= 1900 && year <= 2200 && day >= 1 && day <= daysInMonth && hour <= 23 && minute <= 59 && second <= 59) addGroup(dateProjection, dateMatch);
+      }
+    }
+    addValidDateMatches(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[t ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?z?)?/g);
+    addValidDateMatches(/(?:^|\u0001)(\d{4})(\d{2})(\d{2})(?=$|\u0001)/g);
+    var businessPattern = /(\d{1,3})号板块(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(\d{1,2})室(\d{1,2})厅(\d{1,2})卫(\d{4})年/g;
+    var business;
+    while ((business = businessPattern.exec(securityProjection.skeleton)) !== null) {
+      var block = Number(business[1]);
+      var transit = Number(business[2]);
+      var minutes = Number(business[3]);
+      var room = Number(business[4]);
+      var hall = Number(business[5]);
+      var bath = Number(business[6]);
+      var year = Number(business[7]);
+      if (block <= 999 && transit >= 1 && transit <= 30 && minutes <= 300 &&
+        room >= 1 && room <= 20 && hall >= 1 && hall <= 20 && bath >= 1 && bath <= 20 &&
+        year >= 1900 && year <= 2200) addGroup(securityProjection, business);
+    }
+    function layoutCountValue(value) {
+      var text = String(value || '');
+      var chinese = { 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+      return Object.prototype.hasOwnProperty.call(chinese, text) ? chinese[text] : Number(text);
+    }
+    var layoutSequencePattern = /(?:\d{1,5}(?:㎡|m2|平方米)(?:\d{1,2}|[一二两兩三四五六七八九])室(?:(?:\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(?:\d{1,2}|[一二两兩三四五六七八九])卫)?)+/gi;
+    var sequence;
+    while ((sequence = layoutSequencePattern.exec(securityProjection.skeleton)) !== null) {
+      var tokenPattern = /(\d{1,5})(?:㎡|m2|平方米)(\d{1,2}|[一二两兩三四五六七八九])室(?:(\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(\d{1,2}|[一二两兩三四五六七八九])卫)?/gi;
+      var token;
+      var cursor = 0;
+      var valid = true;
+      while ((token = tokenPattern.exec(sequence[0])) !== null) {
+        if (token.index !== cursor) {
+          valid = false;
+          break;
+        }
+        cursor = token.index + token[0].length;
+        var area = Number(token[1]);
+        var layoutRoom = layoutCountValue(token[2]);
+        var layoutHall = token[3] ? layoutCountValue(token[3]) : 0;
+        var layoutBath = token[4] ? layoutCountValue(token[4]) : 0;
+        if (!(area > 0 && area <= 10000 && layoutRoom >= 1 && layoutRoom <= 20 && layoutHall <= 20 && layoutBath <= 20)) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid && cursor === sequence[0].length) addGroup(securityProjection, sequence);
+    }
+    var transitPattern = /(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(?:到|至)?(\d{1,4})路(?:公交|公交站|车)/g;
+    var transitMatch;
+    while ((transitMatch = transitPattern.exec(securityProjection.skeleton)) !== null) {
+      if (Number(transitMatch[1]) >= 1 && Number(transitMatch[1]) <= 30 && Number(transitMatch[2]) <= 300 && Number(transitMatch[3]) <= 9999) {
+        addGroup(securityProjection, transitMatch);
+      }
+    }
+    var addressProjection = guestPublicAddressProjection(value);
+    [
+      /[\u3400-\u9fff]{0,40}(?:路|街|巷|弄|道)[0-9]{1,4}(?:号|號)/g,
+      /[0-9]{1,3}(?:栋|棟|幢|座|号楼|號樓|楼|樓)(?:[0-9]{1,2}(?:单元|單元))?(?:[0-9]{2,4}(?:室|房|号房|號房|户|戶|门|門))?/g
+    ].forEach(function (pattern) {
+      var match;
+      while ((match = pattern.exec(addressProjection.skeleton)) !== null) {
+        var positions = markMatchDigits(addressProjection, match);
+        if (Object.keys(positions).length) addressGroups.push(positions);
+      }
+    });
+    return { groups: groups, addressGroups: addressGroups };
+  }
+
+  function guestPublicCompositeDigitPatterns(listing) {
+    var data = listing || {};
+    function digitToken(value) {
+      return guestPublicDigitOnlyProjection(guestPublicHouseSecretToken(value)).skeleton;
+    }
+    var building = digitToken(firstText(data.building, data.buildingNo, data.buildingNumber));
+    var unit = digitToken(firstText(data.unit, data.unitNo, data.unitNumber));
+    var room = digitToken(firstText(data.roomNumber, data.roomNo, data.houseNo, data.doorNo));
+    var tokens = [building, unit, room];
+    var seen = {};
+    return [tokens, tokens.slice(0, 2), tokens.slice(1)].filter(function (items) {
+      return items.length >= 2 && items.every(function (item) { return /^\d{1,4}$/.test(item); });
+    }).map(function (items) {
+      return {
+        digits: items.join(''),
+        tokenBoundaries: items.slice(0, -1).reduce(function (boundaries, item) {
+          boundaries.push((boundaries[boundaries.length - 1] || 0) + item.length);
+          return boundaries;
+        }, [])
+      };
+    }).filter(function (item) {
+      if (seen[item.digits]) return false;
+      seen[item.digits] = true;
+      return true;
+    }).map(function (item) {
+      return {
+        pattern: new RegExp(guestPublicEscapeRegExp(item.digits), 'g'),
+        tokenBoundaries: item.tokenBoundaries
+      };
+    });
+  }
+
+  function guestPublicObfuscatedAddressPatterns(listing) {
+    var data = listing || {};
+    function token(value) {
+      return guestPublicAddressProjection(guestPublicHouseSecretToken(value)).skeleton;
+    }
+    return [
+      { value: token(firstText(data.building, data.buildingNo, data.buildingNumber)), suffix: '(?:栋|棟|幢|座|号楼|號樓|楼|樓)' },
+      { value: token(firstText(data.unit, data.unitNo, data.unitNumber)), suffix: '(?:单元|單元)' },
+      { value: token(firstText(data.roomNumber, data.roomNo, data.houseNo, data.doorNo)), suffix: '(?:室|房|号房|號房|户|戶|门|門)' }
+    ].filter(function (item) {
+      return /^[0-9十百千拾佰仟]{1,4}$/.test(item.value);
+    }).map(function (item) {
+      return {
+        pattern: new RegExp(guestPublicEscapeRegExp(item.value) + '[\u3400-\u9fff]{1,24}' + item.suffix, 'g'),
+        boundedAddressToken: true
+      };
+    });
+  }
+
+  function guestPublicEnglishAddressPattern() {
+    return /(room|rm|apartment|apt|unit|building|bldg|bld|house|door|suite|ste|flat|floor|fl|level|lvl|tower|block|no)\u0001*(?:no\u0001*)?(\d{1,4}(?:\u0001\d{1,4}){0,2}(?:(?:st|nd|rd|th)|[a-z])?|[a-z]\d{0,4}(?:\u0001\d{1,4}){0,2})/gi;
+  }
+
+  function guestPublicEnglishAddressMatchIsValid(projection, match) {
+    var keyword = String(match && match[1] || '');
+    var target = String(match && match[2] || '');
+    if (!keyword || !target) return false;
+    var targetOffset = match[0].lastIndexOf(target);
+    var bridge = match[0].slice(keyword.length, targetOffset).replace(/\u0001/g, '').toLowerCase();
+    if (bridge === 'no' && !/^\d/.test(target)) return false;
+    var keywordStartPosition = projection.positions[match.index];
+    var keywordEndPosition = projection.positions[match.index + keyword.length - 1];
+    var targetStartPosition = projection.positions[match.index + targetOffset];
+    var targetEndPosition = projection.positions[match.index + targetOffset + target.length - 1];
+    if (![keywordStartPosition, keywordEndPosition, targetStartPosition, targetEndPosition].every(Number.isInteger)) return false;
+    var previousCharacter = projection.source[keywordStartPosition - 1] || '';
+    var nextCharacter = projection.source[targetEndPosition + 1] || '';
+    if (/^[A-Za-z0-9]$/.test(previousCharacter.normalize('NFKC'))) return false;
+    if (/^[A-Za-z0-9]$/.test(nextCharacter.normalize('NFKC'))) return false;
+    if (/^[A-Za-z]$/.test(target) && targetStartPosition <= keywordEndPosition + 1) return false;
+    return true;
+  }
+
+  function guestPublicEnglishAddressMatches(projection) {
+    var pattern = guestPublicEnglishAddressPattern();
+    var match;
+    while ((match = pattern.exec(projection.skeleton)) !== null) {
+      if (guestPublicEnglishAddressMatchIsValid(projection, match)) return true;
+    }
+    return false;
+  }
+
+  function redactGuestPublicAlphaContacts(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9_])p[^A-Za-z0-9_\u3400-\u9fff]{1,4}h[^A-Za-z0-9_\u3400-\u9fff]{1,4}o[^A-Za-z0-9_\u3400-\u9fff]{1,4}n[^A-Za-z0-9_\u3400-\u9fff]{1,4}e[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9_])(?:w[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|v[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|we[^A-Za-z0-9_\u3400-\u9fff]{1,4}chat|wei[^A-Za-z0-9_\u3400-\u9fff]{1,4}xin)[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+      .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]{0,4}信(?:\s*号)?|微\s*号|v\s*信)[^A-Za-z0-9_\u3400-\u9fff]{0,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, ' ');
+  }
+
+  function redactGuestPublicDirectContacts(value) {
+    return redactGuestPublicAlphaContacts(value)
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1 ')
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1 ');
+  }
+
+  function redactGuestPublicStandaloneFloorTokens(value) {
+    return String(value || '').replace(
+      /(^|[^A-Za-z0-9])(?:\d{1,3}f|f\d{1,3})(?![A-Za-z0-9])/gi,
+      function (match, boundary, offset, source) {
+        var before = source.slice(0, offset + boundary.length);
+        var after = source.slice(offset + match.length);
+        var layoutBefore = /(?:loft|复式|複式|跃层|躍層)\s*$/i.test(before);
+        var layoutAfter = /^\s*(?:loft\b|复式|複式|跃层|躍層)/i.test(after);
+        return layoutBefore || layoutAfter ? match : boundary + ' ';
+      }
+    );
+  }
+
+  function redactGuestPublicDirectAddresses(value) {
+    return redactGuestPublicStandaloneFloorTokens(value)
+      .replace(/(^|[^A-Za-z0-9])(?:#|＃)[\s:：-]*[0-9０-９]{2,5}(?![A-Za-z0-9０-９])/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9])\d{1,3}(?:st|nd|rd|th)\s*(?:floor|fl|lvl)(?![A-Za-z0-9])/gi, '$1 ')
+      .replace(/(^|[^0-9０-９])(?:第\s*)?[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)(?!\s*(?:复式|複式|跃层|躍層|loft))/gi, '$1 ')
+      .replace(/(?:楼层|樓層)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}/gi, ' ')
+      .replace(/(?:\d{1,3}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+)(?:栋|棟|幢|座|号楼|號樓|单元|單元)/gi, ' ')
+      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,6})(?:室|房|号房|號房|户|戶|门|門)/gi, ' ')
+      .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
+      .replace(/(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|栋号|棟號|幢号|幢號|单元号|單元號)[:：\s-]*[A-Za-z0-9Oo〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺-]{1,12}/gi, ' ')
+      .replace(/(?:路|街|巷|弄|道)\d{1,4}(?:号|號)/g, ' ');
+  }
+
+  function redactGuestPublicSecuritySpans(value, options) {
+    var settings = options || {};
+    var contactSafeValue = redactGuestPublicDirectContacts(value);
+    var directSafeValue = settings.includeAddress === true ? redactGuestPublicDirectAddresses(contactSafeValue) : contactSafeValue;
+    var projection = guestPublicSecurityProjection(directSafeValue);
+    var digitProjection = guestPublicDigitOnlyProjection(directSafeValue);
+    var localPhoneProjection = guestPublicLocalPhoneProjection(directSafeValue);
+    var protectedNumeric = guestPublicProtectedNumericGroups(directSafeValue);
+    var allowedPhones = settings.allowedPhones instanceof Set ? settings.allowedPhones : new Set();
+    var patterns = [
+      { projection: digitProjection, pattern: /(?:86)?1[3-9]\d{9}/g, phone: true, numericContact: true, overlap: true },
+      { projection: digitProjection, pattern: /0\d{9,11}/g, phone: true, numericContact: true, overlap: true },
+      { projection: digitProjection, pattern: /(?:400|800)\d{7}/g, numericContact: true, overlap: true },
+      { projection: localPhoneProjection, pattern: /\d{7,8}/g, numericContact: true, protectAddress: true }
+    ];
+    var contactProjection = guestPublicContactProjection(directSafeValue);
+    patterns.push(
+      {
+        projection: contactProjection,
+        pattern: /(?:(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|联络|聯絡|联系|聯繫)|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel))[^\d]{0,12}\d(?:[^\d]{0,8}\d){4,7}/gi,
+        preserveEnglishBoundary: true
+      },
+      {
+        projection: contactProjection,
+        pattern: /(?:微(?:[\u3400-\u9fff]{0,4})?\u0001*信号?|微号|(?:^|[^a-z])(?:wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x)|v\u0001*信)\u0001*([a-z][a-z0-9]{3,31})/gi,
+        contactIdentifier: true,
+        preserveEnglishBoundary: true
+      },
+      {
+        projection: contactProjection,
+        pattern: /(?:(?:联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东微信|房東微信|微信号?|微号)\u0001*|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel)\u0001+)([a-z][a-z0-9]{3,31})/gi,
+        contactIdentifier: true,
+        preserveEnglishBoundary: true
+      }
+    );
+    if (settings.includeAddress === true) {
+      // 与生产投影保持同一坐标系，避免预清洗地址后误删相邻公开文案。
+      var addressProjection = guestPublicAddressProjection(directSafeValue);
+      patterns.push(
+        { projection: addressProjection, pattern: /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g },
+        { projection: addressProjection, pattern: /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g },
+        { projection: addressProjection, pattern: /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi },
+        { projection: addressProjection, pattern: /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g },
+        { projection: contactProjection, pattern: guestPublicEnglishAddressPattern(), englishAddressLabel: true },
+        { projection: contactProjection, pattern: /(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/gi },
+        { projection: contactProjection, pattern: /[a-z]\d{2,4}(?:室|房|号房|號房)/gi }
+      );
+      guestPublicCompositeDigitPatterns(settings.listing || {}).forEach(function (entry) {
+        patterns.push({ projection: digitProjection, pattern: entry.pattern, compositeAddress: true, tokenBoundaries: entry.tokenBoundaries });
+      });
+      guestPublicObfuscatedAddressPatterns(settings.listing || {}).forEach(function (entry) {
+        patterns.push({ projection: addressProjection, pattern: entry.pattern, boundedAddressToken: entry.boundedAddressToken });
+      });
+    }
+    var spans = [];
+    var numericRemovePositions = {};
+    patterns.forEach(function (entry) {
+      var targetProjection = entry.projection || projection;
+      var match;
+      while ((match = entry.pattern.exec(targetProjection.skeleton)) !== null) {
+        var previous = targetProjection.skeleton[match.index - 1] || '';
+        var next = targetProjection.skeleton[match.index + match[0].length] || '';
+        var start = targetProjection.positions[match.index];
+        if (entry.englishAddressLabel && !guestPublicEnglishAddressMatchIsValid(targetProjection, match)) continue;
+        if (entry.preserveEnglishBoundary && /^[^a-z]/i.test(match[0][0] || '') &&
+          /^(?:telephone|phone|mobile|contact|call|tel|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x)/i.test(match[0].slice(1))) {
+          start = targetProjection.positions[match.index + 1];
+        }
+        var originalMatchEndIndex = match.index + match[0].length - 1;
+        var matchEndIndex = originalMatchEndIndex;
+        if (entry.contactIdentifier && match[1]) {
+          var identifierStartIndex = match.index + match[0].lastIndexOf(match[1]);
+          for (var identifierIndex = identifierStartIndex + 1; identifierIndex <= originalMatchEndIndex; identifierIndex += 1) {
+            var identifierPreviousSourcePosition = targetProjection.positions[identifierIndex - 1];
+            var identifierCurrentSourcePosition = targetProjection.positions[identifierIndex];
+            var identifierSourceGap = targetProjection.source.slice(identifierPreviousSourcePosition + 1, identifierCurrentSourcePosition).join('');
+            if (!/\s/u.test(identifierSourceGap) || /^[a-z]$/i.test(targetProjection.skeleton[identifierIndex] || '')) continue;
+            matchEndIndex = identifierIndex - 1;
+            break;
+          }
+          if (matchEndIndex < originalMatchEndIndex) entry.pattern.lastIndex = matchEndIndex + 1;
+        }
+        var end = targetProjection.positions[matchEndIndex];
+        if (entry.numericContact) {
+          var numericPositions = targetProjection.positions.slice(match.index, matchEndIndex + 1);
+          var containedByOneGroup = protectedNumeric.groups.some(function (group) {
+            return numericPositions.every(function (position) { return group[position]; });
+          });
+          var containedByOneAddress = protectedNumeric.addressGroups.some(function (group) {
+            return numericPositions.every(function (position) { return group[position]; });
+          });
+          if (containedByOneGroup || containedByOneAddress) {
+            if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+            continue;
+          }
+          function belongsToGroup(position) {
+            return protectedNumeric.groups.some(function (group) { return group[position]; });
+          }
+          function belongsToAddress(position) {
+            return protectedNumeric.addressGroups.some(function (group) { return group[position]; });
+          }
+          var removablePositions = numericPositions.filter(function (position) {
+            return !belongsToGroup(position) && !belongsToAddress(position);
+          });
+          if (!removablePositions.length) {
+            if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+            continue;
+          }
+          removablePositions.forEach(function (position) { numericRemovePositions[position] = true; });
+          if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+          continue;
+        }
+        if (entry.compositeAddress && Array.isArray(entry.tokenBoundaries)) {
+          var separatorsAreStructural = entry.tokenBoundaries.every(function (boundary) {
+            var leftPosition = targetProjection.positions[match.index + boundary - 1];
+            var rightPosition = targetProjection.positions[match.index + boundary];
+            var separator = targetProjection.source.slice(leftPosition + 1, rightPosition).join('');
+            return !/(?:室|厅|卫|㎡|平方米|m\s*[²2]|号板块|號板塊|号(?:线|地铁)|號線|分钟|分鐘|公交|年|元|公里|km)/i.test(separator.normalize('NFKC'));
+          });
+          if (!separatorsAreStructural) continue;
+        }
+        if (entry.boundedAddressToken && /[0-9十百千拾佰仟]/.test(previous)) {
+          continue;
+        }
+        var previousPosition = targetProjection.positions[match.index - 1];
+        var nextPosition = targetProjection.positions[match.index + match[0].length];
+        var previousDigitContinues = /\d/.test(previous) && Number.isInteger(previousPosition) && previousPosition + 1 === start;
+        var nextDigitContinues = /\d/.test(next) && Number.isInteger(nextPosition) && end + 1 === nextPosition;
+        var localPhone = entry.phone && /^\d{11,13}$/.test(match[0]) ? match[0].slice(-11) : match[0];
+        if (entry.phone && allowedPhones.has(localPhone) && !previousDigitContinues && !nextDigitContinues) {
+          if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+          continue;
+        }
+        var sourceSlice = Number.isInteger(start) && Number.isInteger(end)
+          ? targetProjection.source.slice(start, end + 1).join('')
+          : '';
+        var areaLayoutRoom = !entry.phone && !entry.compositeAddress && (
+          (/^[mM]2[1-9](?:室|房)$/.test(match[0]) && /\d/.test(previous)) ||
+          /\d+(?:㎡|m\s*[²2]|平方米)\s*[一二两三四五六七八九1-9](?:室|房)/i.test(sourceSlice)
+        );
+        if (areaLayoutRoom) {
+          if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+          continue;
+        }
+        if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start: start, end: end });
+        if (entry.overlap) entry.pattern.lastIndex = match.index + 1;
+      }
+    });
+    if (!spans.length && !Object.keys(numericRemovePositions).length) return projection.source.join('');
+    spans.sort(function (left, right) { return left.start - right.start || left.end - right.end; });
+    var merged = [];
+    spans.forEach(function (span) {
+      var previous = merged[merged.length - 1];
+      if (previous && span.start <= previous.end + 1) previous.end = Math.max(previous.end, span.end);
+      else merged.push({ start: span.start, end: span.end });
+    });
+    var spanIndex = 0;
+    var result = '';
+    projection.source.forEach(function (character, index) {
+      var span = merged[spanIndex];
+      if (span && index >= span.start && index <= span.end) {
+        if (index === span.start) result += ' ';
+        if (index === span.end) spanIndex += 1;
+        return;
+      }
+      if (numericRemovePositions[index]) {
+        result += ' ';
+        return;
+      }
+      result += character;
+    });
+    return result;
+  }
+
+  function normalizeGuestPublicSecurityText(value) {
+    return stripGuestPublicInvisibleText(value).normalize('NFKC').trim();
+  }
+
+  var GUEST_PUBLIC_PROJECTION_CACHE_LIMIT = 4096;
+  var guestPublicSensitiveFragmentCache = new Map();
+  var guestPublicTextCache = new Map();
+
+  function guestPublicProjectionCacheSet(cache, key, value) {
+    if (cache.has(key)) cache.delete(key);
+    cache.set(key, value);
+    while (cache.size > GUEST_PUBLIC_PROJECTION_CACHE_LIMIT) {
+      cache.delete(cache.keys().next().value);
+    }
+    return value;
+  }
+
+  function guestPublicSecurityContextKey(listing) {
+    var data = listing || {};
+    // 与生产保持同一完整上下文；任一敏感原文变化都会让旧投影立即失效。
+    return JSON.stringify([
+      data.city,
+      data.district,
+      data.area,
+      data.block,
+      data.community,
+      data.building,
+      data.buildingNo,
+      data.buildingNumber,
+      data.unit,
+      data.unitNo,
+      data.unitNumber,
+      data.roomNumber,
+      data.roomNo,
+      data.houseNo,
+      data.doorNo,
+      data.roomAddress,
+      data.landlordPhone,
+      data.contact,
+      data.phone,
+      data.mobile,
+      data.contactPhone,
+      data.ownerPhone,
+      data.viewingPassword,
+      data.showingPassword,
+      data.password,
+      data.viewingKeyLocation,
+      data.keyLocation,
+      data.address,
+      data.fullAddress,
+      data.locationSummary,
+      data.remark,
+      data.note,
+      data.memo
+    ].map(function (item) {
+      return String(item === undefined || item === null ? '' : item);
+    }));
+  }
+
+  function guestPublicSensitiveFragments(listing) {
+    var data = listing || {};
+    var cacheKey = guestPublicSecurityContextKey(data);
+    if (guestPublicSensitiveFragmentCache.has(cacheKey)) {
+      return guestPublicSensitiveFragmentCache.get(cacheKey);
+    }
+    function normalized(values) {
+      return uniqueTextList(values.map(function (item) {
+        return normalizeGuestPublicSecurityText(item);
+      }));
+    }
+    var alwaysPublicLocationValues = {};
+    normalized([
+      data.city,
+      data.district,
+      data.area
+    ]).forEach(function (item) { alwaysPublicLocationValues[item] = true; });
+    normalized([data.community]).forEach(function (item) {
+      if (isKnownMockCommunity(item) && !guestPublicIntrinsicUnsafe(item)) {
+        alwaysPublicLocationValues[item] = true;
+      }
+    });
+    var hardSecrets = normalized([
+      data.building,
+      data.buildingNo,
+      data.buildingNumber,
+      data.unit,
+      data.unitNo,
+      data.unitNumber,
+      data.roomNumber,
+      data.roomNo,
+      data.houseNo,
+      data.doorNo,
+      data.roomAddress,
+      data.landlordPhone,
+      data.contact,
+      data.phone,
+      data.mobile,
+      data.contactPhone,
+      data.ownerPhone,
+      data.viewingPassword,
+      data.showingPassword,
+      data.password,
+      data.viewingKeyLocation,
+      data.keyLocation
+    ]).filter(function (item) {
+      // 与生产一致：一位数楼栋/单元也是精确地址，只在独立 token 边界内清除。
+      return item.length >= 1;
+    });
+    var addressSecrets = normalized([
+      data.address,
+      data.fullAddress,
+      data.locationSummary
+    ]).filter(function (item) {
+      return item.length >= 2;
+    }).filter(function (item) {
+      return !alwaysPublicLocationValues[item];
+    });
+    var publicCommunityBase = normalizeGuestPublicSecurityText(
+      redactGuestPublicSecuritySpans(data.community, { includeAddress: true, listing: data })
+    );
+    var publicBlockBase = normalizeGuestPublicSecurityText(
+      redactGuestPublicSecuritySpans(data.block, { includeAddress: true, listing: data })
+    );
+    addressSecrets.forEach(function (fragment) {
+      publicCommunityBase = publicCommunityBase.split(fragment).join(' ').replace(/\s+/g, ' ').trim();
+      publicBlockBase = publicBlockBase.split(fragment).join(' ').replace(/\s+/g, ' ').trim();
+    });
+    var publicNoteAliases = {};
+    normalized([
+      data.city,
+      data.district,
+      data.area,
+      publicBlockBase,
+      publicCommunityBase
+    ]).forEach(function (item) { publicNoteAliases[item] = true; });
+    var noteSecrets = normalized([
+      data.remark,
+      data.note,
+      data.memo
+    ]).filter(function (item) {
+      return item.length >= 2;
+    }).filter(function (item) {
+      return !publicNoteAliases[item];
+    });
+    var fragments = uniqueTextList(hardSecrets.concat(addressSecrets, noteSecrets)).sort(function (left, right) {
+      return right.length - left.length;
+    });
+    return guestPublicProjectionCacheSet(guestPublicSensitiveFragmentCache, cacheKey, fragments);
+  }
+
+  function guestPublicSecretBoundaryClass() {
+    return '[\\s,，;；|/·:：_\\-—–()（）]';
+  }
+
+  function guestPublicEscapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function guestPublicShortSecretPattern(fragment) {
+    var secret = normalizeGuestPublicSecurityText(fragment);
+    if (!/^(?:[A-Za-z]\d{1,4}|\d{1,4})$/.test(secret)) return null;
+    var boundary = guestPublicSecretBoundaryClass();
+    return new RegExp('(^|' + boundary + ')' + guestPublicEscapeRegExp(secret) + '(?=$|' + boundary + ')', 'gi');
+  }
+
+  function guestPublicHouseSecretToken(value) {
+    return normalizeGuestPublicSecurityText(value)
+      .replace(/(?:栋|幢|座|号楼|单元|室|房|号房)$/i, '');
+  }
+
+  function guestPublicCompositeSecretPatterns(listing) {
+    var data = listing || {};
+    var building = guestPublicHouseSecretToken(firstText(data.building, data.buildingNo, data.buildingNumber));
+    var unit = guestPublicHouseSecretToken(firstText(data.unit, data.unitNo, data.unitNumber));
+    var room = guestPublicHouseSecretToken(firstText(data.roomNumber, data.roomNo, data.houseNo, data.doorNo));
+    var tokens = [building, unit, room];
+    var candidates = [tokens, tokens.slice(0, 2), tokens.slice(1)].filter(function (items) {
+      return items.length >= 2 && items.every(function (item) {
+        return /^(?:[A-Za-z]\d{1,4}|\d{1,4})$/.test(item);
+      });
+    });
+    var boundary = guestPublicSecretBoundaryClass();
+    return candidates.map(function (items) {
+      return new RegExp('(^|' + boundary + ')' + items.map(guestPublicEscapeRegExp).join(boundary + '+') + '(?=$|' + boundary + ')', 'gi');
+    });
+  }
+
+  function guestPublicCompositeSecretMatches(value, listing) {
+    var text = normalizeGuestPublicSecurityText(value);
+    return Boolean(text) && guestPublicCompositeSecretPatterns(listing || {}).some(function (pattern) {
+      return pattern.test(text);
+    });
+  }
+
+  function guestPublicIntrinsicUnsafe(value) {
+    var rawText = stripGuestPublicInvisibleText(value).trim();
+    var text = rawText.normalize('NFKC').trim();
+    if (!text) return false;
+    if (listingRemarkContainsContact(text)) return true;
+    var skeleton = guestPublicSecurityProjection(rawText).skeleton;
+    var digitProjection = guestPublicDigitOnlyProjection(rawText);
+    var localPhoneProjection = guestPublicLocalPhoneProjection(rawText);
+    var protectedNumeric = guestPublicProtectedNumericGroups(rawText);
+    function hasUnsafeNumericContact(pattern, targetProjection, protectAddress) {
+      var activeProjection = targetProjection || digitProjection;
+      var match;
+      while ((match = pattern.exec(activeProjection.skeleton)) !== null) {
+        var positions = activeProjection.positions.slice(match.index, match.index + match[0].length);
+        var containedByOneGroup = protectedNumeric.groups.some(function (group) {
+          return positions.every(function (position) { return group[position]; });
+        });
+        var containedByOneAddress = protectedNumeric.addressGroups.some(function (group) {
+          return positions.every(function (position) { return group[position]; });
+        });
+        if (containedByOneGroup || containedByOneAddress) continue;
+        var unsafePosition = positions.some(function (position) {
+          var belongsToGroup = protectedNumeric.groups.some(function (group) { return group[position]; });
+          var belongsToAddress = protectedNumeric.addressGroups.some(function (group) { return group[position]; });
+          return !belongsToGroup && !belongsToAddress;
+        });
+        if (unsafePosition) return true;
+      }
+      return false;
+    }
+    var addressSkeleton = guestPublicAddressProjection(rawText).skeleton;
+    var contactProjection = guestPublicContactProjection(rawText);
+    var contactSkeleton = contactProjection.skeleton;
+    if (hasUnsafeNumericContact(/(?:86)?1[3-9]\d{9}/g)) return true;
+    if (hasUnsafeNumericContact(/0\d{9,11}/g)) return true;
+    if (hasUnsafeNumericContact(/(?:400|800)\d{7}/g)) return true;
+    if (hasUnsafeNumericContact(/\d{7,8}/g, localPhoneProjection, true)) return true;
+    if (/(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|联络|聯絡|联系|聯繫|telephone|phone|mobile|contact|call|tel)[^\d]{0,12}\d(?:[^\d]{0,8}\d){4,7}/i.test(contactSkeleton)) return true;
+    if (/(?:微\u0001*信号?|微号|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x|v\u0001*信)\u0001*[a-z][a-z0-9]{3,31}/i.test(contactSkeleton)) return true;
+    if (/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))/i.test(text)) return true;
+    var compact = skeleton.replace(/(\d+(?:\.\d+)?)(?:㎡|m2|平方米)(?=[1-9一二两三四五六七八九](?:室|房))/gi, '$1面积');
+    if (/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/i.test(compact)) return true;
+    if (/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/i.test(compact)) return true;
+    function projectionHasUnsafeAddress(targetProjection, patterns) {
+      return patterns.some(function (pattern) {
+        var match;
+        while ((match = pattern.exec(targetProjection.skeleton)) !== null) {
+          var start = targetProjection.positions[match.index];
+          var end = targetProjection.positions[match.index + match[0].length - 1];
+          var sourceSlice = Number.isInteger(start) && Number.isInteger(end)
+            ? targetProjection.source.slice(start, end + 1).join('')
+            : '';
+          if (/\d+(?:㎡|m\s*[²2]|平方米)\s*[一二两三四五六七八九1-9](?:室|房)/i.test(sourceSlice)) continue;
+          return true;
+        }
+        return false;
+      });
+    }
+    if (projectionHasUnsafeAddress(guestPublicAddressProjection(rawText), [
+      /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g,
+      /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g,
+      /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi,
+      /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g
+    ])) return true;
+    if (guestPublicEnglishAddressMatches(contactProjection)) return true;
+    if (/(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/i.test(contactSkeleton)) return true;
+    if (/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/.test(text)) return true;
+    if (/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/i.test(text)) return true;
+    if (/(?:路|街|巷|弄|道)\d{1,4}号/.test(compact)) return true;
+    return /(?:门锁|开门|取钥匙|拿钥匙|钥匙|密码|门禁|联系房东|房东电话|手机号)/.test(text);
+  }
+
+  function guestPublicSensitiveFragmentMatches(value, fragment) {
+    var text = normalizeGuestPublicSecurityText(value);
+    var secret = normalizeGuestPublicSecurityText(fragment);
+    if (!text || !secret) return false;
+    var shortPattern = guestPublicShortSecretPattern(secret);
+    if (shortPattern) return shortPattern.test(text);
+    var textSkeleton = guestPublicSecurityProjection(value).skeleton;
+    var secretSkeleton = guestPublicSecurityProjection(fragment).skeleton;
+    return text.indexOf(secret) !== -1 ||
+      (secretSkeleton.length >= 2 && textSkeleton.indexOf(secretSkeleton) !== -1) ||
+      guestPublicProjectedSubsequenceSpans(value, fragment).length > 0;
+  }
+
+  function guestPublicProjectedSubsequenceSpans(value, fragment) {
+    var projection = guestPublicSecurityProjection(value);
+    var secretSkeleton = guestPublicSecurityProjection(fragment).skeleton;
+    if (secretSkeleton.length < 6 || projection.skeleton.length < secretSkeleton.length) return [];
+    var maxExtra = Math.max(8, Math.min(32, secretSkeleton.length * 2));
+    var spans = [];
+    for (var startIndex = 0; startIndex < projection.skeleton.length; startIndex += 1) {
+      if (projection.skeleton[startIndex].toLowerCase() !== secretSkeleton[0].toLowerCase()) continue;
+      var sourceIndex = startIndex;
+      var secretIndex = 1;
+      var extras = 0;
+      while (sourceIndex + 1 < projection.skeleton.length && secretIndex < secretSkeleton.length && extras <= maxExtra) {
+        sourceIndex += 1;
+        if (projection.skeleton[sourceIndex].toLowerCase() === secretSkeleton[secretIndex].toLowerCase()) secretIndex += 1;
+        else extras += 1;
+      }
+      if (secretIndex !== secretSkeleton.length || extras > maxExtra) continue;
+      var start = projection.positions[startIndex];
+      var end = projection.positions[sourceIndex];
+      if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start: start, end: end });
+      startIndex = sourceIndex;
+    }
+    return spans;
+  }
+
+  function redactGuestPublicProjectedFragment(value, fragment) {
+    var projection = guestPublicSecurityProjection(value);
+    var secretSkeleton = guestPublicSecurityProjection(fragment).skeleton;
+    if (!secretSkeleton) return projection.source.join('');
+    var spans = [];
+    var offset = 0;
+    while (offset <= projection.skeleton.length - secretSkeleton.length) {
+      var matchIndex = projection.skeleton.indexOf(secretSkeleton, offset);
+      if (matchIndex < 0) break;
+      var start = projection.positions[matchIndex];
+      var end = projection.positions[matchIndex + secretSkeleton.length - 1];
+      if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start: start, end: end });
+      offset = matchIndex + Math.max(1, secretSkeleton.length);
+    }
+    guestPublicProjectedSubsequenceSpans(value, fragment).forEach(function (span) { spans.push(span); });
+    if (!spans.length) return projection.source.join('');
+    return projection.source.map(function (character, index) {
+      return spans.some(function (span) { return index >= span.start && index <= span.end; }) ? '' : character;
+    }).join('');
+  }
+
+  function guestPublicTextUnsafe(value, listing) {
+    var text = normalizeGuestPublicSecurityText(value);
+    if (!text) return false;
+    if (guestPublicIntrinsicUnsafe(value)) return true;
+    if (guestPublicCompositeSecretMatches(text, listing || {})) return true;
+    return guestPublicSensitiveFragments(listing || {}).some(function (fragment) {
+      return guestPublicSensitiveFragmentMatches(text, fragment);
+    });
+  }
+
+  function redactGuestPublicText(value, listing) {
+    var data = listing || {};
+    var knownSafeText = stripGuestPublicInvisibleText(value);
+    guestPublicCompositeSecretPatterns(data).forEach(function (pattern) {
+      knownSafeText = knownSafeText.replace(pattern, '$1 ');
+    });
+    guestPublicSensitiveFragments(data).forEach(function (fragment) {
+      if (!guestPublicSensitiveFragmentMatches(knownSafeText, fragment)) return;
+      var shortPattern = guestPublicShortSecretPattern(fragment);
+      knownSafeText = shortPattern
+        ? knownSafeText.replace(shortPattern, '$1 ')
+        : redactGuestPublicProjectedFragment(knownSafeText, fragment);
+    });
+    var text = redactGuestPublicSecuritySpans(knownSafeText, { includeAddress: true, listing: data }).trim();
+    if (!text) return '';
+    guestPublicCompositeSecretPatterns(listing || {}).forEach(function (pattern) {
+      text = text.replace(pattern, '$1 ');
+    });
+    guestPublicSensitiveFragments(listing || {}).forEach(function (fragment) {
+      if (!guestPublicSensitiveFragmentMatches(text, fragment)) return;
+      var shortPattern = guestPublicShortSecretPattern(fragment);
+      text = shortPattern ? text.replace(shortPattern, '$1 ') : redactGuestPublicProjectedFragment(text, fragment);
+    });
+    return text
+      .replace(/(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}/g, ' ')
+      .replace(/0\d{2,3}(?:[\s\-()./—–·]*\d){7,8}/g, ' ')
+      .replace(/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, ' ')
+      .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+      .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, ' ')
+      .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b(?:\s*[:：号])?/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)(?:\s*[:：号])?/gi, '$1 ')
+      .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]*信(?:\s*号)?|微\s*号|v\s*信)(?:\s*[:：号])?/gi, ' ')
+      .replace(/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/gi, ' ')
+      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/gi, ' ')
+      .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
+      .replace(/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/gi, ' ')
+      .replace(/(?:路|街|巷|弄|道)\d{1,4}号/g, ' ')
+      .replace(/(?:门锁|开门|取钥匙|拿钥匙|钥匙|密码|门禁|联系房东|房东电话|手机号)(?:[:：\s]*[^\s,，;；]*)?/g, ' ')
+      .replace(/[\s·|,/，；;]+/g, ' ')
+      .replace(/^[\s.。:：\-—]+|[\s.。:：\-—]+$/g, '')
+      .trim();
+  }
+
+  function safeGuestPublicText(value, listing, fallback) {
+    var data = listing || {};
+    var cacheKey = JSON.stringify([
+      guestPublicSecurityContextKey(data),
+      String(value === undefined || value === null ? '' : value),
+      String(fallback === undefined || fallback === null ? '' : fallback)
+    ]);
+    if (guestPublicTextCache.has(cacheKey)) return guestPublicTextCache.get(cacheKey);
+    var text = redactGuestPublicText(value, data);
+    if (text && !guestPublicTextUnsafe(text, data)) {
+      return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, text);
+    }
+    var fallbackText = redactGuestPublicText(fallback, data);
+    var result = fallbackText && !guestPublicTextUnsafe(fallbackText, data) ? fallbackText : '';
+    return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, result);
+  }
+
+  function configuredCompanyContactPhones() {
+    return uniqueTextList(COMPANY_CONTACT_PHONES).filter(function (item) {
+      return /^1[3-9]\d{9}$/.test(item);
+    });
+  }
+
+  function isValidPublicDateTimeText(value) {
+    var text = String(value === undefined || value === null ? '' : value).trim();
+    var match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z?)?$/);
+    if (!match) match = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (!match) return false;
+    var year = Number(match[1]);
+    var month = Number(match[2]);
+    var day = Number(match[3]);
+    var hour = match[4] === undefined ? 0 : Number(match[4]);
+    var minute = match[5] === undefined ? 0 : Number(match[5]);
+    var second = match[6] === undefined ? 0 : Number(match[6]);
+    if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+    var daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return year >= 1900 && year <= 2200 && day >= 1 && day <= daysInMonth;
+  }
+
+  // 公司房源的地址和看房信息继续公开，但任何房源行夹带的私号、座机或微信号都不能
+  // 绕过服务器统一号码配置。检测投影单独归一化，输出保持原始可见字形（例如“㎡”）。
+  function safeCompanyPublicText(value, fallback, options) {
+    var originalText = String(value === undefined || value === null ? '' : value);
+    var settings = options || {};
+    var allowedPhones = new Set(configuredCompanyContactPhones());
+    function sanitize(input) {
+      var original = stripGuestPublicInvisibleText(input);
+      if (isValidPublicDateTimeText(original)) return original;
+      if (settings.kind === 'access' && /^\d{7,8}[#*]?$/.test(original.trim())) return original;
+      var protectedPhones = [];
+      var candidate = original;
+      Array.from(allowedPhones).forEach(function (phone, index) {
+        var token = '\uE000' + String.fromCodePoint(0xE100 + index) + '\uE001';
+        // 每次输入内选择不冲突、无数字的私用区哨兵，避免固定占位符改写原文。
+        while (candidate.indexOf(token) !== -1) token += '\uE002';
+        var pattern = new RegExp('(^|\\D)' + guestPublicEscapeRegExp(phone) + '(?!\\d)', 'g');
+        candidate = candidate.replace(pattern, function (matched, prefix) { return prefix + token; });
+        protectedPhones.push({ token: token, phone: phone });
+      });
+      // 先完整清除常规私号和座机，避免纯数字投影跨多个号码交叉后留下区号残片。
+      function sanitizeUnprotected(segment) {
+        return redactGuestPublicSecuritySpans(segment
+          .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1')
+          .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1')).trim();
+      }
+      if (protectedPhones.length) {
+        var tokenLookup = {};
+        protectedPhones.forEach(function (entry) { tokenLookup[entry.token] = entry.phone; });
+        var tokenPattern = new RegExp('(' + protectedPhones.map(function (entry) {
+          return guestPublicEscapeRegExp(entry.token);
+        }).join('|') + ')', 'g');
+        candidate = candidate.split(tokenPattern).map(function (segment) {
+          return Object.prototype.hasOwnProperty.call(tokenLookup, segment) ? segment : sanitizeUnprotected(segment);
+        }).join('');
+      } else {
+        candidate = sanitizeUnprotected(candidate);
+      }
+      protectedPhones.forEach(function (entry) {
+        candidate = candidate.split(entry.token).join(entry.phone);
+      });
+      return candidate;
+    }
+    var text = sanitize(originalText);
+    var safeFallback = sanitize(fallback);
+    if (!text) return safeFallback;
+    text = text.replace(/(^|[^\d])((?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9})(?!\d)/g, function (matched, prefix, phoneText) {
+      var digits = String(phoneText || '').replace(/\D/g, '');
+      var phone = digits.length === 13 && digits.slice(0, 2) === '86' ? digits.slice(2) : digits;
+      return allowedPhones.has(phone) ? matched : prefix;
+    });
+    text = text
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1')
+      .replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+      .replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^[\s,，;；:：\-—()（）]+|[\s,，;；:：\-—()（）]+$/g, '')
+      .trim();
+    // NFKC 会把既有中文逗号折叠成半角；展示文案不是敏感值，保留原中文标点以免改变 UI 口径。
+    if (originalText.indexOf('，') !== -1) text = text.replace(/,/g, '，');
+    return text || safeFallback;
+  }
+
+  function companyPublicListingFields(listing) {
+    var data = listing || {};
+    if (!isCompanyListing(data)) return {};
+    var location = listingLocationFields(data);
+    var companyPhones = configuredCompanyContactPhones();
+    var contact = companyPhones[0] || '';
+    var building = safeCompanyPublicText(location.building, '', { kind: 'address' });
+    var unit = safeCompanyPublicText(location.unit, '', { kind: 'address' });
+    var roomNumber = safeCompanyPublicText(location.roomNumber, '', { kind: 'address' });
+    var room = safeCompanyPublicText(firstText(data.roomAddress, location.roomAddress), '', { kind: 'address' });
+    var address = safeCompanyPublicText(firstText(data.address, [location.city, location.area, location.community, room].filter(Boolean).join('')), '', { kind: 'address' });
+    var viewing = listingViewingMethodFields(data);
+    var viewingPassword = safeCompanyPublicText(firstText(data.viewingPassword, data.showingPassword, data.password), '', { kind: 'access' });
+    return {
+      building: building,
+      unit: unit,
+      roomNumber: roomNumber,
+      roomAddress: room,
+      address: address,
+      contact: contact,
+      landlordPhone: contact,
+      companyContactPhones: companyPhones,
+      companyContactPhoneText: contact,
+      viewingMethod: safeCompanyPublicText(viewing.viewingMethod),
+      viewingMethodText: safeCompanyPublicText(viewing.viewingMethodText),
+      viewingPassword: viewingPassword,
+      showingPassword: viewingPassword,
+      viewingKeyLocation: safeCompanyPublicText(firstText(data.viewingKeyLocation, data.keyLocation), '', { kind: 'access' }),
+      remark: safeCompanyPublicText(normalizeListingRemark(firstText(data.remark, data.note, data.memo)))
+    };
+  }
+
+  function publicListingHousingFields(listing) {
+    var data = listing || {};
+    var rawRentMode = firstText(data.rentMode, data.type);
+    if (isCompanyListing(data)) {
+      var companyRentMode = safeCompanyPublicText(rawRentMode);
+      var companyType = safeCompanyPublicText(firstText(data.type, data.rentMode), companyRentMode);
+      var companyRoom = safeCompanyPublicText(data.room);
+      var companyHall = safeCompanyPublicText(data.hall);
+      var companyBath = safeCompanyPublicText(data.bath);
+      var companyFallbackLayout = [companyRentMode, companyRoom, companyHall, companyBath].filter(Boolean).join('');
+      return {
+        layout: safeCompanyPublicText(data.layout, companyFallbackLayout),
+        rentMode: companyRentMode,
+        type: companyType,
+        room: companyRoom,
+        hall: companyHall,
+        bath: companyBath
+      };
+    }
+    var rentMode = safeGuestPublicText(rawRentMode, data, '');
+    var type = safeGuestPublicText(firstText(data.type, data.rentMode), data, rentMode);
+    var room = safeGuestPublicText(data.room, data, '');
+    var hall = safeGuestPublicText(data.hall, data, '');
+    var bath = safeGuestPublicText(data.bath, data, '');
+    var fallbackLayout = [rentMode, room, hall, bath].filter(Boolean).join('');
+    return {
+      layout: safeGuestPublicText(data.layout, data, fallbackLayout),
+      rentMode: rentMode,
+      type: type,
+      room: room,
+      hall: hall,
+      bath: bath
+    };
+  }
+
+  function publicListingTitle(listing, location) {
+    var place = location || publicListingLocationFields(listing || {});
+    var housing = publicListingHousingFields(listing || {});
+    return place.community || ((place.area || '房源') + (housing.layout ? ' · ' + housing.layout : ''));
+  }
+
+  function publicLocationSearchText(listing) {
+    var location = publicListingLocationFields(listing || {});
+    return [location.city, location.district, location.area, location.block, location.community].map(function (item) {
+      return String(item || '');
+    }).join('');
+  }
+
   function getUser(id) {
     var userId = id || state.currentUserId;
     return state.users.find(function (user) {
@@ -501,6 +1765,52 @@
     return clone(user);
   }
 
+  function issueAuthSession(userId) {
+    var user = getUser(String(userId || ''));
+    if (!user || user.deleted) {
+      var error = new Error('账号不存在或已停用');
+      error.statusCode = 401;
+      throw error;
+    }
+    var expiresAt = Date.now() + MOCK_SESSION_TTL_MS;
+    var token = 'synthetic-mock-session-' + Date.now().toString(36) + '-' +
+      Math.random().toString(36).slice(2, 14) + '-' + Math.random().toString(36).slice(2, 14);
+    issuedAuthSessions[token] = { userId: user.id, expiresAt: expiresAt };
+    state.currentUserId = user.id;
+    return { token: token, tokenExpiresAt: expiresAt };
+  }
+
+  function resolveAuthSession(token) {
+    var key = String(token || '').trim();
+    var session = key ? issuedAuthSessions[key] : null;
+    if (!session || Number(session.expiresAt || 0) <= Date.now()) {
+      if (key) delete issuedAuthSessions[key];
+      state.currentUserId = '';
+      return null;
+    }
+    var user = getUser(session.userId);
+    if (!user || user.deleted) {
+      delete issuedAuthSessions[key];
+      state.currentUserId = '';
+      return null;
+    }
+    state.currentUserId = user.id;
+    return clone(user);
+  }
+
+  function revokeAuthSession(token) {
+    var key = String(token || '').trim();
+    if (key) delete issuedAuthSessions[key];
+  }
+
+  function revokeAuthSessionsForUser(userId) {
+    var target = String(userId || '').trim();
+    Object.keys(issuedAuthSessions).forEach(function (token) {
+      if (String((issuedAuthSessions[token] || {}).userId || '') === target) delete issuedAuthSessions[token];
+    });
+    if (String(state.currentUserId || '') === target) state.currentUserId = '';
+  }
+
   function registerUser(form) {
     var payload = form || {};
     var name = String(payload.name || '').trim();
@@ -521,7 +1831,12 @@
     throw error;
   }
 
-  function logout() {
+  function logout(token) {
+    var key = String(token || '').trim();
+    var session = key ? issuedAuthSessions[key] : null;
+    var userId = session ? session.userId : state.currentUserId;
+    if (userId) revokeAuthSessionsForUser(userId);
+    else revokeAuthSession(key);
     state.currentUserId = '';
     return { loggedOut: true, scope: 'all-devices' };
   }
@@ -538,6 +1853,11 @@
 
   function hasListingVideo(listing) {
     return looksLikeVideoPath(listing && listing.videoUrl) || looksLikeVideoPath(listing && listing.videoKey);
+  }
+
+  function publicMockListingVideoUrl(listing) {
+    // Mock 不提供真实媒体代理，但公开 DTO 仍必须与生产一样不暴露原始 URL/对象键或文件名。
+    return hasListingVideo(listing) ? 'https://mock-media.invalid/listing-video.mp4' : '';
   }
 
   function isExpiredListing(listing) {
@@ -1149,9 +2469,82 @@
     });
   }
 
+  function companyPublicDisplayFields(listing) {
+    var display = listingDisplayFields(listing || {});
+    var features = (display.features || []).map(function (item) {
+      return safeCompanyPublicText(item);
+    }).filter(Boolean);
+    var safeDisplay = Object.keys(display).reduce(function (result, key) {
+      var value = display[key];
+      result[key] = typeof value === 'string'
+        ? safeCompanyPublicText(value, '', { kind: key === 'lastVerifiedAt' ? 'date' : 'generic' })
+        : value;
+      return result;
+    }, {});
+    safeDisplay.features = features;
+    safeDisplay.featureText = safeCompanyPublicText(featureText(features));
+    return safeDisplay;
+  }
+
+  function guestPartnerDisplayFields(listing) {
+    var display = listingDisplayFields(listing);
+    var freshnessTime = guestPublicFreshnessTime(display.lastVerifiedAt, listing || {});
+    return {
+      features: display.features,
+      featureText: display.featureText,
+      companyListing: display.companyListing,
+      isCompanyListing: display.isCompanyListing,
+      noCommission: display.noCommission,
+      ownerType: display.ownerType,
+      isOwnerListing: display.isOwnerListing,
+      sourceLabel: display.sourceLabel,
+      commissionText: display.commissionText,
+      commissionBadge: display.commissionBadge,
+      lastVerifiedAt: freshnessTime,
+      staleDays: display.staleDays,
+      verifyStatus: display.verifyStatus,
+      verifyTip: display.verifyTip,
+      needsVerify: display.needsVerify,
+      maintenanceText: display.maintenanceText
+    };
+  }
+
+  function guestPublicFreshnessTime(value, listing) {
+    var text = String(value === undefined || value === null ? '' : value).trim();
+    if (text === '刚刚' || text === '未核验') return text;
+    if (!isValidPublicDateTimeText(text)) return '';
+    return safeGuestPublicText(text, listing || {});
+  }
+
+  function authenticatedPartnerDisplayFields(listing) {
+    var data = listing || {};
+    var display = listingDisplayFields(data);
+    var safeDisplay = Object.keys(display).reduce(function (result, key) {
+      var value = display[key];
+      result[key] = typeof value === 'string' ? safeGuestPublicText(value, data) : value;
+      return result;
+    }, {});
+    var features = (display.features || []).map(function (item) {
+      return safeGuestPublicText(item, data);
+    }).filter(Boolean);
+    var safeReviewStatus = safeGuestPublicText(display.reviewStatus, data);
+    var safeCommunityMatchStatus = safeGuestPublicText(display.communityMatchStatus, data);
+    safeDisplay.reviewStatus = ['无需审核', '待审核', '已通过', '已驳回'].indexOf(safeReviewStatus) !== -1
+      ? safeReviewStatus
+      : (requiresListingReview(data) ? (isPendingOwnerReview(data) ? '待审核' : '已通过') : '无需审核');
+    safeDisplay.communityMatchStatus = ['已匹配', '未匹配'].indexOf(safeCommunityMatchStatus) !== -1
+      ? safeCommunityMatchStatus
+      : (display.communityMatched === false ? '未匹配' : '已匹配');
+    safeDisplay.features = features;
+    safeDisplay.featureText = safeGuestPublicText(featureText(features), data);
+    return safeDisplay;
+  }
+
   function listingMatchFeatureSet(listing) {
-    return new Set(listingFeatureFields(listing).features
-      .concat([listing && listing.rentMode, listing && listing.type])
+    var housing = publicListingHousingFields(listing || {});
+    var features = isCompanyListing(listing) ? companyPublicDisplayFields(listing).features : listingFeatureFields(listing).features;
+    return new Set(features
+      .concat([housing.rentMode, housing.type])
       .filter(Boolean));
   }
 
@@ -1197,22 +2590,33 @@
     };
   }
 
-  function formatHomeListing(listing) {
+  function formatHomeListing(listing, options) {
+    var settings = options || {};
     var uploader = getUser(listing.uploaderId) || {};
-    var location = listingLocationFields(listing);
-    var display = listingDisplayFields(listing);
-    var companyListing = display.companyListing;
+    var companyListing = isCompanyListing(listing);
+    var partnerPublic = !companyListing && settings.publicGuest === true;
+    var location = publicListingLocationFields(listing);
+    var housing = publicListingHousingFields(listing);
+    var display = companyListing
+      ? companyPublicDisplayFields(listing)
+      : (partnerPublic ? guestPartnerDisplayFields(listing) : authenticatedPartnerDisplayFields(listing));
+    var companyPublic = companyPublicListingFields(listing);
     var hasVideo = hasListingVideo(listing);
     var mediaText = hasVideo ? '仅视频' : (companyListing ? '公司房源表' : '待补视频');
-    var publicTitle = listing.shortTitle || location.community || listing.community || ((location.area || '房源') + (listing.layout ? ' · ' + listing.layout : ''));
-    return Object.assign({
+    var publicTitle = publicListingTitle(listing, location);
+    var rent = publicListingRentValue(listing);
+    var result = Object.assign({
       id: listing.id,
       title: publicTitle,
-      meta: (location.locationSummary || location.area) + ' · ' + listing.layout + ' · ' + mediaText,
-      sub: display.sourceLabel + ' · ' + display.commissionText + ' · 上传人 ' + (uploader.name || '平台'),
-      price: '¥' + listing.rent + '/月',
+      meta: (location.locationSummary || location.area) + ' · ' + housing.layout + ' · ' + mediaText,
+      sub: partnerPublic
+        ? (display.sourceLabel + ' · ' + display.commissionText)
+        : (display.sourceLabel + ' · ' + display.commissionText + ' · 上传人 ' + (companyListing
+          ? safeCompanyPublicText(uploader.name, '平台')
+          : safeGuestPublicText(uploader.name, listing, '平台'))),
+      price: rent ? ('¥' + rent + '/月') : '',
       tag: companyListing ? COMPANY_SOURCE : (commissionRateByOwnerType(display.ownerType) + '%'),
-      videoUrl: listing.videoUrl || '',
+      videoUrl: publicMockListingVideoUrl(listing),
       hasVideo: hasVideo,
       coverUrl: '',
       city: location.city,
@@ -1220,12 +2624,15 @@
       area: location.area,
       block: location.block,
       community: location.community,
-      building: location.building,
-      unit: location.unit,
-      roomNumber: location.roomNumber,
       locationSummary: location.locationSummary,
-      roomAddress: location.roomAddress
-    }, display);
+      layout: housing.layout,
+      type: housing.type,
+      rentMode: housing.rentMode,
+      room: housing.room,
+      hall: housing.hall,
+      bath: housing.bath
+    }, display, companyPublic);
+    return result;
   }
 
   function matchesCategory(listing, category) {
@@ -1233,25 +2640,28 @@
     if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(category) !== -1) {
       return listingSourceType(listing) === category;
     }
-    var display = listingDisplayFields(listing);
-    var text = String((listing.type || '') + (listing.layout || '') + (listing.source || '') + (display.ownerType || '') + (display.sourceLabel || ''));
+    var display = isCompanyListing(listing) ? companyPublicDisplayFields(listing) : guestPartnerDisplayFields(listing);
+    var housing = publicListingHousingFields(listing);
+    var text = String((housing.type || '') + (housing.layout || '') + (display.ownerType || '') + (display.sourceLabel || ''));
     return text.indexOf(category) !== -1;
   }
 
   function getListings(filter) {
     var query = filter || {};
     return publicListings().filter(function (listing) {
-      var areaText = String((listing.city || '') + (listing.district || '') + (listing.area || '') + (listing.block || '') + (listing.community || '') + (listing.building || '') + (listing.unit || '') + (listing.roomNumber || '') + (listing.address || ''));
+      var location = publicListingLocationFields(listing);
+      var housing = publicListingHousingFields(listing);
+      var areaText = publicLocationSearchText(listing);
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
-      if (query.district && String((listing.district || '') + (listing.area || '')).indexOf(query.district) === -1) return false;
+      if (query.district && String((location.district || '') + (location.area || '')).indexOf(query.district) === -1) return false;
       if (query.area && areaText.indexOf(query.area) === -1) return false;
       if (query.block && areaText.indexOf(query.block) === -1) return false;
-      if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
-      if (query.layout && String(listing.layout || '').indexOf(query.layout) === -1) return false;
-      if (query.rentMode && (listing.rentMode || listing.type) !== query.rentMode) return false;
-      if (query.rentMin && Number(listing.rent || 0) < Number(query.rentMin)) return false;
-      if (query.rentMax && Number(listing.rent || 0) > Number(query.rentMax)) return false;
+      if (query.community && String(location.community || '').indexOf(query.community) === -1) return false;
+      if (query.layout && String(housing.layout || '').indexOf(query.layout) === -1) return false;
+      if (query.rentMode && housing.rentMode !== query.rentMode) return false;
+      if (query.rentMin && publicListingRentValue(listing) < Number(query.rentMin)) return false;
+      if (query.rentMax && publicListingRentValue(listing) > Number(query.rentMax)) return false;
       var requestedFeatures = parseFeatureInput(query.features || query.feature);
       if (requestedFeatures.length) {
         var featureSet = listingMatchFeatureSet(listing);
@@ -1259,23 +2669,33 @@
       }
       return true;
     }).map(function (listing) {
-      var row = formatHomeListing(listing);
-      row.layout = listing.layout || '';
-      row.rent = Number(listing.rent || 0);
-      row.type = listing.type || '';
-      row.rentMode = listing.rentMode || listing.type || '';
-      row.room = listing.room || '';
-      row.hall = listing.hall || '';
-      row.bath = listing.bath || '';
-      row.source = listing.source || '';
-      row.status = listing.status || '';
+      var row = formatHomeListing(listing, { publicGuest: query.publicGuest === true });
+      var housing = publicListingHousingFields(listing);
+      row.layout = housing.layout;
+      row.rent = publicListingRentValue(listing);
+      row.type = housing.type;
+      row.rentMode = housing.rentMode;
+      row.room = housing.room;
+      row.hall = housing.hall;
+      row.bath = housing.bath;
+      row.source = !row.companyListing ? (row.sourceLabel || '') : safeCompanyPublicText(listing.source || '');
+      row.status = publicListingStatus(listing);
       return row;
     });
   }
 
+  function requireFavoriteUser() {
+    var user = getUser();
+    if (user && user.id) return user;
+    var error = new Error('请先登录内部中介账号');
+    error.statusCode = 401;
+    throw error;
+  }
+
   function favoriteRecordsForCurrentUser() {
+    var user = requireFavoriteUser();
     return (state.favorites || []).filter(function (item) {
-      return item && item.userId === state.currentUserId;
+      return item && item.userId === user.id;
     });
   }
 
@@ -1295,21 +2715,20 @@
   }
 
   function isFavoriteListingAvailable(listing) {
-    if (!listing || isExpiredListing(listing) || isPendingOwnerReview(listing)) return false;
-    if (listing.lifecycleStatus === 'sold' || /成交|签单/.test(String(listing.status || ''))) return false;
-    return isCompanyListing(listing) || hasListingVideo(listing);
+    return Boolean(listing && isMockFrontendEffectiveListing(listing));
   }
 
   function setFavorite(listingId, desired) {
+    var user = requireFavoriteUser();
     var id = String(listingId || '').trim();
     if (!id) throw new Error('缺少房源编号');
     state.favorites = state.favorites || [];
     var existing = state.favorites.find(function (item) {
-      return item.userId === state.currentUserId && item.listingId === id;
+      return item.userId === user.id && item.listingId === id;
     });
     if (!desired) {
       state.favorites = state.favorites.filter(function (item) {
-        return !(item.userId === state.currentUserId && item.listingId === id);
+        return !(item.userId === user.id && item.listingId === id);
       });
       return { listingId: id, favorited: false, isFavorited: false };
     }
@@ -1330,7 +2749,7 @@
     }
     var record = {
       id: 'FV' + Date.now() + Math.floor(Math.random() * 1000),
-      userId: state.currentUserId,
+      userId: user.id,
       listingId: id,
       createdAt: new Date().toISOString()
     };
@@ -1347,7 +2766,8 @@
   function mockFavoriteLayoutMatches(listing, value) {
     var filter = String(value || '').trim();
     if (!filter || filter === '不限') return true;
-    var text = [listing.layout, listing.room, listing.type, listing.rentMode].join(' ');
+    var housing = publicListingHousingFields(listing || {});
+    var text = [housing.layout, housing.room, housing.type, housing.rentMode].join(' ');
     var matched = text.match(/([一二两三四五六七八九]|\d+)\s*室/);
     var map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
     var count = matched ? (map[matched[1]] || Number(matched[1]) || 0) : 0;
@@ -1355,7 +2775,7 @@
     if (filter === '两室' || filter === '二室') return count === 2;
     if (filter === '三室') return count === 3;
     if (filter === '三室以上') return count >= 3;
-    return String(listing.layout || '').indexOf(filter) !== -1;
+    return String(housing.layout || '').indexOf(filter) !== -1;
   }
 
   function favoriteSafeRow(listing, relationship) {
@@ -1384,21 +2804,24 @@
         favoritedAt: relationship.createdAt || ''
       };
     }
-    var location = listingLocationFields(listing);
-    var display = listingDisplayFields(listing);
+    var companyListing = isCompanyListing(listing);
+    var location = publicListingLocationFields(listing);
+    var housing = publicListingHousingFields(listing);
+    var display = companyListing ? companyPublicDisplayFields(listing) : authenticatedPartnerDisplayFields(listing);
     var available = isFavoriteListingAvailable(listing);
-    var source = listing.source || display.ownerType || '';
-    var rent = Number(listing.rent || 0);
+    var source = companyListing ? safeCompanyPublicText(listing.source || display.ownerType || '') : (display.sourceLabel || '');
+    var status = publicListingStatus(listing);
+    var rent = publicListingRentValue(listing);
     return {
       id: listing.id,
-      title: listing.shortTitle || location.community || '房源',
-      meta: [location.locationSummary || location.area, listing.layout, display.sourceLabel || source].filter(Boolean).join(' · '),
-      sub: available ? [listing.layout, display.sourceLabel || source, listing.status].filter(Boolean).join(' · ') : '暂不可用',
+      title: publicListingTitle(listing, location),
+      meta: [location.locationSummary || location.area, housing.layout, display.sourceLabel || source].filter(Boolean).join(' · '),
+      sub: available ? [housing.layout, display.sourceLabel || source, status].filter(Boolean).join(' · ') : '暂不可用',
       price: rent ? '¥' + rent + '/月' : '',
       rent: rent,
-      layout: listing.layout || '',
-      rentMode: listing.rentMode || listing.type || '',
-      type: listing.rentMode || listing.type || '',
+      layout: housing.layout,
+      rentMode: housing.rentMode,
+      type: housing.type,
       district: location.district,
       area: location.area,
       block: location.block,
@@ -1406,8 +2829,8 @@
       features: display.features || [],
       source: source,
       sourceLabel: display.sourceLabel || source,
-      status: listing.status || '',
-      companyListing: isCompanyListing(listing),
+      status: status,
+      companyListing: companyListing,
       hasVideo: available && hasListingVideo(listing),
       coverUrl: '',
       isAvailable: available,
@@ -1440,15 +2863,17 @@
         if (query.availability === 'available' && !available) return false;
         if (query.availability === 'unavailable' && available) return false;
         if (!listing) return !query.category && !query.district && !query.area && !query.block && !query.community && !query.layout && !query.rentMode && !query.rentMin && !query.rentMax && !requestedFeatures.length;
+        var location = publicListingLocationFields(listing);
+        var housing = publicListingHousingFields(listing);
         var district = String(query.district || query.area || '');
         if (query.category && !matchesCategory(listing, query.category)) return false;
-        if (district && [listing.district, listing.area].join('').indexOf(district) === -1) return false;
-        if (query.block && String(listing.block || '').indexOf(query.block) === -1) return false;
-        if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
+        if (district && [location.district, location.area].join('').indexOf(district) === -1) return false;
+        if (query.block && String(location.block || '').indexOf(query.block) === -1) return false;
+        if (query.community && String(location.community || '').indexOf(query.community) === -1) return false;
         if (!mockFavoriteLayoutMatches(listing, query.layout)) return false;
-        if (query.rentMode && (listing.rentMode || listing.type) !== query.rentMode) return false;
-        if (query.rentMin && Number(listing.rent || 0) < Number(query.rentMin)) return false;
-        if (query.rentMax && Number(listing.rent || 0) > Number(query.rentMax)) return false;
+        if (query.rentMode && housing.rentMode !== query.rentMode) return false;
+        if (query.rentMin && publicListingRentValue(listing) < Number(query.rentMin)) return false;
+        if (query.rentMax && publicListingRentValue(listing) > Number(query.rentMax)) return false;
         if (requestedFeatures.length) {
           var featureSet = listingMatchFeatureSet(listing);
           if (!requestedFeatures.every(function (feature) { return featureSet.has(feature); })) return false;
@@ -1472,20 +2897,23 @@
     var scored = availableListings.map(function (listing) {
       var score = 40;
       var reasons = [];
+      var housing = publicListingHousingFields(listing);
+      var listingRent = publicListingRentValue(listing);
       var featureSet = listingMatchFeatureSet(listing);
       var matchedFeatureCount = requestedFeatures.filter(function (item) {
         return featureSet.has(item);
       }).length;
-      if (budget && listing.rent <= budget) {
+      if (budget && listingRent <= budget) {
         score += 24;
         reasons.push('预算匹配');
       }
-      if (budget && listing.rent > budget) score -= Math.min(30, Math.ceil((listing.rent - budget) / 200));
-      if (area && String((listing.city || '') + (listing.district || '') + (listing.area || '') + (listing.block || '') + (listing.community || '') + (listing.building || '') + (listing.unit || '') + (listing.roomNumber || '') + (listing.address || '')).indexOf(area) !== -1) {
+      if (budget && listingRent > budget) score -= Math.min(30, Math.ceil((listingRent - budget) / 200));
+      var areaSearchText = publicLocationSearchText(listing);
+      if (area && areaSearchText.indexOf(area) !== -1) {
         score += 24;
         reasons.push('区域匹配');
       }
-      if (layout && listing.layout.indexOf(layout) !== -1) {
+      if (layout && housing.layout.indexOf(layout) !== -1) {
         score += 22;
         reasons.push('户型匹配');
       }
@@ -1518,7 +2946,7 @@
     }
 
     var rows = scored.slice(0, 3).map(function (item) {
-      var row = formatHomeListing(item.listing);
+      var row = formatHomeListing(item.listing, { publicGuest: condition.publicGuest === true });
       row.relevanceScore = item.score;
       row.relevancePercent = item.score + '%';
       row.relevanceText = '相关性 ' + item.score + '%';
@@ -1643,16 +3071,23 @@
 
   function unavailableListingDetail(listing, listingId) {
     var unavailable = listingUnavailableReason(listing);
+    var companyListing = Boolean(listing && isCompanyListing(listing));
+    function safeText(value) {
+      return companyListing ? safeCompanyPublicText(value) : safeGuestPublicText(value, listing || {});
+    }
+    function safeDate(value) {
+      return isValidPublicDateTimeText(value) ? String(value).trim() : '';
+    }
     return {
       id: listing ? listing.id : listingId,
       unavailable: true,
       reason: unavailable.reason,
       reasonText: unavailable.reasonText,
-      status: listing ? (listing.status || '') : '',
-      updatedAt: listing ? (listing.updatedAt || '') : '',
-      syncedAt: listing ? (listing.syncedAt || '') : '',
-      feishuLastSyncAction: listing ? (listing.feishuLastSyncAction || '') : '',
-      feishuLastSyncAt: listing ? (listing.feishuLastSyncAt || listing.syncedAt || '') : ''
+      status: listing ? publicListingStatus(listing) : '',
+      updatedAt: listing ? safeDate(listing.updatedAt) : '',
+      syncedAt: listing ? safeDate(listing.syncedAt) : '',
+      feishuLastSyncAction: listing ? safeText(listing.feishuLastSyncAction) : '',
+      feishuLastSyncAt: listing ? safeDate(listing.feishuLastSyncAt || listing.syncedAt) : ''
     };
   }
 
@@ -1665,59 +3100,56 @@
       throw notFoundError;
     }
     var settings = options || {};
-    if (settings.companyOnly && !isCompanyListing(listing)) {
-      var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
-      accessError.statusCode = 401;
-      throw accessError;
-    }
-    if (!isMockFrontendEffectiveListing(listing)) return unavailableListingDetail(listing, id);
-    var location = listingLocationFields(listing);
     var companyListing = isCompanyListing(listing);
-    var companyContactText = COMPANY_CONTACT_PHONES[0] || '';
+    var publicPartner = !companyListing;
+    var viewerId = String(settings.viewerId || '');
+    if (!isMockFrontendEffectiveListing(listing)) {
+      if (settings.publicGuest === true && publicPartner) {
+        var unavailableError = new Error('房源不存在');
+        unavailableError.statusCode = 404;
+        throw unavailableError;
+      }
+      return unavailableListingDetail(listing, id);
+    }
+    var publicLocation = publicListingLocationFields(listing);
+    var location = publicLocation;
+    var housing = publicListingHousingFields(listing);
+    var companyPublic = companyPublicListingFields(listing);
+    var display = companyListing
+      ? companyPublicDisplayFields(listing)
+      : (settings.publicGuest === true ? guestPartnerDisplayFields(listing) : authenticatedPartnerDisplayFields(listing));
     var detail = Object.assign({
       id: listing.id,
-      title: listing.title,
-      ownListing: Boolean(listing.uploaderId && String(listing.uploaderId) === String(state.currentUserId)),
-      rent: String(listing.rent),
-      layout: listing.layout,
+      title: publicListingTitle(listing, publicLocation),
+      ownListing: Boolean(viewerId && listing.uploaderId && String(listing.uploaderId) === viewerId),
+      rent: String(publicListingRentValue(listing)),
+      layout: housing.layout,
       city: location.city,
       district: location.district,
       area: location.area,
       areaText: location.city + ' · ' + location.area,
       block: location.block,
       community: location.community,
-      building: location.building,
-      unit: location.unit,
-      roomNumber: location.roomNumber,
       locationSummary: location.locationSummary,
-      roomAddress: location.roomAddress,
-      address: companyListing ? (listing.address || [location.locationSummary, location.roomAddress].filter(Boolean).join('')) : '确认留痕后可查看',
-      landlordPhone: companyListing ? companyContactText : '确认留痕后可查看',
-      contact: companyListing ? companyContactText : '',
-      companyContactPhones: companyListing ? COMPANY_CONTACT_PHONES.slice() : [],
-      companyContactPhoneText: companyListing ? companyContactText : '',
       sensitiveLocked: !companyListing,
-      remark: listingRemarkContainsContact(listing.remark) ? '' : normalizeListingRemark(listing.remark),
       landlordCommissionPercent: landlordCommissionPercentFrom({}, listing),
-      commissionBreakdown: commissionBreakdownForListing(listing, state.currentUserId),
-      videoLabel: listing.videoLabel,
-      videoUrl: listing.videoUrl || '',
-      videoKey: listing.videoKey || '',
-      type: listing.type || listing.rentMode || '',
-      rentMode: listing.rentMode || listing.type || '',
-      room: listing.room || '',
-      hall: listing.hall || '',
-      bath: listing.bath || '',
-      status: listing.status
-    }, listingViewingMethodFields(listing), companyListing ? {
-      viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
-      viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation)
-    } : {}, listingDisplayFields(listing));
+      commissionBreakdown: commissionBreakdownForListing(listing, viewerId),
+      videoLabel: companyListing ? safeCompanyPublicText(listing.videoLabel, '房源实拍视频') : safeGuestPublicText(listing.videoLabel, listing, '房源实拍视频'),
+      videoUrl: publicMockListingVideoUrl(listing),
+      hasVideo: hasListingVideo(listing),
+      coverUrl: '',
+      type: housing.type,
+      rentMode: housing.rentMode,
+      room: housing.room,
+      hall: housing.hall,
+      bath: housing.bath,
+      status: publicListingStatus(listing)
+    }, display, companyPublic);
     delete detail.uploader;
     delete detail.commissionRate;
     delete detail.commissionText;
     delete detail.commissionBadge;
-    detail.nearby = getNearbyListings(id, { companyOnly: settings.companyOnly === true });
+    detail.nearby = getNearbyListings(id, { publicGuest: settings.publicGuest === true });
     return detail;
   }
 
@@ -1950,21 +3382,73 @@
     };
   }
 
+  function guestPublicMapCoordinateFromListing(listing) {
+    var coordinate = mapCoordinateFromListing(listing);
+    var publicLocation = publicListingLocationFields(listing || {});
+    if (isCompanyListing(listing)) {
+      var sourceText = String(coordinate.source || '').toLowerCase();
+      return {
+        latitude: coordinate.latitude,
+        longitude: coordinate.longitude,
+        source: sourceText.indexOf('admin-verified-coordinate') !== -1
+          ? 'admin-verified-coordinate'
+          : (sourceText.indexOf('manual-confirmed') !== -1 ? 'manual-confirmed-coordinate' : 'community-coordinate')
+      };
+    }
+    var communityCoordinate = coordinateByCommunity(publicLocation.community);
+    if (communityCoordinate) {
+      return {
+        latitude: communityCoordinate.latitude,
+        longitude: communityCoordinate.longitude,
+        source: 'guest-community-approximate'
+      };
+    }
+    return {
+      latitude: Number(Number(coordinate.latitude).toFixed(2)),
+      longitude: Number(Number(coordinate.longitude).toFixed(2)),
+      source: 'guest-community-approximate'
+    };
+  }
+
   function isSoldListing(listing) {
     var data = listing || {};
     return data.lifecycleStatus === 'sold' || /成交|签单/.test(String(data.status || ''));
   }
 
+  function isFrontendInactiveHistoricalStatus(listing) {
+    return /已出租|不租了|暂停出租|已下架|已失效/.test(String((listing || {}).status || '').trim());
+  }
+
   function isMockFrontendEffectiveListing(listing) {
     return !isExpiredListing(listing) &&
       !isSoldListing(listing) &&
+      !isFrontendInactiveHistoricalStatus(listing) &&
       (isCompanyListing(listing) || hasListingVideo(listing)) &&
       !isPendingOwnerReview(listing);
   }
 
+  function publicListingRentValue(listing) {
+    var data = listing || {};
+    var text = String(data.rent === undefined || data.rent === null ? '' : data.rent).trim();
+    if (!/^\d+(?:\.\d+)?$/.test(text)) return 0;
+    if (/^(?:(?:86)?1[3-9]\d{9}|0\d{9,11}|(?:400|800)\d{7})$/.test(text)) return 0;
+    var value = Number(text);
+    // 旧数据数值化后可能丢失座机前导 0；Mock 与生产统一拒绝巨额纯数字公开租金。
+    return isFinite(value) && value >= 0 && value <= 1000000 ? value : 0;
+  }
+
+  function publicListingStatus(listing) {
+    var data = listing || {};
+    var status = String(data.status || '').trim();
+    if (isFrontendInactiveHistoricalStatus(data) || isExpiredListing(data) || isSoldListing(data)) return '已下架';
+    if (isCompanyListing(data)) return safeCompanyPublicText(status, '在租') || '在租';
+    return ['在租', '待确认', '已维护'].indexOf(status) !== -1 ? status : '在租';
+  }
+
   function nearbyReliableCoordinate(listing) {
     var data = listing || {};
-    var communityCoordinate = coordinateByCommunity(data.community);
+    var publicLocation = publicListingLocationFields(data);
+    var communityCoordinate = coordinateByCommunity(publicLocation.community);
     if (communityCoordinate) {
       return {
         latitude: Number(communityCoordinate.latitude),
@@ -1981,7 +3465,12 @@
     if (data.coordinateVerified !== true || level !== 'verified') return null;
     if (/block-center|tencent-geocode|qq-map-geocode|geocoder|approx|default|pending|legacy|estimated/i.test(source)) return null;
     if (!/admin-verified-coordinate|community-coordinate|manual-confirmed|lianjia|amap/i.test(source)) return null;
-    return { latitude: latitude, longitude: longitude };
+    var publicCoordinate = guestPublicMapCoordinateFromListing(data);
+    if (!publicCoordinate || !isFinite(Number(publicCoordinate.latitude)) || !isFinite(Number(publicCoordinate.longitude))) return null;
+    return {
+      latitude: Number(publicCoordinate.latitude),
+      longitude: Number(publicCoordinate.longitude)
+    };
   }
 
   function nearbyDistanceKm(from, to) {
@@ -2002,30 +3491,37 @@
   }
 
   function mockNearbyCard(listing, distanceKm) {
-    var location = listingLocationFields(listing);
-    var display = listingDisplayFields(listing);
-    var sourceLabel = display.sourceLabel || listing.source || listing.ownerType || '';
-    var rent = Number(listing.rent || 0);
-    var rentMode = listing.rentMode || listing.type || '';
+    var companyListing = isCompanyListing(listing);
+    var location = publicListingLocationFields(listing);
+    var housing = publicListingHousingFields(listing);
+    var display = companyListing ? companyPublicDisplayFields(listing) : guestPartnerDisplayFields(listing);
+    var sourceLabel = display.sourceLabel || (companyListing ? safeCompanyPublicText(listing.source || listing.ownerType || '') : '');
+    var rent = publicListingRentValue(listing);
+    var rentMode = housing.rentMode || housing.type || '';
     return {
       id: listing.id,
-      title: listing.shortTitle || location.community || '房源',
-      meta: [location.community || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
+      title: publicListingTitle(listing, location),
+      meta: [location.community || location.area, housing.layout, sourceLabel].filter(Boolean).join(' · '),
       coverUrl: '',
       hasVideo: hasListingVideo(listing),
       distanceKm: Number(Number(distanceKm).toFixed(3)),
       distanceText: nearbyDistanceText(distanceKm),
       source: sourceLabel,
       sourceLabel: sourceLabel,
-      companyListing: isCompanyListing(listing),
+      companyListing: companyListing,
       type: rentMode,
       rentMode: rentMode,
-      layout: listing.layout || '',
+      layout: housing.layout,
       features: (display.features || []).slice(),
       featureText: display.featureText || '',
       rent: rent,
       price: rent ? ('¥' + rent + '/月') : '',
-      community: location.community || ''
+      city: location.city,
+      district: location.district,
+      area: location.area,
+      block: location.block,
+      community: location.community || '',
+      locationSummary: location.locationSummary || ''
     };
   }
 
@@ -2039,9 +3535,9 @@
     var anchorId = String(anchorListingId || '').trim();
     var anchor = getListing(anchorId);
     if (!anchor) return emptyNearbyResult();
-    if (settings.companyOnly && !isCompanyListing(anchor)) {
-      var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
-      accessError.statusCode = 401;
+    if (settings.publicGuest === true && !isCompanyListing(anchor) && !isMockFrontendEffectiveListing(anchor)) {
+      var accessError = new Error('房源不存在');
+      accessError.statusCode = 404;
       throw accessError;
     }
     if (!isMockFrontendEffectiveListing(anchor)) return emptyNearbyResult();
@@ -2207,7 +3703,7 @@
     }).filter(Boolean);
     return {
       publicLocation: recommendationPublicLocation(data, fragments),
-      rent: isFinite(Number(data.rent || 0)) ? Number(data.rent || 0) : 0,
+      rent: publicListingRentValue(data),
       layout: cleanRecommendationText(data.layout || '', fragments),
       rentMode: cleanRecommendationText(data.rentMode || data.type || '', fragments),
       room: cleanRecommendationText(data.room || '', fragments),
@@ -2322,32 +3818,41 @@
     var query = filter || {};
     return publicListings().filter(function (listing) {
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
-      if (query.sourceType && query.sourceType !== '全部' && !matchesCategory(listing, query.sourceType)) return false;
+      if (query.sourceType && query.sourceType !== '全部' && [COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(query.sourceType) === -1) return false;
+      if (query.sourceType && query.sourceType !== '全部' && listingSourceType(listing) !== query.sourceType) return false;
       return true;
     }).map(function (listing) {
-      var coordinate = mapCoordinateFromListing(listing);
+      var companyListing = isCompanyListing(listing);
+      var coordinate = guestPublicMapCoordinateFromListing(listing);
+      var display = companyListing ? companyPublicDisplayFields(listing) : guestPartnerDisplayFields(listing);
+      var location = publicListingLocationFields(listing);
+      var housing = publicListingHousingFields(listing);
       return Object.assign({
         id: listing.id,
-        title: listing.shortTitle || listing.title,
-        area: listing.area || '待分区',
-        block: listing.block || '待板块',
-        community: listing.community || '',
-        layout: listing.layout || '',
-        type: listing.type || '',
-        status: listing.status || '',
-        price: String(listing.rent),
+        title: publicListingTitle(listing, location),
+        city: location.city,
+        district: location.district,
+        area: location.area || '待分区',
+        block: location.block || '待板块',
+        community: location.community || '',
+        layout: housing.layout,
+        type: housing.type,
+        rentMode: housing.rentMode,
+        status: publicListingStatus(listing),
+        price: String(publicListingRentValue(listing)),
         commission: V1_COMMISSION_TEXT,
-        source: listing.source || '',
-        companyListing: listingDisplayFields(listing).companyListing,
-        noCommission: listingDisplayFields(listing).noCommission,
-        sourceLabel: listingDisplayFields(listing).sourceLabel,
-        commissionText: listingDisplayFields(listing).commissionText,
+        source: companyListing ? safeCompanyPublicText(listing.source || '') : (display.sourceLabel || ''),
+        companyListing: display.companyListing,
+        noCommission: display.noCommission,
+        sourceLabel: display.sourceLabel,
+        commissionText: display.commissionText,
         latitude: coordinate.latitude,
         longitude: coordinate.longitude,
         coordinateSource: coordinate.source || '',
+        hasVideo: hasListingVideo(listing),
         left: listing.mapLeft,
         top: listing.mapTop
-      }, listingDisplayFields(listing));
+      }, display);
     });
   }
 
@@ -2794,6 +4299,25 @@
     if (isPendingOwnerReview(listing)) {
       throw new Error('该房源正在等待管理员审核，审核通过后才会上架');
     }
+    if (listing && isCompanyListing(listing)) {
+      var companyLoc = publicListingLocationFields(listing);
+      var companyPublic = companyPublicListingFields(listing);
+      return {
+        logs: getListingLogs(listingId),
+        quota: brokerSensitiveUsage(state.currentUserId),
+        sensitive: Object.assign({
+          city: companyLoc.city,
+          district: companyLoc.district,
+          area: companyLoc.area,
+          areaText: companyLoc.city + ' · ' + companyLoc.area,
+          block: companyLoc.block,
+          community: companyLoc.community,
+          locationSummary: companyLoc.locationSummary,
+          sensitiveLocked: false,
+          companyListing: true
+        }, companyPublic)
+      };
+    }
     // 上传人自查自己上传的房源：直接返回地址/房东电话，不留痕、不耗额度（与生产后端一致，避免开发者工具预览分叉）。
     if (listing && listing.uploaderId && String(listing.uploaderId) === String(state.currentUserId)) {
       var ownLoc = listingLocationFields(listing);
@@ -2817,6 +4341,7 @@
           viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
           viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
           viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+          remark: normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo)),
           sensitiveLocked: false,
           ownListing: true
         }
@@ -2868,6 +4393,7 @@
         viewingMethodText: listingViewingMethodFields(listing).viewingMethodText,
         viewingKeyLocation: firstText(listing.viewingKeyLocation, listing.keyLocation),
         viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+        remark: normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo)),
         sensitiveLocked: false
       } : {},
       quota: brokerSensitiveUsage(state.currentUserId)
@@ -3096,8 +4622,21 @@
     return { ok: true, message: '已消耗1积分换群', data: getGroupState() };
   }
 
+  function nextMockListingId() {
+    var base = 'L' + Date.now();
+    var existing = state.listings || [];
+    if (!existing.some(function (item) { return item && item.id === base; })) return base;
+    var sequence = 1;
+    var candidate = '';
+    do {
+      candidate = base + String(sequence).padStart(3, '0');
+      sequence += 1;
+    } while (existing.some(function (item) { return item && item.id === candidate; }));
+    return candidate;
+  }
+
   function addNormalListing(form) {
-    var id = 'L' + Date.now();
+    var id = nextMockListingId();
     var city = firstText(form.city, '杭州');
     var area = normalizeDistrict(firstText(form.district, form.area, '拱墅区'));
     var rawCommunity = firstText(form.communityName, form.community);
@@ -3550,8 +5089,15 @@
   });
 
   return {
-    getCurrentUser: function () { return clone(getUser()); },
+    getCurrentUser: function () {
+      var user = getUser();
+      return user ? clone(user) : null;
+    },
     loginByPhone: loginByPhone,
+    issueAuthSession: issueAuthSession,
+    resolveAuthSession: resolveAuthSession,
+    revokeAuthSession: revokeAuthSession,
+    revokeAuthSessionsForUser: revokeAuthSessionsForUser,
     registerUser: registerUser,
     logout: logout,
     getHomeListings: function (filter) { return getListings(filter || {}).slice(0, 3); },

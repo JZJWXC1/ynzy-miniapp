@@ -84,7 +84,7 @@ function assertBreakdown(actual, expected, message) {
   ;['uploader', 'commissionRate', 'commissionText'].forEach((field) => {
     assert.ok(!Object.prototype.hasOwnProperty.call(detail, field), `详情不得返回旧字段 ${field}`)
   })
-  assert.strictEqual(detail.remark, '可预约工作日晚间看房', '安全备注应在详情展示')
+  assert.ok(!Object.prototype.hasOwnProperty.call(detail, 'remark'), '合作房源备注属于敏感信息，留痕前不得在基础详情展示')
   assertBreakdown(detail.commissionBreakdown, {
     landlordPercentOfRent: 50,
     viewingAgentPercentOfRent: 35,

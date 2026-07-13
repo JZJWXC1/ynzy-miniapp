@@ -1,6 +1,7 @@
 const llmService = require('../../utils/llm-service')
 const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
+const { anonymousPublicRequestData } = require('../../utils/public-request-safety')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
@@ -324,6 +325,7 @@ Page({
   onLoad(options) {
     this._pageActive = true
     this.authSessionSnapshot = currentAuthSessionKey()
+    this.bindAuthInvalidationListener()
     this.initVoiceInput()
     const text = decodeOption(options.text)
     const voiceText = decodeOption(options.voiceText)
@@ -348,7 +350,13 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
     this.activeRequestId = createMessageId('unloaded')
+    this.activeRequestAllowsPublicFallback = false
+    this.confirmedPublicFallbackRequestId = ''
     this.cleanupVoiceInput()
   },
 
@@ -363,6 +371,8 @@ Page({
   resetForAuthSession(nextSessionKey) {
     this.authSessionSnapshot = nextSessionKey
     this.activeRequestId = createMessageId('session-reset')
+    this.activeRequestAllowsPublicFallback = false
+    this.confirmedPublicFallbackRequestId = ''
     this.cleanupVoiceInput()
     ;[
       'currentThreadId',
@@ -388,9 +398,63 @@ Page({
     })
   },
 
-  isSessionRequestCurrent(requestId, requestSessionKey) {
+  adoptPublicAuthFallback(requestSessionKey) {
+    const canAdopt = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+      apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+    if (!canAdopt) return false
+    this.authSessionSnapshot = currentAuthSessionKey()
+    ;['currentThreadId', 'lastNeedContext', 'pendingNeed'].forEach((key) => { delete this[key] })
+    ;['lastAssistantPayload', 'lastRecognizePayload', 'activeRecognizePayload', 'lastRequestPayload'].forEach((key) => {
+      if (this[key]) this[key] = anonymousPublicRequestData(this[key])
+    })
+    const lastUserMessage = (this.data.messages || []).slice().reverse().find((message) => message && message.role === 'user')
+    const safeUserMessage = lastUserMessage ? anonymousPublicRequestData(lastUserMessage) : null
+    this.setData({
+      messages: initialMessages().concat(safeUserMessage ? [safeUserMessage] : []),
+      needHistory: safeUserMessage && safeUserMessage.text ? [safeUserMessage.text] : [],
+      inputText: '',
+      voiceText: '',
+      isVoiceListening: false,
+      voiceCancelActive: false,
+      voicePhase: '',
+      loading: true,
+      scrollTarget: 'typing-row'
+    })
+    return true
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      const fromSessionKey = String(event && event.fromSessionKey || '')
+      if (!fromSessionKey || fromSessionKey !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const publicFallbackRequestId = String(event && event.publicFallbackRequestId || '')
+      if (
+        this.data.loading &&
+        this.activeRequestAllowsPublicFallback === true &&
+        publicFallbackRequestId &&
+        publicFallbackRequestId === String(this.activeRequestId || '') &&
+        this.adoptPublicAuthFallback(fromSessionKey)
+      ) {
+        this.confirmedPublicFallbackRequestId = publicFallbackRequestId
+        return
+      }
+      this.resetForAuthSession(nextSessionKey)
+    })
+  },
+
+  isSessionRequestCurrent(requestId, requestSessionKey, allowPublicFallback = false) {
     if (this._pageActive === false || this.activeRequestId !== requestId) return false
     if (currentAuthSessionKey() === requestSessionKey) return true
+    if (
+      allowPublicFallback &&
+      this.activeRequestAllowsPublicFallback === true &&
+      this.confirmedPublicFallbackRequestId === requestId &&
+      currentAuthSessionKey() === this.authSessionSnapshot
+    ) return true
     this.syncAuthSession()
     return false
   },
@@ -593,13 +657,15 @@ Page({
     const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('assistant-chat')
     this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
     this.lastAssistantPayload = payload
-    llmService.chatAssistant(payload).then((result) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+    llmService.chatAssistant(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -614,12 +680,14 @@ Page({
     const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('recognize')
     this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
     this.activeRecognizePayload = payload
-    llmService.recognizeRentalNeed(payload).then((result) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+    llmService.recognizeRentalNeed(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.appendRecognitionResult(result || {})
     }).catch((error) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.appendRecognitionResult({
         reply: '网络连接失败，请补充条件后重试。',
         warning: error.message || '网络连接失败',
@@ -634,12 +702,14 @@ Page({
     const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('request')
     this.activeRequestId = requestId
-    llmService.matchRentalNeed(payload).then((result) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
+    llmService.matchRentalNeed(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -913,6 +983,11 @@ Page({
       text: '确认这些条件，开始匹配。'
     }
     this.appendMessage(userMessage, { loading: true, scrollTarget: 'typing-row' })
+    if (!apiClient.getAuthToken()) {
+      this.lastRequestPayload = payload
+      this.executeMatch(payload)
+      return
+    }
     this.createNeedAndMatch(payload, message)
   },
 
@@ -920,6 +995,7 @@ Page({
     const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('create-need')
     this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = false
     const need = confirmFormToNeed(message.confirmForm, message.need)
     apiService.createRentalNeed({
       source: 'match-chat',
@@ -963,7 +1039,12 @@ Page({
       const id = event.currentTarget.dataset.id
       if (id) filters.listingIds = [id]
     }
-    wx.setStorageSync('ynzy_pending_map_filters', createPendingFilterEnvelope(filters, currentAuthSessionKey()))
+    try {
+      wx.setStorageSync('ynzy_pending_map_filters', createPendingFilterEnvelope(filters, currentAuthSessionKey()))
+    } catch (error) {
+      wx.showToast({ title: '筛选条件保存失败', icon: 'none' })
+      return
+    }
     wx.switchTab({ url: '/pages/map/map' })
   }
 })

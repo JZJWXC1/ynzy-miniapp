@@ -91,6 +91,71 @@ function reportRequestError(error) {
 }
 
 let authRedirecting = false
+const PUBLIC_READ_AUTH_FALLBACK_TTL_MS = 2 * 60 * 1000
+let publicReadAuthFallbackBridge = null
+const authInvalidationListeners = new Set()
+
+function subscribeAuthInvalidation(listener) {
+  if (typeof listener !== 'function') return () => {}
+  authInvalidationListeners.add(listener)
+  return () => authInvalidationListeners.delete(listener)
+}
+
+function notifyAuthInvalidated(fromSessionKey, options = {}) {
+  const config = getRuntimeConfig()
+  const event = {
+    reason: 'unauthorized',
+    fromSessionKey: String(fromSessionKey || ''),
+    toSessionKey: String(getAuthSessionKey(config) || '')
+  }
+  const publicFallbackRequestId = String(options.publicFallbackRequestId || '')
+  if (publicFallbackRequestId) event.publicFallbackRequestId = publicFallbackRequestId
+  authInvalidationListeners.forEach((listener) => {
+    try { listener(event) } catch (error) {}
+  })
+}
+
+function activePublicReadAuthFallbackBridge() {
+  const bridge = publicReadAuthFallbackBridge
+  if (!bridge || Date.now() - bridge.createdAt > PUBLIC_READ_AUTH_FALLBACK_TTL_MS) {
+    publicReadAuthFallbackBridge = null
+    return null
+  }
+  return bridge
+}
+
+function recordPublicReadAuthFallbackBridge(fromSessionKey, fromToken) {
+  const config = getRuntimeConfig()
+  const toSessionKey = String(getAuthSessionKey(config) || '')
+  if (!fromSessionKey || !fromToken || !toSessionKey || getAuthToken(config)) return
+  publicReadAuthFallbackBridge = {
+    fromSessionKey: String(fromSessionKey),
+    fromToken: String(fromToken),
+    toSessionKey,
+    createdAt: Date.now()
+  }
+}
+
+function matchesPublicReadAuthFallbackBridge(requestSessionKey, requestToken) {
+  const bridge = activePublicReadAuthFallbackBridge()
+  if (!bridge) return false
+  const config = getRuntimeConfig()
+  return !getAuthToken(config) &&
+    String(getAuthSessionKey(config) || '') === bridge.toSessionKey &&
+    String(requestSessionKey || '') === bridge.fromSessionKey &&
+    String(requestToken || '') === bridge.fromToken
+}
+
+// 页面只能在自身发起的“公共读取”成功回调里使用此判断。它只承认刚刚因同一失效 token
+// 从旧登录会话切到当前游客会话的单向接力；一旦用户登录新账号，会话键或 token 不符即失效。
+function isPublicReadAuthFallbackContinuation(requestSessionKey) {
+  const bridge = activePublicReadAuthFallbackBridge()
+  if (!bridge) return false
+  const config = getRuntimeConfig()
+  return !getAuthToken(config) &&
+    String(requestSessionKey || '') === bridge.fromSessionKey &&
+    String(getAuthSessionKey(config) || '') === bridge.toSessionKey
+}
 
 function getAuthToken(config) {
   try {
@@ -192,28 +257,41 @@ function redirectToAuth() {
   })
 }
 
-function handleUnauthorized(error, requestToken, requestSessionKey) {
-  if (!error || Number(error.statusCode) !== 401) return
+function handleUnauthorized(error, requestToken, requestSessionKey, options = {}) {
+  if (!error || Number(error.statusCode) !== 401) return false
   const config = getRuntimeConfig()
   const currentToken = String(getAuthToken(config) || '')
   const currentSessionKey = String(getAuthSessionKey(config) || '')
   // bearer A 滑动续签成 A′ 时稳定 session 不变。旧 A 的迟到 401 只说明旧请求已陈旧，不能
   // 撤销 A′；标记后仅允许幂等 GET 由 request 层自动重试一次，写请求交给页面提示人工重试。
-  if (requestSessionKey !== undefined && currentSessionKey !== String(requestSessionKey || '')) return
+  if (requestSessionKey !== undefined && currentSessionKey !== String(requestSessionKey || '')) {
+    return options.publicReadAuthFallback === true &&
+      matchesPublicReadAuthFallbackBridge(requestSessionKey, requestToken)
+  }
   if (requestToken !== undefined && currentToken !== String(requestToken || '')) {
     if (currentToken && requestToken) error.authResponseStale = true
-    return
+    return false
   }
   // 当前本来就是游客时没有任何登录态可撤销。调用 app.logout() 反而会轮换稳定 guest session，
   // 让同批已成功的公开请求被页面代次门禁误判为旧响应。匿名 401 交给具体页面显示登录引导即可。
-  if (!currentToken) return
+  if (!currentToken) return false
   // 401 只能撤销发出该请求的同一会话。A 请求迟到时若用户已切到 B、刚从游客登录或主动退出，
   // 页面级序号还来不及拦住这里的全局副作用，因此必须先比较实际 Authorization token 快照。
   // 游客（从未登录、无 token）浏览时，不要因为某个后台请求 401（如详情页的 getProfileState、
   // 或点到非公司房源）就被强制弹去登录页——那正是「一直跳转登录」的根源。只有原本已登录、
   // token 失效的用户才自动跳登录重新认证；游客保持当前匿名会话、不跳转，敏感操作各页面会显式引导登录。
   clearAuthState()
-  redirectToAuth()
+  if (options.publicReadAuthFallback === true) {
+    recordPublicReadAuthFallbackBridge(requestSessionKey, requestToken)
+  }
+  notifyAuthInvalidated(requestSessionKey, {
+    publicFallbackRequestId: options.publicFallbackRequestId
+  })
+  if (options.publicFallbackRequestId) error.publicFallbackRequestNotified = true
+  // 公开视频已经发送成功后的留痕只是尽力审计：仍须撤销当前失效身份，但不得以跳登录
+  // 破坏“视频播放/转发/保存免登录”的产品边界。该开关只由调用方逐请求显式启用。
+  if (options.silentAuthFailure !== true) redirectToAuth()
+  return true
 }
 
 function isStaleUnauthorized(error) {
@@ -224,8 +302,35 @@ function request(options) {
   const config = getRuntimeConfig()
   const method = String(options.method || 'GET').toUpperCase()
   const data = options.data || {}
+  const publicReadAuthFallback = options.publicReadAuthFallback === true
+  // GET 天然幂等；公共 POST 只有在调用方额外确认“401 发生在业务执行前”后才允许重放。
+  // PUT/DELETE/PATCH 等写语义即使误传两个开关也绝不自动匿名重试。
+  const canRetryAnonymousOnAuthFailure = (error) => method === 'GET' || (
+    method === 'POST' &&
+    publicReadAuthFallback &&
+    options.retryAnonymousOnAuthFailure === true &&
+    error && error.data && error.data.authFailurePhase === 'pre_execution'
+  )
+  const publicReadAuthFallbackCount = Number(options._publicReadAuthFallbackCount || 0)
+  const anonymousRetryData = () => {
+    if (typeof options.buildAnonymousRetryData !== 'function') return data
+    return options.buildAnonymousRetryData(data)
+  }
+  const publicFallbackRequestIdFor = (error) => (
+    canRetryAnonymousOnAuthFailure(error)
+      ? String(options.authFallbackRequestId || '')
+      : ''
+  )
+  const notifyRequestSpecificFallbackIfNeeded = (error, requestSessionKey) => {
+    const publicFallbackRequestId = publicFallbackRequestIdFor(error)
+    if (!publicFallbackRequestId || (error && error.publicFallbackRequestNotified === true)) return
+    notifyAuthInvalidated(requestSessionKey, { publicFallbackRequestId })
+    if (error) error.publicFallbackRequestNotified = true
+  }
 
   if (shouldUseMock(config)) {
+    const requestAuthToken = options.omitAuth === true ? '' : String(getAuthToken(config) || '')
+    const requestAuthSessionKey = String(getAuthSessionKey(config) || '')
     try {
       const mockData = typeof options.mock === 'function' ? options.mock(data) : null
       return Promise.resolve({
@@ -234,6 +339,31 @@ function request(options) {
         data: mockData
       })
     } catch (error) {
+      const authStateCleared = handleUnauthorized(
+        error,
+        requestAuthToken,
+        requestAuthSessionKey,
+        {
+          silentAuthFailure: options.silentAuthFailure === true || publicReadAuthFallback,
+          publicReadAuthFallback,
+          publicFallbackRequestId: publicFallbackRequestIdFor(error)
+        }
+      )
+      if (
+        canRetryAnonymousOnAuthFailure(error) &&
+        requestAuthToken &&
+        authStateCleared &&
+        publicReadAuthFallbackCount < 1
+      ) {
+        notifyRequestSpecificFallbackIfNeeded(error, requestAuthSessionKey)
+        return request({
+          ...options,
+          data: anonymousRetryData(),
+          omitAuth: true,
+          silentAuthFailure: true,
+          _publicReadAuthFallbackCount: publicReadAuthFallbackCount + 1
+        })
+      }
       return Promise.reject(error)
     }
   }
@@ -241,7 +371,7 @@ function request(options) {
   return new Promise((resolve, reject) => {
     const url = buildUrl(config.baseUrl, options.path)
     const timeout = options.timeout || config.timeout
-    const requestAuthToken = String(getAuthToken(config) || '')
+    const requestAuthToken = options.omitAuth === true ? '' : String(getAuthToken(config) || '')
     const requestAuthSessionKey = String(getAuthSessionKey(config) || '')
     const startedAt = Date.now()
     const context = (extra = {}) => ({
@@ -263,10 +393,31 @@ function request(options) {
       reject(error)
     }
     const rejectOrRetryAuth = (error) => {
-      handleUnauthorized(error, requestAuthToken, requestAuthSessionKey)
+      const authStateCleared = handleUnauthorized(error, requestAuthToken, requestAuthSessionKey, {
+        silentAuthFailure: options.silentAuthFailure === true || publicReadAuthFallback,
+        publicReadAuthFallback,
+        publicFallbackRequestId: publicFallbackRequestIdFor(error)
+      })
       const authRetryCount = Number(options._authRetryCount || 0)
       if (method === 'GET' && isStaleUnauthorized(error) && authRetryCount < 1) {
         request({ ...options, _authRetryCount: authRetryCount + 1 }).then(resolve, reject)
+        return
+      }
+      if (
+        canRetryAnonymousOnAuthFailure(error) &&
+        requestAuthToken &&
+        authStateCleared &&
+        publicReadAuthFallback &&
+        publicReadAuthFallbackCount < 1
+      ) {
+        notifyRequestSpecificFallbackIfNeeded(error, requestAuthSessionKey)
+        request({
+          ...options,
+          data: anonymousRetryData(),
+          omitAuth: true,
+          silentAuthFailure: true,
+          _publicReadAuthFallbackCount: publicReadAuthFallbackCount + 1
+        }).then(resolve, reject)
         return
       }
       reportRequestError(error)
@@ -302,7 +453,9 @@ function request(options) {
           rejectOrRetryAuth(error)
           return
         }
-        applyAuthRefresh(res, requestAuthToken, requestAuthSessionKey)
+        // 滑动续签只能延长一个确实随请求发出的已登录会话。匿名请求（含公共读取的 401 降级）
+        // 即使异常响应夹带续签头，也不得凭空创建客户端登录态。
+        if (requestAuthToken) applyAuthRefresh(res, requestAuthToken, requestAuthSessionKey)
         resolve(body)
       },
       fail(error) {
@@ -325,6 +478,10 @@ function uploadFile(options) {
   const config = getRuntimeConfig()
 
   if (shouldUseMock(config)) {
+    const authorization = headerValue({ header: options.header || {} }, 'Authorization')
+    const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i)
+    const requestAuthToken = bearerMatch ? String(bearerMatch[1] || '') : ''
+    const requestAuthSessionKey = requestAuthToken ? String(getAuthSessionKey(config) || '') : ''
     try {
       const mockData = typeof options.mock === 'function' ? options.mock() : null
       return Promise.resolve({
@@ -333,6 +490,7 @@ function uploadFile(options) {
         data: mockData
       })
     } catch (error) {
+      if (requestAuthToken) handleUnauthorized(error, requestAuthToken, requestAuthSessionKey)
       return Promise.reject(error)
     }
   }
@@ -425,6 +583,8 @@ module.exports = {
   authHeader,
   applyAuthRefresh,
   handleUnauthorized,
+  isPublicReadAuthFallbackContinuation,
+  subscribeAuthInvalidation,
   isStaleUnauthorized,
   headerValue,
   urlWithoutQuery,

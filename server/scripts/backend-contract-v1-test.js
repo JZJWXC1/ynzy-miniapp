@@ -318,17 +318,28 @@ function run() {
     address: '杭州上城区京漾东韵府1幢1单元101室',
     videoKey: 'house-videos/backend-contract/map-real.mp4'
   }))
-  const mapPins = domain.mapPins(db)
+  const mapPins = domain.mapPins(db, { sourceType: '二房东房源' })
   const realPin = mapPins.find((item) => item.community === '京漾东韵府')
   assert.ok(realPin, '地图必须展示可靠小区坐标')
-  assert.strictEqual(realPin.coordinateVerified, true, '地图点必须是已确认坐标')
+  assert.strictEqual(realPin.coordinateVerified, false, '合作房源公共地图只能标记小区近似位置')
+  assert.strictEqual(realPin.coordinateLevel, 'approximate', '合作房源公共地图不能把内部可靠坐标作为逐套精确点下发')
   assert.ok(realPin.listingCount >= 1, '地图点应按小区聚合房源')
   assertNoPublicSensitiveFields(realPin, '地图小区点')
   ;(realPin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '地图房源摘要'))
   domain.updateListingCoordinate(db, 'U1', reliableMapListing.id, { latitude: 31.111, longitude: 121.222 })
-  const correctedPin = domain.mapPins(db).find((item) => item.community === '京漾东韵府')
-  assert.strictEqual(correctedPin.latitude, 31.111, '后台人工修正坐标必须优先于已有小区坐标库')
-  assert.strictEqual(correctedPin.longitude, 121.222, '后台人工修正坐标必须真正进入地图点位')
+  const correctedRaw = db.listings.find((item) => item.id === reliableMapListing.id)
+  assert.strictEqual(correctedRaw.mapLatitude, 31.111, '后台人工修正纬度必须优先写入内部房源记录')
+  assert.strictEqual(correctedRaw.mapLongitude, 121.222, '后台人工修正经度必须优先写入内部房源记录')
+  assert.strictEqual(correctedRaw.coordinateSource, 'admin-verified-coordinate', '后台人工修正坐标必须保留内部可信来源')
+  const correctedAdminRow = domain.adminListings(db).find((item) => item.id === reliableMapListing.id)
+  assert.strictEqual(correctedAdminRow.mapLatitude, 31.111, '后台管理读路径必须看到人工修正纬度')
+  assert.strictEqual(correctedAdminRow.mapLongitude, 121.222, '后台管理读路径必须看到人工修正经度')
+  const correctedPin = domain.mapPins(db, { sourceType: '二房东房源' }).find((item) => item.community === '京漾东韵府')
+  assert.notStrictEqual(correctedPin.latitude, 31.111, '合作房源公共地图不得下发逐套人工修正纬度')
+  assert.notStrictEqual(correctedPin.longitude, 121.222, '合作房源公共地图不得下发逐套人工修正经度')
+  assert.strictEqual(correctedPin.coordinateVerified, false, '合作房源公共地图不得把人工修正坐标标为逐套精确')
+  assert.strictEqual(correctedPin.coordinateLevel, 'approximate', '合作房源人工坐标对外必须降为小区近似位置')
+  assert.notStrictEqual(correctedPin.coordinateSource, 'admin-verified-coordinate', '合作房源公共地图不得泄露内部人工修正来源')
 
   db.companySheetSnapshot = {
     rows: [

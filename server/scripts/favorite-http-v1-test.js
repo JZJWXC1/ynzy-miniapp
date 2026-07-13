@@ -213,6 +213,29 @@ async function run() {
     const listText = JSON.stringify(list.data)
     assert.ok(!listText.includes('19900000021') && !listText.includes('SENTINEL_HTTP_ADDRESS') && !listText.includes('SENTINEL_HTTP_PASSWORD'))
 
+    // 历史收藏允许保留已下架房源，但公共媒体包装层不得根据 raw videoKey 把灰态卡重新伪装成可播放。
+    disk = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+    disk.favorites = (disk.favorites || []).concat({
+      id: 'FV-U1-L3-HISTORICAL',
+      userId: 'U1',
+      listingId: 'L3',
+      createdAt: new Date().toISOString()
+    })
+    fs.writeFileSync(dataFile, JSON.stringify(disk, null, 2), 'utf8')
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    const unavailableList = await requestJson(ports[0], 'GET', '/mini/favorites?availability=unavailable', tokenU1)
+    assert.strictEqual(unavailableList.statusCode, 200)
+    const unavailableRow = unavailableList.data.find((item) => item.id === 'L3')
+    assert.ok(unavailableRow, '历史已下架收藏必须保留灰态卡')
+    assert.strictEqual(unavailableRow.isAvailable, false)
+    assert.strictEqual(unavailableRow.hasVideo, false, '已下架收藏不得被媒体包装层重新标成有视频')
+    assert.ok(!unavailableRow.videoUrl && !unavailableRow.coverUrl, '已下架收藏不得下发无效媒体能力地址')
+    assert.ok(!JSON.stringify(unavailableRow).includes('/media/'), '已下架收藏响应不得含媒体能力 token')
+    disk = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+    disk.favorites = (disk.favorites || []).filter((item) => item.id !== 'FV-U1-L3-HISTORICAL')
+    fs.writeFileSync(dataFile, JSON.stringify(disk, null, 2), 'utf8')
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
     const unavailableBefore = fs.readFileSync(dataFile, 'utf8')
     const unavailableWrite = await requestJson(ports[0], 'PUT', '/mini/favorites/L3', tokenU1)
     assert.strictEqual(unavailableWrite.statusCode, 410)

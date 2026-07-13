@@ -205,7 +205,7 @@ async function assertEndpointBehavior() {
     assertUnavailableSafe(dataOf(unavailable), '已下架房源')
 
     const pendingPartner = await requestGuestDetail('PENDING', 'pending-partner-q')
-    assert.strictEqual(pendingPartner.statusCode, 401, '游客不得借失效详情旁路枚举待审核合作房源')
+    assert.strictEqual(pendingPartner.statusCode, 404, '游客对待审核合作房源必须得到与不存在同形的 404')
     assert.ok(!JSON.stringify(pendingPartner.body).includes('updatedAt'), '游客被拒时不得拿到合作房源状态或同步时间')
 
     const missing = await requestGuestDetail('MISSING', 'missing-q')

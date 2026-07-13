@@ -52,11 +52,7 @@
       <cover-view class="locate-me" bindtap="locateToMe">我的位置</cover-view>
       <cover-view class="reset-map" bindtap="resetCenter">重置</cover-view>
       <cover-view wx:if="{{!loading && !loadFailed && !communities.length}}" class="map-empty">
-        <block wx:if="{{loginRequired}}">
-          <cover-view class="map-empty-text">登录后查看业主和二房东合作房源</cover-view>
-          <cover-view class="map-login-button" bindtap="goLogin">去登录</cover-view>
-        </block>
-        <cover-view wx:else class="map-empty-text">{{emptyText}}</cover-view>
+        <cover-view class="map-empty-text">{{emptyText}}</cover-view>
       </cover-view>
     </map>
   </view>

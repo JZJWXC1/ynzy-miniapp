@@ -7,13 +7,7 @@
       <view wx:if="{{listings.length}}" class="hero-count">共 {{total}} 套可展示房源</view>
     </view>
 
-    <view wx:if="{{accessRequired}}" class="state-card">
-      <view class="state-title">登录后继续查看</view>
-      <view class="state-desc">合作房源及其附近推荐只对内部中介账号开放。</view>
-      <button class="brand-button" bindtap="goLogin">去登录</button>
-    </view>
-
-    <view wx:elif="{{loadFailed}}" class="state-card">
+    <view wx:if="{{loadFailed}}" class="state-card">
       <view class="state-title">加载失败</view>
       <view class="state-desc">请检查网络后重试，当前结果不会由客户端本地估算。</view>
       <button class="brand-button" bindtap="retryNearby">重新加载</button>

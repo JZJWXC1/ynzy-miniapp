@@ -238,8 +238,8 @@ async function run() {
     const guestDetail = await requestJson(port, '/mini/listings/ANCHOR')
     assert.strictEqual(guestDetail.statusCode, 200)
     assert.ok(guestDetail.data && guestDetail.data.nearby, '详情接口必须内嵌权限裁剪后的附近预览')
-    assert.deepStrictEqual(guestDetail.data.nearby.listings.map((item) => item.id), ['C1', 'C2', 'C3'], '游客详情只能看到公司附近房源')
-    assert.strictEqual(guestDetail.data.nearby.total, 3, '游客详情 total 不得泄露合作房源')
+    assert.deepStrictEqual(guestDetail.data.nearby.listings.map((item) => item.id), ['C1', 'O1', 'S1', 'C2', 'O2', 'S2'], '游客详情附近预览必须包含三类公开房源')
+    assert.strictEqual(guestDetail.data.nearby.total, 7, '游客详情 total 必须统计三类公开房源')
     assertSafeNearby(guestDetail.data.nearby)
 
     const brokerDetail = await requestJson(port, '/mini/listings/ANCHOR', token)
@@ -254,7 +254,7 @@ async function run() {
     )
     assert.strictEqual(forgedGuest.statusCode, 200)
     assert.strictEqual(forgedGuest.data.radiusKm, 3)
-    assert.deepStrictEqual(forgedGuest.data.listings.map((item) => item.id), ['C1', 'C2', 'C3'], '伪造查询参数不能放宽游客来源或半径')
+    assert.deepStrictEqual(forgedGuest.data.listings.map((item) => item.id), ['C1', 'O1', 'S1', 'C2', 'O2', 'S2', 'C3'], '游客全量附近结果应包含三类来源，伪造半径与身份字段仍无效')
     assertSafeNearby(forgedGuest.data)
 
     const brokerAll = await requestJson(port, '/mini/listings/ANCHOR/nearby?all=1&radiusKm=0.01&companyOnly=true', token)
@@ -263,7 +263,9 @@ async function run() {
     assert.strictEqual(brokerAll.data.total, 7)
 
     const partnerGuest = await requestJson(port, '/mini/listings/O1/nearby?all=1')
-    assert.strictEqual(partnerGuest.statusCode, 401, '游客不能借合作房源编号读取附近关系')
+    assert.strictEqual(partnerGuest.statusCode, 200, '游客可用有效合作房源作为附近推荐锚点')
+    assert.ok(partnerGuest.data.listings.some((item) => !item.companyListing), '合作锚点附近结果必须保留公开合作房源')
+    assertSafeNearby(partnerGuest.data)
 
     const badToken = await requestJson(port, '/mini/listings/ANCHOR/nearby?all=1', `${token}broken`)
     assert.strictEqual(badToken.statusCode, 401, '无效 token 不能降级成游客')
@@ -277,7 +279,7 @@ async function run() {
     assert.deepStrictEqual(expired.data, { radiusKm: 3, total: 0, hasMore: false, listings: [] })
 
     const expiredPartner = await requestJson(port, '/mini/listings/EXPIRED_PARTNER/nearby?all=1')
-    assert.strictEqual(expiredPartner.statusCode, 401, '游客不能从已失效合作锚点的差异响应推断合作房源')
+    assert.strictEqual(expiredPartner.statusCode, 404, '游客对已失效合作锚点必须得到与不存在同形的 404')
 
     console.log('listing-nearby-http-v1-test passed')
   } finally {

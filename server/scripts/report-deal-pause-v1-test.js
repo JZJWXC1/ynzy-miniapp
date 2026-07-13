@@ -92,11 +92,21 @@ assert.throws(
 )
 
 async function assertMockDirectDealPaused() {
-  await assert.rejects(
-    apiService.registerDeal('L1'),
-    (error) => error && error.statusCode === 410 && error.data && error.data.reason === 'REPORT_DEAL_PAUSED',
-    '开发者工具 Mock 的旧直签入口也必须稳定拒绝'
-  )
+  const previousGetApp = global.getApp
+  const mockUser = mockData.loginByPhone('13800010005')
+  const session = mockData.issueAuthSession(mockUser.id)
+  global.getApp = () => ({ globalData: { authToken: session.token } })
+  try {
+    await assert.rejects(
+      apiService.registerDeal('L1'),
+      (error) => error && error.statusCode === 410 && error.data && error.data.reason === 'REPORT_DEAL_PAUSED',
+      '开发者工具 Mock 的旧直签入口必须在可信会话下稳定命中业务暂停门'
+    )
+  } finally {
+    mockData.revokeAuthSession(session.token)
+    if (previousGetApp === undefined) delete global.getApp
+    else global.getApp = previousGetApp
+  }
 }
 
 {

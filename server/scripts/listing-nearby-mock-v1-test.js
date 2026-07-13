@@ -113,22 +113,19 @@ async function run() {
   )
   assert.strictEqual(all.hasMore, false)
 
-  const guest = mockData.getNearbyListings(anchor.id, { all: true, companyOnly: true })
-  assert.ok(guest.listings.length >= 2)
-  assert.ok(guest.listings.every((item) => item.companyListing), 'Mock 游客只能拿到公司附近房源')
-  assert.strictEqual(guest.total, guest.listings.length, 'Mock 游客 total 不得包含合作房源')
+  const guest = mockData.getNearbyListings(anchor.id, { all: true, publicGuest: true })
+  assert.strictEqual(guest.total, 7, 'Mock 游客附近结果必须统计三类有效房源')
+  assert.ok(guest.listings.some((item) => !item.companyListing), 'Mock 游客必须拿到公开的业主/二房东附近房源')
+  const ownerGuest = mockData.getNearbyListings(owner.id, { all: true, publicGuest: true })
+  assert.ok(ownerGuest.listings.length > 0, 'Mock 游客可用有效业主房源作为附近锚点')
+  assertSafe(ownerGuest)
   assert.throws(
-    () => mockData.getNearbyListings(owner.id, { all: true, companyOnly: true }),
-    (error) => error && error.statusCode === 401,
-    'Mock 游客不能用业主/二房东合作房源作为附近锚点'
-  )
-  assert.throws(
-    () => mockData.getNearbyListings(expiredPartner.id, { all: true, companyOnly: true }),
-    (error) => error && error.statusCode === 401,
-    'Mock 游客不能通过已失效合作锚点的差异响应推断房源'
+    () => mockData.getNearbyListings(expiredPartner.id, { all: true, publicGuest: true }),
+    (error) => error && error.statusCode === 404,
+    'Mock 游客对已失效合作锚点必须返回 404'
   )
 
-  const detail = mockData.getListingDetail(anchor.id, { companyOnly: false })
+  const detail = mockData.getListingDetail(anchor.id, { publicGuest: true })
   assert.ok(detail.nearby)
   assert.strictEqual(detail.nearby.listings.length, 6, 'Mock 详情必须内嵌同形预览')
 
@@ -144,7 +141,23 @@ async function run() {
       getAuthToken: () => token,
       call(options) {
         calls.push(options)
-        return Promise.resolve(options.mock())
+        const executeMock = (requestData) => Promise.resolve().then(() => options.mock(requestData))
+        return executeMock(options.data).catch((error) => {
+          if (!error || error.statusCode !== 401 || options.publicReadAuthFallback !== true || !token) throw error
+          token = ''
+          const method = String(options.method || 'GET').toUpperCase()
+          const mayReplayAnonymous = method === 'GET' || (
+            method === 'POST' &&
+            options.retryAnonymousOnAuthFailure === true &&
+            error.data &&
+            error.data.authFailurePhase === 'pre_execution'
+          )
+          if (!mayReplayAnonymous) throw error
+          const anonymousData = typeof options.buildAnonymousRetryData === 'function'
+            ? options.buildAnonymousRetryData(options.data)
+            : options.data
+          return executeMock(anonymousData)
+        })
       }
     }
   }
@@ -152,14 +165,15 @@ async function run() {
   const apiService = require(apiServicePath)
 
   const guestApi = await apiService.getNearbyListings(anchor.id)
-  assert.ok(guestApi.listings.every((item) => item.companyListing), 'API Mock 分支必须从当前 token 派生游客边界')
+  assert.ok(guestApi.listings.some((item) => !item.companyListing), 'API Mock 游客分支必须返回三类公开附近房源')
   const guestCall = calls[calls.length - 1]
   assert.ok(guestCall.path.endsWith(`/mini/listings/${encodeURIComponent(anchor.id)}/nearby?all=1`))
   assert.ok(!/radius|latitude|longitude|companyOnly|userId|role/i.test(guestCall.path), '客户端附近请求不得发送权限、半径或坐标字段')
 
   token = 'synthetic-mock-login-token'
   const brokerApi = await apiService.getNearbyListings(anchor.id)
-  assert.strictEqual(brokerApi.total, 7, '有 token 的 Mock 分支应返回三类来源')
+  assert.strictEqual(brokerApi.total, 7, '无效 token 的 Mock 公开 GET 应撤销伪身份并以游客返回三类来源')
+  assert.strictEqual(token, '', 'Mock 公开 GET 遇到伪 token 必须先撤销本地伪身份再匿名重试')
 
   console.log('listing-nearby-mock-v1-test passed')
 }

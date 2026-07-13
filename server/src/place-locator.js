@@ -113,6 +113,22 @@ function listingCoordinate(listing = {}) {
   )
   if (direct) return direct
 
+  // match-service 只会把领域层已降精度的合作房源坐标标成 domain-v1；该标记不来自客户端表单，
+  // 允许库外小区继续参与 3 公里召回，同时距离只能指向公开约一公里粒度点。
+  if (listing.publicMapCoordinateProjection === 'domain-v1') {
+    const latitude = numberFrom(listing.mapLatitude || listing.latitude)
+    const longitude = numberFrom(listing.mapLongitude || listing.longitude)
+    const level = String(listing.coordinateLevel || '')
+    if (latitude && longitude && ['approximate', 'block-center'].includes(level) && listing.coordinateVerified === false) {
+      return {
+        latitude,
+        longitude,
+        source: listing.coordinateSource || 'guest-community-approximate',
+        level
+      }
+    }
+  }
+
   const byCommunity = coordinateByCommunity(listing.community)
   if (byCommunity) {
     return {
@@ -151,7 +167,10 @@ function entriesFromListings(listings = []) {
       type: 'community',
       latitude: coordinate.latitude,
       longitude: coordinate.longitude,
-      source: coordinate.source
+      source: coordinate.source,
+      // 该点只用于让房源参与半径计算；同名地点已有配置锚点时，不应把降精度房源点
+      // 再当成第二个地点制造“歧义”，否则首次合法找房会被错误拦截。
+      derivedFromListing: true
     })
   })
   return Array.from(byCommunity.values())
@@ -208,6 +227,20 @@ function dropDuplicateBlockCenterEntries(entries = []) {
   })
 }
 
+function normalizeEntryArea(value) {
+  return String(value || '').trim().replace(/区$/, '')
+}
+
+function dropShadowedListingEntries(entries = []) {
+  return entries.filter((entry) => {
+    if (entry.derivedFromListing !== true) return true
+    const name = normalizePlaceName(entry.name)
+    const area = normalizeEntryArea(entry.area)
+    return !entries.some((other) => other !== entry && other.derivedFromListing !== true &&
+      normalizePlaceName(other.name) === name && normalizeEntryArea(other.area) === area)
+  })
+}
+
 function resolvePlace(db = {}, query = '', listings = []) {
   const text = normalizePlaceName(query)
   if (!text) {
@@ -220,7 +253,9 @@ function resolvePlace(db = {}, query = '', listings = []) {
 
   const matched = placeEntries(db, listings).filter((entry) => entryMatches(entry, text))
   const exact = matched.filter((entry) => entryNames(entry).some((name) => normalizePlaceName(name) === text))
-  const candidates = dropDuplicateBlockCenterEntries(exact.length ? exact : matched)
+  const candidates = dropShadowedListingEntries(
+    dropDuplicateBlockCenterEntries(exact.length ? exact : matched)
+  )
   const deduped = []
   const seen = new Set()
   candidates.forEach((entry) => {

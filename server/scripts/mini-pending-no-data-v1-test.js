@@ -21,7 +21,7 @@ function signMiniToken(payload) {
 }
 
 // 正面固化「待审核/未开通/无密码账号拿不到任何数据」：这些账号一律换不到 token，而无 token 访问
-// /mini 受保护接口一律 401；公司房源匿名可见口径不变（不被本轮登录改造误伤）。
+// /mini 受保护写接口一律 401；三类有效房源的公开卡片/脱敏详情与视频无需 token。
 // 防回归：若将来有人让注册/待审核发 token，本测试会立刻变红。
 
 const serverDir = path.resolve(__dirname, '..')
@@ -68,7 +68,8 @@ function listing(overrides = {}) {
     type: '整租',
     rentMode: '整租',
     source: '普通上传',
-    videoUrl: 'https://example.com/pnd.mp4',
+    videoUrl: '',
+    videoKey: 'house-videos/synthetic/pnd.mp4',
     lastVerifiedAt: now,
     updatedAt: now,
     createdAt: now,
@@ -159,7 +160,13 @@ async function run() {
       DATA_FILE: dataFile,
       AUTH_TOKEN_SECRET: AUTH_SECRET,
       ADMIN_TOKEN_SECRET: 'pending-no-data-admin',
-      V1_DISABLE_LEGACY_ROUTES: '1'
+      V1_DISABLE_LEGACY_ROUTES: '1',
+      MINI_REQUEST_DOMAIN: baseUrl,
+      ALI_OSS_BUCKET: 'synthetic-bucket',
+      ALI_OSS_REGION: 'oss-cn-example',
+      ALI_OSS_ACCESS_KEY_ID: 'synthetic-access-key-id',
+      ALI_OSS_ACCESS_KEY_SECRET: 'synthetic-access-key-secret',
+      ALI_OSS_PUBLIC_BASE_URL: 'https://synthetic-bucket.oss-cn-example.aliyuncs.com'
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -182,20 +189,25 @@ async function run() {
       assert.ok(!hasToken(r), `不该有访问权的流程#${i} 绝不能发 token`)
     })
 
-    // ② 无 token（这些账号能拿到的最好状态就是无 token）访问 /mini 受保护接口一律 401
+    // ② 无 token仍不能访问账号接口，但可读取合作房源的公开详情和视频。
     const noAuthProfile = await request('GET', '/mini/profile')
     assert.strictEqual(noAuthProfile.statusCode, 401, '无 token 访问我的必须 401')
     const noAuthPartner = await request('GET', '/mini/listings/PND_PARTNER')
-    assert.strictEqual(noAuthPartner.statusCode, 401, '无 token 访问合作房源详情必须 401')
+    assert.strictEqual(noAuthPartner.statusCode, 200, '无 token 可访问合作房源脱敏详情')
+    assert.ok(String(dataOf(noAuthPartner).videoUrl || '').startsWith(`${baseUrl}/mini/listings/PND_PARTNER/media/video?token=`), '游客合作详情必须保留 API 域不透明视频地址')
+    assert.ok(!JSON.stringify(dataOf(noAuthPartner)).includes('house-videos/synthetic/pnd.mp4'), '游客合作详情不得泄露服务端对象键')
+    ;['building', 'unit', 'roomNumber', 'address', 'landlordPhone', 'viewingMethod', 'remark'].forEach((field) => {
+      assert.ok(!Object.prototype.hasOwnProperty.call(dataOf(noAuthPartner), field), `游客合作详情不得下发 ${field}`)
+    })
     const noAuthMe = await request('GET', '/mini/auth/me')
     assert.strictEqual(noAuthMe.statusCode, 401, '无 token 访问 me 必须 401')
 
-    // ③ 公司房源匿名可见口径不变：游客首页只出公司房源、不出合作房源，登录改造没误伤游客浏览
+    // ③ 游客首页同时公开公司与合作房源卡片，但合作房源保持小区级脱敏。
     const guestHome = await request('GET', '/mini/home/listings')
     assert.strictEqual(guestHome.statusCode, 200, '游客首页应 200')
     const rows = dataOf(guestHome) || []
     assert.ok(rows.some((r) => r.id === 'PND_COMPANY'), '游客首页应能看到公司房源')
-    assert.ok(!rows.some((r) => r.id === 'PND_PARTNER'), '游客首页不得出现需登录的合作房源')
+    assert.ok(rows.some((r) => r.id === 'PND_PARTNER'), '游客首页应出现脱敏合作房源卡片')
 
     // ④ 软删账号：即便密码正确也不能重新登录；删除前签发、仍在有效期内的旧 token 也即时失效
     const delLogin = await request('POST', '/mini/auth/login', { phone: DEL_PHONE, password: DEL_PASSWORD })

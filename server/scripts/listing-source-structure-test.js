@@ -214,14 +214,14 @@ function run() {
   const companyIds = domain.filterListings(db, { category: '公司房源' }).map((item) => item.id).sort()
   const secondLandlordIds = domain.filterListings(db, { category: '二房东房源' }).map((item) => item.id).sort()
   const allIds = domain.filterListings(db, {}).map((item) => item.id).sort()
-  const guestCompanyIds = domain.filterListings(db, { companyOnly: true }).map((item) => item.id).sort()
+  const explicitCompanyIds = domain.filterListings(db, { companyOnly: true }).map((item) => item.id).sort()
   assert.ok(!ownerIds.includes('COMPANY_DESC_OWNER'), '描述或户型含“业主”的公司房源不得进入业主筛选')
   assert.ok(ownerIds.includes('REAL_OWNER'), '真实业主房源仍应进入业主筛选')
   assert.ok(companyIds.includes('COMPANY_DESC_OWNER'), '公司房源仍应进入公司专区')
   assert.ok(allIds.includes('COMPANY_DESC_OWNER'), '公司房源无视频仍应进入全部房源')
   assert.ok(allIds.includes('REAL_OWNER'), '真实业主房源有视频且审核通过应进入全部房源')
   assert.deepStrictEqual(companyIds, ['COMPANY_DESC_OWNER'], '公司分类只能包含结构化公司房源，字符串假值不得被当真')
-  assert.deepStrictEqual(guestCompanyIds, companyIds, 'filterListings 的游客 companyOnly 必须直接收敛为公司房源全集')
+  assert.deepStrictEqual(explicitCompanyIds, companyIds, 'filterListings 的显式 companyOnly 必须直接收敛为公司房源全集')
   assert.deepStrictEqual(
     ownerIds,
     ['FALSE_STRING_OWNER', 'OWNER_CONFLICT', 'REAL_OWNER'],
@@ -243,8 +243,8 @@ function run() {
   assert.deepStrictEqual(mapIds({ sourceType: '公司房源' }), companyIds, '地图公司筛选必须与列表同口径')
   assert.deepStrictEqual(mapIds({ sourceType: '业主房源' }), ownerIds, '地图业主筛选必须与列表同口径')
   assert.deepStrictEqual(mapIds({ sourceType: '二房东房源' }), secondLandlordIds, '地图二房东筛选必须与列表同口径')
-  assert.deepStrictEqual(mapIds({ companyOnly: true, sourceType: '业主房源' }), [], '游客权限与业主筛选取交集必须为空')
-  assert.deepStrictEqual(mapIds({ companyOnly: true, sourceType: '二房东房源' }), [], '游客权限与二房东筛选取交集必须为空')
+  assert.deepStrictEqual(mapIds({ companyOnly: true, sourceType: '业主房源' }), [], '显式公司筛选与业主来源取交集必须为空')
+  assert.deepStrictEqual(mapIds({ companyOnly: true, sourceType: '二房东房源' }), [], '显式公司筛选与二房东来源取交集必须为空')
 
   function favoriteIds(category) {
     return domain.favoriteListings(db, 'U1', { category }).map((item) => item.id).sort()

@@ -20,7 +20,6 @@ Page({
     broker: '',
     loading: false,
     loadFailed: false,
-    accessRequired: false,
     unavailable: false
   },
 
@@ -58,22 +57,24 @@ Page({
 
   loadListing(id) {
     this.listingId = id
+    this._videoPlaybackRefreshCount = 0
+    this._mediaRefreshPromise = null
     const requestSeq = Number(this._listingRequestSeq || 0) + 1
-    const requestSessionKey = currentAuthSessionKey()
+    const requestListingId = String(id || '')
     this._listingRequestSeq = requestSeq
     const requestIsCurrent = () => (
       this._pageActive !== false &&
       this._listingRequestSeq === requestSeq &&
-      currentAuthSessionKey() === requestSessionKey
+      String(this.listingId || '') === requestListingId
     )
     this.setData({
       listing: {},
       loading: true,
       loadFailed: false,
-      accessRequired: false,
       unavailable: false
     })
-    return apiService.getListingDetail(id).then((listing) => {
+    // 分享页只消费公共视频投影，始终省略 Authorization；残留过期 token 不能破坏游客播放。
+    return apiService.getListingDetail(id, { anonymous: true }).then((listing) => {
       if (!requestIsCurrent()) return
       if (listing && listing.unavailable) {
         this.setData({ listing: {}, loading: false, unavailable: true })
@@ -81,18 +82,11 @@ Page({
       }
       this.setData({ listing, loading: false })
     }).catch((error) => {
-      if (this._pageActive === false || this._listingRequestSeq !== requestSeq) return
+      if (!requestIsCurrent()) return
       const statusCode = Number(error && error.statusCode)
-      const currentSessionKey = currentAuthSessionKey()
-      if (currentSessionKey !== requestSessionKey) {
-        this.authSessionSnapshot = currentSessionKey
-        if (statusCode === 401 || statusCode === 403) {
-          this.setData({ listing: {}, loading: false, accessRequired: true })
-        }
-        return
-      }
       if (statusCode === 401 || statusCode === 403) {
-        this.setData({ loading: false, accessRequired: true })
+        this.setData({ loading: false, loadFailed: true })
+        wx.showToast({ title: '视频读取失败，请重试', icon: 'none' })
         return
       }
       if (statusCode === 404) {
@@ -105,12 +99,54 @@ Page({
     })
   },
 
-  retryLoad() {
-    if (this.listingId) this.loadListing(this.listingId)
+  refreshListingMedia() {
+    const listingId = String((this.data.listing && this.data.listing.id) || this.listingId || '')
+    if (!listingId) return Promise.reject(new Error('房源不存在或已下架'))
+    if (this._mediaRefreshPromise) return this._mediaRefreshPromise
+    const requestSeq = Number(this._listingRequestSeq || 0)
+    const isCurrentRequest = () => (
+      this._pageActive !== false &&
+      Number(this._listingRequestSeq || 0) === requestSeq &&
+      String((this.data.listing && this.data.listing.id) || '') === listingId
+    )
+    const request = apiService.getListingDetail(listingId, { anonymous: true }).then((fresh) => {
+      if (!isCurrentRequest()) {
+        const error = new Error('页面状态已变化，忽略旧媒体地址')
+        error.staleMediaRefresh = true
+        throw error
+      }
+      if (!fresh || fresh.unavailable || !fresh.videoUrl) {
+        const error = new Error('房源视频不存在或已下架')
+        error.statusCode = 404
+        throw error
+      }
+      const merged = Object.assign({}, this.data.listing || {}, {
+        videoUrl: fresh.videoUrl,
+        coverUrl: fresh.coverUrl || (this.data.listing && this.data.listing.coverUrl) || '',
+        hasVideo: true
+      })
+      this.setData({ listing: merged })
+      return merged
+    }).finally(() => {
+      if (this._mediaRefreshPromise === request) this._mediaRefreshPromise = null
+    })
+    this._mediaRefreshPromise = request
+    return request
   },
 
-  goLogin() {
-    wx.navigateTo({ url: '/pages/auth/auth' })
+  onVideoPlaybackError() {
+    if (Number(this._videoPlaybackRefreshCount || 0) >= 1) return
+    this._videoPlaybackRefreshCount = Number(this._videoPlaybackRefreshCount || 0) + 1
+    const requestSeq = Number(this._listingRequestSeq || 0)
+    this.refreshListingMedia().catch((error) => {
+      if (error && error.staleMediaRefresh) return
+      if (this._pageActive === false || Number(this._listingRequestSeq || 0) !== requestSeq) return
+      wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
+    })
+  },
+
+  retryLoad() {
+    if (this.listingId) this.loadListing(this.listingId)
   },
 
   onShareAppMessage() {

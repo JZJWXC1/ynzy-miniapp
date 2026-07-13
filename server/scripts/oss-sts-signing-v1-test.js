@@ -141,6 +141,14 @@ async function assertPutErrorRedactsSts() {
 }
 
 async function main() {
+  const opaqueVideoPolicy = oss.createVideoUploadPolicy({
+    fileName: '19900007777-9-8-701.mp4',
+    mimeType: 'video/mp4'
+  })
+  assert.ok(!opaqueVideoPolicy.objectKey.includes('19900007777'), '服务端生成的视频对象键不得保留客户端文件名中的手机号')
+  assert.ok(!opaqueVideoPolicy.objectKey.includes('9-8-701'), '服务端生成的视频对象键不得保留客户端文件名中的楼栋房号')
+  assert.ok(/\.mp4$/i.test(opaqueVideoPolicy.objectKey), '匿名对象键仍须保留受支持视频扩展名')
+
   const readKey = 'house-videos/20260710/room 101.mp4'
   assertSignedUrl(oss.createSignedReadUrl(readKey, 900), readKey, {
     'security-token': TOKEN

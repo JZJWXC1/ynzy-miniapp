@@ -236,6 +236,8 @@ async function runDetailBehavior() {
 
 async function runNearbyPageBehavior() {
   let token = 'TOKEN_A'
+  let publicReadFallbackSessionKey = ''
+  const authInvalidationListeners = new Set()
   const requests = []
   const toasts = []
   const navigations = []
@@ -245,7 +247,16 @@ async function runNearbyPageBehavior() {
     navigateTo(options) { navigations.push(options.url) },
     navigateBack() {}
   }
-  const apiClient = { getAuthToken: () => token }
+  const apiClient = {
+    getAuthToken: () => token,
+    isPublicReadAuthFallbackContinuation: (requestSessionKey) => (
+      Boolean(publicReadFallbackSessionKey) && requestSessionKey === publicReadFallbackSessionKey
+    ),
+    subscribeAuthInvalidation(listener) {
+      authInvalidationListeners.add(listener)
+      return () => authInvalidationListeners.delete(listener)
+    }
+  }
   const api = {
     getNearbyListings(id) {
       const request = deferred()
@@ -270,6 +281,42 @@ async function runNearbyPageBehavior() {
   await settle()
   assert.deepStrictEqual(page.data.listings.map((item) => item.id), ['B-1'])
 
+  token = 'TOKEN_NEARBY_EXPIRED'
+  const expiredPage = makePage(definition)
+  expiredPage.onLoad({ id: 'ANCHOR' })
+  expiredPage.onShow()
+  const expiredFirstRequest = requests[2].request
+  token = ''
+  publicReadFallbackSessionKey = 'TOKEN_NEARBY_EXPIRED'
+  expiredFirstRequest.resolve({ radiusKm: 3, total: 1, hasMore: false, listings: nearbyRows('OLD', 1) })
+  await settle()
+  assert.strictEqual(requests.length, 4, '附近公共读取静默清态后必须用当前游客会话重新请求')
+  requests[3].request.resolve({ radiusKm: 3, total: 1, hasMore: false, listings: nearbyRows('GUEST', 1) })
+  await settle()
+  assert.deepStrictEqual(expiredPage.data.listings.map((item) => item.id), ['GUEST-1'], '附近页不得因失效 token 清态而停留空白')
+  assert.strictEqual(expiredPage.data.loading, false, '附近页游客恢复请求完成后必须退出 loading')
+  publicReadFallbackSessionKey = ''
+  expiredPage.onUnload()
+
+  token = 'TOKEN_NEARBY_CHILD_REVOKE'
+  const childRevokePage = makePage(definition)
+  childRevokePage.onLoad({ id: 'ANCHOR' })
+  childRevokePage.onShow()
+  childRevokePage.setData({ listings: nearbyRows('OLD-PRIVATE', 1), total: 1 })
+  token = ''
+  Array.from(authInvalidationListeners).forEach((listener) => listener({
+    reason: 'unauthorized',
+    fromSessionKey: 'TOKEN_NEARBY_CHILD_REVOKE',
+    toSessionKey: ''
+  }))
+  assert.deepStrictEqual(childRevokePage.data.listings, [], '收藏子组件 401 清态后附近页必须立即清旧账号结果')
+  assert.strictEqual(requests.length, 6, '附近页收到全局撤销通知后必须以游客会话立即重读')
+  requests[4].request.resolve({ radiusKm: 3, total: 1, hasMore: false, listings: nearbyRows('OLD-LATE', 1) })
+  requests[5].request.resolve({ radiusKm: 3, total: 1, hasMore: false, listings: nearbyRows('CHILD-GUEST', 1) })
+  await settle()
+  assert.deepStrictEqual(childRevokePage.data.listings.map((item) => item.id), ['CHILD-GUEST-1'])
+  childRevokePage.onUnload()
+
   page.openListing({ currentTarget: { dataset: { id: 'MISSING' } } })
   assert.deepStrictEqual(navigations, [], '不得信任数据集导航到服务端结果外的房源')
   page.openListing({ currentTarget: { dataset: { id: 'B-1' } } })
@@ -285,8 +332,9 @@ async function runNearbyPageBehavior() {
   assert.ok(redirectUrls[0].includes('B-1'), '全部附近页返回详情时栈满必须保留原房源 URL 并 redirectTo')
   assert.ok(toasts.some((item) => /打开失败/.test(item.title || '')), '全部附近页导航双重失败必须明确 toast')
 
+  token = 'TOKEN_B'
   page.onShow()
-  const lateRequest = requests[2].request
+  const lateRequest = requests[6].request
   page.onUnload()
   lateRequest.reject(new Error('迟到失败'))
   await settle()

@@ -1,6 +1,44 @@
 const assert = require('assert')
 const feishuSync = require('../src/feishu-sync')
 
+const FALSE_SAFE_SUFFIX_PHONE = '187号线0000号线1111'
+const LEGAL_PUBLIC_NUMERIC_VALUES = [
+  '17号板块3号地铁5分钟1室1厅1卫2026年',
+  '17㎡三室1厅1卫',
+  '17m²三室',
+  '17m2三室',
+  '17平方米三室'
+]
+const NOISY_WECHAT_GAP = '微 信 a realwx123'
+const NOISY_WECHAT_DECOY = '微 信 abcdef realwx123'
+const NOISY_WECHAT_ID = 'realwx123'
+const GENERIC_ALPHA_CONTACTS = ['联系方式 privateid', '联系方式 private_wx_01', '联系房东 privateid', '联络方式 privateid', 'contact privateid']
+const FULLWIDTH_O_PHONE = '187000Ｏ1111'
+const MIXED_CHINESE_PHONE_VARIANTS = [
+  '一八八测试零零零零测试七七七七',
+  '壹捌捌测试零零零零测试柒柒柒柒',
+  '一八八abc零零零零abc七七七七',
+  '一八八🫥零零零零🫥七七七七'
+]
+const VALID_DATE_COPY = '开放日期2026-07-14 更新时间2026-07-14T10:20:30.000Z'
+const COMPANY_ROAD_ADDRESS = '杭州市拱墅区文一西路969号园区北门'
+const PLACEHOLDER_LITERAL = '__YNZY_ALLOWED_PHONE_A__'
+const TIBETAN_PHONE = '\u0f21\u0f28\u0f27\u0f20\u0f20\u0f20\u0f20\u0f21\u0f21\u0f21\u0f21'
+const PRIVATE_PHONE_DIGITS = '18700001111'
+const UNIT_PHONE_SMUGGLES = [
+  '18㎡700㎡001㎡111㎡',
+  '18公里700公里001公里111公里',
+  '18元/月700元/月001元/月111元/月',
+  '18号线7室0室0室00号线1室1室1室1室'
+]
+const CONTACT_HEADER_CASES = [
+  { header: '微🫥信号', privateValue: 'private_wx_01' },
+  { header: '微・信号', privateValue: 'private_wx_01' },
+  { header: '聯絡電話', privateValue: '88888888' },
+  { header: '座机', privateValue: '88888888' },
+  { header: '房东微信', privateValue: 'private_wx_01' }
+]
+
 function makeDb() {
   return {
     users: [
@@ -242,17 +280,235 @@ async function main() {
   assert.ok(Number.isFinite(Date.parse(removedFootprint.occurredAt)), '发生时间必须由服务端生成 ISO 时间')
 
   const snapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '公司表 19800007777',
+    sheetUrl: 'https://synthetic.feishu.example/sheets/PRIVATE_SHEET_TOKEN',
+    range: 'PRIVATE_SHEET_TOKEN!A1:ZZ1000',
+    cachedAt: '内部缓存时间',
+    startRow: 7,
+    startCol: 3,
     rows: [
-      ['区域', '小区', '房号', '联系电话', '户型描述', '看房方式密码', '备注'],
-      ['闸弄口', '京漾东韵府', '1-2-601D', '13900001111', '一室', '336699#', '水电自理']
+      ['公司简介，联系电话：+86 198-0000-9999；座机：0571-12345678；微信号：private_wx_01'],
+      ['备用联系 197 0000 8888'],
+      ['区域', '小区', '房号', '联系电话', '户型描述', '看房方式密码', '备注', '微信号'],
+      ['闸弄口', '京漾东韵府', '1-2-601D', '+86 139-0000-1111', '一室', '336699#', '水电自理', 'raw_wechat_02']
     ]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
   })
   const snapshotText = JSON.stringify(snapshot)
+  const compactSnapshotText = snapshotText.replace(/[+\s\-]/g, '')
   assert.ok(snapshotText.includes('联系电话'), '公司房源快照应保留联系电话列')
-  assert.ok(snapshotText.includes('13900001111'), '公司房源快照应保留联系电话内容')
+  ;['19800007777', '8619800009999', '19700008888', '8613900001111', '057112345678'].forEach((privatePhone) => {
+    assert.ok(!compactSnapshotText.includes(privatePhone), `公司房源快照不得下发表头前简介或数据行私号 ${privatePhone}`)
+  })
+  ;['private_wx_01', 'raw_wechat_02'].forEach((privateWechat) => {
+    assert.ok(!snapshotText.includes(privateWechat), `公司房源快照不得下发原始微信号 ${privateWechat}`)
+  })
+  ;['19900000001', '19900000002', '19900000003'].forEach((phone) => {
+    assert.ok(snapshotText.includes(phone), `公司房源快照应保留服务器统一号码 ${phone}`)
+  })
   assert.ok(snapshotText.includes('看房方式密码'), '公司房源快照应保留看房密码列')
   assert.ok(snapshotText.includes('336699'), '公司房源快照应保留看房密码内容')
-  assert.strictEqual(snapshot.columnCount, 7, '快照表头与数据行列数应一致')
+  assert.ok(snapshotText.includes('1-2-601D'), '清洗联系方式时必须保留公司房号')
+  assert.strictEqual(snapshot.columnCount, 8, '后置表头与数据行列数应一致')
+  assert.strictEqual(snapshot.sensitiveStripped, true, '快照必须声明原始联系方式已替换')
+  ;['sheetUrl', 'range', 'cachedAt', 'startRow', 'startCol', 'PRIVATE_SHEET_TOKEN'].forEach((privateMetadata) => {
+    assert.ok(!snapshotText.includes(privateMetadata), `公开快照不得包含内部飞书定位元数据 ${privateMetadata}`)
+  })
+
+  const unsafeSnapshotTime = feishuSync.sanitizeSheetSnapshot({
+    updatedAt: 'Tue, 14 Jul 2026 00:00:00 GMT (contact 19900007777)',
+    rows: [['区域', '小区'], ['拱墅区', '合成小区']]
+  }, { contactPhones: ['19900000001', '19900000002', '19900000003'] })
+  assert.strictEqual(unsafeSnapshotTime.updatedAt, '', '公开快照不得原样返回可被 Date.parse 接受但夹带联系方式的核验时间')
+  const safeSnapshotTime = feishuSync.sanitizeSheetSnapshot({
+    updatedAt: '2026-07-14T10:20:30.000Z',
+    rows: [['区域', '小区'], ['拱墅区', '合成小区']]
+  }, { contactPhones: ['19900000001', '19900000002', '19900000003'] })
+  assert.strictEqual(safeSnapshotTime.updatedAt, '2026-07-14T10:20:30.000Z', '公开快照必须保留严格合法的 ISO 更新时间')
+
+  const contactVariantSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '公司表 188.0000.7777 wei xin:private_wei_xin_01 零宽 185\u200b0000\u200b6666 不可见 184\u20630000\u20635555 组合 183\u034f0000\ufe0f4444 中文 一八二零零零零三三三三 口语 幺八零零零零零幺幺幺幺 阿拉伯 ١٧٩٠٠٠٠٩٩٩٩ 键帽 1️⃣7️⃣8️⃣0️⃣0️⃣0️⃣0️⃣8️⃣8️⃣8️⃣8️⃣ 国家码 +86一七七零零零零七七七七 表情 181🫥0000🫥2222 日文点 187・0000・1111 阿拉伯逗号 187،0000،1111 字母 187a0000a1111 长字母 187abc0000abc1111 超长字母 187abcdefg0000abcdefg1111 汉字 187测试0000测试1111 伪地铁 187号线0000号线1111 安全词尾 139a1111a2222室 139a1111a2222房 139a1111a2222号房 139a1111a2222平方米 139a1111a2222㎡ 139a1111a2222m2 139a1111a2222元/月 139a1111a2222公里 客服4001234567 客服800a123a4567 电话88888888 电 话88888888 座机8888-8888 英文 tel:88888888 phone:8888-8888 p h o n e88888888 mobile:88888888 contact:88888888 Call 88888888 繁体 電話88888888 聯絡電話88888888 聯繫方式88888888 手機88888888 熱線88888888 聯絡88888888 噪声微信 微🫥信:privateid 微・信:privateid w🫥x:privateid we🫥chat:privateid v🫥信:privateid 合法数字 17号板块3号地铁5分钟1室1厅1卫2026年',
+    rows: [
+      ['备注 187/0000/8888 v信:private_vxin_01'],
+      ['说明 186—0000—8888 微号:private_micro_01 we chat:private_we_chat_01'],
+      ['1313室 统一咨询19900000001 私号19900000061 座机0571-88888888']
+    ]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const contactVariantText = JSON.stringify(contactVariantSnapshot)
+  const compactContactVariantText = contactVariantText.normalize('NFKC').replace(/[\u00AD\u034F\u180E\u200B-\u200F\u2060-\u206F\uFE00-\uFE0F\uFEFF+\s\-()./—]/g, '')
+  ;['18800007777', '18700008888', '18600008888', '18500006666', '18400005555', '18300004444'].forEach((privatePhone) => {
+    assert.ok(!compactContactVariantText.includes(privatePhone), `公开快照不得泄露点号/斜杠/长破折号拆分的私号 ${privatePhone}`)
+  })
+  ;['private_wei_xin_01', 'private_vxin_01', 'private_micro_01', 'private_we_chat_01'].forEach((privateWechat) => {
+    assert.ok(!contactVariantText.includes(privateWechat), `公开快照不得泄露中英混写微信号 ${privateWechat}`)
+  })
+  ;['一八二零零零零三三三三', '幺八零零零零零幺幺幺幺', '١٧٩٠٠٠٠٩٩٩٩', '1️⃣7️⃣8️⃣0️⃣0️⃣0️⃣0️⃣8️⃣8️⃣8️⃣8️⃣', '+86一七七零零零零七七七七', '181🫥0000🫥2222'].forEach((privatePhone) => {
+    assert.ok(!contactVariantText.includes(privatePhone), `公开快照不得泄露中文数字或表情分隔私号 ${privatePhone}`)
+  })
+  ;['187・0000・1111', '187،0000،1111', '187a0000a1111', '187abc0000abc1111', '187abcdefg0000abcdefg1111', '187测试0000测试1111', '187号线0000号线1111'].forEach((privatePhone) => {
+    assert.ok(!contactVariantText.includes(privatePhone), `公开快照不得泄露任意字符或伪公共数字语义拆分的私号 ${privatePhone}`)
+  })
+  ;['139a1111a2222室', '139a1111a2222房', '139a1111a2222号房', '139a1111a2222平方米', '139a1111a2222㎡', '139a1111a2222m2', '139a1111a2222元/月', '139a1111a2222公里'].forEach((privatePhone) => {
+    assert.ok(!contactVariantText.includes(privatePhone), `飞书快照不得用合法业务单位打断完整私号清洗 ${privatePhone}`)
+    const isolatedSnapshotText = JSON.stringify(feishuSync.sanitizeSheetSnapshot({
+      title: `公司表 ${privatePhone}`,
+      rows: []
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    }))
+    assert.ok(!isolatedSnapshotText.includes(privatePhone), `飞书快照单值场景不得用合法业务单位打断完整私号清洗 ${privatePhone}`)
+  })
+  assert.ok(contactVariantText.includes('17号板块3号地铁5分钟1室1厅1卫2026年'), '公开快照清洗私号时必须保留合法数字业务语义')
+  assert.ok(contactVariantText.includes('19900000001'), '房号与私号相邻时必须完整保留服务器统一号码')
+  assert.ok(!contactVariantText.includes('19900000061') && !contactVariantText.includes('0571-88888888'), '统一号码相邻的私号和座机仍必须完整脱敏')
+  ;['4001234567', '800a123a4567', '电话88888888', '电 话88888888', '座机8888-8888', 'tel:88888888', 'phone:8888-8888', 'p h o n e88888888', 'mobile:88888888', 'contact:88888888', 'Call 88888888', '電話88888888', '聯絡電話88888888', '聯繫方式88888888', '手機88888888', '熱線88888888', '聯絡88888888', '微🫥信:privateid', '微・信:privateid', 'w🫥x:privateid', 'we🫥chat:privateid', 'v🫥信:privateid'].forEach((privateContact) => {
+    assert.ok(!contactVariantText.includes(privateContact), `飞书快照不得泄露客服号、本地座机或噪声拆分微信 ${privateContact}`)
+  })
+
+  const adjacentContactCases = [
+    '01064853453 19900000001',
+    '19900000001 02112345678',
+    '座机0571-88888888 标签 19900000001',
+    '19900000001🫥010🫥6485🫥3453',
+    '010a6485a3453标签19900000001',
+    '0106485345319900000001',
+    '4001234567 19900000001',
+    '19900000001 800-123-4567'
+  ]
+  const adjacentContactSnapshot = feishuSync.sanitizeSheetSnapshot({ rows: adjacentContactCases.map((value) => [value]) }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const adjacentContactText = JSON.stringify(adjacentContactSnapshot)
+  ;['01064853453', '02112345678', '0571-88888888', '010🫥6485🫥3453', '010a6485a3453', '4001234567', '800-123-4567'].forEach((privateContact) => {
+    assert.ok(!adjacentContactText.includes(privateContact), `飞书快照相邻统一号码时不得泄露未配置电话 ${privateContact}`)
+  })
+
+  const isolatedFalseSafeSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '公司房源公开值独立测试',
+    rows: [[FALSE_SAFE_SUFFIX_PHONE]]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const isolatedFalseSafeSnapshotText = JSON.stringify(isolatedFalseSafeSnapshot)
+  assert.ok(!isolatedFalseSafeSnapshotText.includes(FALSE_SAFE_SUFFIX_PHONE), '飞书公司公开单值不得完整保留伪装成地铁语义的私号')
+
+  const isolatedNoisyWechatSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '噪声拆分微信独立测试',
+    rows: [[NOISY_WECHAT_GAP]]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  assert.ok(!JSON.stringify(isolatedNoisyWechatSnapshot).toLowerCase().includes(NOISY_WECHAT_ID), '飞书快照不得残留噪声拆分微信 ID realwx123')
+
+  ;[NOISY_WECHAT_DECOY, ...GENERIC_ALPHA_CONTACTS].forEach((privateContact, index) => {
+    const privateContactSnapshot = feishuSync.sanitizeSheetSnapshot({
+      title: `通用字母联系方式独立测试 ${index + 1}`,
+      rows: [[`安全文案 ${privateContact}`]]
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    })
+    const privateContactText = JSON.stringify(privateContactSnapshot).toLowerCase()
+    ;['realwx123', 'privateid', 'private_wx_01'].forEach((identifier) => {
+      assert.ok(!privateContactText.includes(identifier), `飞书快照不得残留 decoy 或通用字母联系方式 ${identifier}：${privateContact}`)
+    })
+  })
+
+  ;[FULLWIDTH_O_PHONE, ...MIXED_CHINESE_PHONE_VARIANTS].forEach((privatePhone, index) => {
+    const privatePhoneSnapshot = feishuSync.sanitizeSheetSnapshot({
+      title: `混合中文/全角 O 私号独立测试 ${index + 1}`,
+      rows: [[`安全文案 ${privatePhone}`]]
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    })
+    const privatePhoneText = JSON.stringify(privatePhoneSnapshot)
+    const normalizedPrivatePhoneText = privatePhoneText.normalize('NFKC').replace(/[OoＯ]/g, '0').replace(/\D/g, '')
+    assert.ok(!normalizedPrivatePhoneText.includes(index === 0 ? '18700001111' : '18800007777'), `飞书快照不得保留可归一还原的混合中文/全角 O 私号：${privatePhone}`)
+    assert.ok(!privatePhoneText.includes(privatePhone), `飞书快照不得原样泄露混合中文/全角 O 私号：${privatePhone}`)
+  })
+
+  const isolatedTibetanPhoneSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '藏文数字私号独立测试',
+    rows: [[TIBETAN_PHONE]]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const normalizedTibetanSnapshot = Array.from(JSON.stringify(isolatedTibetanPhoneSnapshot)).map((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint >= 0x0f20 && codePoint <= 0x0f29 ? String(codePoint - 0x0f20) : character
+  }).join('').replace(/\D/g, '')
+  assert.ok(!normalizedTibetanSnapshot.includes(PRIVATE_PHONE_DIGITS), '飞书快照不得保留或转写藏文数字私号')
+
+  UNIT_PHONE_SMUGGLES.forEach((privateValue, index) => {
+    const isolatedUnitPhoneSnapshot = feishuSync.sanitizeSheetSnapshot({
+      title: `业务单位私号独立测试 ${index + 1}`,
+      rows: [[privateValue]]
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    })
+    const isolatedUnitPhoneText = JSON.stringify(isolatedUnitPhoneSnapshot)
+    assert.ok(!isolatedUnitPhoneText.includes(privateValue), `飞书快照不得逐值完整保留业务单位拼接私号：${privateValue}`)
+  })
+
+  CONTACT_HEADER_CASES.forEach(({ header, privateValue }, index) => {
+    const isolatedHeaderSnapshot = feishuSync.sanitizeSheetSnapshot({
+      title: `敏感联系方式表头独立测试 ${index + 1}`,
+      rows: [[header], [privateValue]]
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    })
+    const isolatedHeaderText = JSON.stringify(isolatedHeaderSnapshot)
+    assert.strictEqual(isolatedHeaderSnapshot.rows[1][0], '19900000001 / 19900000002 / 19900000003', `飞书表头 ${header} 对应数据整列必须替换为服务器统一号码`)
+    assert.ok(!isolatedHeaderText.includes(privateValue), `飞书表头 ${header} 对应数据不得残留原始联系方式 ${privateValue}`)
+  })
+
+  const allowedAdjacentPrivateSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '统一号码与私号相邻独立测试',
+    rows: [['统一19900000001 私号18700001111']]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const allowedAdjacentPrivateText = JSON.stringify(allowedAdjacentPrivateSnapshot)
+  assert.ok(allowedAdjacentPrivateText.includes('19900000001'), '飞书单元中统一号码与私号相邻时必须保留统一号码')
+  assert.ok(!allowedAdjacentPrivateText.includes('18700001111'), '飞书单元中统一号码与私号相邻时必须删除私号')
+  assert.ok(!/YNZYALLOWED|[\uE000-\uF8FF]/u.test(allowedAdjacentPrivateText), '飞书公开快照不得残留内部号码保护哨兵或私用区字符')
+
+  const positiveNumericSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '公司合法数字公开规则独立测试',
+    rows: [
+      ['区域', '小区', '房号', '看房方式密码', '备注'],
+      ['拱墅区', '测试小区', '9-8-701', '88888888', `${VALID_DATE_COPY} ${COMPANY_ROAD_ADDRESS} 联系电话18800007777 ${PLACEHOLDER_LITERAL}`]
+    ]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  const positiveNumericText = JSON.stringify(positiveNumericSnapshot)
+  assert.ok(positiveNumericText.includes(VALID_DATE_COPY), '飞书快照必须原样保留合法日期与 ISO 时间')
+  assert.ok(positiveNumericText.includes(COMPANY_ROAD_ADDRESS), '飞书快照必须原样保留缺少单元房号的道路门牌')
+  assert.ok(positiveNumericText.includes('88888888'), '飞书快照必须原样保留公司 8 位门锁密码')
+  assert.ok(positiveNumericText.includes(PLACEHOLDER_LITERAL), '飞书原文碰巧等于配置号码哨兵字面量时必须原样保留')
+  assert.ok(!positiveNumericText.includes('18800007777'), '合法道路门牌同一备注字段中的私号仍必须删除')
+
+  const structuralPhoneSnapshot = feishuSync.sanitizeSheetSnapshot({
+    title: '地址结构不得白洗私号',
+    rows: [['安全板块 18800007777栋1单元101室']]
+  }, {
+    contactPhones: ['19900000001', '19900000002', '19900000003']
+  })
+  assert.ok(!JSON.stringify(structuralPhoneSnapshot).replace(/\D/g, '').includes('18800007777'), '飞书地址结构不得把 11 位私号误当合法楼栋而白洗')
+
+  LEGAL_PUBLIC_NUMERIC_VALUES.forEach((value, index) => {
+    const isolatedLegalSnapshot = feishuSync.sanitizeSheetSnapshot({
+      title: `合法业务数字独立测试 ${index + 1}`,
+      rows: [[value]]
+    }, {
+      contactPhones: ['19900000001', '19900000002', '19900000003']
+    })
+    const isolatedLegalSnapshotText = JSON.stringify(isolatedLegalSnapshot)
+    assert.ok(isolatedLegalSnapshotText.includes(value), `飞书快照必须逐值原样保留合法业务数字：${value}`)
+  })
 
   const parsedWholeRent = feishuSync.normalizeRecord(row({
     区域: '闸弄口',

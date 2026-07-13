@@ -211,6 +211,43 @@ function assertIsolatedUploadPolicy(response, injectedKey, expectedPrefix, label
     !conditions.some((condition) => Array.isArray(condition) && condition[0] === 'starts-with' && condition[1] === '$key'),
     `${label} policy 不得允许客户端把 key 改成同目录任意已有对象`
   )
+  if (label.includes('视频')) {
+    assert.ok(/^v1\.\d{10}\.[A-Za-z0-9_-]{43}$/.test(String(policyResult.uploadTicket || '')), '视频策略必须返回绑定用户、对象键和过期时间的服务端上传票据')
+    const legacyUrl = new URL(String(policyResult.fileUrl || ''))
+    assert.strictEqual(legacyUrl.searchParams.get('ynzyUploadTicket'), policyResult.uploadTicket, '视频策略必须把同一短期票据嵌入旧客户端会回传的 fileUrl')
+    assert.ok(legacyUrl.pathname.endsWith(`/${policyResult.objectKey}`), '兼容票据不得改变服务端生成的对象路径')
+  }
+}
+
+function listingPayload(media, roomNumber) {
+  return {
+    city: '杭州',
+    district: '上城区',
+    area: '上城区',
+    block: '闸弄口',
+    community: '京漾东韵府',
+    communityName: '京漾东韵府',
+    building: '9幢',
+    unit: '8单元',
+    roomNumber,
+    address: `杭州市上城区京漾东韵府9幢8单元${roomNumber}室`,
+    rent: 2800,
+    rentMode: '整租',
+    type: '整租',
+    layout: '整租一室一厅一卫',
+    room: '一室',
+    hall: '一厅',
+    bath: '一卫',
+    landlordPhone: '19900001111',
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    viewingMethod: '联系房东',
+    features: ['无'],
+    landlordCommissionPercent: 50,
+    videoUrl: media.fileUrl,
+    videoKey: media.objectKey,
+    videoUploadTicket: media.uploadTicket
+  }
 }
 
 async function run() {
@@ -245,8 +282,10 @@ async function run() {
     const loginStartedAt = Date.now()
     const brokerA = await login('13900000201', brokerPassword)
     const brokerB = await login('13900000201', brokerPassword)
+    const victimLogin = await login('13900000202', victimPassword)
     assert.strictEqual(brokerA.statusCode, 200)
     assert.strictEqual(brokerB.statusCode, 200)
+    assert.strictEqual(victimLogin.statusCode, 200)
     assertThirtyDays(dataOf(brokerA).tokenExpiresAt, loginStartedAt, '登录 token')
     const loginPayload = tokenPayload(dataOf(brokerA).token)
     assert.deepStrictEqual(Object.keys(loginPayload).sort(), ['exp', 'tokenVersion', 'userId'])
@@ -258,6 +297,7 @@ async function run() {
       ['/mini/uploads/group-screenshot-policy', 'group-screenshots/known-victim.jpg', 'group-screenshots', '群截图上传'],
       ['/mini/uploads/showing-photo-policy', 'showing-photos/known-victim.jpg', 'showing-photos', '带看照片上传']
     ]
+    let videoPolicyResult = null
     for (const [endpoint, injectedKey, prefix, label] of policyCases) {
       const policyResponse = await request('POST', endpoint, {
         objectKey: injectedKey,
@@ -266,7 +306,42 @@ async function run() {
         size: 1024
       }, auth(dataOf(brokerA).token))
       assertIsolatedUploadPolicy(policyResponse, injectedKey, prefix, label)
+      if (label.includes('视频')) videoPolicyResult = dataOf(policyResponse)
     }
+
+    const injectedListing = await request('POST', '/mini/listings', listingPayload({
+      fileUrl: 'https://synthetic-test-bucket.example.test/house-videos/known-victim.mp4',
+      objectKey: 'house-videos/known-victim.mp4',
+      uploadTicket: ''
+    }, '701'), auth(dataOf(brokerA).token))
+    assert.strictEqual(injectedListing.statusCode, 400, '客户端不得绕过上传策略直接绑定已知视频对象键')
+
+    const swappedKeyListing = await request('POST', '/mini/listings', listingPayload({
+      ...videoPolicyResult,
+      objectKey: 'house-videos/other-known-object.mp4',
+      fileUrl: 'https://synthetic-test-bucket.example.test/house-videos/other-known-object.mp4'
+    }, '702'), auth(dataOf(brokerA).token))
+    assert.strictEqual(swappedKeyListing.statusCode, 400, '视频上传票据不得跨对象键重放')
+
+    const legacyPayload = listingPayload(videoPolicyResult, '703')
+    delete legacyPayload.videoUploadTicket
+    const wrongUserLegacyListing = await request('POST', '/mini/listings', legacyPayload, auth(dataOf(victimLogin).token))
+    assert.strictEqual(wrongUserLegacyListing.statusCode, 400, '旧客户端 fileUrl 内的证明不得跨登录账号重放')
+    const legacyListing = await request('POST', '/mini/listings', legacyPayload, auth(dataOf(brokerA).token))
+    assert.strictEqual(legacyListing.statusCode, 200, `已申请本账号视频策略的旧客户端必须仍能提交房源：${JSON.stringify(legacyListing.body)}`)
+    assert.strictEqual(dataOf(legacyListing).videoKey, videoPolicyResult.objectKey, '旧客户端兼容证明只能落库其绑定的服务端对象键')
+    assert.ok(!String(dataOf(legacyListing).videoUrl || '').includes('ynzyUploadTicket'), '短期上传证明不得持久化或进入房源响应')
+
+    const newPolicyResponse = await request('POST', '/mini/uploads/video-policy', {
+      fileName: 'synthetic-new-client.mp4',
+      mimeType: 'video/mp4',
+      size: 1024
+    }, auth(dataOf(brokerA).token))
+    assertIsolatedUploadPolicy(newPolicyResponse, 'house-videos/known-victim.mp4', 'house-videos', '视频上传（新客户端）')
+    const newPolicyResult = dataOf(newPolicyResponse)
+    const policyListing = await request('POST', '/mini/listings', listingPayload(newPolicyResult, '704'), auth(dataOf(brokerA).token))
+    assert.strictEqual(policyListing.statusCode, 200, `同一登录用户必须能用服务端视频策略票据提交房源：${JSON.stringify(policyListing.body)}`)
+    assert.strictEqual(dataOf(policyListing).videoKey, newPolicyResult.objectKey, '合法票据只能落库其绑定的服务端对象键')
 
     const wrongLogin = await login('13900000201', 'wrong-password-value')
     assert.strictEqual(wrongLogin.statusCode, 403)

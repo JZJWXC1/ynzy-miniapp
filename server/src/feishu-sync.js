@@ -772,15 +772,545 @@ function trimSheetValues(values = []) {
   }
 }
 
-function sanitizeSheetSnapshot(snapshot = {}) {
-  const rows = normalizeSnapshotRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
-  return {
-    ...snapshot,
-    rows,
-    rowCount: rows.length,
-    columnCount: rows[0] ? rows[0].length : 0,
-    sensitiveStripped: false
+function normalizedSnapshotContactPhones(options = {}) {
+  const configured = Object.prototype.hasOwnProperty.call(options, 'contactPhones')
+    ? options.contactPhones
+    : (config.company && config.company.contactPhones)
+  const values = Array.isArray(configured) ? configured : String(configured || '').split(',')
+  return Array.from(new Set(values
+    .map((item) => normalizeText(item))
+    .filter((item) => /^1[3-9]\d{9}$/.test(item))))
+}
+
+function snapshotContactColumnIndexes(header = []) {
+  const aliases = new Set(CONTACT_FIELD_ALIASES
+    .concat(['微信', '微信号', '联系微信', '联系人微信', 'wechat', 'weChatId', 'wx', 'vx'])
+    .map((item) => contactAddressProjection(item).skeleton.replace(/\u0001/g, '').toLowerCase()))
+  return new Set(header.reduce((indexes, value, index) => {
+    const normalized = contactAddressProjection(value).skeleton.replace(/\u0001/g, '').toLowerCase()
+    if (aliases.has(normalized) || /(?:微信|微号|联系|聯繫|聯絡|电话|電話|手机|手機|座机|座機|房东微信|房東微信|wechat|weixin|wx|vx)/i.test(normalized)) indexes.push(index)
+    return indexes
+  }, []))
+}
+
+function snapshotAccessColumnIndexes(header = []) {
+  return new Set(header.reduce((indexes, value, index) => {
+    const normalized = contactAddressProjection(value).skeleton.replace(/\u0001/g, '').toLowerCase()
+    if (/(?:看房|开门|門鎖|门锁|门禁|門禁|password).*(?:密码|密碼|码|碼)?|(?:密码|密碼)/i.test(normalized)) indexes.push(index)
+    return indexes
+  }, []))
+}
+
+function contactDigitValue(character) {
+  const normalized = String(character || '').normalize('NFKC')
+  if (/^[0-9]$/.test(normalized)) return normalized
+  const map = {
+    '零': '0', '〇': '0', '○': '0',
+    '一': '1', '壹': '1', '幺': '1',
+    '二': '2', '两': '2', '兩': '2', '贰': '2', '貳': '2',
+    '三': '3', '叁': '3', '參': '3', '四': '4', '肆': '4',
+    '五': '5', '伍': '5', '六': '6', '陆': '6', '陸': '6',
+    '七': '7', '柒': '7', '八': '8', '捌': '8', '九': '9', '玖': '9'
   }
+  if (Object.prototype.hasOwnProperty.call(map, character)) return map[character]
+  const codePoint = String(character || '').codePointAt(0)
+  const decimalBases = [
+    0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66,
+    0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20,
+    0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
+    0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0,
+    0xA9F0, 0xAA50, 0xABF0, 0x104A0, 0x10D30, 0x10D40, 0x11066, 0x110F0,
+    0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0,
+    0x116D0, 0x116DA, 0x11730, 0x118E0, 0x11950, 0x11BF0, 0x11C50,
+    0x11D50, 0x11DA0, 0x11DE0, 0x11F50, 0x16130, 0x16A60, 0x16AC0,
+    0x16B50, 0x16D70, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E5F1, 0x1E950,
+    0x1FBF0
+  ]
+  const base = decimalBases.find((item) => codePoint >= item && codePoint <= item + 9)
+  return base === undefined ? '' : String(codePoint - base)
+}
+
+function contactChineseDigitValue(character) {
+  const map = {
+    '零': '0', '〇': '0', '○': '0', '一': '1', '壹': '1', '幺': '1',
+    '二': '2', '两': '2', '兩': '2', '贰': '2', '貳': '2', '三': '3', '叁': '3', '參': '3',
+    '四': '4', '肆': '4', '五': '5', '伍': '5', '六': '6', '陆': '6', '陸': '6',
+    '七': '7', '柒': '7', '八': '8', '捌': '8', '九': '9', '玖': '9'
+  }
+  return Object.prototype.hasOwnProperty.call(map, character) ? map[character] : ''
+}
+
+function contactInvisibleOrCombiningCodePoint(codePoint) {
+  return codePoint === 0x00AD || (codePoint >= 0x0300 && codePoint <= 0x036F) || codePoint === 0x061C ||
+    (codePoint >= 0x115F && codePoint <= 0x1160) || (codePoint >= 0x17B4 && codePoint <= 0x17B5) ||
+    (codePoint >= 0x180B && codePoint <= 0x180F) || (codePoint >= 0x1AB0 && codePoint <= 0x1AFF) ||
+    (codePoint >= 0x1DC0 && codePoint <= 0x1DFF) || (codePoint >= 0x200B && codePoint <= 0x200F) ||
+    (codePoint >= 0x202A && codePoint <= 0x202E) || (codePoint >= 0x2060 && codePoint <= 0x206F) ||
+    (codePoint >= 0x20D0 && codePoint <= 0x20FF) || codePoint === 0x3164 ||
+    (codePoint >= 0xFE00 && codePoint <= 0xFE0F) || (codePoint >= 0xFE20 && codePoint <= 0xFE2F) ||
+    codePoint === 0xFEFF || codePoint === 0xFFA0 || (codePoint >= 0xFFF0 && codePoint <= 0xFFFB) ||
+    (codePoint >= 0x1BCA0 && codePoint <= 0x1BCA3) || (codePoint >= 0x1D173 && codePoint <= 0x1D17A) ||
+    (codePoint >= 0xE0000 && codePoint <= 0xE0FFF)
+}
+
+function contactSecurityNoise(character) {
+  const codePoint = String(character || '').codePointAt(0)
+  if (contactInvisibleOrCombiningCodePoint(codePoint) || /\s/.test(character)) return true
+  if ((codePoint >= 0x21 && codePoint <= 0x2F) || (codePoint >= 0x3A && codePoint <= 0x40) ||
+    (codePoint >= 0x5B && codePoint <= 0x60) || (codePoint >= 0x7B && codePoint <= 0x7E)) return true
+  return (codePoint >= 0x2000 && codePoint <= 0x2BFF) || (codePoint >= 0x3000 && codePoint <= 0x303F) ||
+    (codePoint >= 0x3200 && codePoint <= 0x33FF) || (codePoint >= 0xFE10 && codePoint <= 0xFE6F) ||
+    (codePoint >= 0x1F000 && codePoint <= 0x1FAFF)
+}
+
+function contactProjectionContext(source) {
+  return {
+    chineseDigitCount: source.reduce((count, item) => (
+      count + (contactChineseDigitValue(item) ? 1 : 0)
+    ), 0)
+  }
+}
+
+function contactProjectedDigit(source, sourceIndex, context) {
+  const character = source[sourceIndex]
+  const digit = contactDigitValue(character)
+  const chineseDigit = contactChineseDigitValue(character)
+  if (digit && !chineseDigit) return digit
+  if (chineseDigit) {
+    const chineseDigitCount = context && Number.isInteger(context.chineseDigitCount)
+      ? context.chineseDigitCount
+      : contactProjectionContext(source).chineseDigitCount
+    return chineseDigitCount >= 7 ? chineseDigit : ''
+  }
+  const normalized = String(character || '').normalize('NFKC')
+  if (normalized !== 'O' && normalized !== 'o') return ''
+  let previousIndex = sourceIndex - 1
+  while (previousIndex >= 0 && contactSecurityNoise(source[previousIndex])) previousIndex -= 1
+  let nextIndex = sourceIndex + 1
+  while (nextIndex < source.length && contactSecurityNoise(source[nextIndex])) nextIndex += 1
+  return previousIndex >= 0 && nextIndex < source.length &&
+    contactDigitValue(source[previousIndex]) && contactDigitValue(source[nextIndex]) ? '0' : ''
+}
+
+function contactSecurityProjection(value) {
+  const source = Array.from(String(value || '').normalize('NFC'))
+    .filter((character) => !contactInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+  const context = contactProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = contactProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    if (character === '㎡') {
+      skeleton += character
+      positions.push(sourceIndex)
+      return
+    }
+    if (contactSecurityNoise(character)) return
+    skeleton += character
+    positions.push(sourceIndex)
+  })
+  return { source, skeleton, positions }
+}
+
+function contactAddressProjection(value) {
+  const source = Array.from(String(value || '').normalize('NFC'))
+    .filter((character) => !contactInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+  const context = contactProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = contactProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    const normalized = character.normalize('NFKC')
+    if (/^[A-Za-z]$/.test(normalized)) {
+      skeleton += normalized.toLowerCase()
+      positions.push(sourceIndex)
+      return
+    }
+    if (!/[\u3400-\u9fff]/u.test(character)) return
+    skeleton += character
+    positions.push(sourceIndex)
+  })
+  return { source, skeleton, positions }
+}
+
+function contactDigitOnlyProjection(value) {
+  const source = Array.from(String(value || '').normalize('NFC'))
+    .filter((character) => !contactInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+  const context = contactProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = contactProjectedDigit(source, sourceIndex, context)
+    if (!digit) return
+    skeleton += digit
+    positions.push(sourceIndex)
+  })
+  return { source, skeleton, positions }
+}
+
+function contactLocalPhoneProjection(value) {
+  const source = Array.from(String(value || '').normalize('NFC'))
+    .filter((character) => !contactInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+  const context = contactProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = contactProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    if (contactSecurityNoise(character)) return
+    if (!skeleton.endsWith('\u0001')) {
+      skeleton += '\u0001'
+      positions.push(sourceIndex)
+    }
+  })
+  return { source, skeleton, positions }
+}
+
+function contactDateProjection(value) {
+  const source = Array.from(String(value || '').normalize('NFC'))
+    .filter((character) => !contactInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+  const context = contactProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = contactProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    const normalized = character.normalize('NFKC')
+    if (/^[-/:.TtZz ]$/.test(normalized)) {
+      skeleton += normalized.toLowerCase()
+      positions.push(sourceIndex)
+      return
+    }
+    if (!skeleton.endsWith('\u0001')) {
+      skeleton += '\u0001'
+      positions.push(sourceIndex)
+    }
+  })
+  return { source, skeleton, positions }
+}
+
+function contactProtectedNumericGroups(value) {
+  const groups = []
+  const addressGroups = []
+  const matchDigitPositions = (targetProjection, match) => {
+    const positions = new Set()
+    for (let index = match.index; index < match.index + match[0].length; index += 1) {
+      if (/\d/.test(targetProjection.skeleton[index] || '')) positions.add(targetProjection.positions[index])
+    }
+    return positions
+  }
+  const addGroup = (targetProjection, match) => {
+    const positions = matchDigitPositions(targetProjection, match)
+    if (positions.size) groups.push(positions)
+  }
+  const securityProjection = contactSecurityProjection(value)
+  const dateProjection = contactDateProjection(value)
+  const addValidDateMatches = (pattern) => {
+    let match
+    while ((match = pattern.exec(dateProjection.skeleton)) !== null) {
+      const year = Number(match[1])
+      const month = Number(match[2])
+      const day = Number(match[3])
+      const hour = match[4] === undefined ? 0 : Number(match[4])
+      const minute = match[5] === undefined ? 0 : Number(match[5])
+      const second = match[6] === undefined ? 0 : Number(match[6])
+      const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0
+      if (year >= 1900 && year <= 2200 && day >= 1 && day <= daysInMonth && hour <= 23 && minute <= 59 && second <= 59) {
+        addGroup(dateProjection, match)
+      }
+    }
+  }
+  addValidDateMatches(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[t ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?z?)?/g)
+  addValidDateMatches(/(?:^|\u0001)(\d{4})(\d{2})(\d{2})(?=$|\u0001)/g)
+  const businessPattern = /(\d{1,3})号板块(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(\d{1,2})室(\d{1,2})厅(\d{1,2})卫(\d{4})年/g
+  let business
+  while ((business = businessPattern.exec(securityProjection.skeleton)) !== null) {
+    const block = Number(business[1])
+    const transit = Number(business[2])
+    const minutes = Number(business[3])
+    const room = Number(business[4])
+    const hall = Number(business[5])
+    const bath = Number(business[6])
+    const year = Number(business[7])
+    if (block <= 999 && transit >= 1 && transit <= 30 && minutes <= 300 &&
+      room >= 1 && room <= 20 && hall >= 1 && hall <= 20 && bath >= 1 && bath <= 20 &&
+      year >= 1900 && year <= 2200) addGroup(securityProjection, business)
+  }
+  const layoutCountValue = (value) => {
+    const text = String(value || '')
+    const chinese = { 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+    return Object.prototype.hasOwnProperty.call(chinese, text) ? chinese[text] : Number(text)
+  }
+  const layoutSequencePattern = /(?:\d{1,5}(?:㎡|m2|平方米)(?:\d{1,2}|[一二两兩三四五六七八九])室(?:(?:\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(?:\d{1,2}|[一二两兩三四五六七八九])卫)?)+/gi
+  let sequence
+  while ((sequence = layoutSequencePattern.exec(securityProjection.skeleton)) !== null) {
+    const tokenPattern = /(\d{1,5})(?:㎡|m2|平方米)(\d{1,2}|[一二两兩三四五六七八九])室(?:(\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(\d{1,2}|[一二两兩三四五六七八九])卫)?/gi
+    let token
+    let cursor = 0
+    let valid = true
+    while ((token = tokenPattern.exec(sequence[0])) !== null) {
+      if (token.index !== cursor) {
+        valid = false
+        break
+      }
+      cursor = token.index + token[0].length
+      const area = Number(token[1])
+      const room = layoutCountValue(token[2])
+      const hall = token[3] ? layoutCountValue(token[3]) : 0
+      const bath = token[4] ? layoutCountValue(token[4]) : 0
+      if (!(area > 0 && area <= 10000 && room >= 1 && room <= 20 && hall <= 20 && bath <= 20)) {
+        valid = false
+        break
+      }
+    }
+    if (valid && cursor === sequence[0].length) addGroup(securityProjection, sequence)
+  }
+  const transitPattern = /(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(?:到|至)?(\d{1,4})路(?:公交|公交站|车)/g
+  let transitMatch
+  while ((transitMatch = transitPattern.exec(securityProjection.skeleton)) !== null) {
+    if (Number(transitMatch[1]) >= 1 && Number(transitMatch[1]) <= 30 && Number(transitMatch[2]) <= 300 && Number(transitMatch[3]) <= 9999) {
+      addGroup(securityProjection, transitMatch)
+    }
+  }
+  // 只把经过整段语义校验的日期、面积户型、板块/地铁组合加入保护组。
+  // 单独保护每个“18㎡”“700公里”等片段会允许攻击者把一串合法单位拼成
+  // 11 位手机号后完整穿透；这与前台公共投影的 fail-closed 规则不一致。
+  const addressProjection = contactAddressProjection(value)
+  ;[
+    /(?:第)?\d{1,4}(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g,
+    /\d{3,4}(?:室|房|号房|號房|户|戶|门|門)/g,
+    /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)\d{1,4}/gi,
+    /(?:路|街|巷|弄|道)\d{1,4}(?:号|號)/g,
+    /(?:room|apartment|apt|unit|building|bldg|house|door|suite|no)\d{1,4}(?!\d)/gi
+  ].forEach((pattern) => {
+    let match
+    while ((match = pattern.exec(addressProjection.skeleton)) !== null) {
+      const positions = matchDigitPositions(addressProjection, match)
+      if (positions.size) addressGroups.push(positions)
+    }
+  })
+  return { groups, addressGroups }
+}
+
+function replaceUnconfiguredMobileNumbers(value, replacement, allowedPhones, options = {}) {
+  if (typeof value !== 'string') return value
+  if (options.kind === 'access' && /^\d{7,8}[#*]?$/.test(value.trim())) return value
+  // 电话形状只依赖数字序列，不枚举分隔符；任意 Unicode 标点、字母、emoji 或
+  // 私用区字符都不能把 3-4-4 手机号或座机拆开后绕过快照脱敏。
+  const safeAllowedPhones = allowedPhones instanceof Set ? allowedPhones : new Set()
+  const protectedPhones = []
+  let candidate = value.normalize('NFC')
+  Array.from(safeAllowedPhones).forEach((phone, index) => {
+    let token = `\uE000${String.fromCodePoint(0xE100 + index)}\uE001`
+    while (candidate.includes(token)) token += '\uE002'
+    candidate = candidate.replace(new RegExp(`(^|\\D)${phone}(?!\\d)`, 'g'), (matched, prefix) => `${prefix}${token}`)
+    protectedPhones.push({ token, phone })
+  })
+  const restoreProtectedPhones = (text) => {
+    let restored = text
+    protectedPhones.forEach(({ token, phone }) => {
+      restored = restored.split(token).join(phone)
+    })
+    return restored
+  }
+  const sanitizeSegment = (unprotectedCandidate) => {
+    const projection = contactDigitOnlyProjection(unprotectedCandidate)
+    const localPhoneProjection = contactLocalPhoneProjection(unprotectedCandidate)
+    const protectedNumeric = contactProtectedNumericGroups(unprotectedCandidate)
+    const contactProjection = contactAddressProjection(unprotectedCandidate)
+    const securityProjection = contactSecurityProjection(unprotectedCandidate)
+  const patterns = [
+    { projection, pattern: /(?:86)?1[3-9]\d{9}/g, numericContact: true, overlap: true },
+    { projection, pattern: /0\d{9,11}/g, numericContact: true, overlap: true },
+    { projection, pattern: /(?:400|800)\d{7}/g, numericContact: true, overlap: true },
+    { projection: localPhoneProjection, pattern: /\d{7,8}/g, numericContact: true, protectAddress: true },
+    {
+      projection: contactProjection,
+      pattern: /(?:(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|联络|聯絡|联系|聯繫)|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel))[^\d]{0,12}\d(?:[^\d]{0,8}\d){4,7}/gi,
+      preserveEnglishBoundary: true
+    },
+    {
+      projection: contactProjection,
+      pattern: /(?:微(?:[\u3400-\u9fff]{0,4})?信号?|微号|(?:^|[^a-z])(?:weixin|wechat|wx|vx)|v信)([a-z][a-z0-9]{3,31})/gi,
+      contactIdentifier: true,
+      preserveEnglishBoundary: true
+    },
+    {
+      projection: contactProjection,
+      pattern: /(?:(?:联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东微信|房東微信|微信号?|微号)|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel))([a-z][a-z0-9]{3,31})/gi,
+      contactIdentifier: true,
+      preserveEnglishBoundary: true
+    }
+  ]
+  const spans = []
+  const numericRemovePositions = new Set()
+  patterns.forEach(({ projection: targetProjection, pattern, overlap, contactIdentifier, numericContact, protectAddress, preserveEnglishBoundary }) => {
+    let match
+    while ((match = pattern.exec(targetProjection.skeleton)) !== null) {
+      let start = targetProjection.positions[match.index]
+      if (preserveEnglishBoundary && /^[^a-z]/i.test(match[0][0] || '') &&
+        /^(?:telephone|phone|mobile|contact|call|tel|weixin|wechat|wx|vx)/i.test(match[0].slice(1))) {
+        start = targetProjection.positions[match.index + 1]
+      }
+      const originalMatchEndIndex = match.index + match[0].length - 1
+      let matchEndIndex = originalMatchEndIndex
+      if (contactIdentifier && match[1]) {
+        const identifierStartIndex = match.index + match[0].lastIndexOf(match[1])
+        for (let index = identifierStartIndex + 1; index <= originalMatchEndIndex; index += 1) {
+          const previousSourcePosition = targetProjection.positions[index - 1]
+          const currentSourcePosition = targetProjection.positions[index]
+          const sourceGap = targetProjection.source.slice(previousSourcePosition + 1, currentSourcePosition).join('')
+          if (!/\s/u.test(sourceGap) || /^[a-z]$/i.test(targetProjection.skeleton[index] || '')) continue
+          matchEndIndex = index - 1
+          break
+        }
+        if (matchEndIndex < originalMatchEndIndex) pattern.lastIndex = matchEndIndex + 1
+      }
+      const end = targetProjection.positions[matchEndIndex]
+      if (numericContact) {
+        const numericPositions = targetProjection.positions.slice(match.index, matchEndIndex + 1)
+        const containedByOneGroup = protectedNumeric.groups.some((group) => numericPositions.every((position) => group.has(position)))
+        const containedByOneAddress = protectedNumeric.addressGroups.some((group) => numericPositions.every((position) => group.has(position)))
+        if (containedByOneGroup || containedByOneAddress) {
+          if (overlap) pattern.lastIndex = match.index + 1
+          continue
+        }
+        const belongsToGroup = (position) => protectedNumeric.groups.some((group) => group.has(position))
+        const belongsToAddress = (position) => protectedNumeric.addressGroups.some((group) => group.has(position))
+        const removablePositions = numericPositions.filter((position) => (
+          !belongsToGroup(position) && !belongsToAddress(position)
+        ))
+        if (!removablePositions.length) {
+          if (overlap) pattern.lastIndex = match.index + 1
+          continue
+        }
+        removablePositions.forEach((position) => numericRemovePositions.add(position))
+        if (overlap) pattern.lastIndex = match.index + 1
+        continue
+      }
+      if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start, end })
+      if (overlap) pattern.lastIndex = match.index + 1
+    }
+  })
+  if (!spans.length && !numericRemovePositions.size) return securityProjection.source.join('')
+  spans.sort((left, right) => left.start - right.start || left.end - right.end)
+  const merged = []
+  spans.forEach((span) => {
+    const previous = merged[merged.length - 1]
+    if (previous && span.start <= previous.end + 1) previous.end = Math.max(previous.end, span.end)
+    else merged.push({ ...span })
+  })
+  let spanIndex = 0
+  let result = ''
+  let replacementInserted = false
+  securityProjection.source.forEach((character, index) => {
+    const span = merged[spanIndex]
+    if (span && index >= span.start && index <= span.end) {
+      if (index === span.start && !replacementInserted) {
+        result += replacement
+        replacementInserted = true
+      }
+      if (index === span.end) spanIndex += 1
+      return
+    }
+    if (numericRemovePositions.has(index)) {
+      if (!replacementInserted) {
+        result += replacement
+        replacementInserted = true
+      }
+      return
+    }
+    result += character
+  })
+    return result
+  }
+  if (!protectedPhones.length) return sanitizeSegment(candidate)
+  const tokenLookup = new Set(protectedPhones.map((entry) => entry.token))
+  const tokenPattern = new RegExp(`(${protectedPhones.map((entry) => (
+    entry.token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  )).join('|')})`, 'g')
+  const sanitized = candidate.split(tokenPattern).map((segment) => (
+    tokenLookup.has(segment) ? segment : sanitizeSegment(segment)
+  )).join('')
+  return restoreProtectedPhones(sanitized)
+}
+
+function replaceUnconfiguredContactValues(value, replacement, allowedPhones, options = {}) {
+  if (typeof value !== 'string') return value
+  let sanitized = replaceUnconfiguredMobileNumbers(value, replacement, allowedPhones, options)
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, (matched, prefix) => `${prefix}联系方式：${replacement}`)
+  sanitized = sanitized.replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, `联系方式：${replacement}`)
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])p[^A-Za-z0-9_\u3400-\u9fff]{1,4}h[^A-Za-z0-9_\u3400-\u9fff]{1,4}o[^A-Za-z0-9_\u3400-\u9fff]{1,4}n[^A-Za-z0-9_\u3400-\u9fff]{1,4}e[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:w[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|v[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|we[^A-Za-z0-9_\u3400-\u9fff]{1,4}chat|wei[^A-Za-z0-9_\u3400-\u9fff]{1,4}xin)[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+  sanitized = sanitized.replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]{0,4}信(?:\s*号)?|微\s*号|v\s*信)[^A-Za-z0-9_\u3400-\u9fff]{0,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, ' ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+  sanitized = sanitized.replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, ' ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b(?:\s*[:：号])?/gi, '$1 ')
+  sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)(?:\s*[:：号])?/gi, '$1 ')
+  return sanitized
+}
+
+function publicSnapshotDateTime(value) {
+  const text = normalizeText(value)
+  let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z?)?$/)
+  if (!match) match = text.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (!match) return ''
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = match[4] === undefined ? 0 : Number(match[4])
+  const minute = match[5] === undefined ? 0 : Number(match[5])
+  const second = match[6] === undefined ? 0 : Number(match[6])
+  if (year < 1900 || year > 2200 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return ''
+  if (day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return ''
+  return text
+}
+
+function sanitizeSheetSnapshot(snapshot = {}, options = {}) {
+  const rows = normalizeSnapshotRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
+  const contactPhones = normalizedSnapshotContactPhones(options)
+  const contactText = contactPhones.join(' / ')
+  const allowedPhones = new Set(contactPhones)
+  let headerIndex = rows.findIndex(isSheetHeaderRow)
+  if (headerIndex < 0) headerIndex = rows.findIndex((row) => snapshotContactColumnIndexes(row).size > 0)
+  const contactColumns = snapshotContactColumnIndexes(headerIndex >= 0 ? rows[headerIndex] : [])
+  const accessColumns = snapshotAccessColumnIndexes(headerIndex >= 0 ? rows[headerIndex] : [])
+  const sanitizedRows = rows.map((row, rowIndex) => row.map((value, columnIndex) => {
+    if (headerIndex >= 0 && rowIndex > headerIndex && contactColumns.has(columnIndex)) return contactText
+    return replaceUnconfiguredContactValues(value, contactText, allowedPhones, {
+      kind: headerIndex >= 0 && rowIndex > headerIndex && accessColumns.has(columnIndex) ? 'access' : 'generic'
+    })
+  }))
+  const result = {
+    title: replaceUnconfiguredContactValues(normalizeText(snapshot.title), contactText, allowedPhones),
+    updatedAt: publicSnapshotDateTime(snapshot.updatedAt),
+    rows: sanitizedRows,
+    rowCount: sanitizedRows.length,
+    columnCount: sanitizedRows[0] ? sanitizedRows[0].length : 0,
+    sensitiveStripped: true
+  }
+  if (snapshot.unavailable === true) result.unavailable = true
+  return result
 }
 
 async function sheetSnapshot(options = {}) {

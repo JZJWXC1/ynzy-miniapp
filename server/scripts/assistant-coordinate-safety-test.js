@@ -1,5 +1,6 @@
 const assert = require('assert')
 const assistantService = require('../src/assistant-service')
+const matchService = require('../src/match-service')
 
 const now = new Date().toLocaleString('zh-CN', { hour12: false })
 
@@ -101,6 +102,23 @@ async function chat(db, text) {
 }
 
 async function main() {
+  const candidateDb = makeDb()
+  candidateDb.listings[0].recommendationProfile = {
+    ready: true,
+    qualityScore: 88,
+    freshnessScore: 91,
+    coordinateQuality: 'contact privateid 19900007777'
+  }
+  const publicCandidates = matchService._internal.candidateListings(candidateDb)
+  const publicGood = publicCandidates.find((item) => item.id === 'GOOD01')
+  assert.strictEqual(publicGood.mapLatitude, 30.32, '助手合作候选只能注入公开降精度纬度，不能复用逐套坐标')
+  assert.strictEqual(publicGood.mapLongitude, 120.17, '助手合作候选只能注入公开降精度经度，不能复用逐套坐标')
+  assert.notStrictEqual(publicGood.coordinateSource, 'manual-confirmed-test-coordinate', '助手合作候选不得携带逐套可信坐标来源')
+  assert.strictEqual(publicGood.coordinateQuality, 'unverified', '助手坐标质量必须从公共坐标重新计算，不能信任存量 profile 文本')
+  assert.ok(!JSON.stringify(publicCandidates).includes('privateid') && !JSON.stringify(publicCandidates).includes('19900007777'), '助手候选不得夹带 recommendationProfile 私号')
+  const promptSafe = matchService.safeListingsForPrompt([{ ...publicGood, coordinateQuality: 'contact privateid 19900007777' }])
+  assert.strictEqual(promptSafe[0].coordinateQuality, 'missing', 'LLM 提示词白名单还必须二次枚举 coordinateQuality')
+
   assistantService._internal.threadStore._internal.resetForTest()
   const badAnchor = await chat(makeDb(), '默认中心大厦附近2000左右的单间')
   assert.strictEqual(badAnchor.placeResolution.status, 'missing', '坏来源地点不能作为半径锚点')

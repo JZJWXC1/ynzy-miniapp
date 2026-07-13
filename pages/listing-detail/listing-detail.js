@@ -24,6 +24,11 @@ function isAlbumAuthError(error) {
   return /auth|authorize|permission|deny|denied|scope\.writePhotosAlbum/i.test(message)
 }
 
+function isUserCancelError(error) {
+  const message = String((error && (error.errMsg || error.message)) || '')
+  return /cancel|canceled|cancelled/i.test(message)
+}
+
 function isAuthError(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403)
 }
@@ -143,7 +148,8 @@ Page({
     sensitiveSubmitting: false,
     canShareVideo: false,
     shareVideoBusy: false,
-    shareStateText: '登录中介账号后，可把原视频文件发送给租客。',
+    saveVideoBusy: false,
+    shareStateText: '原视频可直接播放、转发或保存，不包含具体地址和房东联系方式。',
     shareBrokerName: '',
     needId: '',
     needTemporary: false,
@@ -156,6 +162,7 @@ Page({
 
   onLoad(options) {
     this._pageActive = true
+    this.bindAuthInvalidationListener()
     this.hideNativeShareMenu()
     const id = options.id;
     const needId = decodeOption(options.needId)
@@ -180,28 +187,46 @@ Page({
       this.authTokenSnapshot = nextToken
       return
     }
-    if (nextToken !== this.authTokenSnapshot) {
-      // 换号后先以新 token 重新读取可信 profile；禁止用旧 currentUserId 队列配新 token 补发，避免串账号归属。
-      this.authTokenSnapshot = nextToken
-      this.invalidateDetailOperations()
-      if (wx.hideLoading) wx.hideLoading()
-      this.setData({
-        needId: '',
-        needTemporary: false,
-        showingSubmitting: false,
-        showingPhotoPath: '',
-        shareVideoBusy: false,
-        phoneCallBusy: false,
-        shareStateText: '正在按当前账号重新读取房源'
-      })
-      if (this.listingId) this.loadListing(this.listingId)
-      return
-    }
+    if (this.reloadForAuthSessionChange(nextToken)) return
     if (this.data.currentUserId) this.flushPhoneFootprints(this.data.currentUserId)
+  },
+
+  reloadForAuthSessionChange(nextSessionKey) {
+    const nextKey = String(nextSessionKey || '')
+    if (nextKey === String(this.authTokenSnapshot || '')) return false
+    // 换号或过期 token 被静默撤销后，立即清除旧账号敏感数据并重新读取公共详情；
+    // 不能等下一次 onShow，否则地址、电话和足迹会残留在当前游客页面。
+    this.authTokenSnapshot = nextKey
+    this.invalidateDetailOperations()
+    if (wx.hideLoading) wx.hideLoading()
+    this.setData({
+      listing: {},
+      logs: [],
+      currentUserId: '',
+      isVerified: false,
+      isOwnListing: false,
+      sensitiveVisible: false,
+      sensitiveConfirmVisible: false,
+      sensitiveSubmitting: false,
+      needId: '',
+      needTemporary: false,
+      showingSubmitting: false,
+      showingPhotoPath: '',
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      phoneCallBusy: false,
+      shareStateText: '正在按当前账号重新读取房源'
+    })
+    if (this.listingId) this.loadListing(this.listingId)
+    return true
   },
 
   onUnload() {
     this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
     this.invalidateDetailOperations()
     if (wx.hideLoading) wx.hideLoading()
     // 整份详情（含服务端内嵌 nearby）共用同一代次；卸载后任何迟到响应都不得再写页面。
@@ -238,6 +263,26 @@ Page({
       safeText(listing.id) === operation.listingId
   },
 
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      const fromSessionKey = String(event && event.fromSessionKey || '')
+      if (!fromSessionKey || fromSessionKey !== String(this.authTokenSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      this.reloadForAuthSessionChange(nextSessionKey)
+    })
+  },
+
+  isDetailOperationSequenceCurrent(operation) {
+    if (!operation || this._pageActive === false) return false
+    const listing = this.data.listing || {}
+    return this[operation.sequenceField] === operation.sequence &&
+      Number(this.listingLoadGeneration || 0) === operation.listingGeneration &&
+      safeText(listing.id) === operation.listingId
+  },
+
   hideNativeShareMenu() {
     if (!wx.hideShareMenu) return
     wx.hideShareMenu({
@@ -247,6 +292,10 @@ Page({
 
   loadListing(id) {
     this.listingId = id
+    this.invalidateDetailOperations()
+    this._videoPlaybackRefreshCount = 0
+    this._mediaRefreshPromise = null
+    if (wx.hideLoading) wx.hideLoading()
     const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
     const requestSessionKey = currentAuthSessionKey()
     const requestHasLogin = Boolean(currentAuthToken())
@@ -256,6 +305,13 @@ Page({
     const isCurrentRequest = () => (
       this.listingLoadGeneration === requestGeneration && currentAuthSessionKey() === requestSessionKey
     )
+    const recoverPublicReadAfterAuthFallback = () => {
+      if (this.listingLoadGeneration !== requestGeneration || currentAuthSessionKey() === requestSessionKey) return false
+      const shouldRecover = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+        apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+      if (shouldRecover) this.reloadForAuthSessionChange(currentAuthSessionKey())
+      return shouldRecover
+    }
     this.setData({
       listing: {},
       unavailableListing: {},
@@ -272,7 +328,12 @@ Page({
       sensitiveSubmitting: false,
       sensitivePlaceholder: '完成确认后可查看',
       ownSensitiveLoading: false,
-      ownSensitiveLoadFailed: false
+      ownSensitiveLoadFailed: false,
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      showingSubmitting: false,
+      showingPhotoPath: '',
+      phoneCallBusy: false
     })
     return Promise.all([
       apiService.getListingDetail(id),
@@ -288,6 +349,7 @@ Page({
         : Promise.resolve({ profile: { user: {} } })
     ]).then(([listing, logs, profileState]) => {
       // 同页重载或换号后，较早请求即使更晚返回也不得覆盖新账号状态或触发旧账号队列补发。
+      if (recoverPublicReadAfterAuthFallback()) return
       if (!isCurrentRequest()) return
       if (listing && listing.unavailable) {
         this.setData({
@@ -320,7 +382,7 @@ Page({
         user.authed === '手机号登录' ||
         String(user.role || '').indexOf('中介') !== -1
       )
-      const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
+      const canShareVideo = Boolean(listing && listing.videoUrl)
       const companyListing = Boolean(listing && listing.companyListing)
       const ownListing = Boolean(listing && listing.ownListing)
       const nearby = listing && listing.nearby && typeof listing.nearby === 'object' ? listing.nearby : {}
@@ -354,8 +416,8 @@ Page({
         currentUserId: user.id || '',
         phoneCallBusy: false,
         shareStateText: canShareVideo
-          ? '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
-          : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
+          ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+          : '这套房源暂无可转发视频。'
       });
       if (user.id) this.flushPhoneFootprints(user.id)
       // 上传人自查自己上传的房源：直接拉取地址/房东电话填充，后端免留痕且不耗额度。
@@ -363,21 +425,21 @@ Page({
         this.loadOwnSensitive(listing.id, { requestGeneration, requestSessionKey })
       }
     }).catch((error) => {
+      if (recoverPublicReadAfterAuthFallback()) return
       if (!isCurrentRequest()) return
       if (isAuthError(error)) {
+        wx.showToast({ title: '房源加载失败，请重试', icon: 'none' })
         this.setData({
           listing: {},
           unavailableListing: {},
           listingLoading: false,
-          listingLoadFailed: false,
-          listingAccessRequired: true,
+          listingLoadFailed: true,
+          listingLoadErrorText: '公开房源暂时读取失败，请重新加载。具体地址和房东联系方式仍需登录确认后查看。',
+          listingAccessRequired: false,
           isVerified: false,
           sensitiveVisible: false,
           canShareVideo: false
         })
-        if (Number(error.statusCode) === 403) {
-          this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
-        }
         return
       }
       if (Number(error && error.statusCode) === 404) {
@@ -465,7 +527,57 @@ Page({
     })
   },
 
-  downloadShareVideo(videoUrl) {
+  refreshListingMedia() {
+    const listing = this.data.listing || {}
+    const listingId = safeText(listing.id || this.listingId)
+    if (!listingId) return Promise.reject(new Error('房源不存在或已下架'))
+    if (this._mediaRefreshPromise) return this._mediaRefreshPromise
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    const isCurrentRequest = () => (
+      this._pageActive !== false &&
+      Number(this.listingLoadGeneration || 0) === requestGeneration &&
+      currentAuthSessionKey() === requestSessionKey &&
+      safeText(this.data.listing && this.data.listing.id) === listingId
+    )
+    const request = apiService.getListingDetail(listingId, { anonymous: true }).then((fresh) => {
+      if (!isCurrentRequest()) {
+        const error = new Error('页面状态已变化，忽略旧媒体地址')
+        error.staleMediaRefresh = true
+        throw error
+      }
+      if (!fresh || fresh.unavailable || !fresh.videoUrl) {
+        const error = new Error('房源视频不存在或已下架')
+        error.statusCode = 404
+        throw error
+      }
+      const merged = Object.assign({}, this.data.listing || {}, {
+        videoUrl: fresh.videoUrl,
+        coverUrl: fresh.coverUrl || (this.data.listing && this.data.listing.coverUrl) || '',
+        hasVideo: true
+      })
+      this.setData({ listing: merged, canShareVideo: true })
+      return merged
+    }).finally(() => {
+      if (this._mediaRefreshPromise === request) this._mediaRefreshPromise = null
+    })
+    this._mediaRefreshPromise = request
+    return request
+  },
+
+  onVideoPlaybackError() {
+    if (Number(this._videoPlaybackRefreshCount || 0) >= 1) return
+    this._videoPlaybackRefreshCount = Number(this._videoPlaybackRefreshCount || 0) + 1
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    this.refreshListingMedia().catch((error) => {
+      if (error && error.staleMediaRefresh) return
+      if (this._pageActive === false || Number(this.listingLoadGeneration || 0) !== requestGeneration || currentAuthSessionKey() !== requestSessionKey) return
+      wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
+    })
+  },
+
+  downloadVideoFileOnce(videoUrl) {
     return new Promise((resolve, reject) => {
       if (!wx.downloadFile) {
         reject(new Error('当前微信版本暂不支持下载视频文件'))
@@ -473,10 +585,12 @@ Page({
       }
       wx.downloadFile({
         url: videoUrl,
-        timeout: 60000,
+        timeout: 300000,
         success: (res) => {
           if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-            reject(new Error(`视频下载失败：${res.statusCode}`))
+            const error = new Error(`视频下载失败：${res.statusCode}`)
+            error.statusCode = Number(res.statusCode)
+            reject(error)
             return
           }
           if (!res.tempFilePath) {
@@ -487,6 +601,13 @@ Page({
         },
         fail: reject
       })
+    })
+  },
+
+  downloadShareVideo(videoUrl) {
+    return this.downloadVideoFileOnce(videoUrl).catch((error) => {
+      if (![401, 403, 404].includes(Number(error && error.statusCode))) throw error
+      return this.refreshListingMedia().then((listing) => this.downloadVideoFileOnce(listing.videoUrl))
     })
   },
 
@@ -533,6 +654,7 @@ Page({
   },
 
   recordVideoFileShare(channel, operation) {
+    if (!currentAuthToken()) return Promise.resolve(null)
     const listing = this.data.listing || {}
     const listingId = operation ? operation.listingId : listing.id
     if (operation && !this.isDetailOperationCurrent(operation)) return Promise.resolve(null)
@@ -541,7 +663,7 @@ Page({
       target: 'tenant',
       sharePath: '',
       shareTitle: '原视频文件'
-    }).then((result) => {
+    }, { silentAuthFailure: true }).then((result) => {
       if ((!operation || this.isDetailOperationCurrent(operation)) && result && result.logs) {
         this.setData({ logs: result.logs })
       }
@@ -549,12 +671,19 @@ Page({
     })
   },
 
+  recordVideoFileShareBestEffort(channel, operation) {
+    return this.recordVideoFileShare(channel, operation).catch((error) => {
+      if (Number(error && error.statusCode) === 401 && operation && currentAuthSessionKey() !== operation.sessionKey) {
+        this.reloadForAuthSessionChange(currentAuthSessionKey())
+      }
+      return null
+    })
+  },
+
   async fallbackSaveVideo(filePath, operation) {
     try {
       if (operation && !this.isDetailOperationCurrent(operation)) return false
       await this.saveVideoForManualShare(filePath)
-      if (operation && !this.isDetailOperationCurrent(operation)) return false
-      await this.recordVideoFileShare('wechat-album-fallback', operation)
       if (operation && !this.isDetailOperationCurrent(operation)) return false
       wx.showModal({
         title: '视频已保存',
@@ -585,7 +714,7 @@ Page({
       wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
       return
     }
-    if (this.data.shareVideoBusy) return
+    if (this.data.shareVideoBusy || this.data.saveVideoBusy) return
     const listing = this.data.listing || {}
     if (!listing.videoUrl) {
       wx.showToast({ title: '这套房源暂无可转发视频', icon: 'none' })
@@ -604,19 +733,19 @@ Page({
       try {
         await this.shareVideoMessage(filePath)
         if (!this.isDetailOperationCurrent(operation)) return
-        await this.recordVideoFileShare('wechat-video', operation)
-        if (!this.isDetailOperationCurrent(operation)) return
-        wx.showToast({ title: '视频已发送', icon: 'none' })
+        this.recordVideoFileShareBestEffort('wechat-video', operation)
+        if (this.isDetailOperationSequenceCurrent(operation)) wx.showToast({ title: '视频已发送', icon: 'none' })
       } catch (videoShareError) {
         if (!this.isDetailOperationCurrent(operation)) return
+        if (isUserCancelError(videoShareError)) return
         try {
           await this.shareVideoFile(filePath)
           if (!this.isDetailOperationCurrent(operation)) return
-          await this.recordVideoFileShare('wechat-file', operation)
-          if (!this.isDetailOperationCurrent(operation)) return
-          wx.showToast({ title: '视频已发送', icon: 'none' })
+          this.recordVideoFileShareBestEffort('wechat-file', operation)
+          if (this.isDetailOperationSequenceCurrent(operation)) wx.showToast({ title: '视频已发送', icon: 'none' })
         } catch (fileShareError) {
           if (!this.isDetailOperationCurrent(operation)) return
+          if (isUserCancelError(fileShareError)) return
           await this.fallbackSaveVideo(filePath, operation)
         }
       }
@@ -628,11 +757,52 @@ Page({
         icon: 'none'
       })
     } finally {
-      if (!this.isDetailOperationCurrent(operation)) return
+      if (!this.isDetailOperationSequenceCurrent(operation)) return
       this.setData({
         shareVideoBusy: false,
-        shareStateText: '只转发原视频文件，不包含地址、房东电话、楼栋单元房号。'
+        shareStateText: '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
       })
+    }
+  },
+
+  async saveListingVideo() {
+    if (this.data.saveVideoBusy || this.data.shareVideoBusy) return
+    const listing = this.data.listing || {}
+    if (!listing.videoUrl) {
+      wx.showToast({ title: '这套房源暂无可保存视频', icon: 'none' })
+      return
+    }
+    const operation = this.beginDetailOperation('save-video')
+    this.setData({ saveVideoBusy: true })
+    wx.showLoading({ title: '保存视频' })
+    try {
+      const filePath = await this.downloadShareVideo(listing.videoUrl)
+      if (!this.isDetailOperationCurrent(operation)) return
+      await this.saveVideoForManualShare(filePath)
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      wx.showToast({ title: '视频已保存到相册', icon: 'none' })
+    } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      if (isAlbumAuthError(error)) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存视频到相册后重试。',
+          cancelText: '取消',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
+        return
+      }
+      wx.showToast({
+        title: error && (error.message || error.errMsg) ? (error.message || error.errMsg) : '视频保存未完成',
+        icon: 'none'
+      })
+    } finally {
+      if (this.isDetailOperationCurrent(operation)) this.setData({ saveVideoBusy: false })
     }
   },
 
@@ -672,7 +842,7 @@ Page({
         ownSensitiveLoading: false,
         ownSensitiveLoadFailed: true
       })
-      wx.showToast({ title: '地址和电话加载失败，请重试', icon: 'none' })
+      wx.showToast({ title: '完整信息加载失败，请重试', icon: 'none' })
     })
   },
 
@@ -706,7 +876,7 @@ Page({
       return
     }
     if (!this.data.sensitiveVisible) {
-      wx.showToast({ title: '请先查看地址和电话', icon: 'none' })
+      wx.showToast({ title: '请先查看详细地址和联系方式', icon: 'none' })
       return
     }
     const phoneNumber = safeText(listing.companyContactPhoneText || listing.landlordPhone)
@@ -754,11 +924,11 @@ Page({
 
   revealSensitive() {
     if (this.data.sensitiveVisible) {
-      wx.showToast({ title: this.data.isOwnListing ? '自己上传，已直接展示（免留痕）' : '已解锁地址和电话', icon: 'none' })
+      wx.showToast({ title: this.data.isOwnListing ? '自己上传，已直接展示（免留痕）' : '已解锁完整信息', icon: 'none' })
       return;
     }
     if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+      this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
       return
     }
     this.sensitiveViewIdempotencyKey = apiService.createSensitiveViewIdempotencyKey()
@@ -780,7 +950,7 @@ Page({
     if (!currentAuthToken() || !profileSessionMatches(this.profileAuthToken, requestSessionKey)) {
       this.sensitiveViewIdempotencyKey = ''
       this.setData({ sensitiveConfirmVisible: false, sensitiveSubmitting: false })
-      this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+      this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
       return Promise.resolve()
     }
     const idempotencyKey = this.sensitiveViewIdempotencyKey || apiService.createSensitiveViewIdempotencyKey()
@@ -819,7 +989,7 @@ Page({
         }
         this.sensitiveViewIdempotencyKey = ''
         this.setData({ sensitiveConfirmVisible: false })
-        this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+        this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
         return
       }
       if (error && error.data && error.data.quotaExceeded) {

@@ -1039,6 +1039,9 @@ function sanitizeListing(item, group) {
     sub: '当前报备与签单暂停；详情佣金比例由服务器按房源规则计算',
     features: unique(parseFeatureInput(listing.features).concat(parseFeatureInput(listing.rawFeatures))).slice(0, 8),
     maintenanceText: listing.maintenanceText || '',
+    sourceLabel: listing.sourceLabel || '',
+    ownerType: listing.ownerType || '',
+    companyListing: Boolean(listing.companyListing),
     matchGroup: group,
     matchGroupText: group === 'exact' ? '符合要求' : '接近要求',
     matchReason,
@@ -1051,11 +1054,35 @@ function sanitizeListing(item, group) {
     displayRelevance: `${relevanceScore}%`,
     qualityScore: listing.qualityScore || 0,
     freshnessScore: listing.freshnessScore || 0,
-    coordinateQuality: listing.coordinateQuality || '',
+    coordinateQuality: normalizedCoordinateQuality(listing.coordinateQuality),
     distanceKm: listing.distanceKm || '',
     distanceText: listing.distanceText || '',
     anchorName: listing.anchorName || ''
   }
+}
+
+const COORDINATE_QUALITY_VALUES = new Set([
+  'missing',
+  'unverified',
+  'unsafe_source',
+  'community_verified',
+  'admin_verified'
+])
+
+function normalizedCoordinateQuality(value) {
+  const text = String(value || '').trim()
+  return COORDINATE_QUALITY_VALUES.has(text) ? text : 'missing'
+}
+
+function coordinateQualityFromPublicCoordinate(coordinate = {}) {
+  const latitude = Number(coordinate.latitude)
+  const longitude = Number(coordinate.longitude)
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return 'missing'
+  const level = String(coordinate.level || coordinate.coordinateLevel || '').trim()
+  if (level !== 'verified') return 'unverified'
+  return String(coordinate.source || '') === 'admin-verified-coordinate'
+    ? 'admin_verified'
+    : 'community_verified'
 }
 
 function rawListingsById(db = {}) {
@@ -1068,34 +1095,28 @@ function rawListingsById(db = {}) {
 
 function candidateListings(db = {}) {
   const rawMap = rawListingsById(db)
-  return domain.filterListings(db, {}).map((listing) => {
+  return domain.filterListings(db, { publicGuest: true }).map((listing) => {
     const raw = rawMap.get(listing.id) || {}
     const profile = raw.recommendationProfile || null
-    const profileLocation = profile && profile.publicLocation ? profile.publicLocation : {}
     if (profile && profile.ready !== true) return null
+    const publicCoordinate = domain.publicListingMapCoordinate(raw) || {}
     return {
       ...listing,
-      recommendationProfile: profile || undefined,
-      rawFeatures: unique(parseFeatureInput(raw.features).concat(parseFeatureInput(raw.tags))),
-      status: raw.status || listing.status || '',
-      rent: numberFrom((profile && profile.rent) || raw.rent || listing.rent || listing.price),
-      layout: (profile && profile.layout) || raw.layout || listing.layout || '',
-      rentMode: (profile && profile.rentMode) || raw.rentMode || raw.type || listing.rentMode || listing.type || '',
-      type: (profile && profile.rentMode) || raw.type || raw.rentMode || listing.type || listing.rentMode || '',
-      room: (profile && profile.room) || raw.room || listing.room || '',
-      hall: (profile && profile.hall) || raw.hall || listing.hall || '',
-      bath: (profile && profile.bath) || raw.bath || listing.bath || '',
-      area: profileLocation.area || raw.area || raw.district || listing.area || listing.district || '',
-      district: profileLocation.district || raw.district || listing.district || listing.area || '',
-      block: profileLocation.block || raw.block || listing.block || '',
-      community: profileLocation.community || raw.community || listing.community || '',
-      mapLatitude: raw.mapLatitude || raw.latitude || listing.mapLatitude || listing.latitude || '',
-      mapLongitude: raw.mapLongitude || raw.longitude || listing.mapLongitude || listing.longitude || '',
-      coordinateSource: raw.coordinateSource || listing.coordinateSource || '',
-      coordinateVerified: raw.coordinateVerified === true || listing.coordinateVerified === true,
+      // 候选文本一律来自领域层公共投影；原始 tags、户型和位置不能在这里重新注入。
+      // 半径计算也只能使用领域层公共坐标投影；合作房源逐套坐标即使不直接下发，
+      // 仍会通过多锚点 distanceKm 形成三角定位 oracle。
+      rawFeatures: unique(parseFeatureInput(listing.features)),
+      status: listing.status || '',
+      rent: numberFrom(listing.rent || listing.price),
+      mapLatitude: publicCoordinate.latitude || '',
+      mapLongitude: publicCoordinate.longitude || '',
+      coordinateSource: publicCoordinate.source || '',
+      coordinateVerified: publicCoordinate.coordinateVerified === true,
+      coordinateLevel: publicCoordinate.level || publicCoordinate.coordinateLevel || '',
+      publicMapCoordinateProjection: domain.isCompanyListing(raw) ? '' : 'domain-v1',
       qualityScore: Number(profile && profile.qualityScore) || 0,
       freshnessScore: Number(profile && profile.freshnessScore) || 0,
-      coordinateQuality: (profile && profile.coordinateQuality) || ''
+      coordinateQuality: coordinateQualityFromPublicCoordinate(publicCoordinate)
     }
   }).filter(Boolean)
 }
@@ -1467,13 +1488,16 @@ function safeListingsForPrompt(listings) {
     rent: listing.rent,
     features: listing.features,
     maintenanceText: listing.maintenanceText,
+    sourceLabel: listing.sourceLabel,
+    ownerType: listing.ownerType,
+    companyListing: Boolean(listing.companyListing),
     matchGroupText: listing.matchGroupText,
     matchReason: listing.matchReason,
     differenceText: listing.differenceText,
     relevancePercent: listing.relevancePercent,
     qualityScore: listing.qualityScore,
     freshnessScore: listing.freshnessScore,
-    coordinateQuality: listing.coordinateQuality,
+    coordinateQuality: normalizedCoordinateQuality(listing.coordinateQuality),
     distanceKm: listing.distanceKm,
     distanceText: listing.distanceText,
     anchorName: listing.anchorName

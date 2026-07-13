@@ -157,7 +157,8 @@ module.exports = {
     requestDomain: process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
     uploadDomain: process.env.MINI_UPLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com',
     socketDomain: process.env.MINI_SOCKET_DOMAIN || process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/',
-    downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || 'https://ynzy-house-videos-bj.oss-cn-beijing.aliyuncs.com'
+    // 公共视频改走 API 域不透明代理；wx.downloadFile 合法域名必须包含同一 API 域。
+    downloadDomain: process.env.MINI_DOWNLOAD_DOMAIN || process.env.MINI_REQUEST_DOMAIN || 'https://zf-api.ynzyqbot.cn/'
   },
   company: {
     contactPhones: listFromEnv('COMPANY_CONTACT_PHONES', [])

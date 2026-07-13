@@ -26,14 +26,9 @@ const RENT_FILTERS = [
 const LAYOUT_FILTERS = ['全部', '一室', '两室', '三室']
 const RENT_MODE_FILTERS = ['全部', '整租', '合租']
 const SOURCE_TYPE_FILTERS = ['全部', '公司房源', '业主房源', '二房东房源']
-const PARTNER_SOURCE_TYPES = ['业主房源', '二房东房源']
 
 function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
-}
-
-function partnerLoginRequired(filters) {
-  return !apiClient.getAuthToken() && PARTNER_SOURCE_TYPES.indexOf(filters && filters.sourceType) !== -1
 }
 
 function toArray(value) {
@@ -176,7 +171,6 @@ Page({
     mapScale: 13,
     loading: false,
     loadFailed: false,
-    loginRequired: false,
     loadErrorText: '',
     showSearchCurrentArea: false,
     emptyText: '当前区域暂无可上图的有效房源，可切换列表找房。',
@@ -190,6 +184,7 @@ Page({
 
   onShow() {
     this._pageActive = true
+    this.bindAuthInvalidationListener()
     const sessionState = this.syncAuthSession()
     this.setTabBarSelected()
     let pending = {}
@@ -198,7 +193,7 @@ Page({
       if (storedPending) {
         try { wx.removeStorageSync(PENDING_MAP_FILTERS_KEY) } catch (error) {}
       }
-      pending = sessionState.changed ? {} : (consumePendingFilterEnvelope(storedPending, sessionState.key) || {})
+      pending = consumePendingFilterEnvelope(storedPending, sessionState.key) || {}
     } catch (error) {
       pending = {}
     }
@@ -213,6 +208,10 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
     this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
     this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
   },
@@ -237,11 +236,22 @@ Page({
         loadFailed: false,
         loadErrorText: '',
         filters,
-        loginRequired: partnerLoginRequired(filters),
         summaryText: '正在加载可上图房源'
       })
     }
     return { key: nextSessionKey, changed }
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
+    })
   },
 
   setTabBarSelected() {
@@ -308,13 +318,15 @@ Page({
     this.setData({
       loading: true,
       loadFailed: false,
-      loadErrorText: '',
-      loginRequired: partnerLoginRequired(this.data.filters)
+      loadErrorText: ''
     })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
       if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadCommunities(loadOptions)
         return
       }
       const communities = (items || []).map(normalizeCommunity).filter(validCommunity)
@@ -322,13 +334,15 @@ Page({
       this.setData({
         loading: false,
         loadFailed: false,
-        loadErrorText: '',
-        loginRequired: partnerLoginRequired(this.data.filters)
+        loadErrorText: ''
       })
     }).catch(() => {
       if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadCommunities(loadOptions)
         return
       }
       wx.showToast({ title: '地图房源加载失败', icon: 'none' })
@@ -396,7 +410,6 @@ Page({
       mapCenter: nextCenter,
       mapScale: recenter && communities.length ? 14 : this.data.mapScale,
       showSearchCurrentArea: false,
-      loginRequired: partnerLoginRequired(this.data.filters),
       summaryText: communities.length
         ? `共 ${communities.length} 个可上图小区，筛选后 ${communities.reduce((sum, item) => sum + item.listingCount, 0)} 套有效房源`
         : '当前区域暂无可上图的有效房源'
@@ -553,10 +566,6 @@ Page({
     wx.navigateTo({
       url: `/pages/listing-detail/listing-detail?id=${id}${query}`
     })
-  },
-
-  goLogin() {
-    wx.navigateTo({ url: '/pages/auth/auth' })
   },
 
   openAreaListings() {

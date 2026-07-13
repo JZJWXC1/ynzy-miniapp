@@ -1,7 +1,6 @@
 const crypto = require('crypto')
 const { clone } = require('./db')
 const { hashPassword, verifyPassword, passwordIssue } = require('./auth-util')
-const oss = require('./oss')
 const config = require('./config')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
@@ -61,7 +60,7 @@ const FEATURE_INFERENCE_RULES = [
   { name: '带露台（阁楼）', pattern: /带露台|带阁楼|阁楼|露台|带花园|有花园|花园房|带院子|有院子/ },
   // 近地铁（自动打标签）：「地铁+方位」强语境词，或「X号线」（description 里"紧邻2号线"等真写法）——
   // 但「X号线」后紧跟专名后缀(公寓/苑/园…)视为楼盘名(一号线公寓)不打标签。因本函数已不读 title/tags/community，仅从 description 等推断，安全。
-  { name: '近地铁', pattern: /近地铁|地铁口|地铁站|地铁旁|地铁边|靠地铁|临地铁|挨地铁|[\d一二三四五六七八九十两]号线(?!公寓|公馆|花园|家园|苑|园|城|府|庄|阁|座|幢|邸|里|巷|弄|路|桥|楼|号|馆|居|庭|轩|湾|郡|墅|寓)/ },
+  { name: '近地铁', pattern: /近地铁|地铁口|地铁站|地铁旁|地铁边|靠地铁|临地铁|挨地铁|[\d一二三四五六七八九十两]号线(?!公寓|公馆|花园|家园|苑|园|城|府|庄|阁|座|幢|邸|里|巷|弄|路|桥|楼|号|馆|居|庭|轩|湾|郡|墅|寓)(?:口|站|旁|边|附近)?/ },
   { name: '朝南', pattern: /朝南|南向/ },
   { name: 'Loft', pattern: /\bloft\b|挑高复式|复式挑高/i },
   { name: '落地窗', pattern: /落地窗/ },
@@ -271,8 +270,9 @@ function hasListingVideo(listing = {}) {
 // 是纯签名（无网络、无 OSS 配置时返空串），故放 domain 序列化层不影响可测性；无视频/非 OSS 对象返空，
 // 前端退占位图兜底。列表/详情统一走这里，保证公司/合作/我的/全部房源封面口径一致。
 function listingCoverUrl(listing = {}) {
-  const videoKey = String(listing.videoKey || '').trim()
-  return videoKey ? oss.createVideoSnapshotUrl(videoKey) : ''
+  // 公共 DTO 不得直接生成含对象键的 OSS URL；index 只依据服务端持久房源补同源不透明能力 URL。
+  // 是否有视频仍由 hasListingVideo 判断，领域层在此始终 fail-closed。
+  return ''
 }
 
 function isCompanySheetListing(listing = {}) {
@@ -288,11 +288,34 @@ function isSoldListing(listing = {}) {
   return listing.lifecycleStatus === 'sold' || /\u6210\u4ea4|\u7b7e\u5355/.test(status)
 }
 
+function isFrontendInactiveHistoricalStatus(listing = {}) {
+  return /已出租|不租了|暂停出租|已下架|已失效/.test(String(listing.status || '').trim())
+}
+
 function isFrontendEffectiveListing(listing = {}) {
   return !isExpiredListing(listing) &&
     !isSoldListing(listing) &&
+    !isFrontendInactiveHistoricalStatus(listing) &&
     (!requiresListingVideo(listing) || hasListingVideo(listing)) &&
     !isPendingOwnerReview(listing)
+}
+
+function publicListingRentValue(listing = {}) {
+  const text = String(listing.rent === undefined || listing.rent === null ? '' : listing.rent).trim()
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return 0
+  // 存量脏数据可能把手机号误写进租金；纯数字也不能因此绕过公共字段值级脱敏。
+  if (/^(?:(?:86)?1[3-9]\d{9}|0\d{9,11}|(?:400|800)\d{7})$/.test(text)) return 0
+  const value = Number(text)
+  // 前导 0 在旧链路数值化后无法恢复；公共 DTO 还需拒绝超过业务合理范围的
+  // 巨额纯数字，避免把座机残值误当月租下发。
+  return Number.isFinite(value) && value >= 0 && value <= 1000000 ? value : 0
+}
+
+function publicListingStatus(listing = {}) {
+  const status = String(listing.status || '').trim()
+  if (isFrontendInactiveHistoricalStatus(listing) || isExpiredListing(listing) || isSoldListing(listing)) return '已下架'
+  if (isCompanyListing(listing)) return safeCompanyPublicText(status, '在租') || '在租'
+  return ['在租', '待确认', '已维护'].indexOf(status) !== -1 ? status : '在租'
 }
 
 function ownerTypeFromStructuredValue(value = '') {
@@ -1170,6 +1193,63 @@ function listingDisplayFields(listing = {}, db = {}) {
   }
 }
 
+// 游客新开放的业主/二房东卡片只能使用显式公开白名单。登录中介和公司房源仍走原展示字段，
+// 避免把审核原因、匹配状态或上传人等原本只在内部流转的信息随新公开范围一起放大。
+function guestPartnerDisplayFields(listing = {}, db = {}) {
+  const source = listingSourceFields(listing, db)
+  const freshness = listingFreshness(listing)
+  const freshnessTime = guestPublicFreshnessTime(freshness.lastVerifiedAt, listing)
+  return {
+    ...listingFeatureFields(listing),
+    companyListing: source.companyListing,
+    isCompanyListing: source.isCompanyListing,
+    ownerType: source.ownerType,
+    isOwnerListing: source.isOwnerListing,
+    noCommission: source.noCommission,
+    sourceLabel: source.sourceLabel,
+    commissionText: source.commissionText,
+    commissionBadge: source.commissionBadge,
+    lastVerifiedAt: freshnessTime,
+    staleDays: freshness.staleDays,
+    verifyStatus: freshness.verifyStatus,
+    verifyTip: freshness.verifyTip,
+    needsVerify: freshness.needsVerify,
+    maintenanceText: maintenanceText(freshness)
+  }
+}
+
+function guestPublicFreshnessTime(value, listing = {}) {
+  const text = String(value === undefined || value === null ? '' : value).trim()
+  if (text === '刚刚' || text === '未核验') return text
+  if (!isValidPublicDateTimeText(text)) return ''
+  return safeGuestPublicText(text, listing)
+}
+
+function authenticatedPartnerDisplayFields(listing = {}, db = {}) {
+  const display = listingDisplayFields(listing, db)
+  const safeDisplay = Object.keys(display).reduce((result, key) => {
+    const value = display[key]
+    result[key] = typeof value === 'string' ? safeGuestPublicText(value, listing) : value
+    return result
+  }, {})
+  const features = (display.features || []).map((item) => safeGuestPublicText(item, listing)).filter(Boolean)
+  const safeReviewStatus = safeGuestPublicText(display.reviewStatus, listing)
+  const safeCommunityMatchStatus = safeGuestPublicText(display.communityMatchStatus, listing)
+  const reviewStatus = ['无需审核', '待审核', '已通过', '已驳回'].includes(safeReviewStatus)
+    ? safeReviewStatus
+    : (requiresListingReview(listing) ? (isPendingOwnerReview(listing) ? '待审核' : '已通过') : '无需审核')
+  const communityMatchStatus = ['已匹配', '未匹配'].includes(safeCommunityMatchStatus)
+    ? safeCommunityMatchStatus
+    : (display.communityMatched === false ? '未匹配' : '已匹配')
+  return {
+    ...safeDisplay,
+    reviewStatus,
+    communityMatchStatus,
+    features,
+    featureText: safeGuestPublicText(featureText(features), listing)
+  }
+}
+
 function recommendationUnavailableReason(listing = {}, fallback = 'not_frontend_effective') {
   if (isExpiredListing(listing)) return 'expired'
   if (isSoldListing(listing)) return 'sold'
@@ -1204,8 +1284,10 @@ function clearListingRecommendationProfile(listing, reason) {
 }
 
 function listingMatchFeatureSet(listing = {}) {
-  return new Set(listingFeatureFields(listing).features
-    .concat([listing.rentMode, listing.type])
+  const housing = publicListingHousingFields(listing)
+  const display = isCompanyListing(listing) ? companyPublicDisplayFields(listing) : listingFeatureFields(listing)
+  return new Set(display.features
+    .concat([housing.rentMode, housing.type])
     .filter(Boolean))
 }
 
@@ -2156,28 +2238,35 @@ function adminUsers(db) {
   })
 }
 
-function formatHomeListing(db, listing) {
+function formatHomeListing(db, listing, options = {}) {
   const uploader = userById(db, listing.uploaderId) || {}
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing, db)
+  const housing = publicListingHousingFields(listing)
+  const companyListing = isCompanyListing(listing)
+  const publicPartner = !companyListing && options.publicGuest === true
+  const display = companyListing
+    ? companyPublicDisplayFields(listing, db)
+    : (publicPartner ? guestPartnerDisplayFields(listing, db) : authenticatedPartnerDisplayFields(listing, db))
   const companyPublic = companyPublicListingFields(listing)
   const publicTitle = publicListingTitle(listing, location)
-  const companyListing = isCompanyListing(listing)
   const mediaText = hasListingVideo(listing) ? '仅视频' : (companyListing ? '公司房源表' : '待补视频')
   const commissionText = display.commissionText
+  const rent = publicListingRentValue(listing)
   return {
     id: listing.id,
     title: publicTitle,
-    meta: `${location.locationSummary || location.area} · ${listing.layout} · ${mediaText}`,
-    sub: `${display.sourceLabel} · ${commissionText} · 上传人 ${uploader.name || '平台'}`,
-    price: `¥${listing.rent}/月`,
+    meta: [location.locationSummary || location.area, housing.layout, mediaText].filter(Boolean).join(' · '),
+    sub: publicPartner
+      ? `${display.sourceLabel} · ${commissionText}`
+      : `${display.sourceLabel} · ${commissionText} · 上传人 ${companyListing
+          ? safeCompanyPublicText(uploader.name, '平台')
+          : safeGuestPublicText(uploader.name, listing, '平台')}`,
+    price: rent ? `¥${rent}/月` : '',
     tag: companyListing ? '公司房源' : `${commissionRateForListing(listing, db)}%`,
-    videoUrl: listing.videoUrl || '',
+    videoUrl: '',
     hasVideo: hasListingVideo(listing),
     coverUrl: listingCoverUrl(listing),
-    layout: listing.layout || '',
-    rentMode: listing.rentMode || listing.type || '',
-    type: listing.type || listing.rentMode || '',
+    ...housing,
     ...display,
     ...location,
     ...companyPublic
@@ -2193,8 +2282,9 @@ function matchesCategory(listing, category) {
   if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(category) !== -1) {
     return listingSourceType(listing) === category
   }
-  const display = listingDisplayFields(listing)
-  const type = `${listing.type || ''}${listing.layout || ''}${listing.source || ''}${display.ownerType || ''}${display.sourceLabel || ''}`
+  const display = isCompanyListing(listing) ? companyPublicDisplayFields(listing) : listingDisplayFields(listing)
+  const housing = publicListingHousingFields(listing)
+  const type = `${housing.type || ''}${housing.layout || ''}${isCompanyListing(listing) ? safeCompanyPublicText(listing.source || '') : ''}${display.ownerType || ''}${display.sourceLabel || ''}`
   return type.indexOf(category) !== -1
 }
 
@@ -2220,12 +2310,13 @@ function roomCountFromLayoutText(value = '') {
 function matchesLayoutFilter(listing = {}, layoutFilter = '') {
   const filter = String(layoutFilter || '').trim()
   if (!filter || filter === '不限') return true
-  const roomCount = roomCountFromLayoutText([listing.layout, listing.room, listing.type, listing.rentMode].join(' '))
+  const housing = publicListingHousingFields(listing)
+  const roomCount = roomCountFromLayoutText([housing.layout, housing.room, housing.type, housing.rentMode].join(' '))
   if (filter === '一室') return roomCount === 1
   if (filter === '两室' || filter === '二室') return roomCount === 2
   if (filter === '三室') return roomCount === 3
   if (filter === '三室以上') return roomCount >= 3
-  return String(listing.layout || '').indexOf(filter) !== -1
+  return String(housing.layout || '').indexOf(filter) !== -1
 }
 
 function filterListings(db, filter = {}) {
@@ -2234,17 +2325,19 @@ function filterListings(db, filter = {}) {
   const requestedFeatures = parseFeatureInput(filter.features || filter.feature)
   return publicListings(db)
     .filter((listing) => {
+      const location = publicListingLocationFields(listing)
+      const housing = publicListingHousingFields(listing)
       const locationText = publicLocationSearchText(listing)
       if (companyOnly && !isCompanyListing(listing)) return false
       if (!matchesCategory(listing, filter.category)) return false
-      if (districtFilter && [listing.district, listing.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
+      if (districtFilter && [location.district, location.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
       if (filter.area && locationText.indexOf(filter.area) === -1) return false
       if (filter.block && locationText.indexOf(filter.block) === -1) return false
-      if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
+      if (filter.community && String(location.community || '').indexOf(filter.community) === -1) return false
       if (!matchesLayoutFilter(listing, filter.layout)) return false
-      if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
-      if (filter.rentMin && Number(listing.rent || 0) < Number(filter.rentMin)) return false
-      if (filter.rentMax && Number(listing.rent || 0) > Number(filter.rentMax)) return false
+      if (filter.rentMode && (housing.rentMode || housing.type) !== filter.rentMode) return false
+      if (filter.rentMin && publicListingRentValue(listing) < Number(filter.rentMin)) return false
+      if (filter.rentMax && publicListingRentValue(listing) > Number(filter.rentMax)) return false
       if (requestedFeatures.length) {
         const featureSet = listingMatchFeatureSet(listing)
         if (!requestedFeatures.every((feature) => featureSet.has(feature))) return false
@@ -2252,18 +2345,14 @@ function filterListings(db, filter = {}) {
       return true
     })
     .map((listing) => {
-      const row = formatHomeListing(db, listing)
+      const row = formatHomeListing(db, listing, { publicGuest: filter.publicGuest === true })
+      const housing = publicListingHousingFields(listing)
       return {
         ...row,
-        layout: listing.layout || '',
-        rent: Number(listing.rent || 0),
-        type: listing.type || '',
-        rentMode: listing.rentMode || listing.type || '',
-        room: listing.room || '',
-        hall: listing.hall || '',
-        bath: listing.bath || '',
-        source: listing.source || '',
-        status: listing.status || '',
+        ...housing,
+        rent: publicListingRentValue(listing),
+        source: row.companyListing ? safeCompanyPublicText(listing.source || '') : (row.sourceLabel || ''),
+        status: publicListingStatus(listing),
         companyListing: row.companyListing,
         noCommission: Boolean(row.noCommission),
         sourceLabel: row.sourceLabel,
@@ -2398,7 +2487,7 @@ function favoriteListingIds(db, userId) {
     })
 }
 
-function favoriteSafeListingRow(db, listing, relationship) {
+function favoriteSafeListingRow(db, listing, relationship, viewerId = '') {
   const favoritedAt = String((relationship && relationship.createdAt) || '')
   if (!listing) {
     return {
@@ -2431,22 +2520,26 @@ function favoriteSafeListingRow(db, listing, relationship) {
   }
 
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing, db)
+  const housing = publicListingHousingFields(listing)
+  const companyListing = isCompanyListing(listing)
+  const display = companyListing
+    ? companyPublicDisplayFields(listing, db)
+    : (viewerId ? authenticatedPartnerDisplayFields(listing, db) : guestPartnerDisplayFields(listing, db))
   const available = isFrontendEffectiveListing(listing)
   const unavailable = available ? { reason: '', reasonText: '' } : listingUnavailableReason(listing)
-  const features = Array.from(listingMatchFeatureSet(listing))
-  const rent = Number(listing.rent || 0)
-  const rentMode = listing.rentMode || listing.type || ''
-  const source = listing.source || listing.ownerType || listing.houseSourceType || ''
+  const features = Array.isArray(display.features) ? display.features.slice() : []
+  const rent = publicListingRentValue(listing)
+  const rentMode = housing.rentMode || housing.type || ''
+  const source = companyListing ? safeCompanyPublicText(listing.source || listing.ownerType || listing.houseSourceType || '') : (display.sourceLabel || '')
   const sourceLabel = display.sourceLabel || source
   return {
     id: listing.id,
     title: publicListingTitle(listing, location),
-    meta: [location.locationSummary || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
-    sub: available ? [listing.layout, sourceLabel, listing.status].filter(Boolean).join(' · ') : '暂不可用',
+    meta: [location.locationSummary || location.area, housing.layout, sourceLabel].filter(Boolean).join(' · '),
+    sub: available ? [housing.layout, sourceLabel, publicListingStatus(listing)].filter(Boolean).join(' · ') : '暂不可用',
     price: rent ? `¥${rent}/月` : '',
     rent,
-    layout: listing.layout || '',
+    layout: housing.layout,
     rentMode,
     type: rentMode,
     district: location.district,
@@ -2456,8 +2549,8 @@ function favoriteSafeListingRow(db, listing, relationship) {
     features,
     source,
     sourceLabel,
-    status: listing.status || '',
-    companyListing: isCompanyListing(listing),
+    status: publicListingStatus(listing),
+    companyListing,
     hasVideo: available && hasListingVideo(listing),
     coverUrl: available ? listingCoverUrl(listing) : '',
     isAvailable: available,
@@ -2496,37 +2589,48 @@ function favoriteListings(db, userId, filter = {}) {
         return !filter.category && !districtFilter && !filter.block && !filter.community &&
           !filter.layout && !filter.rentMode && !filter.rentMin && !filter.rentMax && !requestedFeatures.length
       }
+      const location = publicListingLocationFields(listing)
+      const housing = publicListingHousingFields(listing)
       if (filter.category && !matchesCategory(listing, filter.category)) return false
-      if (districtFilter && [listing.district, listing.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
-      if (filter.block && String(listing.block || '').indexOf(String(filter.block)) === -1) return false
-      if (filter.community && String(listing.community || '').indexOf(String(filter.community)) === -1) return false
+      if (districtFilter && [location.district, location.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
+      if (filter.block && String(location.block || '').indexOf(String(filter.block)) === -1) return false
+      if (filter.community && String(location.community || '').indexOf(String(filter.community)) === -1) return false
       if (!matchesLayoutFilter(listing, filter.layout)) return false
-      if (filter.rentMode && (listing.rentMode || listing.type) !== filter.rentMode) return false
-      if (filter.rentMin !== undefined && String(filter.rentMin).trim() !== '' && Number(listing.rent || 0) < Number(filter.rentMin)) return false
-      if (filter.rentMax !== undefined && String(filter.rentMax).trim() !== '' && Number(listing.rent || 0) > Number(filter.rentMax)) return false
+      if (filter.rentMode && (housing.rentMode || housing.type) !== filter.rentMode) return false
+      if (filter.rentMin !== undefined && String(filter.rentMin).trim() !== '' && publicListingRentValue(listing) < Number(filter.rentMin)) return false
+      if (filter.rentMax !== undefined && String(filter.rentMax).trim() !== '' && publicListingRentValue(listing) > Number(filter.rentMax)) return false
       if (requestedFeatures.length) {
         const featureSet = listingMatchFeatureSet(listing)
         if (!requestedFeatures.every((feature) => featureSet.has(feature))) return false
       }
       return true
     })
-    .map(({ listing, relationship }) => favoriteSafeListingRow(db, listing, relationship))
+    .map(({ listing, relationship }) => favoriteSafeListingRow(db, listing, relationship, userId))
   return rows
 }
 
 function verifiedNearbyCoordinate(listing = {}) {
-  const coordinate = mapCoordinateFromListing(listing)
-  if (!coordinate) return null
-  if (coordinate.level !== 'verified' || coordinate.coordinateVerified !== true) return null
-  const source = String(coordinate.source || '').trim()
+  const selectedCoordinate = mapCoordinateFromListing(listing)
+  if (!selectedCoordinate) return null
+  if (selectedCoordinate.level !== 'verified' || selectedCoordinate.coordinateVerified !== true) return null
+  const source = String(selectedCoordinate.source || '').trim()
   // level/verified 可能来自旧数据或误标，M5 还要独立校验来源；近似地理编码和板块中心即使伪标
   // verified 也不能参与“精确 3 公里”计算。
   if (!/lianjia|amap|community-coordinate|admin-verified-coordinate|manual-confirmed/i.test(source)) return null
   if (/block-center|tencent-geocode|qq-map-geocode|geocoder|approx|default|pending|legacy|estimated/i.test(source)) return null
-  const latitude = Number(coordinate.latitude)
-  const longitude = Number(coordinate.longitude)
+  // 资格仍由内部可信坐标决定，但实际距离只使用公共坐标投影：公司沿用公开精确点，
+  // 业主/二房东降为小区坐标或约一公里粒度，防止多锚点距离查询三角还原具体楼栋。
+  const publicCoordinate = guestPublicMapCoordinateFromListing(listing)
+  if (!publicCoordinate) return null
+  const latitude = Number(publicCoordinate.latitude)
+  const longitude = Number(publicCoordinate.longitude)
   if (!hasValidCoordinatePair(latitude, longitude)) return null
-  return { latitude, longitude }
+  return {
+    latitude,
+    longitude,
+    level: publicCoordinate.level || '',
+    coordinateVerified: publicCoordinate.coordinateVerified === true
+  }
 }
 
 function nearbyDistanceKm(from, to) {
@@ -2554,29 +2658,33 @@ function nearbyDistanceText(distanceKm) {
 
 function nearbyListingCard(db, listing, distanceKm) {
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing, db)
-  const sourceLabel = display.sourceLabel || listing.source || listing.ownerType || ''
-  const rent = Number(listing.rent || 0)
-  const rentMode = listing.rentMode || listing.type || ''
+  const housing = publicListingHousingFields(listing)
+  const companyListing = isCompanyListing(listing)
+  const display = companyListing
+    ? companyPublicDisplayFields(listing, db)
+    : guestPartnerDisplayFields(listing, db)
+  const sourceLabel = display.sourceLabel || (companyListing ? safeCompanyPublicText(listing.source || listing.ownerType || '') : '')
+  const rent = publicListingRentValue(listing)
+  const rentMode = housing.rentMode || housing.type || ''
   return {
     id: listing.id,
+    ...location,
     title: publicListingTitle(listing, location),
-    meta: [location.community || location.area, listing.layout, sourceLabel].filter(Boolean).join(' · '),
+    meta: [location.community || location.area, housing.layout, sourceLabel].filter(Boolean).join(' · '),
     coverUrl: listingCoverUrl(listing),
     hasVideo: hasListingVideo(listing),
     distanceKm: Number(Number(distanceKm).toFixed(3)),
     distanceText: nearbyDistanceText(distanceKm),
     source: sourceLabel,
     sourceLabel,
-    companyListing: isCompanyListing(listing),
+    companyListing,
     type: rentMode,
     rentMode,
-    layout: listing.layout || '',
+    layout: housing.layout,
     features: Array.isArray(display.features) ? display.features.slice() : [],
     featureText: display.featureText || '',
     rent,
-    price: rent ? `¥${rent}/月` : '',
-    community: location.community || ''
+    price: rent ? `¥${rent}/月` : ''
   }
 }
 
@@ -2640,14 +2748,16 @@ function matchListings(db, condition = {}) {
   let scored = availableListings.map((listing) => {
     let score = 40
     const reasons = []
+    const housing = publicListingHousingFields(listing)
+    const listingRent = publicListingRentValue(listing)
     const listingFeatures = listingMatchFeatureSet(listing)
     const matchedFeatureCount = requestedFeatures.filter((item) => listingFeatures.has(item)).length
-    if (budget && Number(listing.rent) <= budget) {
+    if (budget && listingRent <= budget) {
       score += 24
       reasons.push('预算匹配')
     }
-    if (budget && Number(listing.rent) > budget) {
-      score -= Math.min(30, Math.ceil((Number(listing.rent) - budget) / 200))
+    if (budget && listingRent > budget) {
+      score -= Math.min(30, Math.ceil((listingRent - budget) / 200))
     }
     if (
       area &&
@@ -2656,7 +2766,7 @@ function matchListings(db, condition = {}) {
       score += 24
       reasons.push('区域匹配')
     }
-    if (layout && String(listing.layout || '').indexOf(layout) !== -1) {
+    if (layout && String(housing.layout || '').indexOf(layout) !== -1) {
       score += 22
       reasons.push('户型匹配')
     }
@@ -2690,7 +2800,7 @@ function matchListings(db, condition = {}) {
   }
 
   const rows = scored.slice(0, 3).map((item) => {
-    const row = formatHomeListing(db, item.listing)
+    const row = formatHomeListing(db, item.listing, { publicGuest: condition.publicGuest === true })
     row.relevanceScore = item.score
     row.relevancePercent = `${item.score}%`
     row.relevanceText = `相关性 ${item.score}%`
@@ -2709,7 +2819,11 @@ function matchListings(db, condition = {}) {
 
 function buildListingDetail(db, listing, viewerId = '') {
   const location = publicListingLocationFields(listing)
-  const display = listingDisplayFields(listing, db)
+  const housing = publicListingHousingFields(listing)
+  const companyListing = isCompanyListing(listing)
+  const display = companyListing
+    ? companyPublicDisplayFields(listing, db)
+    : (viewerId ? authenticatedPartnerDisplayFields(listing, db) : guestPartnerDisplayFields(listing, db))
   const {
     commissionText: _legacyCommissionText,
     commissionBadge: _legacyCommissionBadge,
@@ -2719,31 +2833,23 @@ function buildListingDetail(db, listing, viewerId = '') {
   return {
     id: listing.id,
     title: publicListingTitle(listing, location),
-    rent: String(listing.rent),
-    layout: listing.layout,
+    rent: String(publicListingRentValue(listing)),
+    ...housing,
     ...location,
     areaText: `${location.city} · ${location.area}`,
-    address: companyPublic.address || '确认留痕后可查看',
     sensitiveLocked: !display.companyListing,
-    // 看房方式名不属敏感，直接下发；钥匙位置/密码/电话等敏感值仍走公司公开或留痕后 sensitive 下发
-    ...listingViewingMethodFields(listing),
     landlordCommissionPercent: storedLandlordCommissionPercent(listing),
     commissionBreakdown: commissionBreakdownForListing(listing, db, viewerId),
-    remark: safePublicListingRemark(listing),
     noCommission: display.noCommission,
     companyListing: display.companyListing,
     sourceLabel: display.sourceLabel,
-    videoLabel: listing.videoLabel || '房源实拍视频',
-    videoUrl: listing.videoUrl || '',
-    videoKey: listing.videoKey || '',
+    videoLabel: companyListing
+      ? safeCompanyPublicText(listing.videoLabel, '房源实拍视频')
+      : safeGuestPublicText(listing.videoLabel, listing, '房源实拍视频'),
+    videoUrl: '',
     hasVideo: hasListingVideo(listing),
     coverUrl: listingCoverUrl(listing),
-    type: listing.type || listing.rentMode || '',
-    rentMode: listing.rentMode || listing.type || '',
-    room: listing.room || '',
-    hall: listing.hall || '',
-    bath: listing.bath || '',
-    status: listing.status,
+    status: publicListingStatus(listing),
     ...detailDisplay,
     ...companyPublic
   }
@@ -2751,16 +2857,21 @@ function buildListingDetail(db, listing, viewerId = '') {
 
 function unavailableListingDetail(listing, listingId) {
   const unavailable = listingUnavailableReason(listing)
+  const companyListing = Boolean(listing && isCompanyListing(listing))
+  const safeText = (value) => companyListing
+    ? safeCompanyPublicText(value)
+    : safeGuestPublicText(value, listing || {})
+  const safeDate = (value) => isValidPublicDateTimeText(value) ? String(value).trim() : ''
   return {
     id: listing ? listing.id : listingId,
     unavailable: true,
     reason: unavailable.reason,
     reasonText: unavailable.reasonText,
-    status: listing ? (listing.status || '') : '',
-    updatedAt: listing ? (listing.updatedAt || '') : '',
-    syncedAt: listing ? (listing.syncedAt || '') : '',
-    feishuLastSyncAction: listing ? (listing.feishuLastSyncAction || '') : '',
-    feishuLastSyncAt: listing ? (listing.feishuLastSyncAt || listing.syncedAt || '') : ''
+    status: listing ? publicListingStatus(listing) : '',
+    updatedAt: listing ? safeDate(listing.updatedAt) : '',
+    syncedAt: listing ? safeDate(listing.syncedAt) : '',
+    feishuLastSyncAction: listing ? safeText(listing.feishuLastSyncAction) : '',
+    feishuLastSyncAt: listing ? safeDate(listing.feishuLastSyncAt || listing.syncedAt) : ''
   }
 }
 
@@ -3284,6 +3395,66 @@ function mapCoordinateFromListing(listing = {}) {
     coordinateStatus: listing.coordinateStatus || coordinateStatusText(level)
   }
 }
+
+function publicCoordinateSourceText(source, level) {
+  const text = String(source || '').trim().toLowerCase()
+  if (level === 'verified') {
+    if (text.indexOf('admin-verified-coordinate') !== -1) return 'admin-verified-coordinate'
+    if (text.indexOf('manual-confirmed') !== -1) return 'manual-confirmed-coordinate'
+    return 'community-coordinate'
+  }
+  if (level === 'block-center') return 'block-center'
+  if (level === 'approximate') return 'approximate-geocode'
+  return 'pending-map-coordinate'
+}
+
+function guestPublicMapCoordinateFromListing(listing = {}) {
+  const coordinate = mapCoordinateFromListing(listing)
+  if (!coordinate) return null
+  const publicLocation = publicListingLocationFields(listing)
+  const publicCommunity = publicLocation.community || ''
+  if (!publicCommunity) return null
+  if (isCompanyListing(listing)) {
+    const level = normalizeCoordinateLevel(coordinate.level || coordinate.coordinateLevel || coordinate.coordinateAccuracy) || 'verified'
+    return {
+      latitude: coordinate.latitude,
+      longitude: coordinate.longitude,
+      source: publicCoordinateSourceText(coordinate.source, level),
+      community: publicCommunity,
+      coordinateVerified: level === 'verified',
+      level,
+      coordinateLevel: level,
+      coordinateAccuracy: level,
+      coordinateStatus: coordinateStatusText(level)
+    }
+  }
+  const communityCoordinate = coordinateByCommunity(publicCommunity)
+  if (communityCoordinate) {
+    return {
+      latitude: communityCoordinate.latitude,
+      longitude: communityCoordinate.longitude,
+      source: 'guest-community-approximate',
+      community: publicCommunity,
+      coordinateVerified: false,
+      level: 'approximate',
+      coordinateLevel: 'approximate',
+      coordinateAccuracy: 'approximate',
+      coordinateStatus: '小区位置'
+    }
+  }
+  // 没有小区坐标库时只给约 1 公里粒度的近似点，不能把逐套人工核实坐标等同完整地址公开。
+  return {
+    latitude: Number(Number(coordinate.latitude).toFixed(2)),
+    longitude: Number(Number(coordinate.longitude).toFixed(2)),
+    source: 'guest-community-approximate',
+    community: publicCommunity,
+    coordinateVerified: false,
+    level: 'approximate',
+    coordinateLevel: 'approximate',
+    coordinateAccuracy: 'approximate',
+    coordinateStatus: '小区位置'
+  }
+}
 // 注：MODEL-2 的 block-center 兜底仅接进「助手半径检索」路径(place-locator.listingCoordinate)——
 // 地图页 mapCoordinateFromListing 维持「仅可靠/verified 坐标上图」不变量（防客户端伪造坐标进地图，见
 // backend-contract-v1-test「客户端手填坐标不能进入地图」）。地图页是否也展示 block-center 属产品决策，待用户拍板。
@@ -3396,6 +3567,7 @@ function normalizeMapFilter(filter = {}) {
     rentMode: String(filter.rentMode || '').trim(),
     sourceType: String(filter.sourceType || '').trim(),
     companyOnly: truthyFlag(filter.companyOnly),
+    publicGuest: filter.publicGuest === true,
     area: String(filter.area || filter.region || '').trim(),
     listingIds: new Set(mapFilterList(filter.listingIds))
   }
@@ -3409,57 +3581,40 @@ function coordinateInBounds(coordinate, filter) {
     coordinate.longitude >= filter.west
 }
 
-function sourceTextForListing(listing = {}, display = {}) {
-  return [
-    listing.source,
-    listing.sourceType,
-    listing.listingType,
-    listing.inventoryType,
-    listing.category,
-    listing.ownerType,
-    listing.houseSourceType,
-    display.ownerType,
-    display.sourceLabel
-  ].map((item) => String(item || '')).join(' ')
-}
-
 function listingMatchesMapFilter(listing = {}, filter, display = {}) {
+  const location = publicListingLocationFields(listing)
+  const housing = publicListingHousingFields(listing)
   if (filter.listingIds.size && !filter.listingIds.has(String(listing.id || ''))) return false
   const sourceType = listingSourceType(listing)
   if (filter.companyOnly && sourceType !== COMPANY_SOURCE) return false
-  const rent = Number(listing.rent || 0)
+  const rent = publicListingRentValue(listing)
   if (filter.rentMin !== null && rent < filter.rentMin) return false
   if (filter.rentMax !== null && rent > filter.rentMax) return false
-  if (filter.layout && String(listing.layout || '').indexOf(filter.layout) === -1) return false
-  if (filter.rentMode && String(listing.rentMode || listing.type || listing.layout || '').indexOf(filter.rentMode) === -1) return false
+  if (filter.layout && String(housing.layout || '').indexOf(filter.layout) === -1) return false
+  if (filter.rentMode && String(housing.rentMode || housing.type || housing.layout || '').indexOf(filter.rentMode) === -1) return false
   if (filter.sourceType && filter.sourceType !== '全部') {
-    if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(filter.sourceType) !== -1) {
-      if (sourceType !== filter.sourceType) return false
-    } else if (sourceTextForListing(listing, display).indexOf(filter.sourceType) === -1) {
-      return false
-    }
+    if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(filter.sourceType) === -1) return false
+    if (sourceType !== filter.sourceType) return false
   }
   if (filter.area) {
-    const locationText = [
-      listing.city,
-      listing.district,
-      listing.area,
-      listing.block,
-      listing.community
-    ].map((item) => String(item || '')).join('')
+    const locationText = [location.city, location.district, location.area, location.block, location.community]
+      .map((item) => String(item || ''))
+      .join('')
     if (locationText.indexOf(filter.area) === -1) return false
   }
   return true
 }
 
 function safeMapListingSummary(listing = {}, display = {}) {
+  const housing = publicListingHousingFields(listing)
   return {
     id: listing.id,
-    rent: Number(listing.rent || 0),
-    layout: listing.layout || '',
-    rentMode: listing.rentMode || listing.type || '',
-    sourceType: display.sourceLabel || listing.source || '',
-    lastVerifiedAt: display.lastVerifiedAt || listing.lastVerifiedAt || '',
+    rent: publicListingRentValue(listing),
+    layout: housing.layout,
+    rentMode: housing.rentMode || housing.type || '',
+    sourceType: display.sourceLabel || (isCompanyListing(listing) ? (listing.source || '') : ''),
+    // display 已按公司/合作公开规则清洗；绝不能在空值时回退原始核验时间。
+    lastVerifiedAt: display.lastVerifiedAt || '',
     maintenanceText: display.maintenanceText || '',
     hasVideo: Boolean(listing.videoUrl || listing.videoKey),
     video: listing.videoUrl || listing.videoKey ? '已传视频' : ''
@@ -3472,19 +3627,61 @@ function isV1MapActiveListing(listing = {}) {
   return freshness.staleDays < V1_MAP_STALE_DAYS
 }
 
+function mapCoordinateCandidatePriority(listing = {}, selectedCoordinate = {}) {
+  let priority = isCompanyListing(listing) ? 1000 : 0
+  const source = String(selectedCoordinate.source || '')
+  const level = String(selectedCoordinate.level || selectedCoordinate.coordinateLevel || '')
+  if (source === 'admin-verified-coordinate') priority += 100
+  if (level === 'verified') priority += 50
+  else if (level === 'block-center') priority += 20
+  else if (level === 'approximate') priority += 10
+  return priority
+}
+
+function shouldReplaceMapCoordinateCandidate(current, candidate) {
+  if (!current) return true
+  if (candidate.priority !== current.priority) return candidate.priority > current.priority
+  return candidate.tieBreaker.localeCompare(current.tieBreaker, 'zh-CN') < 0
+}
+
+function applyPublicCoordinateToMapGroup(group, coordinate) {
+  group.latitude = coordinate.latitude
+  group.longitude = coordinate.longitude
+  group.coordinateSource = coordinate.source || ''
+  group.coordinateVerified = coordinate.level === 'verified'
+  group.coordinateLevel = coordinate.level || coordinate.coordinateLevel || 'verified'
+  group.coordinateAccuracy = coordinate.coordinateAccuracy || coordinate.level || 'verified'
+  group.coordinateStatus = coordinate.coordinateStatus || coordinateStatusText(coordinate.level || 'verified')
+  group.coordinateLabel = group.coordinateStatus
+  group.coordinateCalloutNote = coordinate.level === 'approximate'
+    ? '近似位置'
+    : (coordinate.level === 'block-center' ? '板块中心近似位置' : '')
+}
+
 function mapCommunities(db, filter = {}) {
   const normalizedFilter = normalizeMapFilter(filter)
   const groups = new Map()
+  // 代表点的内部优先级单独保存，绝不随响应下发。这样既能让公司公开坐标稳定优先、
+  // 也能让合作房源内部可信来源参与确定代表点，同时响应始终只复制公开投影后的坐标。
+  const coordinateChoices = new Map()
   publicListings(db).forEach((listing) => {
     if (!isV1MapActiveListing(listing)) return
-    const coordinate = mapCoordinateFromListing(listing)
+    const selectedCoordinate = mapCoordinateFromListing(listing)
+    const coordinate = guestPublicMapCoordinateFromListing(listing)
     if (!coordinate) return
     if (!coordinateInBounds(coordinate, normalizedFilter)) return
-    const display = listingDisplayFields(listing, db)
+    const companyListing = isCompanyListing(listing)
+    const display = companyListing ? companyPublicDisplayFields(listing, db) : guestPartnerDisplayFields(listing, db)
+    const location = publicListingLocationFields(listing)
+    const housing = publicListingHousingFields(listing)
     if (!listingMatchesMapFilter(listing, normalizedFilter, display)) return
-    const community = coordinate.community || listing.community
+    const community = location.community || (companyListing ? coordinate.community : '')
     const key = String(community || '').trim()
     if (!key) return
+    const coordinateCandidate = {
+      priority: mapCoordinateCandidatePriority(listing, selectedCoordinate || coordinate),
+      tieBreaker: String(listing.id || '')
+    }
     if (!groups.has(key)) {
       groups.set(key, {
         community: key,
@@ -3507,30 +3704,21 @@ function mapCommunities(db, filter = {}) {
         sourceTypes: [],
         listings: []
       })
+      coordinateChoices.set(key, coordinateCandidate)
     }
     const group = groups.get(key)
-    // 管理员人工修正坐标优先：小区点先由最先命中的房源定坐标，但若后续房源带有后台已核实的
-    // admin-verified 坐标，则升级该小区点位（让小区库近似坐标让位于人工修正的精确点位）。
-    if (coordinate.source === 'admin-verified-coordinate' && group.coordinateSource !== 'admin-verified-coordinate') {
-      group.latitude = coordinate.latitude
-      group.longitude = coordinate.longitude
-      group.coordinateSource = coordinate.source
-      group.coordinateVerified = coordinate.level === 'verified'
-      group.coordinateLevel = coordinate.level || 'verified'
-      group.coordinateAccuracy = coordinate.coordinateAccuracy || coordinate.level || 'verified'
-      group.coordinateStatus = coordinate.coordinateStatus || coordinateStatusText(coordinate.level || 'verified')
-      group.coordinateLabel = group.coordinateStatus
-      group.coordinateCalloutNote = coordinate.level === 'approximate'
-        ? '近似位置'
-        : (coordinate.level === 'block-center' ? '板块中心近似位置' : '')
+    const currentCoordinateCandidate = coordinateChoices.get(key)
+    if (shouldReplaceMapCoordinateCandidate(currentCoordinateCandidate, coordinateCandidate)) {
+      applyPublicCoordinateToMapGroup(group, coordinate)
+      coordinateChoices.set(key, coordinateCandidate)
     }
-    const rent = Number(listing.rent || 0)
+    const rent = publicListingRentValue(listing)
     group.listingCount += 1
     group.minRent = group.minRent ? Math.min(group.minRent, rent) : rent
     group.maxRent = Math.max(group.maxRent, rent)
     group.activeListingIds.push(listing.id)
-    group.layouts = uniqueTextList(group.layouts.concat(listing.layout || ''))
-    group.sourceTypes = uniqueTextList(group.sourceTypes.concat(display.sourceLabel || listing.source || ''))
+    group.layouts = uniqueTextList(group.layouts.concat(housing.layout || ''))
+    group.sourceTypes = uniqueTextList(group.sourceTypes.concat(display.sourceLabel || (companyListing ? listing.source : '') || ''))
     group.listings.push(safeMapListingSummary(listing, display))
   })
   return Array.from(groups.values()).sort((left, right) => {
@@ -3955,6 +4143,24 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
   }
   assertFrontendListingAvailable(listing)
 
+  // 公司房源本就完整公开；旧客户端即使误走 sensitive-view，也只能收到服务器统一号码，
+  // 不能借兼容接口取回房源行里的原始私号。
+  if (isCompanyListing(listing)) {
+    const location = publicListingLocationFields(listing)
+    const companyPublic = companyPublicListingFields(listing)
+    return {
+      logs: listingLogs(db, listingId),
+      quota: brokerSensitiveUsage(db, userId),
+      sensitive: {
+        ...location,
+        areaText: `${location.city} · ${location.area}`,
+        ...companyPublic,
+        sensitiveLocked: false,
+        companyListing: true
+      }
+    }
+  }
+
   // 上传人查看自己上传的房源：直接展示地址/房东电话，不留痕、不耗每日额度、不计入敏感查看数。
   if (listing.uploaderId && String(listing.uploaderId) === String(userId)) {
     const ownLocation = listingLocationFields(listing)
@@ -3969,6 +4175,7 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
         ...listingViewingMethodFields(listing),
         viewingKeyLocation: listingViewingKeyLocation(listing),
         viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+        remark: normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo)),
         sensitiveLocked: false,
         ownListing: true
       }
@@ -4025,6 +4232,7 @@ function addSensitiveFootprint(db, userId, listingId, payload = {}) {
       ...listingViewingMethodFields(listing),
       viewingKeyLocation: listingViewingKeyLocation(listing),
       viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
+      remark: normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo)),
       sensitiveLocked: false
     }
   }
@@ -5114,16 +5322,1197 @@ function listingLocationFields(listing = {}) {
   }
 }
 
+const GUEST_PUBLIC_CHINESE_DIGITS = Object.freeze({
+  '零': '0', '〇': '0', '○': '0',
+  '一': '1', '壹': '1', '幺': '1',
+  '二': '2', '两': '2', '兩': '2', '贰': '2', '貳': '2',
+  '三': '3', '叁': '3', '參': '3',
+  '四': '4', '肆': '4',
+  '五': '5', '伍': '5',
+  '六': '6', '陆': '6', '陸': '6',
+  '七': '7', '柒': '7',
+  '八': '8', '捌': '8',
+  '九': '9', '玖': '9'
+})
+
+const GUEST_PUBLIC_DECIMAL_BASES = Object.freeze([
+    0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66,
+    0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20,
+    0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90,
+    0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0,
+    0xA9F0, 0xAA50, 0xABF0, 0x104A0, 0x10D30, 0x10D40, 0x11066, 0x110F0,
+    0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0,
+    0x116D0, 0x116DA, 0x11730, 0x118E0, 0x11950, 0x11BF0, 0x11C50,
+    0x11D50, 0x11DA0, 0x11DE0, 0x11F50, 0x16130, 0x16A60, 0x16AC0,
+    0x16B50, 0x16D70, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E5F1, 0x1E950,
+    0x1FBF0
+])
+
+function guestPublicDigitValue(character) {
+  const text = String(character || '')
+  const codePoint = text.codePointAt(0)
+  if (codePoint >= 0x30 && codePoint <= 0x39) return String(codePoint - 0x30)
+  const chineseDigit = GUEST_PUBLIC_CHINESE_DIGITS[character]
+  if (chineseDigit !== undefined) return chineseDigit
+  const base = GUEST_PUBLIC_DECIMAL_BASES.find((item) => codePoint >= item && codePoint <= item + 9)
+  if (base !== undefined) return String(codePoint - base)
+  const normalized = text.normalize('NFKC')
+  if (/^[0-9]$/.test(normalized)) return normalized
+  return base === undefined ? '' : String(codePoint - base)
+}
+
+function guestPublicChineseDigitValue(character) {
+  const digit = GUEST_PUBLIC_CHINESE_DIGITS[character]
+  return digit === undefined ? '' : digit
+}
+
+function guestPublicInvisibleOrCombiningCodePoint(codePoint) {
+  return codePoint === 0x00AD ||
+    (codePoint >= 0x0300 && codePoint <= 0x036F) ||
+    codePoint === 0x061C ||
+    (codePoint >= 0x115F && codePoint <= 0x1160) ||
+    (codePoint >= 0x17B4 && codePoint <= 0x17B5) ||
+    (codePoint >= 0x180B && codePoint <= 0x180F) ||
+    (codePoint >= 0x1AB0 && codePoint <= 0x1AFF) ||
+    (codePoint >= 0x1DC0 && codePoint <= 0x1DFF) ||
+    (codePoint >= 0x200B && codePoint <= 0x200F) ||
+    (codePoint >= 0x202A && codePoint <= 0x202E) ||
+    (codePoint >= 0x2060 && codePoint <= 0x206F) ||
+    (codePoint >= 0x20D0 && codePoint <= 0x20FF) ||
+    codePoint === 0x3164 ||
+    (codePoint >= 0xFE00 && codePoint <= 0xFE0F) ||
+    (codePoint >= 0xFE20 && codePoint <= 0xFE2F) ||
+    codePoint === 0xFEFF || codePoint === 0xFFA0 ||
+    (codePoint >= 0xFFF0 && codePoint <= 0xFFFB) ||
+    (codePoint >= 0x1BCA0 && codePoint <= 0x1BCA3) ||
+    (codePoint >= 0x1D173 && codePoint <= 0x1D17A) ||
+    (codePoint >= 0xE0000 && codePoint <= 0xE0FFF)
+}
+
+function stripGuestPublicInvisibleText(value) {
+  return Array.from(String(value === undefined || value === null ? '' : value).normalize('NFC'))
+    .filter((character) => !guestPublicInvisibleOrCombiningCodePoint(character.codePointAt(0)))
+    .join('')
+}
+
+function guestPublicSecurityNoise(character) {
+  const codePoint = String(character || '').codePointAt(0)
+  if (guestPublicInvisibleOrCombiningCodePoint(codePoint) || /\s/.test(character)) return true
+  if ((codePoint >= 0x21 && codePoint <= 0x2F) || (codePoint >= 0x3A && codePoint <= 0x40) ||
+    (codePoint >= 0x5B && codePoint <= 0x60) || (codePoint >= 0x7B && codePoint <= 0x7E)) return true
+  return (codePoint >= 0x2000 && codePoint <= 0x2BFF) ||
+    (codePoint >= 0x3000 && codePoint <= 0x303F) ||
+    (codePoint >= 0x3200 && codePoint <= 0x33FF) ||
+    (codePoint >= 0xFE10 && codePoint <= 0xFE1F) ||
+    (codePoint >= 0xFE30 && codePoint <= 0xFE6F) ||
+    (codePoint >= 0x1F000 && codePoint <= 0x1FAFF)
+}
+
+function guestPublicProjectionContext(source) {
+  return {
+    chineseDigitCount: source.reduce((count, item) => (
+      count + (guestPublicChineseDigitValue(item) ? 1 : 0)
+    ), 0)
+  }
+}
+
+function guestPublicProjectedDigit(source, sourceIndex, context) {
+  const character = source[sourceIndex]
+  const digit = guestPublicDigitValue(character)
+  const chineseDigit = guestPublicChineseDigitValue(character)
+  if (digit && !chineseDigit) return digit
+  if (chineseDigit) {
+    // 中文数字总量达到本地号码下限时才进入电话投影，并允许被字母、汉字、
+    // emoji 任意拆分；单个“文一路”“二房东”“三室”仍保持普通业务文字。
+    const chineseDigitCount = context && Number.isInteger(context.chineseDigitCount)
+      ? context.chineseDigitCount
+      : guestPublicProjectionContext(source).chineseDigitCount
+    return chineseDigitCount >= 7 ? chineseDigit : ''
+  }
+  const normalized = String(character || '').normalize('NFKC')
+  if (normalized !== 'O' && normalized !== 'o') return ''
+  let previousIndex = sourceIndex - 1
+  while (previousIndex >= 0 && guestPublicSecurityNoise(source[previousIndex])) previousIndex -= 1
+  let nextIndex = sourceIndex + 1
+  while (nextIndex < source.length && guestPublicSecurityNoise(source[nextIndex])) nextIndex += 1
+  return previousIndex >= 0 && nextIndex < source.length &&
+    guestPublicDigitValue(source[previousIndex]) && guestPublicDigitValue(source[nextIndex]) ? '0' : ''
+}
+
+function guestPublicSecurityProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    // 面积单位是数字语义边界，不能像普通符号一样丢弃，否则“17㎡三室”会被拼成“173室”误判房号。
+    if (character === '㎡') {
+      skeleton += character
+      positions.push(sourceIndex)
+      return
+    }
+    if (guestPublicSecurityNoise(character)) return
+    Array.from(character.normalize('NFKC')).forEach((normalizedCharacter) => {
+      skeleton += normalizedCharacter
+      positions.push(sourceIndex)
+    })
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicDigitOnlyProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (!digit) return
+    skeleton += digit
+    positions.push(sourceIndex)
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicLocalPhoneProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    if (guestPublicSecurityNoise(character)) return
+    if (!skeleton.endsWith('\u0001')) {
+      skeleton += '\u0001'
+      positions.push(sourceIndex)
+    }
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicDateProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    const normalized = character.normalize('NFKC')
+    if (/^[-/:.TtZz ]$/.test(normalized)) {
+      skeleton += normalized.toLowerCase()
+      positions.push(sourceIndex)
+      return
+    }
+    if (!skeleton.endsWith('\u0001')) {
+      skeleton += '\u0001'
+      positions.push(sourceIndex)
+    }
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicAddressProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    if (!/[\u3400-\u9fff]/u.test(character)) return
+    skeleton += character
+    positions.push(sourceIndex)
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicContactProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  const context = guestPublicProjectionContext(source)
+  let skeleton = ''
+  const positions = []
+  source.forEach((character, sourceIndex) => {
+    const digit = guestPublicProjectedDigit(source, sourceIndex, context)
+    if (digit) {
+      skeleton += digit
+      positions.push(sourceIndex)
+      return
+    }
+    const normalized = character.normalize('NFKC')
+    if (/^[A-Za-z]$/.test(normalized)) {
+      skeleton += normalized.toLowerCase()
+      positions.push(sourceIndex)
+      return
+    }
+    if (/[\u3400-\u9fff]/u.test(character)) {
+      skeleton += character
+      positions.push(sourceIndex)
+      return
+    }
+    // 数字后的原文分隔必须保留：既防止 `No. 701 2 rooms` 被压成 no7012，也防止
+    // `Room 701 near` 被压成 room701near 后把 near 的 n 贪作门牌字母后缀。
+    // 标签内部的 `p h o n e` / `R o o m` 仍会折叠；`701A` / `2nd` 因无原文分隔不会插标记。
+    if (!/\d/.test(skeleton[skeleton.length - 1] || '')) return
+    const nextSignificantIndex = source.slice(sourceIndex + 1).findIndex((nextCharacter, offset) => {
+      if (guestPublicProjectedDigit(source, sourceIndex + 1 + offset, context)) return true
+      const nextNormalized = nextCharacter.normalize('NFKC')
+      return /^[A-Za-z]$/.test(nextNormalized) || /[\u3400-\u9fff]/u.test(nextCharacter)
+    })
+    if (nextSignificantIndex >= 0 && !skeleton.endsWith('\u0001')) {
+      skeleton += '\u0001'
+      positions.push(sourceIndex)
+    }
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicProtectedNumericGroups(value) {
+  const groups = []
+  const addressGroups = []
+  const matchDigitPositions = (targetProjection, match) => {
+    const positions = new Set()
+    for (let index = match.index; index < match.index + match[0].length; index += 1) {
+      if (/\d/.test(targetProjection.skeleton[index] || '')) positions.add(targetProjection.positions[index])
+    }
+    return positions
+  }
+  const addGroup = (targetProjection, match) => {
+    const positions = matchDigitPositions(targetProjection, match)
+    if (positions.size) groups.push(positions)
+  }
+  const securityProjection = guestPublicSecurityProjection(value)
+  const dateProjection = guestPublicDateProjection(value)
+  const addValidDateMatches = (pattern) => {
+    let match
+    while ((match = pattern.exec(dateProjection.skeleton)) !== null) {
+      const year = Number(match[1])
+      const month = Number(match[2])
+      const day = Number(match[3])
+      const hour = match[4] === undefined ? 0 : Number(match[4])
+      const minute = match[5] === undefined ? 0 : Number(match[5])
+      const second = match[6] === undefined ? 0 : Number(match[6])
+      const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0
+      if (year >= 1900 && year <= 2200 && day >= 1 && day <= daysInMonth && hour <= 23 && minute <= 59 && second <= 59) {
+        addGroup(dateProjection, match)
+      }
+    }
+  }
+  addValidDateMatches(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[t ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?z?)?/g)
+  addValidDateMatches(/(?:^|\u0001)(\d{4})(\d{2})(\d{2})(?=$|\u0001)/g)
+  const businessPattern = /(\d{1,3})号板块(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(\d{1,2})室(\d{1,2})厅(\d{1,2})卫(\d{4})年/g
+  let business
+  while ((business = businessPattern.exec(securityProjection.skeleton)) !== null) {
+    const block = Number(business[1])
+    const transit = Number(business[2])
+    const minutes = Number(business[3])
+    const room = Number(business[4])
+    const hall = Number(business[5])
+    const bath = Number(business[6])
+    const year = Number(business[7])
+    if (block <= 999 && transit >= 1 && transit <= 30 && minutes <= 300 &&
+      room >= 1 && room <= 20 && hall >= 1 && hall <= 20 && bath >= 1 && bath <= 20 &&
+      year >= 1900 && year <= 2200) addGroup(securityProjection, business)
+  }
+  const layoutCountValue = (value) => {
+    const text = String(value || '')
+    const chinese = { 一: 1, 二: 2, 两: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+    return Object.prototype.hasOwnProperty.call(chinese, text) ? chinese[text] : Number(text)
+  }
+  const layoutSequencePattern = /(?:\d{1,5}(?:㎡|m2|平方米)(?:\d{1,2}|[一二两兩三四五六七八九])室(?:(?:\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(?:\d{1,2}|[一二两兩三四五六七八九])卫)?)+/gi
+  let sequence
+  while ((sequence = layoutSequencePattern.exec(securityProjection.skeleton)) !== null) {
+    const tokenPattern = /(\d{1,5})(?:㎡|m2|平方米)(\d{1,2}|[一二两兩三四五六七八九])室(?:(\d{1,2}|[一二两兩三四五六七八九])厅)?(?:(\d{1,2}|[一二两兩三四五六七八九])卫)?/gi
+    let token
+    let cursor = 0
+    let valid = true
+    while ((token = tokenPattern.exec(sequence[0])) !== null) {
+      if (token.index !== cursor) {
+        valid = false
+        break
+      }
+      cursor = token.index + token[0].length
+      const area = Number(token[1])
+      const room = layoutCountValue(token[2])
+      const hall = token[3] ? layoutCountValue(token[3]) : 0
+      const bath = token[4] ? layoutCountValue(token[4]) : 0
+      if (!(area > 0 && area <= 10000 && room >= 1 && room <= 20 &&
+        hall <= 20 && bath <= 20)) {
+        valid = false
+        break
+      }
+    }
+    if (valid && cursor === sequence[0].length) addGroup(securityProjection, sequence)
+  }
+  const transitPattern = /(\d{1,2})号(?:线|地铁)(\d{1,3})分钟(?:到|至)?(\d{1,4})路(?:公交|公交站|车)/g
+  let transitMatch
+  while ((transitMatch = transitPattern.exec(securityProjection.skeleton)) !== null) {
+    if (Number(transitMatch[1]) >= 1 && Number(transitMatch[1]) <= 30 &&
+      Number(transitMatch[2]) <= 300 && Number(transitMatch[3]) <= 9999) {
+      addGroup(securityProjection, transitMatch)
+    }
+  }
+  const addressProjection = guestPublicAddressProjection(value)
+  ;[
+    /[\u3400-\u9fff]{0,40}(?:路|街|巷|弄|道)[0-9]{1,4}(?:号|號)/g,
+    /[0-9]{1,3}(?:栋|棟|幢|座|号楼|號樓|楼|樓)(?:[0-9]{1,2}(?:单元|單元))?(?:[0-9]{2,4}(?:室|房|号房|號房|户|戶|门|門))?/g
+  ].forEach((pattern) => {
+    let match
+    while ((match = pattern.exec(addressProjection.skeleton)) !== null) {
+      const positions = matchDigitPositions(addressProjection, match)
+      if (positions.size) addressGroups.push(positions)
+    }
+  })
+  return { groups, addressGroups }
+}
+
+function guestPublicCompositeDigitPatterns(listing = {}) {
+  const digitToken = (value) => guestPublicDigitOnlyProjection(guestPublicHouseSecretToken(value)).skeleton
+  const building = digitToken(firstText(listing.building, listing.buildingNo, listing.buildingNumber))
+  const unit = digitToken(firstText(listing.unit, listing.unitNo, listing.unitNumber))
+  const room = digitToken(firstText(listing.roomNumber, listing.roomNo, listing.houseNo, listing.doorNo))
+  const tokens = [building, unit, room]
+  const seen = new Set()
+  return [tokens, tokens.slice(0, 2), tokens.slice(1)]
+    .filter((items) => items.length >= 2 && items.every((item) => /^\d{1,4}$/.test(item)))
+    .map((items) => ({
+      digits: items.join(''),
+      tokenBoundaries: items.slice(0, -1).reduce((boundaries, item) => {
+        boundaries.push((boundaries[boundaries.length - 1] || 0) + item.length)
+        return boundaries
+      }, [])
+    }))
+    .filter((item) => {
+      if (seen.has(item.digits)) return false
+      seen.add(item.digits)
+      return true
+    })
+    .map((item) => ({
+      pattern: new RegExp(guestPublicEscapeRegExp(item.digits), 'g'),
+      tokenBoundaries: item.tokenBoundaries
+    }))
+}
+
+function guestPublicObfuscatedAddressPatterns(listing = {}) {
+  const token = (value) => guestPublicAddressProjection(guestPublicHouseSecretToken(value)).skeleton
+  const entries = [
+    {
+      value: token(firstText(listing.building, listing.buildingNo, listing.buildingNumber)),
+      suffix: '(?:栋|棟|幢|座|号楼|號樓|楼|樓)'
+    },
+    {
+      value: token(firstText(listing.unit, listing.unitNo, listing.unitNumber)),
+      suffix: '(?:单元|單元)'
+    },
+    {
+      value: token(firstText(listing.roomNumber, listing.roomNo, listing.houseNo, listing.doorNo)),
+      suffix: '(?:室|房|号房|號房|户|戶|门|門)'
+    }
+  ]
+  return entries
+    .filter((item) => /^[0-9十百千拾佰仟]{1,4}$/.test(item.value))
+    .map((item) => ({
+      pattern: new RegExp(`${guestPublicEscapeRegExp(item.value)}[\u3400-\u9fff]{1,24}${item.suffix}`, 'g'),
+      boundedAddressToken: true
+    }))
+}
+
+function guestPublicEnglishAddressPattern() {
+  return /(room|rm|apartment|apt|unit|building|bldg|bld|house|door|suite|ste|flat|floor|fl|level|lvl|tower|block|no)\u0001*(?:no\u0001*)?(\d{1,4}(?:\u0001\d{1,4}){0,2}(?:(?:st|nd|rd|th)|[a-z])?|[a-z]\d{0,4}(?:\u0001\d{1,4}){0,2})/gi
+}
+
+function guestPublicEnglishAddressMatchIsValid(projection, match) {
+  const keyword = String(match && match[1] || '')
+  const target = String(match && match[2] || '')
+  if (!keyword || !target) return false
+  const targetOffset = match[0].lastIndexOf(target)
+  const bridge = match[0].slice(keyword.length, targetOffset).replace(/\u0001/g, '').toLowerCase()
+  // `Room No 702` 是强门牌语义；但 `Room not now` 不能把 no+t 拆成“编号 t”。
+  if (bridge === 'no' && !/^\d/.test(target)) return false
+  const keywordStartPosition = projection.positions[match.index]
+  const keywordEndPosition = projection.positions[match.index + keyword.length - 1]
+  const targetStartPosition = projection.positions[match.index + targetOffset]
+  const targetEndPosition = projection.positions[match.index + targetOffset + target.length - 1]
+  if (![keywordStartPosition, keywordEndPosition, targetStartPosition, targetEndPosition].every(Number.isInteger)) return false
+  const previousCharacter = projection.source[keywordStartPosition - 1] || ''
+  const nextCharacter = projection.source[targetEndPosition + 1] || ''
+  if (/^[A-Za-z0-9]$/.test(previousCharacter.normalize('NFKC'))) return false
+  if (/^[A-Za-z0-9]$/.test(nextCharacter.normalize('NFKC'))) return false
+  // 单字母门牌必须与英文标签在原文中有分隔；否则 rooms/community/not 等普通单词会被误判。
+  if (/^[A-Za-z]$/.test(target) && targetStartPosition <= keywordEndPosition + 1) return false
+  return true
+}
+
+function guestPublicEnglishAddressMatches(projection) {
+  const pattern = guestPublicEnglishAddressPattern()
+  let match
+  while ((match = pattern.exec(projection.skeleton)) !== null) {
+    if (guestPublicEnglishAddressMatchIsValid(projection, match)) return true
+  }
+  return false
+}
+
+function redactGuestPublicAlphaContacts(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+    .replace(/(^|[^A-Za-z0-9_])p[^A-Za-z0-9_\u3400-\u9fff]{1,4}h[^A-Za-z0-9_\u3400-\u9fff]{1,4}o[^A-Za-z0-9_\u3400-\u9fff]{1,4}n[^A-Za-z0-9_\u3400-\u9fff]{1,4}e[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+    .replace(/(^|[^A-Za-z0-9_])(?:w[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|v[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|we[^A-Za-z0-9_\u3400-\u9fff]{1,4}chat|wei[^A-Za-z0-9_\u3400-\u9fff]{1,4}xin)[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
+    .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]{0,4}信(?:\s*号)?|微\s*号|v\s*信)[^A-Za-z0-9_\u3400-\u9fff]{0,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, ' ')
+}
+
+function redactGuestPublicDirectContacts(value) {
+  return redactGuestPublicAlphaContacts(value)
+    .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1 ')
+    .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1 ')
+}
+
+function redactGuestPublicStandaloneFloorTokens(value) {
+  return String(value || '').replace(
+    /(^|[^A-Za-z0-9])(?:\d{1,3}f|f\d{1,3})(?![A-Za-z0-9])/gi,
+    (match, boundary, offset, source) => {
+      const before = source.slice(0, offset + boundary.length)
+      const after = source.slice(offset + match.length)
+      const layoutBefore = /(?:loft|复式|複式|跃层|躍層)\s*$/i.test(before)
+      const layoutAfter = /^\s*(?:loft\b|复式|複式|跃层|躍層)/i.test(after)
+      return layoutBefore || layoutAfter ? match : `${boundary} `
+    }
+  )
+}
+
+function redactGuestPublicDirectAddresses(value) {
+  return redactGuestPublicStandaloneFloorTokens(value)
+    .replace(/(^|[^A-Za-z0-9])(?:#|＃)[\s:：-]*[0-9０-９]{2,5}(?![A-Za-z0-9０-９])/gi, '$1 ')
+    .replace(/(^|[^A-Za-z0-9])\d{1,3}(?:st|nd|rd|th)\s*(?:floor|fl|lvl)(?![A-Za-z0-9])/gi, '$1 ')
+    .replace(/(^|[^0-9０-９])(?:第\s*)?[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)(?!\s*(?:复式|複式|跃层|躍層|loft))/gi, '$1 ')
+    .replace(/(?:楼层|樓層)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}/gi, ' ')
+    .replace(/(?:\d{1,3}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+)(?:栋|棟|幢|座|号楼|號樓|单元|單元)/gi, ' ')
+    .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,6})(?:室|房|号房|號房|户|戶|门|門)/gi, ' ')
+    .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
+    .replace(/(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|栋号|棟號|幢号|幢號|单元号|單元號)[:：\s-]*[A-Za-z0-9Oo〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺-]{1,12}/gi, ' ')
+    .replace(/(?:路|街|巷|弄|道)\d{1,4}(?:号|號)/g, ' ')
+}
+
+function redactGuestPublicSecuritySpans(value, options = {}) {
+  const contactSafeValue = redactGuestPublicDirectContacts(value)
+  const directSafeValue = options.includeAddress === true
+    ? redactGuestPublicDirectAddresses(contactSafeValue)
+    : contactSafeValue
+  const projection = guestPublicSecurityProjection(directSafeValue)
+  const digitProjection = guestPublicDigitOnlyProjection(directSafeValue)
+  const localPhoneProjection = guestPublicLocalPhoneProjection(directSafeValue)
+  const protectedNumeric = guestPublicProtectedNumericGroups(directSafeValue)
+  const allowedPhones = options.allowedPhones instanceof Set ? options.allowedPhones : new Set()
+  const patterns = [
+    { projection: digitProjection, pattern: /(?:86)?1[3-9]\d{9}/g, phone: true, numericContact: true, overlap: true },
+    { projection: digitProjection, pattern: /0\d{9,11}/g, phone: true, numericContact: true, overlap: true },
+    { projection: digitProjection, pattern: /(?:400|800)\d{7}/g, numericContact: true, overlap: true },
+    { projection: localPhoneProjection, pattern: /\d{7,8}/g, numericContact: true, protectAddress: true }
+  ]
+  const contactProjection = guestPublicContactProjection(directSafeValue)
+  patterns.push(
+    {
+      projection: contactProjection,
+      pattern: /(?:(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|联络|聯絡|联系|聯繫)|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel))[^\d]{0,12}\d(?:[^\d]{0,8}\d){4,7}/gi,
+      preserveEnglishBoundary: true
+    },
+    {
+      projection: contactProjection,
+      pattern: /(?:微(?:[\u3400-\u9fff]{0,4})?\u0001*信号?|微号|(?:^|[^a-z])(?:wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x)|v\u0001*信)\u0001*([a-z][a-z0-9]{3,31})/gi,
+      contactIdentifier: true,
+      preserveEnglishBoundary: true
+    },
+    {
+      projection: contactProjection,
+      pattern: /(?:(?:联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东微信|房東微信|微信号?|微号)\u0001*|(?:^|[^a-z])(?:telephone|phone|mobile|contact|call|tel)\u0001+)([a-z][a-z0-9]{3,31})/gi,
+      contactIdentifier: true,
+      preserveEnglishBoundary: true
+    }
+  )
+  if (options.includeAddress === true) {
+    // 直接地址预清洗会改变字符串长度，后续投影必须基于同一份字符串，
+    // 否则 span 坐标会错位并误删相邻的合法公开文案。
+    const addressProjection = guestPublicAddressProjection(directSafeValue)
+    patterns.push(
+      { projection: addressProjection, pattern: /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g },
+      { projection: addressProjection, pattern: /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g },
+      { projection: addressProjection, pattern: /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi },
+      { projection: addressProjection, pattern: /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g },
+      { projection: contactProjection, pattern: guestPublicEnglishAddressPattern(), englishAddressLabel: true },
+      { projection: contactProjection, pattern: /(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/gi },
+      { projection: contactProjection, pattern: /[a-z]\d{2,4}(?:室|房|号房|號房)/gi }
+    )
+    guestPublicCompositeDigitPatterns(options.listing || {}).forEach(({ pattern, tokenBoundaries }) => {
+      patterns.push({ projection: digitProjection, pattern, compositeAddress: true, tokenBoundaries })
+    })
+    guestPublicObfuscatedAddressPatterns(options.listing || {}).forEach(({ pattern, boundedAddressToken }) => {
+      patterns.push({ projection: addressProjection, pattern, boundedAddressToken })
+    })
+  }
+  const spans = []
+  const numericRemovePositions = new Set()
+  patterns.forEach(({ projection: targetProjection = projection, pattern, phone, overlap, compositeAddress, contactIdentifier, numericContact, protectAddress, tokenBoundaries, boundedAddressToken, preserveEnglishBoundary, englishAddressLabel }) => {
+    let match
+    while ((match = pattern.exec(targetProjection.skeleton)) !== null) {
+      const previous = targetProjection.skeleton[match.index - 1] || ''
+      const next = targetProjection.skeleton[match.index + match[0].length] || ''
+      let start = targetProjection.positions[match.index]
+      if (englishAddressLabel && !guestPublicEnglishAddressMatchIsValid(targetProjection, match)) continue
+      if (preserveEnglishBoundary && /^[^a-z]/i.test(match[0][0] || '') &&
+        /^(?:telephone|phone|mobile|contact|call|tel|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x)/i.test(match[0].slice(1))) {
+        start = targetProjection.positions[match.index + 1]
+      }
+      const originalMatchEndIndex = match.index + match[0].length - 1
+      let matchEndIndex = originalMatchEndIndex
+      if (contactIdentifier && match[1]) {
+        const identifierStartIndex = match.index + match[0].lastIndexOf(match[1])
+        for (let index = identifierStartIndex + 1; index <= originalMatchEndIndex; index += 1) {
+          const previousSourcePosition = targetProjection.positions[index - 1]
+          const currentSourcePosition = targetProjection.positions[index]
+          const sourceGap = targetProjection.source.slice(previousSourcePosition + 1, currentSourcePosition).join('')
+          if (!/\s/u.test(sourceGap) || /^[a-z]$/i.test(targetProjection.skeleton[index] || '')) continue
+          matchEndIndex = index - 1
+          break
+        }
+        if (matchEndIndex < originalMatchEndIndex) pattern.lastIndex = matchEndIndex + 1
+      }
+      const end = targetProjection.positions[matchEndIndex]
+      if (numericContact) {
+        const numericPositions = targetProjection.positions.slice(match.index, matchEndIndex + 1)
+        const containedByOneGroup = protectedNumeric.groups.some((group) => numericPositions.every((position) => group.has(position)))
+        const containedByOneAddress = protectedNumeric.addressGroups.some((group) => numericPositions.every((position) => group.has(position)))
+        if (containedByOneGroup || containedByOneAddress) {
+          if (overlap) pattern.lastIndex = match.index + 1
+          continue
+        }
+        const belongsToGroup = (position) => protectedNumeric.groups.some((group) => group.has(position))
+        const belongsToAddress = (position) => protectedNumeric.addressGroups.some((group) => group.has(position))
+        const removablePositions = numericPositions.filter((position) => (
+          !belongsToGroup(position) && !belongsToAddress(position)
+        ))
+        if (!removablePositions.length) {
+          if (overlap) pattern.lastIndex = match.index + 1
+          continue
+        }
+        removablePositions.forEach((position) => numericRemovePositions.add(position))
+        if (overlap) pattern.lastIndex = match.index + 1
+        continue
+      }
+      if (compositeAddress && Array.isArray(tokenBoundaries)) {
+        const separatorsAreStructural = tokenBoundaries.every((boundary) => {
+          const leftPosition = targetProjection.positions[match.index + boundary - 1]
+          const rightPosition = targetProjection.positions[match.index + boundary]
+          const separator = targetProjection.source.slice(leftPosition + 1, rightPosition).join('')
+          return !/(?:室|厅|卫|㎡|平方米|m\s*[²2]|号板块|號板塊|号(?:线|地铁)|號線|分钟|分鐘|公交|年|元|公里|km)/i.test(separator.normalize('NFKC'))
+        })
+        if (!separatorsAreStructural) continue
+      }
+      if (boundedAddressToken && /[0-9十百千拾佰仟]/.test(previous)) {
+        continue
+      }
+      const previousPosition = targetProjection.positions[match.index - 1]
+      const nextPosition = targetProjection.positions[match.index + match[0].length]
+      // skeleton 会剥离空格、emoji 和不可见字符；边界必须按原文位置判断，
+      // 否则同一字段中的多个号码会被拼成一长串数字，反而全部绕过清洗。
+      const previousDigitContinues = /\d/.test(previous) && Number.isInteger(previousPosition) && previousPosition + 1 === start
+      const nextDigitContinues = /\d/.test(next) && Number.isInteger(nextPosition) && end + 1 === nextPosition
+      const localPhone = phone && /^\d{11,13}$/.test(match[0]) ? match[0].slice(-11) : match[0]
+      // 只有“原文中独立出现”的服务器统一号码才允许保留；长数字或多个混淆号码
+      // 即使在 skeleton 中相连，也必须删掉手机号形状的片段。
+      if (phone && allowedPhones.has(localPhone) && !previousDigitContinues && !nextDigitContinues) {
+        if (overlap) pattern.lastIndex = match.index + 1
+        continue
+      }
+      const sourceSlice = Number.isInteger(start) && Number.isInteger(end)
+        ? targetProjection.source.slice(start, end + 1).join('')
+        : ''
+      const areaLayoutRoom = !phone && !compositeAddress && (
+        (/^[mM]2[1-9](?:室|房)$/.test(match[0]) && /\d/.test(previous)) ||
+        /\d+(?:㎡|m\s*[²2]|平方米)\s*[一二两三四五六七八九1-9](?:室|房)/i.test(sourceSlice)
+      )
+      if (areaLayoutRoom) {
+        if (overlap) pattern.lastIndex = match.index + 1
+        continue
+      }
+      if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start, end })
+      if (overlap) pattern.lastIndex = match.index + 1
+    }
+  })
+  if (!spans.length && !numericRemovePositions.size) return projection.source.join('')
+  spans.sort((left, right) => left.start - right.start || left.end - right.end)
+  const merged = []
+  spans.forEach((span) => {
+    const previous = merged[merged.length - 1]
+    if (previous && span.start <= previous.end + 1) previous.end = Math.max(previous.end, span.end)
+    else merged.push({ ...span })
+  })
+  let spanIndex = 0
+  let result = ''
+  projection.source.forEach((character, index) => {
+    const span = merged[spanIndex]
+    if (span && index >= span.start && index <= span.end) {
+      if (index === span.start) result += ' '
+      if (index === span.end) spanIndex += 1
+      return
+    }
+    if (numericRemovePositions.has(index)) {
+      result += ' '
+      return
+    }
+    result += character
+  })
+  return result
+}
+
+function normalizeGuestPublicSecurityText(value) {
+  return stripGuestPublicInvisibleText(value).normalize('NFKC').trim()
+}
+
+const GUEST_PUBLIC_PROJECTION_CACHE_LIMIT = 4096
+const guestPublicSensitiveFragmentCache = new Map()
+const guestPublicTextCache = new Map()
+
+function guestPublicProjectionCacheSet(cache, key, value) {
+  if (cache.has(key)) cache.delete(key)
+  cache.set(key, value)
+  while (cache.size > GUEST_PUBLIC_PROJECTION_CACHE_LIMIT) {
+    cache.delete(cache.keys().next().value)
+  }
+  return value
+}
+
+function guestPublicSecurityContextKey(listing = {}) {
+  // 这里必须覆盖所有参与敏感片段、组合房号与公开别名判断的字段。
+  // 任一地址、电话、看房凭据或备注变化都会生成新键，旧投影绝不会套到新原文。
+  return JSON.stringify([
+    listing.city,
+    listing.district,
+    listing.area,
+    listing.block,
+    listing.community,
+    listing.building,
+    listing.buildingNo,
+    listing.buildingNumber,
+    listing.unit,
+    listing.unitNo,
+    listing.unitNumber,
+    listing.roomNumber,
+    listing.roomNo,
+    listing.houseNo,
+    listing.doorNo,
+    listing.roomAddress,
+    listing.landlordPhone,
+    listing.contact,
+    listing.phone,
+    listing.mobile,
+    listing.contactPhone,
+    listing.ownerPhone,
+    listing.viewingPassword,
+    listing.showingPassword,
+    listing.password,
+    listing.viewingKeyLocation,
+    listing.keyLocation,
+    listing.address,
+    listing.fullAddress,
+    listing.locationSummary,
+    listing.remark,
+    listing.note,
+    listing.memo
+  ].map((item) => String(item === undefined || item === null ? '' : item)))
+}
+
+function guestPublicSensitiveFragments(listing = {}) {
+  const cacheKey = guestPublicSecurityContextKey(listing)
+  if (guestPublicSensitiveFragmentCache.has(cacheKey)) {
+    return guestPublicSensitiveFragmentCache.get(cacheKey)
+  }
+  const normalized = (values) => uniqueTextList(values.map((item) => (
+    normalizeGuestPublicSecurityText(item)
+  )))
+  const alwaysPublicLocationValues = new Set(normalized([
+    listing.city,
+    listing.district,
+    listing.area
+  ]))
+  normalized([listing.community]).forEach((item) => {
+    // 仅服务端小区库的精确命中可兼容存量 address===community；审核通过或坐标已核验
+    // 只证明房源可上架，不能证明任意地址字符串都可公开。
+    if (isKnownCommunity(item) && !guestPublicIntrinsicUnsafe(item)) {
+      alwaysPublicLocationValues.add(item)
+    }
+  })
+  const hardSecrets = normalized([
+    listing.building,
+    listing.buildingNo,
+    listing.buildingNumber,
+    listing.unit,
+    listing.unitNo,
+    listing.unitNumber,
+    listing.roomNumber,
+    listing.roomNo,
+    listing.houseNo,
+    listing.doorNo,
+    listing.roomAddress,
+    listing.landlordPhone,
+    listing.contact,
+    listing.phone,
+    listing.mobile,
+    listing.contactPhone,
+    listing.ownerPhone,
+    listing.viewingPassword,
+    listing.showingPassword,
+    listing.password,
+    listing.viewingKeyLocation,
+    listing.keyLocation
+  // 一位数楼栋/单元同样是精确地址片段；短值由边界正则处理，不会误删“17号板块”“17㎡”。
+  ]).filter((item) => item.length >= 1)
+  const addressSecrets = normalized([
+    listing.address,
+    listing.fullAddress,
+    listing.locationSummary
+  ])
+    .filter((item) => item.length >= 2)
+    .filter((item) => !alwaysPublicLocationValues.has(item))
+  let publicCommunityBase = normalizeGuestPublicSecurityText(
+    redactGuestPublicSecuritySpans(listing.community, { includeAddress: true, listing })
+  )
+  let publicBlockBase = normalizeGuestPublicSecurityText(
+    redactGuestPublicSecuritySpans(listing.block, { includeAddress: true, listing })
+  )
+  addressSecrets.forEach((fragment) => {
+    publicCommunityBase = publicCommunityBase.split(fragment).join(' ').replace(/\s+/g, ' ').trim()
+    publicBlockBase = publicBlockBase.split(fragment).join(' ').replace(/\s+/g, ' ').trim()
+  })
+  const publicNoteAliases = new Set(normalized([
+    listing.city,
+    listing.district,
+    listing.area,
+    publicBlockBase,
+    publicCommunityBase
+  ]))
+  const noteSecrets = normalized([
+    listing.remark,
+    listing.note,
+    listing.memo
+  ])
+    .filter((item) => item.length >= 2)
+    .filter((item) => !publicNoteAliases.has(item))
+  // 完整地址类字段永远不能用待清洗的 block/community 自证公开；仅备注与合法公开名称重合时例外。
+  const fragments = uniqueTextList(hardSecrets.concat(addressSecrets, noteSecrets)).sort((left, right) => right.length - left.length)
+  return guestPublicProjectionCacheSet(guestPublicSensitiveFragmentCache, cacheKey, fragments)
+}
+
+function guestPublicSecretBoundaryClass() {
+  return '[\\s,，;；|/·:：_\\-—–()（）]'
+}
+
+function guestPublicEscapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function guestPublicShortSecretPattern(fragment) {
+  const secret = normalizeGuestPublicSecurityText(fragment)
+  if (!/^(?:[A-Za-z]\d{1,4}|\d{1,4})$/.test(secret)) return null
+  const boundary = guestPublicSecretBoundaryClass()
+  return new RegExp(`(^|${boundary})${guestPublicEscapeRegExp(secret)}(?=$|${boundary})`, 'gi')
+}
+
+function guestPublicHouseSecretToken(value) {
+  return normalizeGuestPublicSecurityText(value)
+    .replace(/(?:栋|幢|座|号楼|单元|室|房|号房)$/i, '')
+}
+
+function guestPublicCompositeSecretPatterns(listing = {}) {
+  const building = guestPublicHouseSecretToken(firstText(listing.building, listing.buildingNo, listing.buildingNumber))
+  const unit = guestPublicHouseSecretToken(firstText(listing.unit, listing.unitNo, listing.unitNumber))
+  const room = guestPublicHouseSecretToken(firstText(listing.roomNumber, listing.roomNo, listing.houseNo, listing.doorNo))
+  const tokens = [building, unit, room]
+  const candidates = [tokens, tokens.slice(0, 2), tokens.slice(1)]
+    .filter((items) => items.length >= 2 && items.every((item) => /^(?:[A-Za-z]\d{1,4}|\d{1,4})$/.test(item)))
+  const boundary = guestPublicSecretBoundaryClass()
+  return candidates.map((items) => new RegExp(
+    `(^|${boundary})${items.map(guestPublicEscapeRegExp).join(`${boundary}+`)}(?=$|${boundary})`,
+    'gi'
+  ))
+}
+
+function guestPublicCompositeSecretMatches(value, listing = {}) {
+  const text = normalizeGuestPublicSecurityText(value)
+  return Boolean(text) && guestPublicCompositeSecretPatterns(listing).some((pattern) => pattern.test(text))
+}
+
+function guestPublicIntrinsicUnsafe(value) {
+  const rawText = stripGuestPublicInvisibleText(value).trim()
+  const text = rawText.normalize('NFKC').trim()
+  if (!text) return false
+  if (listingRemarkContainsContact(text)) return true
+  // 投影必须基于原文；先做 NFKC 会把“㎡”变成“m2”，再和“三室”拼成伪房号 m23室。
+  const skeleton = guestPublicSecurityProjection(rawText).skeleton
+  const digitProjection = guestPublicDigitOnlyProjection(rawText)
+  const localPhoneProjection = guestPublicLocalPhoneProjection(rawText)
+  const protectedNumeric = guestPublicProtectedNumericGroups(rawText)
+  const hasUnsafeNumericContact = (pattern, targetProjection = digitProjection, protectAddress = false) => {
+    let match
+    while ((match = pattern.exec(targetProjection.skeleton)) !== null) {
+      const positions = targetProjection.positions.slice(match.index, match.index + match[0].length)
+      const containedByOneGroup = protectedNumeric.groups.some((group) => positions.every((position) => group.has(position)))
+      const containedByOneAddress = protectedNumeric.addressGroups.some((group) => positions.every((position) => group.has(position)))
+      if (containedByOneGroup || containedByOneAddress) continue
+      const belongsToGroup = (position) => protectedNumeric.groups.some((group) => group.has(position))
+      const belongsToAddress = (position) => protectedNumeric.addressGroups.some((group) => group.has(position))
+      if (positions.some((position) => !belongsToGroup(position) && !belongsToAddress(position))) return true
+    }
+    return false
+  }
+  const addressSkeleton = guestPublicAddressProjection(rawText).skeleton
+  const contactProjection = guestPublicContactProjection(rawText)
+  const contactSkeleton = contactProjection.skeleton
+  if (hasUnsafeNumericContact(/(?:86)?1[3-9]\d{9}/g)) return true
+  if (hasUnsafeNumericContact(/0\d{9,11}/g)) return true
+  if (hasUnsafeNumericContact(/(?:400|800)\d{7}/g)) return true
+  if (hasUnsafeNumericContact(/\d{7,8}/g, localPhoneProjection, true)) return true
+  if (/(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|联络|聯絡|联系|聯繫|telephone|phone|mobile|contact|call|tel)[^\d]{0,12}\d(?:[^\d]{0,8}\d){4,7}/i.test(contactSkeleton)) return true
+  if (/(?:微\u0001*信号?|微号|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x|v\u0001*信)\u0001*[a-z][a-z0-9]{3,31}/i.test(contactSkeleton)) return true
+  if (/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))/i.test(text)) return true
+  const compact = skeleton.replace(/(\d+(?:\.\d+)?)(?:㎡|m2|平方米)(?=[1-9一二两三四五六七八九](?:室|房))/gi, '$1面积')
+  // “2室1厅”是可公开户型，不按房号处理；只拦栋/幢/单元，以及三位以上或字母开头的具体房号。
+  if (/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/i.test(compact)) return true
+  if (/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/i.test(compact)) return true
+  const projectionHasUnsafeAddress = (targetProjection, patterns) => patterns.some((pattern) => {
+    let match
+    while ((match = pattern.exec(targetProjection.skeleton)) !== null) {
+      const start = targetProjection.positions[match.index]
+      const end = targetProjection.positions[match.index + match[0].length - 1]
+      const sourceSlice = Number.isInteger(start) && Number.isInteger(end)
+        ? targetProjection.source.slice(start, end + 1).join('')
+        : ''
+      if (/\d+(?:㎡|m\s*[²2]|平方米)\s*[一二两三四五六七八九1-9](?:室|房)/i.test(sourceSlice)) continue
+      return true
+    }
+    return false
+  })
+  if (projectionHasUnsafeAddress(guestPublicAddressProjection(rawText), [
+    /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g,
+    /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g,
+    /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi,
+    /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g
+  ])) return true
+  if (guestPublicEnglishAddressMatches(contactProjection)) return true
+  if (/(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/i.test(contactSkeleton)) return true
+  if (/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/.test(text)) return true
+  if (/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/i.test(text)) return true
+  if (/(?:路|街|巷|弄|道)\d{1,4}号/.test(compact)) return true
+  return /(?:门锁|开门|取钥匙|拿钥匙|钥匙|密码|门禁|联系房东|房东电话|手机号)/.test(text)
+}
+
+function guestPublicSensitiveFragmentMatches(value, fragment) {
+  const text = normalizeGuestPublicSecurityText(value)
+  const secret = normalizeGuestPublicSecurityText(fragment)
+  if (!text || !secret) return false
+  // 短纯数字/字母房号可能同时出现在“101国际城”“17㎡”等合法公共名称中；
+  // 仅在整字段完全相等时按硬敏感值拦截，结构化“17栋/101室/9-8-701”另由专门正则处理。
+  const shortPattern = guestPublicShortSecretPattern(secret)
+  if (shortPattern) return shortPattern.test(text)
+  const textSkeleton = guestPublicSecurityProjection(value).skeleton
+  const secretSkeleton = guestPublicSecurityProjection(fragment).skeleton
+  return text.indexOf(secret) !== -1 ||
+    (secretSkeleton.length >= 2 && textSkeleton.indexOf(secretSkeleton) !== -1) ||
+    guestPublicProjectedSubsequenceSpans(value, fragment).length > 0
+}
+
+function guestPublicProjectedSubsequenceSpans(value, fragment) {
+  const projection = guestPublicSecurityProjection(value)
+  const secretSkeleton = guestPublicSecurityProjection(fragment).skeleton
+  if (secretSkeleton.length < 6 || projection.skeleton.length < secretSkeleton.length) return []
+  const maxExtra = Math.max(8, Math.min(32, secretSkeleton.length * 2))
+  const spans = []
+  for (let startIndex = 0; startIndex < projection.skeleton.length; startIndex += 1) {
+    if (projection.skeleton[startIndex].toLowerCase() !== secretSkeleton[0].toLowerCase()) continue
+    let sourceIndex = startIndex
+    let secretIndex = 1
+    let extras = 0
+    while (sourceIndex + 1 < projection.skeleton.length && secretIndex < secretSkeleton.length && extras <= maxExtra) {
+      sourceIndex += 1
+      if (projection.skeleton[sourceIndex].toLowerCase() === secretSkeleton[secretIndex].toLowerCase()) {
+        secretIndex += 1
+      } else {
+        extras += 1
+      }
+    }
+    if (secretIndex !== secretSkeleton.length || extras > maxExtra) continue
+    const start = projection.positions[startIndex]
+    const end = projection.positions[sourceIndex]
+    if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start, end })
+    startIndex = sourceIndex
+  }
+  return spans
+}
+
+function redactGuestPublicProjectedFragment(value, fragment) {
+  const projection = guestPublicSecurityProjection(value)
+  const secretSkeleton = guestPublicSecurityProjection(fragment).skeleton
+  if (!secretSkeleton) return projection.source.join('')
+  const spans = []
+  let offset = 0
+  while (offset <= projection.skeleton.length - secretSkeleton.length) {
+    const index = projection.skeleton.indexOf(secretSkeleton, offset)
+    if (index < 0) break
+    const start = projection.positions[index]
+    const end = projection.positions[index + secretSkeleton.length - 1]
+    if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start, end })
+    offset = index + Math.max(1, secretSkeleton.length)
+  }
+  guestPublicProjectedSubsequenceSpans(value, fragment).forEach((span) => spans.push(span))
+  if (!spans.length) return projection.source.join('')
+  return projection.source.map((character, index) => (
+    spans.some((span) => index >= span.start && index <= span.end) ? '' : character
+  )).join('')
+}
+
+function guestPublicTextUnsafe(value, listing = {}) {
+  const text = normalizeGuestPublicSecurityText(value)
+  if (!text) return false
+  if (guestPublicIntrinsicUnsafe(value)) return true
+  if (guestPublicCompositeSecretMatches(text, listing)) return true
+  return guestPublicSensitiveFragments(listing).some((fragment) => guestPublicSensitiveFragmentMatches(text, fragment))
+}
+
+function redactGuestPublicText(value, listing = {}) {
+  // 检测时做 NFKC 归一；输出仅剥离不可见控制符并保留原文，否则“17㎡”会被改写成“17m2”。
+  let knownSafeText = stripGuestPublicInvisibleText(value)
+  guestPublicCompositeSecretPatterns(listing).forEach((pattern) => {
+    knownSafeText = knownSafeText.replace(pattern, '$1 ')
+  })
+  guestPublicSensitiveFragments(listing).forEach((fragment) => {
+    if (!guestPublicSensitiveFragmentMatches(knownSafeText, fragment)) return
+    const shortPattern = guestPublicShortSecretPattern(fragment)
+    knownSafeText = shortPattern
+      ? knownSafeText.replace(shortPattern, '$1 ')
+      : redactGuestPublicProjectedFragment(knownSafeText, fragment)
+  })
+  let text = redactGuestPublicSecuritySpans(knownSafeText, { includeAddress: true, listing }).trim()
+  if (!text) return ''
+  guestPublicCompositeSecretPatterns(listing).forEach((pattern) => {
+    text = text.replace(pattern, '$1 ')
+  })
+  guestPublicSensitiveFragments(listing).forEach((fragment) => {
+    if (!guestPublicSensitiveFragmentMatches(text, fragment)) return
+    const shortPattern = guestPublicShortSecretPattern(fragment)
+    text = shortPattern ? text.replace(shortPattern, '$1 ') : redactGuestPublicProjectedFragment(text, fragment)
+  })
+  return text
+    .replace(/(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}/g, ' ')
+    .replace(/0\d{2,3}(?:[\s\-()./—–·]*\d){7,8}/g, ' ')
+    .replace(/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, ' ')
+    .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+    .replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+    .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, ' ')
+    .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b(?:\s*[:：号])?/gi, '$1 ')
+    .replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)(?:\s*[:：号])?/gi, '$1 ')
+    .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]*信(?:\s*号)?|微\s*号|v\s*信)(?:\s*[:：号])?/gi, ' ')
+    .replace(/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/gi, ' ')
+    .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/gi, ' ')
+    .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
+    .replace(/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/gi, ' ')
+    .replace(/(?:路|街|巷|弄|道)\d{1,4}号/g, ' ')
+    .replace(/(?:门锁|开门|取钥匙|拿钥匙|钥匙|密码|门禁|联系房东|房东电话|手机号)(?:[:：\s]*[^\s,，;；]*)?/g, ' ')
+    .replace(/[\s·|,/，；;]+/g, ' ')
+    .replace(/^[\s.。:：\-—]+|[\s.。:：\-—]+$/g, '')
+    .trim()
+}
+
+function safeGuestPublicText(value, listing = {}, fallback = '') {
+  const cacheKey = JSON.stringify([
+    guestPublicSecurityContextKey(listing),
+    String(value === undefined || value === null ? '' : value),
+    String(fallback === undefined || fallback === null ? '' : fallback)
+  ])
+  if (guestPublicTextCache.has(cacheKey)) return guestPublicTextCache.get(cacheKey)
+  const text = redactGuestPublicText(value, listing)
+  if (text && !guestPublicTextUnsafe(text, listing)) {
+    return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, text)
+  }
+  const fallbackText = redactGuestPublicText(fallback, listing)
+  const result = fallbackText && !guestPublicTextUnsafe(fallbackText, listing) ? fallbackText : ''
+  return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, result)
+}
+
+function configuredCompanyContactPhones() {
+  return Array.from(new Set(((config.company && config.company.contactPhones) || [])
+    .map((item) => String(item || '').trim())
+    .filter((item) => /^1[3-9]\d{9}$/.test(item))))
+}
+
+function isValidPublicDateTimeText(value) {
+  const text = String(value === undefined || value === null ? '' : value).trim()
+  let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z?)?$/)
+  if (!match) match = text.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = match[4] === undefined ? 0 : Number(match[4])
+  const minute = match[5] === undefined ? 0 : Number(match[5])
+  const second = match[6] === undefined ? 0 : Number(match[6])
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return year >= 1900 && year <= 2200 && day >= 1 && day <= daysInMonth
+}
+
+function safeCompanyPublicText(value, fallback = '', options = {}) {
+  const allowedPhones = new Set(configuredCompanyContactPhones())
+  const sanitize = (input) => {
+    const original = stripGuestPublicInvisibleText(input)
+    if (isValidPublicDateTimeText(original)) return original
+    if (options.kind === 'access' && /^\d{7,8}[#*]?$/.test(original.trim())) return original
+    const protectedPhones = []
+    let candidate = original
+    Array.from(allowedPhones).forEach((phone, index) => {
+      let token = `\uE000${String.fromCodePoint(0xE100 + index)}\uE001`
+      // 哨兵必须在本次原文中不存在，避免用户/存量文案碰巧包含固定占位字面量
+      // 而被恢复阶段误改写。追加私用区字符且不含数字，不参与电话投影。
+      while (candidate.includes(token)) token += '\uE002'
+      const pattern = new RegExp(`(^|\\D)${guestPublicEscapeRegExp(phone)}(?!\\d)`, 'g')
+      candidate = candidate.replace(pattern, (matched, prefix) => `${prefix}${token}`)
+      protectedPhones.push({ token, phone })
+    })
+    // 先完整移除常规格式，避免多个号码在纯数字投影中交叉匹配后只留下区号残片；
+    // 任意字符拆分、异体数字等剩余情况再交给值级投影清洗。
+    const sanitizeUnprotected = (segment) => redactGuestPublicSecuritySpans(segment
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1')
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1')).trim()
+    if (protectedPhones.length) {
+      const phoneTokens = new Map(protectedPhones.map((entry) => [entry.token, entry.phone]))
+      const tokenPattern = new RegExp(`(${protectedPhones.map((entry) => guestPublicEscapeRegExp(entry.token)).join('|')})`, 'g')
+      candidate = candidate.split(tokenPattern).map((segment) => (
+        phoneTokens.has(segment) ? segment : sanitizeUnprotected(segment)
+      )).join('')
+    } else {
+      candidate = sanitizeUnprotected(candidate)
+    }
+    protectedPhones.forEach(({ token, phone }) => {
+      candidate = candidate.split(token).join(phone)
+    })
+    return candidate
+  }
+  let text = sanitize(value)
+  const safeFallback = sanitize(fallback)
+  if (!text) return safeFallback
+  text = text.replace(/(^|[^\d])((?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9})(?!\d)/g, (matched, prefix, phoneText) => {
+    const digits = String(phoneText || '').replace(/\D/g, '')
+    const phone = digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
+    return allowedPhones.has(phone) ? matched : prefix
+  })
+  text = text
+    .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1')
+    .replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, '$1 ')
+    .replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s,，;；:：\-—]+|[\s,，;；:：\-—]+$/g, '')
+    .trim()
+  return text || safeFallback
+}
+
+function companyPublicDisplayFields(listing = {}, db = {}) {
+  const display = listingDisplayFields(listing, db)
+  const features = (display.features || []).map((item) => safeCompanyPublicText(item)).filter(Boolean)
+  const safeDisplay = Object.keys(display).reduce((result, key) => {
+    const value = display[key]
+    result[key] = typeof value === 'string'
+      ? safeCompanyPublicText(value, '', { kind: key === 'lastVerifiedAt' ? 'date' : 'generic' })
+      : value
+    return result
+  }, {})
+  return {
+    ...safeDisplay,
+    features,
+    featureText: safeCompanyPublicText(featureText(features))
+  }
+}
+
+function publicListingHousingFields(listing = {}) {
+  const rawRentMode = firstText(listing.rentMode, listing.type)
+  if (isCompanyListing(listing)) {
+    const rentMode = safeCompanyPublicText(rawRentMode)
+    const type = safeCompanyPublicText(firstText(listing.type, listing.rentMode), rentMode)
+    const room = safeCompanyPublicText(listing.room)
+    const hall = safeCompanyPublicText(listing.hall)
+    const bath = safeCompanyPublicText(listing.bath)
+    const fallbackLayout = [rentMode, room, hall, bath].filter(Boolean).join('')
+    return {
+      layout: safeCompanyPublicText(listing.layout, fallbackLayout),
+      rentMode,
+      type,
+      room,
+      hall,
+      bath
+    }
+  }
+  const rentMode = safeGuestPublicText(rawRentMode, listing)
+  const type = safeGuestPublicText(firstText(listing.type, listing.rentMode), listing, rentMode)
+  const room = safeGuestPublicText(listing.room, listing)
+  const hall = safeGuestPublicText(listing.hall, listing)
+  const bath = safeGuestPublicText(listing.bath, listing)
+  const fallbackLayout = [rentMode, room, hall, bath].filter(Boolean).join('')
+  return {
+    layout: safeGuestPublicText(listing.layout, listing, fallbackLayout),
+    rentMode,
+    type,
+    room,
+    hall,
+    bath
+  }
+}
+
 function publicListingLocationFields(listing = {}) {
-  const city = listing.city || '杭州'
-  const area = normalizeDistrict(listing.district || listing.area || '待分区')
+  const rawCity = listing.city || '杭州'
+  const rawArea = normalizeDistrict(listing.district || listing.area || '待分区')
+  if (isCompanyListing(listing)) {
+    const city = safeCompanyPublicText(rawCity, '杭州', { kind: 'address' }) || '杭州'
+    const area = safeCompanyPublicText(rawArea, '待分区', { kind: 'address' }) || '待分区'
+    const block = safeCompanyPublicText(listing.block, area || '待板块', { kind: 'address' }) || area || '待板块'
+    const community = safeCompanyPublicText(listing.community, '', { kind: 'address' })
+    const building = safeCompanyPublicText(firstText(listing.building, listing.buildingNo, listing.buildingNumber), '', { kind: 'address' })
+    const unit = safeCompanyPublicText(firstText(listing.unit, listing.unitNo, listing.unitNumber), '', { kind: 'address' })
+    const roomNumber = safeCompanyPublicText(firstText(listing.roomNumber, listing.roomNo, listing.houseNo, listing.doorNo), '', { kind: 'address' })
+    return {
+      city,
+      district: area,
+      area,
+      block,
+      community,
+      locationSummary: structuredLocation({ city, area, block, community, building, unit, roomNumber })
+    }
+  }
+  const city = safeGuestPublicText(rawCity, listing, '杭州') || '杭州'
+  const area = safeGuestPublicText(rawArea, listing, '待分区') || '待分区'
+  const block = safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块'
+  const community = safeGuestPublicText(listing.community, listing)
   return {
     city,
     district: area,
     area,
-    block: listing.block || area || '待板块',
-    community: listing.community || '',
-    locationSummary: structuredLocation({ ...listing, city, area })
+    block,
+    community,
+    locationSummary: [city, area, community].filter(Boolean).join('')
   }
 }
 
@@ -5212,18 +6601,19 @@ function storedLandlordCommissionPercent(listing = {}) {
 function companyPublicListingFields(listing = {}) {
   if (!isCompanyListing(listing)) return {}
   const location = listingLocationFields(listing)
-  const companyPhones = ((config.company && config.company.contactPhones) || [])
-    .map((item) => String(item || '').trim())
-    .filter((item) => /^1[3-9]\d{9}$/.test(item))
+  const companyPhones = configuredCompanyContactPhones()
   const contact = companyPhones[0] || ''
-  const viewingPassword = firstText(listing.viewingPassword, listing.showingPassword, listing.password)
-  const remark = safePublicListingRemark(listing)
-  const room = firstText(listing.roomAddress, location.roomAddress)
-  const address = firstText(listing.address, [location.city, location.area, location.community, room].filter(Boolean).join(''))
+  const viewingPassword = safeCompanyPublicText(firstText(listing.viewingPassword, listing.showingPassword, listing.password), '', { kind: 'access' })
+  const remark = safeCompanyPublicText(normalizeListingRemark(firstText(listing.remark, listing.note, listing.memo)))
+  const building = safeCompanyPublicText(location.building, '', { kind: 'address' })
+  const unit = safeCompanyPublicText(location.unit, '', { kind: 'address' })
+  const roomNumber = safeCompanyPublicText(location.roomNumber, '', { kind: 'address' })
+  const room = safeCompanyPublicText(firstText(listing.roomAddress, location.roomAddress), '', { kind: 'address' })
+  const address = safeCompanyPublicText(firstText(listing.address, [location.city, location.area, location.community, room].filter(Boolean).join('')), '', { kind: 'address' })
   return {
-    building: location.building,
-    unit: location.unit,
-    roomNumber: location.roomNumber,
+    building,
+    unit,
+    roomNumber,
     roomAddress: room,
     address,
     contact,
@@ -5232,25 +6622,24 @@ function companyPublicListingFields(listing = {}) {
     companyContactPhoneText: contact,
     viewingPassword,
     showingPassword: viewingPassword,
-    viewingKeyLocation: listingViewingKeyLocation(listing),
+    viewingKeyLocation: safeCompanyPublicText(listingViewingKeyLocation(listing), '', { kind: 'access' }),
+    ...listingViewingMethodFields(listing),
     remark
   }
 }
 
 function publicListingTitle(listing = {}, location = publicListingLocationFields(listing)) {
-  const community = location.community || listing.community || ''
+  const community = location.community || ''
   if (community) return community
-  return `${location.area || '房源'}${listing.layout ? ` · ${listing.layout}` : ''}`
+  const housing = publicListingHousingFields(listing)
+  return `${location.area || '房源'}${housing.layout ? ` · ${housing.layout}` : ''}`
 }
 
 function publicLocationSearchText(listing = {}) {
-  return [
-    listing.city,
-    listing.district,
-    listing.area,
-    listing.block,
-    listing.community
-  ].map((item) => String(item || '')).join('')
+  const location = publicListingLocationFields(listing)
+  return [location.city, location.district, location.area, location.block, location.community]
+    .map((item) => String(item || ''))
+    .join('')
 }
 
 function hasAnyOwn(source = {}, fields = []) {
@@ -6191,6 +7580,7 @@ module.exports = {
   groupState,
   mapCommunities,
   mapPins,
+  publicListingMapCoordinate: guestPublicMapCoordinateFromListing,
   adminListings,
   adminUsers,
   expiredListings,

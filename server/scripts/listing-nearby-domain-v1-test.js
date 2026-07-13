@@ -170,6 +170,8 @@ function run() {
   assert.strictEqual(preview.listings.length, 6, '详情预览最多返回 6 套')
   assert.strictEqual(preview.hasMore, true, '第 7 套应触发查看全部入口')
   assert.deepStrictEqual(preview.listings.map((item) => item.id), ['N1', 'N2', 'N3', 'N4', 'N5', 'N6'], '必须按距离由近到远')
+  const publicOwnerDistance = preview.listings.find((item) => item.id === 'N2').distanceKm
+  assert.ok(publicOwnerDistance >= 1.1 && publicOwnerDistance <= 1.12, '合作房源附近距离必须按公开约一公里粒度坐标计算，不能使用逐套精确点')
   assert.ok(preview.listings.every((item) => Number(item.distanceKm) <= 3), '不得返回 3 公里外房源')
   assert.ok(preview.listings.every((item) => item.distanceText), '卡片必须有服务端距离文案')
   assert.ok(preview.listings.every((item) => item.sourceLabel && item.layout && item.features && item.price), '卡片必须包含来源、户型、特点与租金')
@@ -183,10 +185,10 @@ function run() {
   assert.strictEqual(all.hasMore, false)
   assert.deepStrictEqual(all.listings.map((item) => item.id), ['N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'N7'])
 
-  const guest = domain.nearbyListings(db, 'ANCHOR', { all: true, companyOnly: true })
-  assert.deepStrictEqual(guest.listings.map((item) => item.id), ['N1', 'N4', 'N7'], '游客候选池只能保留公司房源')
-  assert.strictEqual(guest.total, 3, '游客 total/hasMore 不能泄露合作房源数量')
-  assert.strictEqual(guest.hasMore, false)
+  const explicitCompanyOnly = domain.nearbyListings(db, 'ANCHOR', { all: true, companyOnly: true })
+  assert.deepStrictEqual(explicitCompanyOnly.listings.map((item) => item.id), ['N1', 'N4', 'N7'], '显式 companyOnly 候选池只能保留公司房源')
+  assert.strictEqual(explicitCompanyOnly.total, 3, '显式 companyOnly 的 total 必须只统计公司房源')
+  assert.strictEqual(explicitCompanyOnly.hasMore, false)
 
   const sameCoordinateDb = {
     ...makeDb(),

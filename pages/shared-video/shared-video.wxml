@@ -5,10 +5,6 @@
       <view wx:if="{{loading}}" class="share-placeholder">
         <view class="placeholder-title">正在加载房源视频</view>
       </view>
-      <view wx:elif="{{accessRequired}}" class="share-placeholder">
-        <view class="placeholder-title">登录后查看这套合作房源</view>
-        <button class="brand-button" bindtap="goLogin">去登录</button>
-      </view>
       <view wx:elif="{{loadFailed}}" class="share-placeholder">
         <view class="placeholder-title">视频暂时加载失败</view>
         <button class="brand-button" bindtap="retryLoad">重新加载</button>
@@ -20,6 +16,7 @@
         wx:elif="{{listing.videoUrl}}"
         class="share-video"
         src="{{listing.videoUrl}}"
+        binderror="onVideoPlaybackError"
         controls
         show-center-play-btn
         object-fit="cover"

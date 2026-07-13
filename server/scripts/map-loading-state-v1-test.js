@@ -4,6 +4,7 @@ const path = require('path')
 
 const repoRoot = path.join(__dirname, '..', '..')
 const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+const apiClientPath = require.resolve(path.join(repoRoot, 'utils', 'api-client.js'))
 const mapPagePath = require.resolve(path.join(repoRoot, 'pages', 'map', 'map.js'))
 const mapWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'map', 'map.wxml'), 'utf8')
 const { createPendingFilterEnvelope } = require(path.join(repoRoot, 'utils', 'pending-filter-storage.js'))
@@ -13,6 +14,21 @@ let authToken = ''
 let authSessionKey = 'guest-map-start'
 let toasts = []
 let storageValues = {}
+let publicReadFallbackSessionKey = ''
+const authInvalidationListeners = new Set()
+
+const apiClient = require(apiClientPath)
+apiClient.isPublicReadAuthFallbackContinuation = (requestSessionKey) => (
+  Boolean(publicReadFallbackSessionKey) && requestSessionKey === publicReadFallbackSessionKey
+)
+apiClient.subscribeAuthInvalidation = (listener) => {
+  authInvalidationListeners.add(listener)
+  return () => authInvalidationListeners.delete(listener)
+}
+
+function emitAuthInvalidation(event) {
+  Array.from(authInvalidationListeners).forEach((listener) => listener(event))
+}
 
 global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
@@ -201,6 +217,65 @@ async function run() {
   await flushPromises()
   assert.strictEqual(latePage.data.communities.length, 0, '会话变化后迟到的账号A地图响应不得被采纳')
 
+  authToken = 'TOKEN-MAP-EXPIRED'
+  authSessionKey = 'auth-map-expired'
+  const expiredMap = deferred()
+  let expiredMapCalls = 0
+  const expiredMapDefinition = loadDefinition({
+    getMapCommunities() {
+      expiredMapCalls += 1
+      return expiredMapCalls === 1
+        ? expiredMap.promise
+        : Promise.resolve([mapCommunity('游客恢复地图小区')])
+    }
+  })
+  const expiredMapPage = makePage(expiredMapDefinition)
+  expiredMapPage.authSessionSnapshot = authSessionKey
+  expiredMapPage.loadCommunities({ recenter: false })
+  authToken = ''
+  authSessionKey = 'guest-map-after-expiry'
+  publicReadFallbackSessionKey = 'auth-map-expired'
+  expiredMap.resolve([mapCommunity('旧会话匿名返回小区')])
+  await flushPromises()
+  await flushPromises()
+  assert.strictEqual(expiredMapCalls, 2, '地图公共读取静默清态后必须用当前游客会话重新请求')
+  assert.strictEqual(expiredMapPage.data.communities[0].community, '游客恢复地图小区', '地图不得因失效 token 清态而停留空白')
+  assert.strictEqual(expiredMapPage.data.loading, false, '游客地图恢复请求完成后必须退出 loading')
+  publicReadFallbackSessionKey = ''
+
+  authToken = 'TOKEN-MAP-CHILD-REVOKE'
+  authSessionKey = 'auth-map-child-revoke'
+  let childRevokeMapCalls = 0
+  const childRevokeMapDefinition = loadDefinition({
+    getMapCommunities() {
+      childRevokeMapCalls += 1
+      return Promise.resolve([mapCommunity('公共地图恢复小区')])
+    }
+  })
+  const childRevokeMapPage = makePage(childRevokeMapDefinition)
+  childRevokeMapPage.authSessionSnapshot = authSessionKey
+  childRevokeMapPage.setData({
+    communities: [mapCommunity('旧账号地图小区')],
+    filters: Object.assign({}, childRevokeMapPage.data.filters, {
+      needId: 'NEED-MAP-OLD',
+      listingIds: ['LISTING-MAP-OLD']
+    })
+  })
+  childRevokeMapPage.bindAuthInvalidationListener()
+  authToken = ''
+  authSessionKey = 'guest-map-child-revoke'
+  emitAuthInvalidation({
+    reason: 'unauthorized',
+    fromSessionKey: 'auth-map-child-revoke',
+    toSessionKey: authSessionKey
+  })
+  assert.strictEqual(childRevokeMapPage.data.filters.needId, '', '收藏子组件 401 清态后地图必须立即移除旧账号 needId')
+  assert.deepStrictEqual(childRevokeMapPage.data.filters.listingIds, [], '地图不得保留旧账号房源 ID 范围')
+  await flushPromises()
+  assert.strictEqual(childRevokeMapCalls, 1)
+  assert.strictEqual(childRevokeMapPage.data.communities[0].community, '公共地图恢复小区')
+  childRevokeMapPage.onUnload()
+
   authToken = 'TOKEN-MAP-UNLOAD'
   authSessionKey = 'auth-map-unload'
   const unloadMap = deferred()
@@ -293,6 +368,23 @@ async function run() {
   assert.strictEqual(ownPendingMapPage.data.filters.needId, 'NEED-MAP-A', '同会话地图必须消费自己的 needId')
   assert.deepStrictEqual(ownPendingMapPage.data.filters.listingIds, ['LISTING-MAP-A'], '同会话地图必须消费自己的房源 ID')
 
+  authToken = 'TOKEN-PENDING-MAP-SWITCH-A'
+  authSessionKey = 'SESSION-PENDING-MAP-SWITCH-A'
+  const switchedPendingMapPage = makePage(pendingMapDefinition)
+  switchedPendingMapPage.authSessionSnapshot = authSessionKey
+  authToken = 'TOKEN-PENDING-MAP-SWITCH-B'
+  authSessionKey = 'SESSION-PENDING-MAP-SWITCH-B'
+  storageValues[pendingMapKey] = createPendingFilterEnvelope({
+    needId: 'NEED-MAP-B-FIRST',
+    listingIds: ['LISTING-MAP-B-FIRST'],
+    sourceType: '二房东房源'
+  }, authSessionKey)
+  switchedPendingMapPage.onShow()
+  await flushPromises()
+  assert.strictEqual(switchedPendingMapPage.data.filters.needId, 'NEED-MAP-B-FIRST', '换号后必须按当前会话 owner 消费账号B首次合法地图筛选')
+  assert.deepStrictEqual(switchedPendingMapPage.data.filters.listingIds, ['LISTING-MAP-B-FIRST'], '助手换号后首次跳地图不得退化为全量地图')
+  assert.strictEqual(storageValues[pendingMapKey], undefined, '换号后的合法地图筛选消费后必须一次性清理')
+
   storageShouldThrow = true
   const storageDefinition = loadDefinition({
     getMapCommunities() { return Promise.resolve([]) }
@@ -312,19 +404,19 @@ async function run() {
     guestPage.setData({ 'filters.sourceType': sourceType })
     guestPage.loadCommunities({ recenter: false })
     await flushPromises()
-    assert.strictEqual(guestPage.data.loginRequired, true, `游客筛选${sourceType}且结果为空时必须明确引导登录`)
+    assert.strictEqual(guestPage.data.loginRequired, undefined, `游客筛选${sourceType}不得出现登录门槛`)
 
     authToken = 'TOKEN-MAP-LOGIN'
     authSessionKey = `auth-${sourceType}`
     guestPage.onShow()
     await flushPromises()
-    assert.strictEqual(guestPage.data.loginRequired, false, `登录返回地图后必须清除${sourceType}游客提示`)
+    assert.strictEqual(guestPage.data.loginRequired, undefined, `登录前后${sourceType}筛选都只展示真实结果`)
   }
 
   assert.ok(/wx:if="\{\{loadFailed\}\}"/.test(mapWxml), '地图模板必须持续显示加载失败状态')
   assert.ok(/bindtap="retryMap"/.test(mapWxml), '地图模板必须绑定重试入口')
   assert.ok(/!loading && !loadFailed && !communities\.length/.test(mapWxml), '地图故障时不得显示零房源空态')
-  assert.ok(/loginRequired/.test(mapWxml) && /bindtap="goLogin"/.test(mapWxml), '地图合作房源空态必须提供登录按钮')
+  assert.ok(!/loginRequired|bindtap="goLogin"|登录后查看业主和二房东/.test(mapWxml), '地图合作房源筛选不得保留登录空态')
 
   console.log('map-loading-state-v1-test passed')
 }

@@ -78,7 +78,7 @@ function run() {
   assert.strictEqual(convertedSecondLandlord.commissionRate, 20, 'mock second-landlord listing should recompute uploader rate to 20')
   assert.strictEqual(convertedSecondLandlord.features.indexOf(TEXT.noCommission), -1, 'mock listing should remove no-commission feature')
 
-  const detail = mockData.getListingDetail(company.id)
+  const detail = mockData.getListingDetail(company.id, { viewerId: 'U004' })
   assert.strictEqual(detail.noCommission, false, 'mock detail should expose commission-enabled state')
   assert.ok(!Object.prototype.hasOwnProperty.call(detail, 'commissionRate'), 'mock detail should remove legacy commissionRate')
   assert.ok(!Object.prototype.hasOwnProperty.call(detail, 'commissionText'), 'mock detail should remove legacy commissionText')

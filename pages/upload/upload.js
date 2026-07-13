@@ -907,6 +907,7 @@ Page({
     if (video) {
       payload.videoUrl = video.fileUrl
       payload.videoKey = video.objectKey
+      payload.videoUploadTicket = video.uploadTicket || ''
     }
     return payload
   },

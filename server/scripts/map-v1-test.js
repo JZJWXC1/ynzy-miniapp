@@ -179,6 +179,8 @@ const rows = communities()
 assert.strictEqual(communities({ rentMin: '', rentMax: '' }).length, rows.length, '空租金参数不应误过滤地图结果')
 const jingyang = byCommunity(rows, '京漾东韵府')
 assert(jingyang, '标准小区坐标可以进入地图')
+assert.strictEqual(jingyang.coordinateVerified, false, '合作房源公共地图不得把小区点标成逐套精确坐标')
+assert.strictEqual(jingyang.coordinateLevel, 'approximate', '合作房源公共地图统一按小区近似位置展示')
 assert.strictEqual(jingyang.listingCount, 2, '同小区多套房源应聚合为一个点')
 assert.deepStrictEqual(jingyang.activeListingIds.sort(), ['L1', 'L2'], '聚合点应返回有效房源 id')
 assert.strictEqual(jingyang.minRent, 2200, 'minRent 应正确')
@@ -199,8 +201,13 @@ assert.strictEqual(approximate.coordinateLevel, 'approximate', '腾讯地理编�
 assert.strictEqual(approximate.coordinateCalloutNote, '近似位置', '近似坐标 callout 应注明近似位置')
 const blockCenter = byCommunity(rows, '板块中心小区')
 assert(blockCenter, '地理编码失败后的板块中心兜底应进入地图')
-assert.strictEqual(blockCenter.coordinateLevel, 'block-center', '板块中心点应标记 block-center')
-assert(byCommunity(rows, '管理员确认小区'), 'coordinateVerified 为 true 的管理员坐标可以进入地图')
+assert.strictEqual(blockCenter.coordinateLevel, 'approximate', '合作房源公共地图不得暴露内部板块中心坐标等级')
+assert.strictEqual(blockCenter.coordinateCalloutNote, '近似位置', '合作房源板块中心兜底对外只标记为小区近似位置')
+const adminVerified = byCommunity(rows, '管理员确认小区')
+assert(adminVerified, '内部已核实坐标的合作房源仍可按近似小区位置进入地图')
+assert.strictEqual(adminVerified.coordinateVerified, false, '逐套管理员核实坐标不得在公共地图标为精确')
+assert.strictEqual(adminVerified.coordinateLevel, 'approximate', '逐套管理员核实坐标对外必须降为近似位置')
+assert.notStrictEqual(adminVerified.coordinateSource, 'admin-verified-coordinate', '公共地图不得泄露逐套管理员核实坐标来源')
 assert(!byCommunity(rows, '待审核小区'), '待审核房源不会进入地图')
 assert(!byCommunity(rows, '已失效小区'), '已失效房源不会进入地图')
 assert(!byCommunity(rows, '华丰欣苑'), '7 天未维护房源不会进入地图')
@@ -227,6 +234,93 @@ assert.strictEqual(listingIdFiltered[0].community, '管理员确认小区', 'lis
 const listingIdArrayFiltered = communities({ listingIds: ['L1', 'L2'] })
 assert.strictEqual(listingIdArrayFiltered.length, 1, 'listingIds 应兼容数组形式')
 assert.strictEqual(listingIdArrayFiltered[0].listingCount, 2, 'listingIds 数组筛选后聚合数量应正确')
+
+function mapRowForOrder(listings, community) {
+  return domain.mapCommunities({ users: [{ id: 'U001', name: '测试中介' }], listings })
+    .find((item) => item.community === community)
+}
+
+const mixedCompany = listing({
+  id: 'L-MIXED-COMPANY',
+  community: '混合顺序小区',
+  source: '公司房源',
+  ownerType: '公司房源',
+  houseSourceType: '公司房源',
+  companyListing: true,
+  isCompanyListing: true,
+  noCommission: true,
+  mapLatitude: 30.411,
+  mapLongitude: 120.411,
+  coordinateSource: 'tencent-geocode contact privateid 19900007777',
+  coordinateVerified: false,
+  coordinateLevel: 'approximate',
+  coordinateStatus: '近似位置 contact privateid 19900007777'
+})
+const mixedPartner = listing({
+  id: 'L-MIXED-PARTNER',
+  community: '混合顺序小区',
+  mapLatitude: 30.499,
+  mapLongitude: 120.499,
+  coordinateSource: 'admin-verified-coordinate',
+  coordinateVerified: true,
+  coordinateLevel: 'verified'
+})
+const mixedCompanyFirst = mapRowForOrder([mixedCompany, mixedPartner], '混合顺序小区')
+const mixedPartnerFirst = mapRowForOrder([mixedPartner, mixedCompany], '混合顺序小区')
+assert(mixedCompanyFirst && mixedPartnerFirst, '公司/合作混合小区必须进入地图')
+assert.strictEqual(mixedCompanyFirst.latitude, mixedPartnerFirst.latitude, '混合小区代表点不能受房源遍历顺序影响')
+assert.strictEqual(mixedCompanyFirst.longitude, mixedPartnerFirst.longitude, '混合小区经度不能受房源遍历顺序影响')
+assert.strictEqual(mixedCompanyFirst.latitude, mixedCompany.mapLatitude, '公司房源公开坐标必须优先于合作房源近似点')
+assert.strictEqual(mixedCompanyFirst.coordinateSource, 'approximate-geocode', '公司公开坐标来源必须映射到固定服务端枚举')
+assert.strictEqual(mixedCompanyFirst.coordinateStatus, '近似位置', '公司公开坐标状态必须由可信级别固定生成')
+assert.ok(!JSON.stringify(mixedCompanyFirst).includes('privateid') && !JSON.stringify(mixedCompanyFirst).includes('19900007777'), '公司公开坐标元数据不得夹带联系方式')
+
+const partnerApproximate = listing({
+  id: 'L-PARTNER-APPROXIMATE',
+  community: '合作顺序小区',
+  mapLatitude: 30.433,
+  mapLongitude: 120.433,
+  coordinateSource: 'tencent-geocode',
+  coordinateVerified: false,
+  coordinateLevel: 'approximate'
+})
+const partnerVerified = listing({
+  id: 'L-PARTNER-VERIFIED',
+  community: '合作顺序小区',
+  mapLatitude: 30.486,
+  mapLongitude: 120.486,
+  coordinateSource: 'admin-verified-coordinate',
+  coordinateVerified: true,
+  coordinateLevel: 'verified'
+})
+const partnerApproximateFirst = mapRowForOrder([partnerApproximate, partnerVerified], '合作顺序小区')
+const partnerVerifiedFirst = mapRowForOrder([partnerVerified, partnerApproximate], '合作顺序小区')
+assert(partnerApproximateFirst && partnerVerifiedFirst, '纯合作房源小区必须进入地图')
+assert.strictEqual(partnerApproximateFirst.latitude, partnerVerifiedFirst.latitude, '纯合作小区代表点不能受房源遍历顺序影响')
+assert.strictEqual(partnerApproximateFirst.longitude, partnerVerifiedFirst.longitude, '纯合作小区经度不能受房源遍历顺序影响')
+assert.strictEqual(partnerApproximateFirst.latitude, 30.49, '内部可信合作坐标只可经约一公里粒度投影后作为代表点')
+assert.strictEqual(partnerApproximateFirst.coordinateVerified, false, '合作房源代表点始终不得对外标成逐套精确')
+
+const exactCoordinateProbe = domain.mapCommunities({
+  users: [{ id: 'U001', name: '测试中介' }],
+  listings: [partnerVerified]
+}, {
+  north: 30.4865,
+  south: 30.4855,
+  east: 120.4865,
+  west: 120.4855
+})
+assert.strictEqual(exactCoordinateProbe.length, 0, '地图边界筛选不得以合作房源内部精确点形成探测 oracle')
+const publicCoordinateProbe = domain.mapCommunities({
+  users: [{ id: 'U001', name: '测试中介' }],
+  listings: [partnerVerified]
+}, {
+  north: 30.491,
+  south: 30.489,
+  east: 120.491,
+  west: 120.489
+})
+assert.strictEqual(publicCoordinateProbe.length, 1, '地图边界筛选应按合作房源公开近似点命中')
 
 function walk(value, visitor) {
   if (Array.isArray(value)) {

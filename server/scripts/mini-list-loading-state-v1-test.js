@@ -4,6 +4,7 @@ const path = require('path')
 
 const repoRoot = path.join(__dirname, '..', '..')
 const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+const apiClientPath = require.resolve(path.join(repoRoot, 'utils', 'api-client.js'))
 const indexPagePath = require.resolve(path.join(repoRoot, 'pages', 'index', 'index.js'))
 const listingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'listings', 'listings.js'))
 const myListingsPagePath = require.resolve(path.join(repoRoot, 'pages', 'my-listings', 'my-listings.js'))
@@ -18,6 +19,21 @@ let toasts = []
 let authToken = 'TOKEN-LIST-BASE'
 let authSessionKey = 'auth-list-base'
 let storageValues = {}
+let publicReadFallbackSessionKey = ''
+const authInvalidationListeners = new Set()
+
+const apiClient = require(apiClientPath)
+apiClient.isPublicReadAuthFallbackContinuation = (requestSessionKey) => (
+  Boolean(publicReadFallbackSessionKey) && requestSessionKey === publicReadFallbackSessionKey
+)
+apiClient.subscribeAuthInvalidation = (listener) => {
+  authInvalidationListeners.add(listener)
+  return () => authInvalidationListeners.delete(listener)
+}
+
+function emitAuthInvalidation(event) {
+  Array.from(authInvalidationListeners).forEach((listener) => listener(event))
+}
 
 global.getApp = () => ({ globalData: { authToken, authSessionKey } })
 
@@ -193,6 +209,64 @@ async function run() {
   assert.strictEqual(lateHomePage.data.listings.length, 0, '账号变化后迟到的首页房源不得落地')
   assert.strictEqual(lateHomePage.data.todayTasks.length, 0, '账号变化后迟到的首页任务不得落地')
 
+  authToken = 'TOKEN-HOME-EXPIRED'
+  authSessionKey = 'auth-home-expired'
+  const expiredHome = deferred()
+  let expiredHomeCalls = 0
+  const expiredHomeDefinition = loadDefinition(indexPagePath, {
+    getHomeListings() {
+      expiredHomeCalls += 1
+      return expiredHomeCalls === 1
+        ? expiredHome.promise
+        : Promise.resolve([{ id: 'HOME-GUEST-RECOVERED' }])
+    }
+  })
+  const expiredHomePage = makePage(expiredHomeDefinition)
+  expiredHomePage.authSessionSnapshot = authSessionKey
+  expiredHomePage.loadHomeListings()
+  authToken = ''
+  authSessionKey = 'guest-home-after-expiry'
+  publicReadFallbackSessionKey = 'auth-home-expired'
+  expiredHome.resolve([{ id: 'HOME-OLD-SESSION-ANONYMOUS-RESULT' }])
+  await flushPromises()
+  await flushPromises()
+  assert.strictEqual(expiredHomeCalls, 2, '公共首页读取触发静默清态后必须用当前游客会话重新读取一次')
+  assert.deepStrictEqual(expiredHomePage.data.listings.map((item) => item.id), ['HOME-GUEST-RECOVERED'], '首页不得因失效 token 清态而停留空白')
+  assert.strictEqual(expiredHomePage.data.listingsLoading, false, '首页游客恢复请求完成后必须退出 loading')
+  publicReadFallbackSessionKey = ''
+
+  authToken = 'TOKEN-HOME-CHILD-REVOKE'
+  authSessionKey = 'auth-home-child-revoke'
+  let childRevokeHomeCalls = 0
+  const childRevokeHomeDefinition = loadDefinition(indexPagePath, {
+    getHomeListings() {
+      childRevokeHomeCalls += 1
+      return Promise.resolve([{ id: 'HOME-PUBLIC-AFTER-CHILD-401' }])
+    }
+  })
+  const childRevokeHomePage = makePage(childRevokeHomeDefinition)
+  childRevokeHomePage.authSessionSnapshot = authSessionKey
+  childRevokeHomePage.setData({
+    listings: [{ id: 'HOME-OLD-ACCOUNT' }],
+    todayTasks: [{ type: 'maintenance', title: '旧账号维护任务' }],
+    visibleTodayTasks: [{ type: 'maintenance', title: '旧账号维护任务' }],
+    taskSummary: { pendingCount: 1, updatedAt: 'synthetic' }
+  })
+  childRevokeHomePage.bindAuthInvalidationListener()
+  authToken = ''
+  authSessionKey = 'guest-home-child-revoke'
+  emitAuthInvalidation({
+    reason: 'unauthorized',
+    fromSessionKey: 'auth-home-child-revoke',
+    toSessionKey: authSessionKey
+  })
+  assert.deepStrictEqual(childRevokeHomePage.data.todayTasks, [], '收藏子组件 401 清态后首页必须立即清旧账号任务')
+  assert.strictEqual(childRevokeHomePage.data.taskSummary.pendingCount, 0, '首页维护统计不得等下一次 onShow 才清除')
+  await flushPromises()
+  assert.strictEqual(childRevokeHomeCalls, 1)
+  assert.deepStrictEqual(childRevokeHomePage.data.listings.map((item) => item.id), ['HOME-PUBLIC-AFTER-CHILD-401'])
+  childRevokeHomePage.onUnload()
+
   authToken = 'TOKEN-HOME-UNLOAD'
   authSessionKey = 'auth-home-unload'
   const unloadHome = deferred()
@@ -269,6 +343,35 @@ async function run() {
   await flushPromises()
   assert.strictEqual(ownPendingPage.data.filters.needId, 'NEED-ACCOUNT-A', '同一会话仍必须消费自己的待处理筛选')
 
+  authToken = 'TOKEN-PENDING-SWITCH-A'
+  authSessionKey = 'SESSION-PENDING-SWITCH-A'
+  const switchedPendingPage = makePage(pendingDefinition)
+  switchedPendingPage.authSessionSnapshot = authSessionKey
+  authToken = 'TOKEN-PENDING-SWITCH-B'
+  authSessionKey = 'SESSION-PENDING-SWITCH-B'
+  storageValues[pendingListingKey] = createPendingFilterEnvelope({
+    category: '二房东房源',
+    filters: { needId: 'NEED-ACCOUNT-B-FIRST', community: '账号B首次目标小区' }
+  }, authSessionKey)
+  switchedPendingPage.onShow()
+  await flushPromises()
+  assert.strictEqual(switchedPendingPage.data.filters.needId, 'NEED-ACCOUNT-B-FIRST', '换号后必须用当前会话 owner 校验并消费账号B首次合法筛选')
+  assert.strictEqual(switchedPendingPage.data.filters.community, '账号B首次目标小区', '地图/助手换号后首次跳列表不得退化为全量列表')
+  assert.strictEqual(storageValues[pendingListingKey], undefined, '换号后的合法筛选消费后仍必须一次性清理')
+
+  const publicPendingPage = makePage(pendingDefinition)
+  publicPendingPage.authSessionSnapshot = 'SESSION-HOME-OLD'
+  authToken = 'TOKEN-HOME-NEW'
+  authSessionKey = 'SESSION-HOME-NEW'
+  storageValues[pendingListingKey] = createPendingFilterEnvelope({
+    category: '公司房源',
+    filters: { area: '拱墅区' }
+  })
+  publicPendingPage.onShow()
+  await flushPromises()
+  assert.strictEqual(publicPendingPage.data.category, '公司房源', '换号后首页公开来源芯片首次跳列表仍必须生效')
+  assert.strictEqual(publicPendingPage.data.filters.district, '拱墅区', '换号不得误删显式公开筛选 envelope')
+
   for (const target of [
     { token: '', sessionKey: 'guest-list-after-a', label: '退出到游客' },
     { token: 'TOKEN-LIST-B', sessionKey: 'auth-list-b', label: '切换到账号B' }
@@ -314,6 +417,61 @@ async function run() {
   await flushPromises()
   assert.strictEqual(lateListPage.data.listings.length, 0, '会话变化后迟到的账号A列表响应不得被采纳')
   assert.strictEqual(lateListPage.data.communityOptions.length, 0, '迟到响应不得写入旧账号小区选项')
+
+  authToken = 'TOKEN-LIST-EXPIRED'
+  authSessionKey = 'auth-list-expired'
+  const expiredListFirstRound = [deferred(), deferred()]
+  let expiredListCalls = 0
+  const expiredListDefinition = loadDefinition(listingsPagePath, {
+    getListings() {
+      expiredListCalls += 1
+      if (expiredListCalls <= 2) return expiredListFirstRound[expiredListCalls - 1].promise
+      return Promise.resolve([{ id: 'LIST-GUEST-RECOVERED', community: '游客恢复小区' }])
+    }
+  })
+  const expiredListPage = makePage(expiredListDefinition)
+  expiredListPage.authSessionSnapshot = authSessionKey
+  expiredListPage.loadListings()
+  authToken = ''
+  authSessionKey = 'guest-list-after-expiry'
+  publicReadFallbackSessionKey = 'auth-list-expired'
+  expiredListFirstRound.forEach((entry) => entry.resolve([{ id: 'LIST-OLD-SESSION' }]))
+  await flushPromises()
+  await flushPromises()
+  assert.strictEqual(expiredListCalls, 4, '列表双 GET 在静默清态后必须整组用当前游客会话重发，不能只恢复其中一个请求')
+  assert.deepStrictEqual(expiredListPage.data.listings.map((item) => item.id), ['LIST-GUEST-RECOVERED'], '列表不得因失效 token 清态而停留空白')
+  assert.deepStrictEqual(expiredListPage.data.communityOptions, ['游客恢复小区'])
+  assert.strictEqual(expiredListPage.data.loading, false, '游客列表恢复请求完成后必须退出 loading')
+  publicReadFallbackSessionKey = ''
+
+  authToken = 'TOKEN-LIST-CHILD-REVOKE'
+  authSessionKey = 'auth-list-child-revoke'
+  let childRevokeListCalls = 0
+  const childRevokeListDefinition = loadDefinition(listingsPagePath, {
+    getListings() {
+      childRevokeListCalls += 1
+      return Promise.resolve([{ id: 'LIST-PUBLIC-AFTER-CHILD-401', community: '公共小区' }])
+    }
+  })
+  const childRevokeListPage = makePage(childRevokeListDefinition)
+  childRevokeListPage.authSessionSnapshot = authSessionKey
+  childRevokeListPage.setData({
+    listings: [{ id: 'LIST-OLD-ACCOUNT' }],
+    filters: Object.assign({}, childRevokeListPage.data.filters, { needId: 'NEED-OLD-ACCOUNT' })
+  })
+  childRevokeListPage.bindAuthInvalidationListener()
+  authToken = ''
+  authSessionKey = 'guest-list-child-revoke'
+  emitAuthInvalidation({
+    reason: 'unauthorized',
+    fromSessionKey: 'auth-list-child-revoke',
+    toSessionKey: authSessionKey
+  })
+  assert.strictEqual(childRevokeListPage.data.filters.needId, '', '收藏子组件 401 清态后列表必须立即移除旧账号 needId')
+  await flushPromises()
+  assert.strictEqual(childRevokeListCalls, 2, '列表鉴权撤销后必须重读主列表与小区选项')
+  assert.deepStrictEqual(childRevokeListPage.data.listings.map((item) => item.id), ['LIST-PUBLIC-AFTER-CHILD-401'])
+  childRevokeListPage.onUnload()
 
   authToken = 'TOKEN-LIST-UNLOAD'
   authSessionKey = 'auth-list-unload'

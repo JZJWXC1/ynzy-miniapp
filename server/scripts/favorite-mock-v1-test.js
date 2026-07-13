@@ -76,11 +76,13 @@ async function run() {
   const apiClientPath = require.resolve('../../utils/api-client')
   const apiServicePath = require.resolve('../../utils/api-service')
   const captured = []
+  let authToken = ''
   require.cache[apiClientPath] = {
     id: apiClientPath,
     filename: apiClientPath,
     loaded: true,
     exports: {
+      getAuthToken() { return authToken },
       call(options) {
         captured.push(options)
         if (options.path.startsWith('/mini/auth/')) return Promise.resolve().then(() => options.mock())
@@ -92,13 +94,40 @@ async function run() {
   const apiService = require(apiServicePath)
   const login = await apiService.loginByPhone('13800010005', 'synthetic-password')
   assert.ok(login.id)
-  assert.ok(/^synthetic-mock-token-/.test(login.token), 'Mock 登录必须返回明显假 token，供登录态收藏验收')
+  assert.ok(/^synthetic-mock-session-/.test(login.token), 'Mock 登录必须返回明显假且可验证的会话 token，供登录态收藏验收')
   assert.ok(Number.isFinite(login.tokenExpiresAt) && login.tokenExpiresAt > Date.now(), 'Mock 登录 expiry 必须与真实 DTO 同为 epoch ms number')
+  const firstToken = login.token
+  authToken = firstToken
+
+  const secondLogin = await apiService.loginByPhone('13800010005', 'synthetic-password')
+  assert.notStrictEqual(secondLogin.token, firstToken, 'Mock 同账号再次登录必须签发独立 token')
+  const secondToken = secondLogin.token
+  authToken = secondToken
 
   const changed = await apiService.changePassword('synthetic-old-password', 'synthetic-new-password')
-  assert.ok(changed.id && /^synthetic-mock-token-/.test(changed.token), 'Mock 改密必须返回新会话 DTO')
+  assert.ok(changed.id && /^synthetic-mock-session-/.test(changed.token), 'Mock 改密必须返回新会话 DTO')
   assert.ok(Number.isFinite(changed.tokenExpiresAt) && changed.tokenExpiresAt > Date.now(), 'Mock 改密 expiry 必须为 epoch ms number')
+  authToken = firstToken
+  await assert.rejects(
+    apiService.getCurrentUser(),
+    (error) => error && error.statusCode === 401,
+    'Mock 改密必须撤销同账号第一台设备的旧 token'
+  )
+  authToken = secondToken
+  await assert.rejects(
+    apiService.getCurrentUser(),
+    (error) => error && error.statusCode === 401,
+    'Mock 改密必须撤销同账号当前设备的旧 token'
+  )
+  authToken = changed.token
+  assert.strictEqual((await apiService.getCurrentUser()).id, changed.id, 'Mock 改密返回的新 token 必须立即可用')
   assert.deepStrictEqual(await apiService.logout(), { loggedOut: true, scope: 'all-devices' }, 'Mock 退出必须与真实全设备撤销 DTO 同形')
+  await assert.rejects(
+    apiService.getCurrentUser(),
+    (error) => error && error.statusCode === 401,
+    'Mock 主动退出后当前 token 必须立即失效'
+  )
+  authToken = ''
   await assert.rejects(
     apiService.registerUser({ name: '合成已开通用户', phone: '13800010005', password: 'synthetic-password' }),
     (error) => error && error.statusCode === 409,

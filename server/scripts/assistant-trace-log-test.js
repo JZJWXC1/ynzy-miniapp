@@ -1,9 +1,15 @@
 const assert = require('assert')
 const assistantService = require('../src/assistant-service')
 const evalRunner = require('./assistant-eval-runner')
-const { containsSensitiveText } = require('../src/assistant/safety')
+const { containsSensitiveText, scrubSensitiveText } = require('../src/assistant/safety')
 
 async function main() {
+  assert.strictEqual(
+    scrubSensitiveText('AST-mrjlvxwn-4nreg2'),
+    'AST-mrjlvxwn-4nreg2',
+    '无联系方式语义的随机 threadId 中 vx 子串不得被误脱敏'
+  )
+  assert.ok(!scrubSensitiveText('微信 VX:private_contact_01').includes('private_contact_01'), '有明确联系方式语义的 VX 号必须继续脱敏')
   assistantService._internal.threadStore._internal.resetForTest()
   const db = evalRunner.makeDb()
   db.rentalNeeds = [{ id: 'N-TRACE-1', brokerId: 'U001' }]

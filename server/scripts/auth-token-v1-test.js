@@ -212,7 +212,10 @@ async function run() {
     assert.strictEqual(forgedHeaderOnly.statusCode, 401, '伪造 X-User-Id 访问需登录接口必须返回 401')
 
     const anonymousPartner = await request('GET', '/mini/listings/AUTH_PARTNER')
-    assert.strictEqual(anonymousPartner.statusCode, 401, '无 token 请求合作房源详情必须返回 401')
+    assert.strictEqual(anonymousPartner.statusCode, 200, '无 token 请求有效合作房源必须返回公开脱敏详情')
+    ;['building', 'unit', 'roomNumber', 'address', 'landlordPhone', 'viewingMethod', 'remark'].forEach((field) => {
+      assert.ok(!Object.prototype.hasOwnProperty.call(dataOf(anonymousPartner), field), `匿名合作详情不得下发 ${field}`)
+    })
 
     const login = await request('POST', '/mini/auth/login', { phone: '13900000001', password: brokerPassword })
     assert.strictEqual(login.statusCode, 200, '手机号+密码登录应返回 200')

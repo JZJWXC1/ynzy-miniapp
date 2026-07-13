@@ -74,6 +74,13 @@ async function run() {
     assert.ok(JSON.stringify(detail).includes('19900000003'), '详情必须保留第三个公司统一号码')
     assert.ok(!JSON.stringify(detail).includes('19900000009'), '公司详情不得回退房源原始电话')
 
+    const sensitiveResult = domain.addSensitiveFootprint(db, 'U2', 'L1', {
+      idempotencyKey: 'company_sensitive_0001'
+    })
+    assert.strictEqual(sensitiveResult.sensitive.landlordPhone, '19900000001', '公司 sensitive-view 兼容响应也只能返回服务器统一首号')
+    assert.deepStrictEqual(sensitiveResult.sensitive.companyContactPhones, ['19900000001', '19900000002', '19900000003'], '公司 sensitive-view 必须保留三个服务器统一号码')
+    assert.ok(!JSON.stringify(sensitiveResult).includes('19900000009'), '公司 sensitive-view 不得泄露房源原始私号')
+
     ;[[], ['invalid', '']].forEach((phones, index) => {
       config.company.contactPhones = phones
       const emptyDb = makeDb()

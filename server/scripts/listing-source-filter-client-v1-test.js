@@ -35,6 +35,7 @@ function listingPayload(roomNumber, ownerType, overrides = {}) {
     hall: '1厅',
     bath: '1卫',
     features: ['电梯'],
+    videoUrl: 'https://example.com/public-source-filter-video.mp4',
     videoKey: `house-videos/synthetic/source-filter-${roomNumber}.mp4`,
     viewingMethod: '联系房东',
     ownerType,
@@ -179,8 +180,8 @@ async function run() {
 
   const listingWxml = fs.readFileSync(path.join(repoRoot, 'pages', 'listings', 'listings.wxml'), 'utf8')
   assert.ok(!listingWxml.includes('title="{{category}}房源"'), '来源本身已含“房源”，导航标题不得显示“公司房源房源”')
-  assert.ok(listingWxml.includes('loginRequired'), '游客选择合作来源时必须渲染明确登录空态')
-  assert.ok(listingWxml.includes('bindtap="goLogin"'), '游客合作来源空态必须提供去登录按钮')
+  assert.ok(!listingWxml.includes('loginRequired'), '游客选择业主/二房东来源不得再渲染登录空态')
+  assert.ok(!listingWxml.includes('bindtap="goLogin"'), '来源筛选不应把游客导向登录页')
 
   const listingsDefinition = loadListingsDefinition()
   const listingsPage = makePage(listingsDefinition)
@@ -188,23 +189,20 @@ async function run() {
   listingsPage.data.category = '业主房源'
   listingsPage.loadListings()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.strictEqual(listingsPage.data.loginRequired, true, '游客选择业主房源必须出现登录引导')
+  assert.strictEqual(listingsPage.data.loginRequired, undefined, '游客选择业主房源不得出现登录引导')
   listingsPage.data.category = '二房东房源'
   listingsPage.loadListings()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.strictEqual(listingsPage.data.loginRequired, true, '游客选择二房东房源必须出现登录引导')
+  assert.strictEqual(listingsPage.data.loginRequired, undefined, '游客选择二房东房源不得出现登录引导')
   listingsPage.data.category = '公司房源'
   listingsPage.loadListings()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.strictEqual(listingsPage.data.loginRequired, false, '游客选择公司房源不得误提示登录')
+  assert.strictEqual(listingsPage.data.loginRequired, undefined, '游客选择公司房源也不需要权限空态')
   listingsPageAuthToken = 'synthetic-listings-page-token'
   listingsPage.data.category = '业主房源'
   listingsPage.loadListings()
   await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.strictEqual(listingsPage.data.loginRequired, false, '登录用户选择合作来源不得误提示登录')
-  navigatedUrl = ''
-  listingsPage.goLogin()
-  assert.strictEqual(navigatedUrl, '/pages/auth/auth', '登录引导按钮必须进入现有登录页')
+  assert.strictEqual(listingsPage.data.loginRequired, undefined, '登录用户来源筛选同样只展示真实结果')
 
   mockData.loginByPhone('13800010004')
   const company = mockData.addNormalListing(listingPayload('9511', '公司房源', {
@@ -212,7 +210,7 @@ async function run() {
     isCompanyListing: true
   }))
   await new Promise((resolve) => setTimeout(resolve, 2))
-  mockData.loginByPhone('13800010005')
+  const ownerSession = mockData.loginByPhone('13800010005')
   const owner = mockData.addNormalListing(listingPayload('9512', '业主房源'))
   await new Promise((resolve) => setTimeout(resolve, 2))
   const secondLandlord = mockData.addNormalListing(listingPayload('9513', '二房东房源'))
@@ -230,14 +228,14 @@ async function run() {
   delete require.cache[apiServicePath]
   const apiService = require(apiServicePath)
 
-  assert.deepStrictEqual(ids(await apiService.getListings({})), [company.id], 'Mock 游客“全部”只能看到公司房源')
+  assert.deepStrictEqual(ids(await apiService.getListings({})), [company.id, owner.id, secondLandlord.id].sort(), 'Mock 游客“全部”必须看到三类有效房源')
   assert.deepStrictEqual(ids(await apiService.getListings({ category: '公司房源' })), [company.id], 'Mock 游客公司筛选必须准确')
-  assert.deepStrictEqual(await apiService.getListings({ category: '业主房源' }), [], 'Mock 游客业主筛选必须与权限取交集为空')
-  assert.deepStrictEqual(await apiService.getListings({ category: '二房东房源' }), [], 'Mock 游客二房东筛选必须与权限取交集为空')
-  assert.deepStrictEqual(await apiService.getMapCommunities({ sourceType: '业主房源' }), [], 'Mock 游客地图业主筛选不得泄露合作房源')
-  assert.deepStrictEqual(await apiService.getMapCommunities({ sourceType: '二房东房源' }), [], 'Mock 游客地图二房东筛选不得泄露合作房源')
+  assert.deepStrictEqual(ids(await apiService.getListings({ category: '业主房源' })), [owner.id], 'Mock 游客业主筛选必须准确')
+  assert.deepStrictEqual(ids(await apiService.getListings({ category: '二房东房源' })), [secondLandlord.id], 'Mock 游客二房东筛选必须准确')
+  assert.deepStrictEqual(mapIds(await apiService.getMapCommunities({ sourceType: '业主房源' })), [owner.id], 'Mock 游客地图业主筛选必须准确')
+  assert.deepStrictEqual(mapIds(await apiService.getMapCommunities({ sourceType: '二房东房源' })), [secondLandlord.id], 'Mock 游客地图二房东筛选必须准确')
 
-  authToken = 'synthetic-source-filter-token'
+  authToken = ownerSession.token
   assert.deepStrictEqual(ids(await apiService.getListings({ category: '公司房源' })), [company.id], 'Mock 登录公司筛选必须互斥')
   assert.deepStrictEqual(ids(await apiService.getListings({ category: '业主房源' })), [owner.id], 'Mock 登录业主筛选必须互斥')
   assert.deepStrictEqual(ids(await apiService.getListings({ category: '二房东房源' })), [secondLandlord.id], 'Mock 登录二房东筛选必须互斥')

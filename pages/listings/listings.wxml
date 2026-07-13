@@ -60,9 +60,8 @@
     </view>
 
     <view wx:elif="{{!loading && !loadFailed}}" class="empty-card">
-      <view class="empty-title">{{loginRequired ? '登录后查看合作房源' : emptyText}}</view>
-      <view class="empty-desc">{{loginRequired ? '公司房源可直接浏览；业主和二房东房源需要登录内部中介账号后查看。' : '可以调整区域、户型或租金条件后重新筛选。'}}</view>
-      <button wx:if="{{loginRequired}}" class="brand-button" bindtap="goLogin">去登录</button>
+      <view class="empty-title">{{emptyText}}</view>
+      <view class="empty-desc">可以调整区域、户型或租金条件后重新筛选。</view>
     </view>
   </view>
 </scroll-view>

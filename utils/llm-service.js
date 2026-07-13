@@ -2,6 +2,7 @@ const apiClient = require('./api-client')
 const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const dataCenter = require('./mock-data')
 const listingDisplay = require('./listing-display')
+const { anonymousPublicRequestData } = require('./public-request-safety')
 const {
   NO_FEATURE,
   LISTING_FEATURE_OPTIONS,
@@ -308,9 +309,10 @@ function buildReply(need, listings, followUpQuestion) {
 function buildLocalMatch(payload) {
   const need = needFromPayload(payload)
   const followUpQuestion = followUpForNeed(need)
-  // 本地 Mock/网络兜底同样只能从可信会话派生游客边界，不能接受页面透传的 companyOnly。
+  // 游客与登录用户都可匹配三类前台有效房源；Mock 只从可信会话派生公共投影，
+  // 绝不接受页面透传的身份、维护人或权限字段。
   const localMatchNeed = Object.assign({}, need, {
-    companyOnly: !apiClient.getAuthToken()
+    publicGuest: true
   })
   const rawResult = followUpQuestion ? { listings: [] } : dataCenter.matchListings(localMatchNeed)
   const listings = normalizeListings(rawResult.listings || [], 'exact')
@@ -344,6 +346,54 @@ function buildLocalRecognition(payload) {
     listings: [],
     reply: buildRecognitionReply(followUpQuestion)
   }
+}
+
+function buildLocalAssistant(payload) {
+  const requestPayload = Object.assign({}, payload || {})
+  const localMatch = buildLocalMatch(requestPayload)
+  return {
+    ...localMatch,
+    threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
+    nextQuestion: localMatch.followUpQuestion || '',
+    intent: 'rental_match',
+    mode: 'local-graph-assistant-v1'
+  }
+}
+
+function mockPreExecutionUnauthorizedError() {
+  const error = new Error('请先登录内部中介账号')
+  error.statusCode = 401
+  error.data = { authFailurePhase: 'pre_execution' }
+  return error
+}
+
+function assertPublicMockAuthorization() {
+  const token = String(typeof apiClient.getAuthToken === 'function' ? (apiClient.getAuthToken() || '') : '').trim()
+  if (typeof dataCenter.resolveAuthSession !== 'function') {
+    if (token) throw mockPreExecutionUnauthorizedError()
+    return null
+  }
+  const viewer = dataCenter.resolveAuthSession(token)
+  if (token && (!viewer || !viewer.id)) throw mockPreExecutionUnauthorizedError()
+  return viewer
+}
+
+function runPublicMock(requestData, buildResult) {
+  // 必须先验证 token，再执行匹配或识别。失效 token 的首次调用只抛执行前 401，
+  // api-client 匿名重试时会把脱敏后的 requestData 重新传进来并重新计算结果。
+  assertPublicMockAuthorization()
+  return buildResult(Object.assign({}, requestData || {}))
+}
+
+function authFallbackRequestOptions(requestContext) {
+  const context = requestContext && typeof requestContext === 'object' ? requestContext : {}
+  return typeof context.authFallbackRequestId === 'string'
+    ? { authFallbackRequestId: context.authFallbackRequestId }
+    : {}
+}
+
+function isUnauthorizedError(error) {
+  return Boolean(error && Number(error.statusCode) === 401)
 }
 
 function networkWarning(error) {
@@ -452,17 +502,22 @@ function normalizeRecognitionResult(serverResult, requestPayload) {
   }
 }
 
-function recognizeRentalNeed(payload) {
+function recognizeRentalNeed(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {}, { stage: 'recognize' })
-  const localResult = buildLocalRecognition(requestPayload)
   return apiClient.call({
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
     timeout: LLM_MATCH_TIMEOUT_MS,
-    mock: () => localResult
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalRecognition)
   }).then((serverResult) => normalizeRecognitionResult(serverResult, requestPayload)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalRecognition(requestPayload)
       return {
         ...localResult,
         warning: networkWarning(error),
@@ -473,17 +528,22 @@ function recognizeRentalNeed(payload) {
   })
 }
 
-function matchRentalNeed(payload) {
+function matchRentalNeed(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {}, { stage: 'match', confirmed: true })
-  const localResult = buildLocalMatch(requestPayload)
   return apiClient.call({
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
     timeout: LLM_MATCH_TIMEOUT_MS,
-    mock: () => localResult
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalMatch)
   }).then((serverResult) => normalizeServerResult(serverResult, requestPayload)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalMatch(requestPayload)
       return {
         ...localResult,
         warning: networkWarning(error),
@@ -507,24 +567,22 @@ function normalizeAssistantResult(serverResult, requestPayload, localResult) {
   }
 }
 
-function chatAssistant(payload) {
+function chatAssistant(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {})
-  const localMatch = buildLocalMatch(requestPayload)
-  const localResult = {
-    ...localMatch,
-    threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
-    nextQuestion: localMatch.followUpQuestion || '',
-    intent: 'rental_match',
-    mode: 'local-graph-assistant-v1'
-  }
   return apiClient.call({
     path: '/mini/assistant/chat',
     method: 'POST',
     data: requestPayload,
     timeout: LLM_MATCH_TIMEOUT_MS,
-    mock: () => localResult
-  }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, localResult)).catch((error) => {
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalAssistant)
+  }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, null)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalAssistant(requestPayload)
       return {
         ...normalizeAssistantResult(localResult, requestPayload, localResult),
         warning: networkWarning(error),
@@ -544,11 +602,14 @@ function submitAssistantFeedback(payload) {
     path: '/mini/assistant/feedback',
     method: 'POST',
     data: requestPayload,
-    mock: () => ({
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    mock: (requestData) => runPublicMock(requestData, (currentPayload) => ({
       id: `LOCAL-AF-${Date.now()}`,
       status: 'open',
-      feedbackType: requestPayload.feedbackType || 'other'
-    })
+      feedbackType: currentPayload.feedbackType || 'other'
+    }))
   })
 }
 

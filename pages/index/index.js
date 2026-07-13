@@ -642,6 +642,7 @@ Page({
   onLoad() {
     this._pageActive = true
     this.authSessionSnapshot = currentAuthSessionKey()
+    this.bindAuthInvalidationListener()
     this.initVoiceInput();
   },
 
@@ -686,6 +687,18 @@ Page({
     return { key: nextSessionKey, changed }
   },
 
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadHomeListings()
+    })
+  },
+
   loadHomeListings() {
     const requestSessionKey = this.syncAuthSession().key
     this._homeListingsRequestSeq = (this._homeListingsRequestSeq || 0) + 1
@@ -694,7 +707,10 @@ Page({
     apiService.getHomeListings().then((listings) => {
       if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadHomeListings()
         return
       }
       this.setData({
@@ -705,7 +721,10 @@ Page({
     }).catch(() => {
       if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadHomeListings()
         return
       }
       this.setData({ listingsLoading: false, listingsLoadFailed: true })
@@ -723,6 +742,10 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
     this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
     this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
     this._sheetSnapshotRequestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1

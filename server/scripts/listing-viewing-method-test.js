@@ -4,6 +4,8 @@
 // 编辑切换清空旧值、公司房源公开口径、助手安全层脱敏。
 
 const assert = require('assert')
+const fs = require('fs')
+const path = require('path')
 const domain = require('../src/domain')
 const safety = require('../src/assistant/safety')
 
@@ -96,22 +98,23 @@ function baseForm(extra) {
   )
 }
 
-// 5) 敏感边界：非公司房源详情留痕前只下发方式名，不泄漏钥匙位置/密码；地址仍锁。
+// 5) 敏感边界：非公司房源详情留痕前连方式名也不下发；地址、房号、钥匙、密码和备注全部锁住。
 {
   const db = makeDb()
-  domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '3栋门卫处' }))
+  domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '3栋门卫处', remark: '门口鞋柜取钥匙' }))
   const detail = domain.listingDetail(db, db.listings[0].id)
-  assert.strictEqual(detail.viewingMethod, '钥匙', '方式名公开展示')
-  assert.strictEqual(detail.viewingMethodText, '钥匙')
+  assert.ok(!('viewingMethod' in detail), '留痕前不下发看房方式')
+  assert.ok(!('viewingMethodText' in detail), '留痕前不下发看房方式文案')
   assert.ok(!('viewingKeyLocation' in detail), '留痕前不下发钥匙位置')
   assert.ok(!('viewingPassword' in detail), '留痕前不下发看房密码')
-  assert.strictEqual(detail.address, '确认留痕后可查看', '地址口径不变')
+  assert.ok(!('address' in detail), '留痕前不下发完整地址字段')
+  assert.ok(!('remark' in detail), '留痕前不下发敏感备注')
 }
 
 // 6) 留痕后（他人查看）sensitive 载荷携带钥匙位置；上传人自查免留痕分支同样带全。
 {
   const db = makeDb()
-  domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '3栋门卫处' }))
+  domain.addNormalListing(db, 'U1', baseForm({ viewingMethod: '钥匙', viewingKeyLocation: '3栋门卫处', remark: '门口鞋柜取钥匙' }))
   const listingId = db.listings[0].id
   const need = domain.createRentalNeed(db, 'U2', { rawText: '客户想看皋塘运都两室' })
   const viewed = domain.addSensitiveFootprint(db, 'U2', listingId, {
@@ -120,9 +123,11 @@ function baseForm(extra) {
   })
   assert.strictEqual(viewed.sensitive.viewingMethod, '钥匙')
   assert.strictEqual(viewed.sensitive.viewingKeyLocation, '3栋门卫处', '留痕后下发钥匙位置')
+  assert.strictEqual(viewed.sensitive.remark, '门口鞋柜取钥匙', '留痕后下发敏感备注')
   assert.strictEqual(db.footprints.length, 1, '他人查看留足迹')
   const own = domain.addSensitiveFootprint(db, 'U1', listingId, {})
   assert.strictEqual(own.sensitive.viewingKeyLocation, '3栋门卫处', '上传人自查直出')
+  assert.strictEqual(own.sensitive.remark, '门口鞋柜取钥匙', '上传人自查同样拿到敏感备注')
   assert.strictEqual(db.footprints.length, 1, '自查不留足迹')
 }
 
@@ -145,7 +150,7 @@ function baseForm(extra) {
   assert.strictEqual(editable.viewingPassword, '6688#')
 }
 
-// 8) 存量推导展示：老房源无显式方式，有看房密码 → 展示「密码」；只有电话 → 展示「联系房东」。
+// 8) 存量推导展示：公开详情仍隐藏方式；留痕后老房源有密码 →「密码」，只有电话 →「联系房东」。
 {
   const db = makeDb()
   db.listings.push({
@@ -161,9 +166,13 @@ function baseForm(extra) {
     landlordPhone: '13800003333', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
   })
   const pwdDetail = domain.listingDetail(db, 'L-OLD-PWD')
-  assert.strictEqual(pwdDetail.viewingMethod, '密码', '有密码的存量推导为密码')
+  assert.ok(!('viewingMethod' in pwdDetail), '存量合作房源公开详情也不下发方式')
   const phoneDetail = domain.listingDetail(db, 'L-OLD-PHONE')
-  assert.strictEqual(phoneDetail.viewingMethod, '联系房东', '有电话的存量推导为联系房东')
+  assert.ok(!('viewingMethod' in phoneDetail), '存量电话房源公开详情也不下发方式')
+  const pwdSensitive = domain.addSensitiveFootprint(db, 'U2', 'L-OLD-PWD', { idempotencyKey: 'SV-OLD-PWD-001' })
+  assert.strictEqual(pwdSensitive.sensitive.viewingMethod, '密码', '留痕后有密码的存量推导为密码')
+  const phoneSensitive = domain.addSensitiveFootprint(db, 'U2', 'L-OLD-PHONE', { idempotencyKey: 'SV-OLD-PHONE-001' })
+  assert.strictEqual(phoneSensitive.sensitive.viewingMethod, '联系房东', '留痕后有电话的存量推导为联系房东')
   // 存量房源编辑（不带看房方式字段）不因新校验被卡（老契约：有联系方式即可）
   domain.updateNormalListing(db, 'U1', 'L-OLD-PHONE', { rent: 3100 })
   assert.strictEqual(db.listings.find((item) => item.id === 'L-OLD-PHONE').rent, 3100)
@@ -184,25 +193,39 @@ function baseForm(extra) {
   assert.strictEqual(detail.sensitiveLocked, false)
 }
 
-// 10) 助手安全层：viewingPassword / viewingKeyLocation 属敏感键，scrubDeep 后不外泄。
+// 10) 助手安全层：看房方式、密码、钥匙位置和备注都属敏感键，scrubDeep 后不外泄。
 {
   const scrubbed = safety.scrubDeep({
     community: '皋塘运都',
     viewingPassword: '1234#',
     showingPassword: '1234#',
+    viewingMethod: '密码',
+    viewingMethodText: '密码',
     viewingKeyLocation: '前台领取',
-    keyLocation: '前台领取'
+    keyLocation: '前台领取',
+    remark: '门口鞋柜取钥匙'
   })
   assert.strictEqual(scrubbed.community, '皋塘运都', '非敏感字段保留')
   assert.notStrictEqual(scrubbed.viewingPassword, '1234#', 'viewingPassword 被脱敏')
   assert.notStrictEqual(scrubbed.showingPassword, '1234#', 'showingPassword 被脱敏')
+  assert.notStrictEqual(scrubbed.viewingMethod, '密码', 'viewingMethod 被脱敏')
+  assert.notStrictEqual(scrubbed.remark, '门口鞋柜取钥匙', 'remark 被脱敏')
   assert.notStrictEqual(scrubbed.viewingKeyLocation, '前台领取', 'viewingKeyLocation 被脱敏')
   assert.notStrictEqual(scrubbed.keyLocation, '前台领取', 'keyLocation 被脱敏')
   assert.ok(safety._internal.SENSITIVE_KEYS.has('viewingPassword'), '敏感键清单含 viewingPassword')
   assert.ok(safety._internal.SENSITIVE_KEYS.has('viewingKeyLocation'), '敏感键清单含 viewingKeyLocation')
 }
 
-// 11) 存量「电话+密码并存」的非公司房源 → 电话优先推导为联系房东（老口径详情页必须继续展示房东电话）；
+// 10.1) 客户端也必须 fail-closed：即使连接旧/灰度后端误带 remark，合作房源仍只在留痕解锁后渲染。
+{
+  const detailWxml = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'listing-detail', 'listing-detail.wxml'), 'utf8')
+  assert.ok(
+    detailWxml.includes('listing.remark && (listing.companyListing || sensitiveVisible)'),
+    '详情备注必须由公司公开规则或 sensitiveVisible 门禁保护'
+  )
+}
+
+// 11) 存量「电话+密码并存」的非公司房源 → 留痕后电话优先推导为联系房东；
 //     公司房源仍密码优先（飞书看房方式密码列是公司权威）。
 {
   const db = makeDb()
@@ -220,7 +243,9 @@ function baseForm(extra) {
     landlordPhone: '13911112222', viewingPassword: '2468#', features: ['电梯'], videoKey: 'v.mp4', communityMatched: true
   })
   const both = domain.listingDetail(db, 'L-BOTH')
-  assert.strictEqual(both.viewingMethod, '联系房东', '非公司双信息电话优先，留痕后仍能看电话')
+  assert.ok(!('viewingMethod' in both), '非公司双信息公开详情仍隐藏看房方式')
+  const bothSensitive = domain.addSensitiveFootprint(db, 'U2', 'L-BOTH', { idempotencyKey: 'SV-BOTH-001' })
+  assert.strictEqual(bothSensitive.sensitive.viewingMethod, '联系房东', '非公司双信息留痕后电话优先')
   const companyBoth = domain.listingDetail(db, 'L-COMPANY-BOTH')
   assert.strictEqual(companyBoth.viewingMethod, '密码', '公司双信息密码优先')
 }

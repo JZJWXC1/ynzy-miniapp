@@ -131,7 +131,10 @@ async function main() {
   assert.strictEqual(result.need.searchMode, 'radius_around_place')
   assert.strictEqual(result.need.anchorName, '新天地')
   assert.strictEqual(result.need.radiusKm, 3)
-  assert(ids(result).includes('XTD01'), '应返回新天地内两室整租')
+  assert(
+    ids(result).includes('XTD01'),
+    `应返回新天地内两室整租；实际房源=${JSON.stringify(ids(result))}，地点=${JSON.stringify(result.placeResolution || {})}`
+  )
   assert(ids(result).includes('XTD02'), '应返回新天地周边两室整租')
   assert(ids(result).includes('XTD03'), '应返回3公里内两室整租')
   assert(!ids(result).includes('XTD04'), '不应返回一室整租')
@@ -151,7 +154,10 @@ async function main() {
   assertSafe(result)
 
   result = await ask(db, '东新园附近两室4000以内')
-  assert(!result.need.searchMode, '已知板块附近问法不应进入坐标半径分支')
+  assert(
+    !result.need.searchMode,
+    `已知板块附近问法不应进入坐标半径分支；实际需求=${JSON.stringify(result.need)}，地点=${JSON.stringify(result.placeResolution || {})}`
+  )
   assert.strictEqual(result.need.community, '东新园', '已知板块应直接落入小区/板块筛选槽位')
   assert.strictEqual(result.nextQuestion || '', '', '东新园是已知板块，不应追问坐标或地址')
   assert(ids(result).includes('DXY01'), '应返回东新园板块两室房源')
@@ -179,8 +185,8 @@ async function main() {
   assert.strictEqual(result.need.anchorRole, 'workplace')
   assert.strictEqual(result.need.radiusKm, 2)
   assert(ids(result).includes('LF01'), '应返回乐富智慧园附近一室整租')
-  assert(ids(result).includes('LF02'), '应返回两公里内略超预算的一室整租')
-  assert(!ids(result).includes('LF03'), '不应返回两公里外房源')
+  assert(ids(result).includes('LF03'), '应按公开小区坐标返回两公里内略超预算的一室整租')
+  assert(!ids(result).includes('LF02'), '公开小区坐标在两公里外的房源不应凭逐套精确坐标混入')
   assertSafe(result)
 
   result = await ask(db, '陌生产业园2公里内有什么一室整租')

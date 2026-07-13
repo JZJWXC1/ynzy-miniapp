@@ -14,6 +14,11 @@ const asrRealtime = require('./asr-realtime')
 const assistantService = require('./assistant-service')
 const backup = require('./backup')
 const oss = require('./oss')
+const {
+  createPublicListingMediaService,
+  resolveManagedVideoObjectKey,
+  isSecureSameOrigin
+} = require('./public-listing-media')
 const adminVideoPreview = require('./admin-video-preview')
 const wxpay = require('./wxpay')
 const { hashPassword, verifyPassword } = require('./auth-util')
@@ -281,24 +286,27 @@ function isGuestUser(userId) {
 }
 
 function guestListingFilter(filter = {}) {
+  const {
+    companyOnly: _clientCompanyOnly,
+    publicGuest: _clientPublicGuest,
+    userId: _clientUserId,
+    viewerId: _clientViewerId,
+    role: _clientRole,
+    isAdmin: _clientIsAdmin,
+    maintainerId: _clientMaintainerId,
+    threadId: _clientThreadId,
+    needId: _clientNeedId,
+    rentalNeedId: _clientRentalNeedId,
+    clientNeedId: _clientClientNeedId,
+    needTemporary: _clientNeedTemporary,
+    feedbackMessageId: _clientFeedbackMessageId,
+    messageId: _clientMessageId,
+    ...safeFilter
+  } = filter || {}
   return {
-    ...filter,
-    companyOnly: true
+    ...safeFilter,
+    publicGuest: true
   }
-}
-
-function companyOnlyDb(db = {}) {
-  return {
-    ...db,
-    listings: (db.listings || []).filter((listing) => domain.isCompanyListing(listing))
-  }
-}
-
-function assertGuestListingAllowed(detail) {
-  if (detail && detail.companyListing) return
-  const error = new Error('游客仅可查看公司房源，请登录后查看合作房源')
-  error.statusCode = 401
-  throw error
 }
 
 function parseRawBody(req) {
@@ -649,10 +657,20 @@ function resumePendingRegistrationNotifications() {
   }
 }
 
+function hasAuthorizationHeader(req) {
+  return Boolean(req && req.headers && Object.prototype.hasOwnProperty.call(req.headers, 'authorization'))
+}
+
 function bearerTokenFromRequest(req) {
-  const header = String((req.headers && req.headers.authorization) || '').trim()
-  const match = header.match(/^Bearer\s+(.+)$/i)
-  return match ? match[1].trim() : ''
+  if (!hasAuthorizationHeader(req)) return ''
+  const duplicateCount = Array.isArray(req.rawHeaders)
+    ? req.rawHeaders.filter((item, index) => index % 2 === 0 && String(item || '').toLowerCase() === 'authorization').length
+    : 1
+  const raw = req.headers.authorization
+  const header = Array.isArray(raw) ? '' : String(raw === undefined || raw === null ? '' : raw).trim()
+  const match = duplicateCount === 1 ? header.match(/^Bearer[\t ]+(\S+)$/i) : null
+  if (!match) throw miniAuthError('登录凭据格式无效，请重新登录')
+  return match[1]
 }
 
 function verifyMiniAuthToken(token) {
@@ -1162,6 +1180,31 @@ function launchCheckItem(title, status, detail, action) {
   return { title, status, detail, action }
 }
 
+function markMiniAuthFailureBeforeExecution(error) {
+  if (!error || Number(error.statusCode) !== 401) throw error
+  error.data = {
+    ...(error.data && typeof error.data === 'object' ? error.data : {}),
+    authFailurePhase: 'pre_execution'
+  }
+  throw error
+}
+
+function initialMiniAuthContextFromRequest(req, db) {
+  try {
+    return miniAuthContextFromRequest(req, db)
+  } catch (error) {
+    return markMiniAuthFailureBeforeExecution(error)
+  }
+}
+
+function assertFreshMiniSessionBeforeExecution(req, expectedUserId) {
+  try {
+    return assertFreshMiniSession(req, expectedUserId)
+  } catch (error) {
+    return markMiniAuthFailureBeforeExecution(error)
+  }
+}
+
 function buildLaunchCheck(db) {
   const accounts = db.adminAccounts || defaultAdminAccounts(db)
   const llmConfig = db.llmConfig || {}
@@ -1180,6 +1223,7 @@ function buildLaunchCheck(db) {
   const wxPayMissing = config.wechatPay.enabled ? wxpay.requiredMissing() : []
   const feishuStatus = feishuSync.status(db)
   const miniProgram = config.miniProgram || {}
+  const publicMediaDownloadReady = isSecureSameOrigin(miniProgram.requestDomain, miniProgram.downloadDomain)
   const userCount = (db.users || []).length
   const listingCount = (db.listings || []).length
   const groupCount = (db.groups || []).length
@@ -1241,9 +1285,11 @@ function buildLaunchCheck(db) {
     ),
     launchCheckItem(
       '微信合法域名',
-      '待确认',
-      `request ${miniProgram.requestDomain || '未配置'}；uploadFile ${miniProgram.uploadDomain || '未配置'}；downloadFile ${miniProgram.downloadDomain || '未配置'}`,
-      '在微信小程序后台核对 request、uploadFile、downloadFile 合法域名与这里一致'
+      publicMediaDownloadReady ? '待确认' : '需处理',
+      `request ${miniProgram.requestDomain || '未配置'}；uploadFile ${miniProgram.uploadDomain || '未配置'}；downloadFile ${miniProgram.downloadDomain || '未配置'}；公开视频播放/保存统一走 request API 域`,
+      publicMediaDownloadReady
+        ? '在微信小程序后台确认该 API 域同时加入 request、downloadFile 与 video 媒体合法域名'
+        : '把 MINI_DOWNLOAD_DOMAIN 改为 request API 域，并在微信后台同时加入 request、downloadFile 与 video 媒体合法域名'
     ),
     launchCheckItem(
       '第一版隐藏功能',
@@ -1336,6 +1382,191 @@ function withSignedVideoUrl(detail) {
   }
 }
 
+function videoUploadTicketSignature(userId, objectKey, expiresAt) {
+  const payload = ['v1', String(userId || ''), String(objectKey || ''), String(expiresAt || '')].join('\n')
+  const key = crypto.createHmac('sha256', miniAuthTokenSecret()).update('ynzy-video-upload-ticket-v1').digest()
+  return crypto.createHmac('sha256', key).update(payload).digest('base64url')
+}
+
+const VIDEO_UPLOAD_TICKET_QUERY = 'ynzyUploadTicket'
+
+function withVideoUploadTicket(policy, userId) {
+  const result = { ...(policy || {}) }
+  const objectKey = String(result.objectKey || '').trim()
+  const expiresAt = Math.floor(Date.parse(result.expiresAt || '') / 1000)
+  if (!objectKey || !Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) return result
+  result.uploadTicket = `v1.${expiresAt}.${videoUploadTicketSignature(userId, objectKey, expiresAt)}`
+  try {
+    const fileUrl = new URL(String(result.fileUrl || ''))
+    const sourceOptions = {
+      uploadDir: config.oss.uploadDir,
+      allowedOrigins: oss.readSourceOrigins()
+    }
+    if (!fileUrl.username && !fileUrl.password && !fileUrl.hash &&
+      resolveManagedVideoObjectKey({ videoUrl: fileUrl.toString() }, sourceOptions) === objectKey) {
+      fileUrl.searchParams.set(VIDEO_UPLOAD_TICKET_QUERY, result.uploadTicket)
+      result.fileUrl = fileUrl.toString()
+    }
+  } catch (error) {}
+  return result
+}
+
+function validVideoUploadTicket(ticket, userId, objectKey) {
+  const matched = String(ticket || '').match(/^v1\.(\d{10})\.([A-Za-z0-9_-]{43})$/)
+  if (!matched) return false
+  const expiresAt = Number(matched[1])
+  if (!Number.isSafeInteger(expiresAt) || expiresAt < Math.floor(Date.now() / 1000)) return false
+  const expected = videoUploadTicketSignature(userId, objectKey, expiresAt)
+  const actual = matched[2]
+  return actual.length === expected.length && crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected))
+}
+
+function submittedVideoUploadUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.username || url.password || url.hash) return null
+    const embeddedTickets = url.searchParams.getAll(VIDEO_UPLOAD_TICKET_QUERY)
+    if (embeddedTickets.length > 1) return null
+    const embeddedTicket = embeddedTickets[0] || ''
+    url.searchParams.delete(VIDEO_UPLOAD_TICKET_QUERY)
+    if (Array.from(url.searchParams.keys()).length) return null
+    url.search = ''
+    return { canonicalUrl: url.toString(), embeddedTicket }
+  } catch (error) {
+    return null
+  }
+}
+
+function validatedListingVideoBody(body = {}, userId, currentListing = null) {
+  const result = { ...(body || {}) }
+  const hasVideoKey = Object.prototype.hasOwnProperty.call(result, 'videoKey')
+  const hasVideoUrl = Object.prototype.hasOwnProperty.call(result, 'videoUrl')
+  delete result.videoUploadTicket
+  if (!hasVideoKey && !hasVideoUrl) return result
+
+  const videoKey = String(body.videoKey || '').trim()
+  const videoUrl = String(body.videoUrl || '').trim()
+  const unchanged = Boolean(currentListing) &&
+    videoKey === String(currentListing.videoKey || '').trim() &&
+    videoUrl === String(currentListing.videoUrl || '').trim()
+  if (unchanged) return result
+
+  const sourceOptions = {
+    uploadDir: config.oss.uploadDir,
+    allowedOrigins: oss.readSourceOrigins()
+  }
+  const submittedUrl = submittedVideoUploadUrl(videoUrl)
+  const explicitTicket = String(body.videoUploadTicket || '').trim()
+  const embeddedTicket = submittedUrl ? String(submittedUrl.embeddedTicket || '').trim() : ''
+  const uploadTicket = explicitTicket || embeddedTicket
+  const normalizedKey = resolveManagedVideoObjectKey({ videoKey }, sourceOptions)
+  const urlKey = submittedUrl
+    ? resolveManagedVideoObjectKey({ videoUrl: submittedUrl.canonicalUrl }, sourceOptions)
+    : ''
+  if (!videoKey || !videoUrl || !submittedUrl || (explicitTicket && embeddedTicket && explicitTicket !== embeddedTicket) ||
+    normalizedKey !== videoKey || urlKey !== videoKey || !validVideoUploadTicket(uploadTicket, userId, videoKey)) {
+    const error = new Error('视频上传凭证无效或已过期，请重新选择视频上传')
+    error.statusCode = 400
+    throw error
+  }
+  result.videoUrl = submittedUrl.canonicalUrl
+  return result
+}
+
+let publicListingMediaServiceInstance = null
+
+function publicListingMediaService() {
+  if (publicListingMediaServiceInstance) return publicListingMediaServiceInstance
+  publicListingMediaServiceInstance = createPublicListingMediaService({
+    secret: miniAuthTokenSecret(),
+    baseUrl: config.miniProgram.requestDomain,
+    uploadDir: config.oss.uploadDir,
+    maxBytes: config.oss.maxVideoSize,
+    allowedOrigins: oss.readSourceOrigins(),
+    signVideoUrl(objectKey, method) {
+      if (!oss.hasReadConfig()) throw Object.assign(new Error('媒体读取配置不完整'), { statusCode: 503 })
+      return oss.createSignedReadUrl(objectKey, config.oss.readUrlExpireSeconds, method)
+    },
+    signCoverUrl(objectKey, method) {
+      if (!oss.hasReadConfig()) throw Object.assign(new Error('媒体读取配置不完整'), { statusCode: 503 })
+      return oss.createVideoSnapshotUrl(objectKey, config.oss.readUrlExpireSeconds, method)
+    }
+  })
+  return publicListingMediaServiceInstance
+}
+
+function ownerListingMediaStateKey(listing = {}) {
+  return [
+    'owner-media-v1',
+    String(listing.uploaderId || ''),
+    String(listing.lifecycleStatus || ''),
+    String(listing.status || ''),
+    String(listing.reviewStatus || ''),
+    String(listing.updatedAt || ''),
+    String(listing.lastVerifiedAt || '')
+  ].join('\n')
+}
+
+function ownerListingMediaEligible(db, listing = {}) {
+  const uploaderId = String(listing.uploaderId || '').trim()
+  const listingId = String(listing.id || '').trim()
+  if (!uploaderId || !listingId) return false
+  return domain.ownedListings(db, uploaderId).some((row) => String(row.id || '') === listingId)
+}
+
+function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptionsForListing) {
+  if (Array.isArray(value)) return value.map((item) => withPublicListingMedia(item, db, eligibleListingIds, capabilityOptionsForListing))
+  if (!value || typeof value !== 'object') return value
+  const result = {}
+  Object.keys(value).forEach((key) => {
+    result[key] = withPublicListingMedia(value[key], db, eligibleListingIds, capabilityOptionsForListing)
+  })
+  const listingId = String(value.id || '').trim()
+  const listing = listingId ? (db.listings || []).find((item) => String(item.id || '') === listingId) : null
+  if (!listing) return result
+  const mediaEligible = eligibleListingIds instanceof Set && eligibleListingIds.has(listingId) &&
+    value.unavailable !== true && value.isAvailable !== false && value.hasVideo !== false
+  if (!mediaEligible) {
+    if (Object.prototype.hasOwnProperty.call(value, 'videoUrl')) result.videoUrl = ''
+    if (Object.prototype.hasOwnProperty.call(value, 'coverUrl')) result.coverUrl = ''
+    if (Object.prototype.hasOwnProperty.call(value, 'hasVideo')) result.hasVideo = false
+    delete result.videoKey
+    return result
+  }
+  const capabilityOptions = typeof capabilityOptionsForListing === 'function'
+    ? capabilityOptionsForListing(listing)
+    : {}
+  const media = publicListingMediaService().urlsForListing(listing, capabilityOptions)
+  if (Object.prototype.hasOwnProperty.call(value, 'videoUrl')) result.videoUrl = media.videoUrl
+  if (Object.prototype.hasOwnProperty.call(value, 'coverUrl')) result.coverUrl = media.coverUrl
+  if (Object.prototype.hasOwnProperty.call(value, 'hasVideo')) result.hasVideo = Boolean(media.videoUrl)
+  if (!media.videoUrl && Object.prototype.hasOwnProperty.call(value, 'video')) result.video = ''
+  delete result.videoKey
+  return result
+}
+
+function sendPublicListingJson(res, db, data, statusCode = 200) {
+  // 能力 URL 短时有效且每次访问都会重验房源状态；JSON 本身不得被共享缓存长期持有。
+  res.noStore = true
+  const eligibleListingIds = new Set(
+    domain.filterListings(db, { publicGuest: true }).map((listing) => String(listing.id || '')).filter(Boolean)
+  )
+  return sendJson(res, withPublicListingMedia(data, db, eligibleListingIds), statusCode)
+}
+
+function sendOwnedListingJson(res, db, data, userId, statusCode = 200) {
+  const trustedUserId = String(userId || '').trim()
+  const eligibleListingIds = new Set(
+    domain.ownedListings(db, trustedUserId).map((listing) => String(listing.id || '')).filter(Boolean)
+  )
+  res.noStore = true
+  return sendJson(res, withPublicListingMedia(data, db, eligibleListingIds, (listing) => ({
+    scope: 'owner',
+    audience: trustedUserId,
+    stateKey: ownerListingMediaStateKey(listing)
+  })), statusCode)
+}
+
 function withSignedListingVideoUrls(rows) {
   return (rows || []).map((row) => ({
     ...row,
@@ -1377,11 +1608,55 @@ async function handleMini(req, res, pathname, searchParams) {
   const method = req.method
   // 所有鉴权入口（含登录失败、解析失败、过期 token）都可能携带或推断敏感会话状态。
   // 必须在读库、验签和解析请求体之前标记，确保成功与错误响应统一禁止缓存并按 Authorization 隔离。
-  if (pathname.startsWith('/mini/auth/') || String(req.headers.authorization || '').trim()) {
+  if (pathname.startsWith('/mini/auth/') || hasAuthorizationHeader(req)) {
     res.noStore = true
     res.varyAuthorization = true
   }
   const db = readDbForRequest()
+  // 登录、注册虽不要求已有会话，但只要客户端主动携带 Authorization，就必须先完整校验。
+  // 否则畸形、伪造或已撤销 token 会在两个免登录路由被静默忽略，形成同一请求头在不同端点语义分叉。
+  const authContext = initialMiniAuthContextFromRequest(req, db)
+
+  const publicMediaMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover)$/)
+  if ((method === 'GET' || method === 'HEAD') && publicMediaMatch) {
+    const listingId = publicMediaMatch[1]
+    // 媒体本来就是公开素材，登录身份不应获得带宽限流豁免；否则单个被盗账号可无限
+    // Range/HEAD/GET 占满全局并发和 OSS 出口，反而让所有游客视频 503。
+    assertGuestRateLimit(req, 'mini-public-listing-media', 180)
+    res.noStore = true
+    const capabilityScope = searchParams.get('scope') === 'owner' ? 'owner' : 'public'
+    let listing
+    let capabilityOptions = { scope: 'public', audience: '', stateKey: '' }
+    if (capabilityScope === 'owner') {
+      listing = (db.listings || []).find((item) => String(item.id || '') === String(listingId || ''))
+      if (!listing || !ownerListingMediaEligible(db, listing)) {
+        const error = new Error('媒体不存在')
+        error.statusCode = 404
+        throw error
+      }
+      capabilityOptions = {
+        scope: 'owner',
+        audience: String(listing.uploaderId || ''),
+        stateKey: ownerListingMediaStateKey(listing)
+      }
+    } else {
+      const state = domain.listingDetailState(db, listingId, authContext ? authContext.userId : '')
+      if (state.status !== 'available' || !state.listing) {
+        const error = new Error('媒体不存在')
+        error.statusCode = 404
+        throw error
+      }
+      listing = state.listing
+    }
+    await publicListingMediaService().serve(req, res, {
+      listing,
+      listingId,
+      kind: publicMediaMatch[2],
+      token: searchParams.get('token') || '',
+      ...capabilityOptions
+    })
+    return
+  }
 
   if (method === 'POST' && pathname === '/mini/auth/login') {
     // 登录是免鉴权入口：按客户端 IP 限流防暴力破解。20/min 兼顾防爆破（scrypt 本就让在线爆破不可行）
@@ -1406,7 +1681,6 @@ async function handleMini(req, res, pathname, searchParams) {
     throw error
   }
 
-  const authContext = miniAuthContextFromRequest(req, db)
   const userId = authContext ? authContext.userId : ''
   if (authContext) {
     res.miniAuthRefresh = {
@@ -1472,9 +1746,9 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'GET' && pathname === '/mini/home/listings') {
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-home-listings')
-      return sendJson(res, domain.filterListings(db, guestListingFilter()).slice(0, 3))
+      return sendPublicListingJson(res, db, domain.filterListings(db, guestListingFilter()).slice(0, 3))
     }
-    return sendJson(res, domain.homeListings(db))
+    return sendPublicListingJson(res, db, domain.homeListings(db))
   }
 
   if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
@@ -1516,9 +1790,9 @@ async function handleMini(req, res, pathname, searchParams) {
     }
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-listings')
-      return sendJson(res, domain.filterListings(db, guestListingFilter(filter)))
+      return sendPublicListingJson(res, db, domain.filterListings(db, guestListingFilter(filter)))
     }
-    return sendJson(res, domain.filterListings(db, filter))
+    return sendPublicListingJson(res, db, domain.filterListings(db, filter))
   }
 
   if (method === 'GET' && pathname === '/mini/commission-config') {
@@ -1530,10 +1804,10 @@ async function handleMini(req, res, pathname, searchParams) {
     const body = await parseBody(req)
     if (isGuestUser(userId)) {
       assertGuestRateLimit(req, 'mini-listings-match')
-      return sendJson(res, domain.matchListings(db, guestListingFilter(body)))
+      return sendPublicListingJson(res, db, domain.matchListings(db, guestListingFilter(body)))
     }
-    assertFreshMiniSession(req, userId)
-    return sendJson(res, domain.matchListings(db, body))
+    assertFreshMiniSessionBeforeExecution(req, userId)
+    return sendPublicListingJson(res, db, domain.matchListings(db, body))
   }
 
   if (method === 'POST' && pathname === '/mini/llm/match') {
@@ -1541,10 +1815,10 @@ async function handleMini(req, res, pathname, searchParams) {
     const body = await parseBody(req)
     const guest = isGuestUser(userId)
     try {
-      const resultDb = guest ? companyOnlyDb(db) : db
+      const resultDb = db
       const resultBody = guest ? guestListingFilter(body) : body
       if (guest) assertGuestRateLimit(req, 'mini-llm-match')
-      else assertFreshMiniSession(req, userId)
+      else assertFreshMiniSessionBeforeExecution(req, userId)
       const result = await llm.matchRentalNeed(resultDb, resultBody)
       if (!guest) assertFreshMiniSession(req, userId)
       let response = { ...result }
@@ -1555,7 +1829,7 @@ async function handleMini(req, res, pathname, searchParams) {
         ))
       }
       console.log(`[llm-match] status=200 durationMs=${Date.now() - startedAt} guest=${guest}`)
-      return sendJson(res, response)
+      return sendPublicListingJson(res, db, response)
     } catch (error) {
       console.log(`[llm-match] status=${error.statusCode || 500} durationMs=${Date.now() - startedAt} guest=${guest}`)
       throw error
@@ -1572,13 +1846,13 @@ async function handleMini(req, res, pathname, searchParams) {
       // clone 隔离之。留痕通过 persistTrace 在 await 之后用同步 updateDb 落到最新 db，
       // 消除“读快照→await 数秒→整库回写覆盖并发写入”的丢数据竞态。
       const snapshot = dbStore.clone(db)
-      const resultDb = guest ? companyOnlyDb(snapshot) : snapshot
+      const resultDb = snapshot
       const resultBody = guest ? guestListingFilter(body) : body
       const persistTrace = guest
         ? (writeTraceLog) => dbStore.updateDb((freshDb) => writeTraceLog(freshDb))
         : (writeTraceLog) => updateMiniDb(req, (freshDb) => writeTraceLog(freshDb))
       if (guest) assertGuestRateLimit(req, 'mini-assistant-chat', 30)
-      else assertFreshMiniSession(req, userId)
+      else assertFreshMiniSessionBeforeExecution(req, userId)
       const context = { userId: guest ? '' : userId, persistTrace }
       const result = await Promise.race([
         assistantService.chat(resultDb, resultBody, context),
@@ -1594,7 +1868,7 @@ async function handleMini(req, res, pathname, searchParams) {
       })
       if (!guest) assertFreshMiniSession(req, userId)
       console.log(`[assistant-chat] status=200 durationMs=${Date.now() - startedAt} guest=${guest} degraded=${Boolean(result && result.degraded)}`)
-      return sendJson(res, result)
+      return sendPublicListingJson(res, db, result)
     } catch (error) {
       console.log(`[assistant-chat] status=${error.statusCode || 500} durationMs=${Date.now() - startedAt} guest=${guest} error=${safeLogError(error)}`)
       throw error
@@ -1661,7 +1935,7 @@ async function handleMini(req, res, pathname, searchParams) {
       features: searchParams.get('features') || '',
       availability: searchParams.get('availability') || ''
     }
-    return sendJson(res, domain.favoriteListings(db, userId, filter))
+    return sendPublicListingJson(res, db, domain.favoriteListings(db, userId, filter))
   }
 
   const favoriteMatch = pathname.match(/^\/mini\/favorites\/([^/]+)$/)
@@ -1699,7 +1973,7 @@ async function handleMini(req, res, pathname, searchParams) {
 
   if (method === 'GET' && pathname === '/mini/my/listings') {
     assertMiniLogin(userId)
-    return sendJson(res, domain.ownedListings(db, userId))
+    return sendOwnedListingJson(res, db, domain.ownedListings(db, userId), userId)
   }
 
   const myListingEditMatch = pathname.match(/^\/mini\/my\/listings\/([^/]+)$/)
@@ -1712,7 +1986,16 @@ async function handleMini(req, res, pathname, searchParams) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
     return sendJson(res, withSignedVideoUrl(updateMiniDb(req, (nextDb, freshUserId) => (
-      domain.updateNormalListing(nextDb, freshUserId, myListingEditMatch[1], body)
+      domain.updateNormalListing(
+        nextDb,
+        freshUserId,
+        myListingEditMatch[1],
+        validatedListingVideoBody(
+          body,
+          freshUserId,
+          (nextDb.listings || []).find((item) => String(item.id || '') === myListingEditMatch[1]) || null
+        )
+      )
     ))))
   }
 
@@ -1720,11 +2003,12 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && myListingVerifyMatch) {
     assertMiniLogin(userId)
     const verifyBody = await parseBody(req)
-    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => {
+    const verifiedListings = updateMiniDb(req, (nextDb, freshUserId) => {
       // outcome: 未出租=已维护；已出租/不租了=下架进后台资产池。缺省兼容旧客户端=已维护。
       domain.submitListingVerification(nextDb, freshUserId, myListingVerifyMatch[1], verifyBody && verifyBody.outcome)
       return domain.ownedListings(nextDb, freshUserId)
-    }))
+    })
+    return sendOwnedListingJson(res, readDbForRequest(), verifiedListings, userId)
   }
 
   if (method === 'GET' && pathname === '/mini/profile') {
@@ -1839,7 +2123,7 @@ async function handleMini(req, res, pathname, searchParams) {
     assertMiniLogin(userId)
     const body = await parseBody(req)
     assertFreshMiniSession(req, userId)
-    return sendJson(res, oss.createVideoUploadPolicy(clientUploadPolicyInput(body)))
+    return sendJson(res, withVideoUploadTicket(oss.createVideoUploadPolicy(clientUploadPolicyInput(body)), userId))
   }
 
   if (method === 'POST' && pathname === '/mini/uploads/group-screenshot-policy') {
@@ -1859,7 +2143,9 @@ async function handleMini(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/mini/listings') {
     assertMiniLogin(userId)
     const body = await parseBody(req)
-    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => domain.addNormalListing(nextDb, freshUserId, body)))
+    return sendJson(res, updateMiniDb(req, (nextDb, freshUserId) => (
+      domain.addNormalListing(nextDb, freshUserId, validatedListingVideoBody(body, freshUserId))
+    )))
   }
 
   const nearbyListingMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/nearby$/)
@@ -1875,18 +2161,15 @@ async function handleMini(req, res, pathname, searchParams) {
     }
     if (detailState.status === 'unavailable') {
       if (guest && !domain.isCompanyListing(detailState.listing)) {
-        assertGuestListingAllowed({ companyListing: false })
+        const error = new Error('房源不存在')
+        error.statusCode = 404
+        throw error
       }
-      return sendJson(res, domain.nearbyListings(db, listingId))
+      return sendPublicListingJson(res, db, domain.nearbyListings(db, listingId))
     }
-    if (guest) {
-      // 锚点与候选双重裁剪：游客不能借合作房源编号或 total/hasMore 数量侧信道推断合作房源。
-      assertGuestListingAllowed(detailState.detail)
-    }
-    const scopedDb = guest ? companyOnlyDb(db) : db
-    return sendJson(res, domain.nearbyListings(scopedDb, listingId, {
+    return sendPublicListingJson(res, db, domain.nearbyListings(db, listingId, {
       all: searchParams.get('all') === '1',
-      companyOnly: guest
+      publicGuest: guest
     }))
   }
 
@@ -1903,8 +2186,10 @@ async function handleMini(req, res, pathname, searchParams) {
       throw error
     }
     if (detailState.status === 'unavailable') {
-      if (guest) {
-        assertGuestListingAllowed({ companyListing: domain.isCompanyListing(detailState.listing) })
+      if (guest && !domain.isCompanyListing(detailState.listing)) {
+        const error = new Error('房源不存在')
+        error.statusCode = 404
+        throw error
       }
       logListingDetailState(listingId, detailState, searchParams.get('queryId') || searchParams.get('traceId') || '')
       return sendJson(res, detailState.unavailable)
@@ -1912,13 +2197,10 @@ async function handleMini(req, res, pathname, searchParams) {
     const detail = detailState.detail
     // 标记是否为上传人自查（服务端判定），供详情页免留痕直接展示地址/房东电话。
     detail.ownListing = domain.isOwnListing(db, listingId, userId)
-    if (guest) {
-      assertGuestListingAllowed(detail)
-    }
-    const scopedDb = guest ? companyOnlyDb(db) : db
-    // 附近预览随详情一次返回，最多 6 条；候选池在服务端先按当前身份裁剪，再计算 total/hasMore。
-    detail.nearby = domain.nearbyListings(scopedDb, listingId, { companyOnly: guest })
-    return sendJson(res, withSignedVideoUrl(detail))
+    // 附近预览随详情一次返回，最多 6 条；游客与登录用户都使用完整的前台有效池，
+    // 但游客拿到的详情、附近卡片和地图点位始终是服务端公共白名单投影。
+    detail.nearby = domain.nearbyListings(db, listingId, { publicGuest: guest })
+    return sendPublicListingJson(res, db, detail)
   }
 
   const listingLogsMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/footprints$/)
@@ -2217,7 +2499,17 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'PUT' && adminListingEditMatch) {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => domain.updateNormalListing(nextDb, adminAccount.userId || adminAccount.id, adminListingEditMatch[1], body, { admin: true })))
+    return sendJson(res, dbStore.updateDb((nextDb) => domain.updateNormalListing(
+      nextDb,
+      adminAccount.userId || adminAccount.id,
+      adminListingEditMatch[1],
+      validatedListingVideoBody(
+        body,
+        adminAccount.userId || adminAccount.id,
+        (nextDb.listings || []).find((item) => String(item.id || '') === adminListingEditMatch[1]) || null
+      ),
+      { admin: true }
+    )))
   }
   const adminListingCoordinateMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/coordinate$/)
   if (method === 'POST' && adminListingCoordinateMatch) {
@@ -2733,6 +3025,12 @@ async function router(req, res) {
     error.statusCode = 404
     throw error
   } catch (error) {
+    // 流式媒体可能已发出 200/206 头后才发现上游少字节或连接中断。此时只能断开当前响应，
+    // 绝不能再 sendError/writeHead，否则会触发 ERR_HTTP_HEADERS_SENT 并把单请求故障放大为进程异常。
+    if (res.headersSent || res.destroyed) {
+      if (!res.writableEnded) res.destroy()
+      return
+    }
     sendError(res, error)
   }
 }

@@ -7,7 +7,6 @@ const { consumePendingFilterEnvelope } = require('../../utils/pending-filter-sto
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
 const categories = ['全部', '公司房源', '业主房源', '二房东房源']
-const partnerCategories = ['业主房源', '二房东房源']
 
 function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
@@ -112,12 +111,12 @@ Page({
     listings: [],
     loading: false,
     loadFailed: false,
-    loginRequired: false,
     emptyText: '暂无符合条件的房源'
   },
 
   onLoad(options) {
     this._pageActive = true
+    this.bindAuthInvalidationListener()
     this.setListingState(normalizeOptions(options))
   },
 
@@ -127,10 +126,7 @@ Page({
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 1 })
     }
-    if (sessionState.changed) {
-      try { wx.removeStorageSync(pendingListingFiltersKey) } catch (error) {}
-    }
-    if (!sessionState.changed && this.applyPendingListingFilters()) return
+    if (this.applyPendingListingFilters(sessionState.key)) return
     this.loadListings()
   },
 
@@ -146,11 +142,22 @@ Page({
         communityOptions: [],
         filters,
         loading: false,
-        loadFailed: false,
-        loginRequired: !apiClient.getAuthToken() && partnerCategories.includes(this.data.category)
+        loadFailed: false
       })
     }
     return { key: nextSessionKey, changed }
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadListings()
+    })
   },
 
   setListingState(nextState, callback) {
@@ -161,7 +168,7 @@ Page({
     }, callback)
   },
 
-  applyPendingListingFilters() {
+  applyPendingListingFilters(sessionKey = currentAuthSessionKey()) {
     let pendingFilters = null
     try {
       const storedPending = wx.getStorageSync(pendingListingFiltersKey)
@@ -170,7 +177,7 @@ Page({
       }
       pendingFilters = consumePendingFilterEnvelope(
         storedPending,
-        currentAuthSessionKey()
+        sessionKey
       )
     } catch (error) {
       pendingFilters = null
@@ -190,6 +197,10 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
     this.activeListingRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
   },
@@ -238,8 +249,7 @@ Page({
     const requestSessionKey = this.syncAuthSession().key
     const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.activeListingRequestId = requestId
-    const loginRequired = !apiClient.getAuthToken() && partnerCategories.includes(this.data.category)
-    this.setData({ loading: true, loadFailed: false, loginRequired })
+    this.setData({ loading: true, loadFailed: false })
     const query = {
       category: this.data.category === '全部' ? '' : this.data.category,
       ...this.data.filters
@@ -256,7 +266,10 @@ Page({
     ]).then(([listings, communityRows]) => {
       if (this.activeListingRequestId !== requestId) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadListings()
         return
       }
       this.setData({
@@ -268,7 +281,10 @@ Page({
     }).catch(() => {
       if (this.activeListingRequestId !== requestId) return
       if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
         this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadListings()
         return
       }
       this.setData({ loadFailed: true })
@@ -282,10 +298,6 @@ Page({
 
   retryListings() {
     this.loadListings()
-  },
-
-  goLogin() {
-    wx.navigateTo({ url: '/pages/auth/auth' })
   },
 
   openListing(event) {

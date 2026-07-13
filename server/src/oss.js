@@ -1,20 +1,20 @@
 const crypto = require('crypto')
 const https = require('https')
 const path = require('path')
+const { URL } = require('url')
 const config = require('./config')
 
 function trimSlash(value) {
   return String(value || '').replace(/\/+$/, '')
 }
 
-function safeName(fileName, defaultExt) {
-  const ext = path.extname(fileName || '').toLowerCase() || defaultExt || '.mp4'
-  const base = path
-    .basename(fileName || 'listing-video', ext)
-    .replace(/[^A-Za-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-  return `${base || 'listing-video'}${ext}`
+function safeExtension(fileName, defaultExt) {
+  const fallback = String(defaultExt || '.mp4').toLowerCase()
+  const candidate = path.extname(fileName || '').toLowerCase()
+  const allowed = fallback === '.jpg'
+    ? new Set(['.jpg', '.jpeg', '.png', '.webp'])
+    : new Set(['.mp4', '.mov', '.m4v', '.webm'])
+  return allowed.has(candidate) ? candidate : fallback
 }
 
 function createObjectKey(fileName, uploadDir, defaultExt) {
@@ -23,7 +23,9 @@ function createObjectKey(fileName, uploadDir, defaultExt) {
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
   const stamp = `${Date.now()}-${Math.floor(Math.random() * 10000)}`
-  return `${uploadDir || config.oss.uploadDir}/${y}${m}${d}/${stamp}-${safeName(fileName, defaultExt)}`
+  // 对象键只保留服务端时间随机串和白名单扩展名；客户端原文件名可能含手机号、房号或姓名，
+  // 不能进入公开封面/视频签名 URL 的路径。
+  return `${uploadDir || config.oss.uploadDir}/${y}${m}${d}/${stamp}${safeExtension(fileName, defaultExt)}`
 }
 
 function ossHost() {
@@ -96,7 +98,7 @@ function missingConfigKeys() {
   return missing
 }
 
-function createSignedReadUrl(objectKey, expiresInSeconds) {
+function createSignedReadUrl(objectKey, expiresInSeconds, method) {
   if (!objectKey || missingConfigKeys().length) {
     return objectKey ? publicFileUrl(objectKey) : ''
   }
@@ -105,7 +107,8 @@ function createSignedReadUrl(objectKey, expiresInSeconds) {
   // STS token 不只是 URL 参数，也是 OSS V1 CanonicalizedResource 的 subresource。
   // 仅拼到 URL 而不参与签名会被私有桶判为 SignatureDoesNotMatch。
   const resourcePath = canonicalizedResource(objectKey, stsSubresources())
-  const stringToSign = ['GET', '', '', String(expires), resourcePath].join('\n')
+  const readMethod = String(method || 'GET').toUpperCase() === 'HEAD' ? 'HEAD' : 'GET'
+  const stringToSign = [readMethod, '', '', String(expires), resourcePath].join('\n')
   const params = {
     OSSAccessKeyId: config.oss.accessKeyId,
     Expires: String(expires),
@@ -130,7 +133,7 @@ function createSignedReadUrl(objectKey, expiresInSeconds) {
 // 真实 videoKey 经本签名 URL 返回 200 + image/jpeg 真图。个别编码不支持时取图失败，前端退占位图兜底。
 const VIDEO_SNAPSHOT_PROCESS = 'video/snapshot,t_0,f_jpg,w_640,h_0,m_fast'
 
-function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
+function createVideoSnapshotUrl(objectKey, expiresInSeconds, method) {
   if (!objectKey || missingConfigKeys().length || !looksLikeVideoPath(objectKey)) return ''
 
   const expires = Math.floor(Date.now() / 1000) + (expiresInSeconds || config.oss.readUrlExpireSeconds)
@@ -138,7 +141,8 @@ function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
   const resourcePath = canonicalizedResource(objectKey, stsSubresources({
     'x-oss-process': VIDEO_SNAPSHOT_PROCESS
   }))
-  const stringToSign = ['GET', '', '', String(expires), resourcePath].join('\n')
+  const readMethod = String(method || 'GET').toUpperCase() === 'HEAD' ? 'HEAD' : 'GET'
+  const stringToSign = [readMethod, '', '', String(expires), resourcePath].join('\n')
   const signature = signOssString(stringToSign)
 
   // x-oss-process 的值只含 /、,、_ 与字母数字，都是 query 合法字符，保持字面以匹配签名串。
@@ -157,6 +161,22 @@ function createVideoSnapshotUrl(objectKey, expiresInSeconds) {
 // 判断对象键是否是可截帧的视频（与 domain.looksLikeVideoPath 同口径：含 #/? 结尾兜底）。
 function looksLikeVideoPath(value) {
   return /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(String(value || '').trim())
+}
+
+function hasReadConfig() {
+  return missingConfigKeys().length === 0
+}
+
+function readSourceOrigins() {
+  return [ossHost(), config.oss.publicBaseUrl, config.oss.homeUrl]
+    .map((value) => {
+      try {
+        return new URL(String(value || '')).origin
+      } catch (error) {
+        return ''
+      }
+    })
+    .filter(Boolean)
 }
 
 function putObjectBuffer(objectKey, buffer, contentType) {
@@ -363,6 +383,8 @@ module.exports = {
   createShowingPhotoUploadPolicy,
   createSignedReadUrl,
   createVideoSnapshotUrl,
+  hasReadConfig,
+  readSourceOrigins,
   putObjectBuffer,
   sanitizeOssErrorText
 }
