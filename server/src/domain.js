@@ -5524,9 +5524,17 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
     ['业主平台比例', payload.ownerPlatformRate],
     ['业主平台比例', platRates[OWNER_SOURCE]]
   ]
+  const parseSuppliedRate = (value) => {
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') {
+      const text = value.trim()
+      if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return Number(text)
+    }
+    return Number.NaN
+  }
   suppliedRates.forEach(([label, value]) => {
     if (value === undefined || value === null) return
-    const number = Number(value)
+    const number = parseSuppliedRate(value)
     if (!Number.isFinite(number)) {
       const error = new Error(`${label}必须是有限数字`)
       error.statusCode = 400

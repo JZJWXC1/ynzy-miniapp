@@ -138,7 +138,13 @@ function makeDb() {
   const cases = [
     { label: '顶层非数字', payload: { ownerRate: 'abc' } },
     { label: '别名负无穷', payload: { secondLandlordUploaderRate: '-1e999' } },
-    { label: '嵌套正无穷', payload: { platformRates: { [OWNER]: Infinity } } }
+    { label: '嵌套正无穷', payload: { platformRates: { [OWNER]: Infinity } } },
+    { label: '布尔值', payload: { ownerRate: false } },
+    { label: '空数组', payload: { ownerRate: [] } },
+    { label: '单元素数组', payload: { ownerRate: [5] } },
+    { label: '空字符串', payload: { ownerRate: '' } },
+    { label: '纯空白', payload: { ownerRate: '   ' } },
+    { label: '对象', payload: { ownerRate: {} } }
   ]
   cases.forEach(({ label, payload }) => {
     const d = makeDb()

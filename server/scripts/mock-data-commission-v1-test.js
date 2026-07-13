@@ -121,7 +121,13 @@ function run() {
   ;[
     { ownerRate: 'abc' },
     { uploaderRates: { [TEXT.secondLandlord]: '-1e999' } },
-    { platformRates: { [TEXT.owner]: Infinity } }
+    { platformRates: { [TEXT.owner]: Infinity } },
+    { ownerRate: false },
+    { ownerRate: [] },
+    { ownerRate: [5] },
+    { ownerRate: '' },
+    { ownerRate: '   ' },
+    { ownerRate: {} }
   ].forEach((payload) => {
     const beforeInvalidConfig = mockData.getCommissionConfig()
     const beforeInvalidLogs = mockData.getAdminLogs().length

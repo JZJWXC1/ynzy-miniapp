@@ -613,6 +613,14 @@
     var data = payload || {};
     var upRates = data.uploaderRates || {};
     var platRates = data.platformRates || {};
+    function parseSuppliedRate(value) {
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string') {
+        var text = value.trim();
+        if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return Number(text);
+      }
+      return Number.NaN;
+    }
     [
       ['二房东上传人比例', data.secondLandlordRate],
       ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE]],
@@ -625,7 +633,7 @@
     ].forEach(function (entry) {
       var value = entry[1];
       if (value === undefined || value === null) return;
-      var number = Number(value);
+      var number = parseSuppliedRate(value);
       if (!Number.isFinite(number)) {
         var invalidError = new Error(entry[0] + '必须是有限数字');
         invalidError.statusCode = 400;
