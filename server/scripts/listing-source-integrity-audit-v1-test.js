@@ -67,9 +67,15 @@ function run() {
   try {
     const cleanPath = path.join(tempRoot, 'clean.json')
     const ambiguousPath = path.join(tempRoot, 'ambiguous.json')
+    const emptyPath = path.join(tempRoot, 'empty.json')
+    const invalidJsonPath = path.join(tempRoot, 'invalid-json.json')
+    const unreadablePath = path.join(tempRoot, 'directory-not-a-file')
     const invalidStructurePath = path.join(tempRoot, 'invalid-structure.json')
     fs.writeFileSync(cleanPath, JSON.stringify(cleanDb), 'utf8')
     fs.writeFileSync(ambiguousPath, JSON.stringify(ambiguousDb), 'utf8')
+    fs.writeFileSync(emptyPath, ' \r\n\t ', 'utf8')
+    fs.writeFileSync(invalidJsonPath, '{"listings":', 'utf8')
+    fs.mkdirSync(unreadablePath)
     fs.writeFileSync(invalidStructurePath, JSON.stringify({ listings: {} }), 'utf8')
 
     const cleanRun = runCli(cleanPath)
@@ -78,6 +84,9 @@ function run() {
       ok: true,
       dataFileFound: true,
       readable: true,
+      parseable: true,
+      structureValid: true,
+      errorCode: '',
       totalListings: 2,
       ambiguousFalseFlagCompanySource: 0
     })
@@ -86,14 +95,65 @@ function run() {
     assert.strictEqual(ambiguousRun.status, 2, '可疑旧误固化签名必须阻断发布')
     const ambiguousOutput = JSON.parse(ambiguousRun.stdout)
     assert.strictEqual(ambiguousOutput.ok, false)
+    assert.strictEqual(ambiguousOutput.readable, true)
+    assert.strictEqual(ambiguousOutput.parseable, true)
+    assert.strictEqual(ambiguousOutput.structureValid, true)
+    assert.strictEqual(ambiguousOutput.errorCode, '')
     assert.strictEqual(ambiguousOutput.ambiguousFalseFlagCompanySource, 4)
     assert.ok(!ambiguousRun.stdout.includes('DO-NOT-PRINT-THIS-ID'), '审计输出不得泄露房源 ID')
     assert.ok(!ambiguousRun.stdout.includes('19900000000'), '审计输出不得泄露电话')
 
+    const emptyRun = runCli(emptyPath)
+    assert.strictEqual(emptyRun.status, 2)
+    assert.deepStrictEqual(JSON.parse(emptyRun.stdout), {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'EMPTY_FILE',
+      totalListings: 0,
+      ambiguousFalseFlagCompanySource: 0
+    })
+
+    const invalidJsonRun = runCli(invalidJsonPath)
+    assert.strictEqual(invalidJsonRun.status, 2)
+    assert.deepStrictEqual(JSON.parse(invalidJsonRun.stdout), {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'INVALID_JSON',
+      totalListings: 0,
+      ambiguousFalseFlagCompanySource: 0
+    })
+
     const invalidStructureRun = runCli(invalidStructurePath)
     assert.strictEqual(invalidStructureRun.status, 2, 'listings 非数组时必须阻断发布')
-    assert.strictEqual(JSON.parse(invalidStructureRun.stdout).ok, false)
-    assert.strictEqual(JSON.parse(invalidStructureRun.stdout).readable, false)
+    assert.deepStrictEqual(JSON.parse(invalidStructureRun.stdout), {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: true,
+      structureValid: false,
+      errorCode: 'INVALID_LISTINGS',
+      totalListings: 0,
+      ambiguousFalseFlagCompanySource: 0
+    })
+
+    const unreadableRun = runCli(unreadablePath)
+    assert.strictEqual(unreadableRun.status, 2)
+    assert.deepStrictEqual(JSON.parse(unreadableRun.stdout), {
+      ok: false,
+      dataFileFound: true,
+      readable: false,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'READ_ERROR',
+      totalListings: 0,
+      ambiguousFalseFlagCompanySource: 0
+    })
 
     const missingRun = runCli(path.join(tempRoot, 'missing.json'))
     assert.strictEqual(missingRun.status, 2, '缺少数据文件时不能伪造审计通过')
@@ -101,6 +161,9 @@ function run() {
       ok: false,
       dataFileFound: false,
       readable: false,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'FILE_NOT_FOUND',
       totalListings: 0,
       ambiguousFalseFlagCompanySource: 0
     })

@@ -214,12 +214,14 @@ function run() {
   const companyIds = domain.filterListings(db, { category: '公司房源' }).map((item) => item.id).sort()
   const secondLandlordIds = domain.filterListings(db, { category: '二房东房源' }).map((item) => item.id).sort()
   const allIds = domain.filterListings(db, {}).map((item) => item.id).sort()
+  const guestCompanyIds = domain.filterListings(db, { companyOnly: true }).map((item) => item.id).sort()
   assert.ok(!ownerIds.includes('COMPANY_DESC_OWNER'), '描述或户型含“业主”的公司房源不得进入业主筛选')
   assert.ok(ownerIds.includes('REAL_OWNER'), '真实业主房源仍应进入业主筛选')
   assert.ok(companyIds.includes('COMPANY_DESC_OWNER'), '公司房源仍应进入公司专区')
   assert.ok(allIds.includes('COMPANY_DESC_OWNER'), '公司房源无视频仍应进入全部房源')
   assert.ok(allIds.includes('REAL_OWNER'), '真实业主房源有视频且审核通过应进入全部房源')
   assert.deepStrictEqual(companyIds, ['COMPANY_DESC_OWNER'], '公司分类只能包含结构化公司房源，字符串假值不得被当真')
+  assert.deepStrictEqual(guestCompanyIds, companyIds, 'filterListings 的游客 companyOnly 必须直接收敛为公司房源全集')
   assert.deepStrictEqual(
     ownerIds,
     ['FALSE_STRING_OWNER', 'OWNER_CONFLICT', 'REAL_OWNER'],

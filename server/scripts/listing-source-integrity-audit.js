@@ -53,33 +53,85 @@ function requestedDbPath(argv = process.argv.slice(2)) {
 }
 
 function auditFile(dbPath) {
+  const emptySummary = {
+    totalListings: 0,
+    ambiguousFalseFlagCompanySource: 0
+  }
   if (!fs.existsSync(dbPath)) {
     return {
       ok: false,
       dataFileFound: false,
       readable: false,
-      totalListings: 0,
-      ambiguousFalseFlagCompanySource: 0
+      parseable: false,
+      structureValid: false,
+      errorCode: 'FILE_NOT_FOUND',
+      ...emptySummary
     }
   }
+
+  let text
   try {
-    const text = fs.readFileSync(dbPath, 'utf8').replace(/^\uFEFF/, '')
-    const db = text.trim() ? JSON.parse(text) : {}
-    const summary = sourceIntegritySummary(db)
-    return {
-      ok: summary.ambiguousFalseFlagCompanySource === 0,
-      dataFileFound: true,
-      readable: true,
-      ...summary
-    }
-  } catch (error) {
+    text = fs.readFileSync(dbPath, 'utf8').replace(/^\uFEFF/, '')
+  } catch (_error) {
     return {
       ok: false,
       dataFileFound: true,
       readable: false,
-      totalListings: 0,
-      ambiguousFalseFlagCompanySource: 0
+      parseable: false,
+      structureValid: false,
+      errorCode: 'READ_ERROR',
+      ...emptySummary
     }
+  }
+
+  if (!text.trim()) {
+    return {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'EMPTY_FILE',
+      ...emptySummary
+    }
+  }
+
+  let db
+  try {
+    db = JSON.parse(text)
+  } catch (_error) {
+    return {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: false,
+      structureValid: false,
+      errorCode: 'INVALID_JSON',
+      ...emptySummary
+    }
+  }
+
+  if (!db || !Array.isArray(db.listings)) {
+    return {
+      ok: false,
+      dataFileFound: true,
+      readable: true,
+      parseable: true,
+      structureValid: false,
+      errorCode: 'INVALID_LISTINGS',
+      ...emptySummary
+    }
+  }
+
+  const summary = sourceIntegritySummary(db)
+  return {
+    ok: summary.ambiguousFalseFlagCompanySource === 0,
+    dataFileFound: true,
+    readable: true,
+    parseable: true,
+    structureValid: true,
+    errorCode: '',
+    ...summary
   }
 }
 

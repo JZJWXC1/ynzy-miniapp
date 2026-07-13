@@ -5,6 +5,13 @@ const path = require('path')
 const repoRoot = path.join(__dirname, '..', '..')
 const appJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'app.json'), 'utf8'))
 const registeredPages = new Set(appJson.pages || [])
+const archivedPageManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'pages', 'archived-pages.json'), 'utf8'))
+const expectedArchivedPages = [
+  'pages/client-reports/client-reports',
+  'pages/deal-records/deal-records',
+  'pages/groups/groups',
+  'pages/match/match'
+]
 const staticPageTargetPattern = /\/pages\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+/g
 const eventHandlerPattern = /\b(?:bind|catch)(?::?[a-zA-Z][\w-]*)\s*=\s*"([^"]+)"/g
 
@@ -59,6 +66,25 @@ function localComponentBase(componentPath) {
 }
 
 const scannedSources = []
+
+assert.strictEqual(archivedPageManifest.version, 1, '历史页面清单版本必须明确')
+assert.ok(Array.isArray(archivedPageManifest.pages), '历史页面清单 pages 必须为数组')
+const archivedPages = archivedPageManifest.pages.map((item) => item.path)
+assert.deepStrictEqual(archivedPages.slice().sort(), expectedArchivedPages.slice().sort(), '四个未注册页面必须逐一归档，不得遗漏或夹带活动页面')
+assert.strictEqual(new Set(archivedPages).size, archivedPages.length, '历史页面清单不得重复')
+const discoveredPageBases = fs.readdirSync(path.join(repoRoot, 'pages'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => `pages/${entry.name}/${entry.name}`)
+  .filter((pageBase) => ['.js', '.json', '.wxml', '.wxss'].every((extension) => fs.existsSync(path.join(repoRoot, `${pageBase}${extension}`))))
+const discoveredUnregisteredPages = discoveredPageBases.filter((pageBase) => !registeredPages.has(pageBase)).sort()
+assert.deepStrictEqual(discoveredUnregisteredPages, archivedPages.slice().sort(), '任何未注册完整页面都必须进入显式归档清单，禁止新增无主孤儿页')
+archivedPageManifest.pages.forEach((item) => {
+  assert.ok(item.status && item.reason, `${item.path} 必须说明状态与保留原因`)
+  assert.ok(!registeredPages.has(item.path), `${item.path} 已归档，不得注册到 app.json`)
+  ;['.js', '.json', '.wxml', '.wxss'].forEach((extension) => {
+    assertFile(path.join(repoRoot, `${item.path}${extension}`), '归档页面源码必须完整保留')
+  })
+})
 
 for (const pageName of registeredPages) {
   const basePath = path.join(repoRoot, pageName)

@@ -39,6 +39,16 @@ const criticalScripts = [
   'server/scripts/listing-nearby-mock-v1-test.js',
   'server/scripts/listing-nearby-page-v1-test.js',
   'server/scripts/listing-verify-outcome-v1-test.js',
+  // P2/P3 返修：Mock/游客契约、页面恢复/空态/分隔符、来源审计语义、后台静态资源与统一测试入口。
+  'server/scripts/mock-preview-parity-v1-test.js',
+  'server/scripts/mini-detail-loading-state-v1-test.js',
+  'server/scripts/map-loading-state-v1-test.js',
+  'server/scripts/mini-list-loading-state-v1-test.js',
+  'server/scripts/mini-record-loading-state-v1-test.js',
+  'server/scripts/listing-source-integrity-audit-v1-test.js',
+  'server/scripts/listing-source-structure-test.js',
+  'server/scripts/admin-web-logo-v1-test.js',
+  'server/scripts/v1-test-runner-v1-test.js',
   // 内部员工上传业主/二房东房源自动通过；普通中介、冲突账号与客户端伪造权限仍必须走原审核边界。
   'server/scripts/staff-listing-auto-approve-v1-test.js',
   'server/scripts/guest-mode-v1-test.js',

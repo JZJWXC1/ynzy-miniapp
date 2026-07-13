@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "pages": [
+    {
+      "path": "pages/client-reports/client-reports",
+      "status": "paused-read-only-history",
+      "reason": "报备流程已暂停；保留历史只读代码，不注册页面，不恢复写入口。"
+    },
+    {
+      "path": "pages/deal-records/deal-records",
+      "status": "paused-read-only-history",
+      "reason": "签单流程已暂停；保留历史只读代码，不注册页面，不恢复写入口。"
+    },
+    {
+      "path": "pages/groups/groups",
+      "status": "first-release-hidden",
+      "reason": "房源群不属于第一版开放范围；保留历史代码，不注册页面，不增加活动入口。"
+    },
+    {
+      "path": "pages/match/match",
+      "status": "compatibility-history",
+      "reason": "旧结构化配房页由当前配房助手流程取代；保留兼容测试所需代码，不注册页面。"
+    }
+  ]
+}

@@ -8,10 +8,15 @@ const rootDir = path.resolve(__dirname, '..', '..')
 const read = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8')
 
 const appJson = JSON.parse(read('app.json'))
+const archivedPageManifest = JSON.parse(read('pages/archived-pages.json'))
+const archivedPageByPath = new Map(archivedPageManifest.pages.map((item) => [item.path, item]))
 assert.ok(!appJson.pages.includes('pages/client-reports/client-reports'), '暂停期间不得注册报备页面')
 assert.ok(!appJson.pages.includes('pages/deal-records/deal-records'), '暂停期间不得注册签单页面')
 assert.ok(fs.existsSync(path.join(rootDir, 'pages/client-reports/client-reports.js')), '历史报备页面代码应保留归档')
 assert.ok(fs.existsSync(path.join(rootDir, 'pages/deal-records/deal-records.js')), '历史签单页面代码应保留归档')
+
+assert.strictEqual(archivedPageByPath.get('pages/client-reports/client-reports').status, 'paused-read-only-history', '报备历史页必须明确标为暂停且只读保留')
+assert.strictEqual(archivedPageByPath.get('pages/deal-records/deal-records').status, 'paused-read-only-history', '签单历史页必须明确标为暂停且只读保留')
 
 const activePageSource = appJson.pages.flatMap((pagePath) => ['.js', '.wxml'].map((extension) => `${pagePath}${extension}`))
   .filter((relativePath) => fs.existsSync(path.join(rootDir, relativePath)))
