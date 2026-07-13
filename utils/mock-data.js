@@ -613,6 +613,25 @@
     var data = payload || {};
     var upRates = data.uploaderRates || {};
     var platRates = data.platformRates || {};
+    [
+      ['二房东上传人比例', data.secondLandlordRate],
+      ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE]],
+      ['业主上传人比例', data.ownerRate],
+      ['业主上传人比例', upRates[OWNER_SOURCE]],
+      ['二房东平台比例', data.secondLandlordPlatformRate],
+      ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE]],
+      ['业主平台比例', data.ownerPlatformRate],
+      ['业主平台比例', platRates[OWNER_SOURCE]]
+    ].forEach(function (entry) {
+      var value = entry[1];
+      if (value === undefined || value === null) return;
+      var number = Number(value);
+      if (Number.isFinite(number) && number < 0) {
+        var error = new Error(entry[0] + '不能小于 0');
+        error.statusCode = 400;
+        throw error;
+      }
+    });
     var current = getCommissionConfig();
     var uploaderRates = {};
     uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordRate, upRates[SECOND_LANDLORD_SOURCE]), current.secondLandlordRate);
@@ -1124,15 +1143,20 @@
     var uploader = getUser(listing.uploaderId) || {};
     var location = listingLocationFields(listing);
     var display = listingDisplayFields(listing);
+    var companyListing = display.companyListing;
+    var hasVideo = hasListingVideo(listing);
+    var mediaText = hasVideo ? '仅视频' : (companyListing ? '公司房源表' : '待补视频');
     var publicTitle = listing.shortTitle || location.community || listing.community || ((location.area || '房源') + (listing.layout ? ' · ' + listing.layout : ''));
     return Object.assign({
       id: listing.id,
       title: publicTitle,
-      meta: (location.locationSummary || location.area) + ' · ' + listing.layout + ' · 仅视频',
-      sub: V1_COMMISSION_TEXT + ' · 上传人' + uploader.name,
+      meta: (location.locationSummary || location.area) + ' · ' + listing.layout + ' · ' + mediaText,
+      sub: display.sourceLabel + ' · ' + display.commissionText + ' · 上传人 ' + (uploader.name || '平台'),
       price: '¥' + listing.rent + '/月',
-      tag: '按配置结算',
+      tag: companyListing ? COMPANY_SOURCE : (commissionRateByOwnerType(display.ownerType) + '%'),
       videoUrl: listing.videoUrl || '',
+      hasVideo: hasVideo,
+      coverUrl: '',
       city: location.city,
       district: location.district,
       area: location.area,
@@ -1162,6 +1186,7 @@
       var areaText = String((listing.city || '') + (listing.district || '') + (listing.area || '') + (listing.block || '') + (listing.community || '') + (listing.building || '') + (listing.unit || '') + (listing.roomNumber || '') + (listing.address || ''));
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
+      if (query.district && String((listing.district || '') + (listing.area || '')).indexOf(query.district) === -1) return false;
       if (query.area && areaText.indexOf(query.area) === -1) return false;
       if (query.block && areaText.indexOf(query.block) === -1) return false;
       if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
@@ -1536,11 +1561,52 @@
     };
   }
 
+  function listingUnavailableReason(listing) {
+    var item = listing || {};
+    if (!item.id) return { reason: 'not-found', reasonText: '房源不存在' };
+    if (isSoldListing(item)) {
+      return { reason: 'down', reasonText: '该房源已成交或已下架，请返回重新找房。' };
+    }
+    if (isExpiredListing(item)) {
+      var expiredReason = String(item.expiredReason || '');
+      var expiredByCycle = item.expiredStaleDays !== undefined || /超过\s*\d+\s*天|未电话联系|房态/.test(expiredReason);
+      return expiredByCycle
+        ? { reason: 'expired', reasonText: '该房源已超过核验周期或已失效，请返回重新找房。' }
+        : { reason: 'down', reasonText: '该房源已下架或已更新，请返回重新找房。' };
+    }
+    if (isPendingOwnerReview(item)) {
+      return { reason: 'pending', reasonText: '该房源正在审核，暂不能查看详情，请返回重新找房。' };
+    }
+    if (!isCompanyListing(item) && !hasListingVideo(item)) {
+      return { reason: 'pending', reasonText: '该房源视频素材待补充，暂不能查看详情，请返回重新找房。' };
+    }
+    return { reason: '', reasonText: '' };
+  }
+
+  function unavailableListingDetail(listing, listingId) {
+    var unavailable = listingUnavailableReason(listing);
+    return {
+      id: listing ? listing.id : listingId,
+      unavailable: true,
+      reason: unavailable.reason,
+      reasonText: unavailable.reasonText,
+      status: listing ? (listing.status || '') : '',
+      updatedAt: listing ? (listing.updatedAt || '') : '',
+      syncedAt: listing ? (listing.syncedAt || '') : '',
+      feishuLastSyncAction: listing ? (listing.feishuLastSyncAction || '') : '',
+      feishuLastSyncAt: listing ? (listing.feishuLastSyncAt || listing.syncedAt || '') : ''
+    };
+  }
+
   function getListingDetail(id, options) {
     autoExpireOverdueListings();
     var listing = getListing(id);
-    if (!listing) return null;
-    if (!isMockFrontendEffectiveListing(listing)) return null;
+    if (!listing) {
+      var notFoundError = new Error('房源不存在');
+      notFoundError.statusCode = 404;
+      throw notFoundError;
+    }
+    if (!isMockFrontendEffectiveListing(listing)) return unavailableListingDetail(listing, id);
     var settings = options || {};
     if (settings.companyOnly && !isCompanyListing(listing)) {
       var accessError = new Error('游客仅可查看公司房源，请登录后查看合作房源');
@@ -2259,6 +2325,43 @@
         landlordCommissionFen: item.landlordCommissionFen || 0,
         uploaderCommissionFen: item.uploaderCommissionFen || 0,
         platformCommissionFen: item.platformCommissionFen || 0,
+        status: item.status,
+        time: item.time
+      };
+    });
+  }
+
+  function commissionFenToYuanText(value) {
+    return (Number(value || 0) / 100).toFixed(2);
+  }
+
+  function getCommissionRecords() {
+    return state.commissionRecords.filter(function (item) {
+      return item.uploaderId === state.currentUserId || item.dealUserId === state.currentUserId;
+    }).map(function (item) {
+      var listing = getListing(item.listingId) || {};
+      var location = listingLocationFields(listing);
+      var uploader = getUser(item.uploaderId) || {};
+      var dealer = getUser(item.dealUserId) || {};
+      var fallbackRate = SECOND_LANDLORD_COMMISSION_RATE + PLATFORM_COMMISSION_RATE;
+      return {
+        id: item.id,
+        listingId: item.listingId,
+        title: listing.title || listing.shortTitle || location.community || '未知房源',
+        role: item.uploaderId === state.currentUserId ? '我是上传人' : '我是成交人',
+        uploader: uploader.name || '未知',
+        dealer: dealer.name || '未知',
+        rate: (item.rate || fallbackRate) + '%',
+        uploaderRate: item.uploaderRate === undefined ? (item.rate || SECOND_LANDLORD_COMMISSION_RATE) : item.uploaderRate,
+        platformRate: item.platformRate === undefined ? 0 : item.platformRate,
+        dealMonthlyRentFen: item.dealMonthlyRentFen || 0,
+        landlordCommissionFen: item.landlordCommissionFen || 0,
+        uploaderCommissionFen: item.uploaderCommissionFen || 0,
+        platformCommissionFen: item.platformCommissionFen || 0,
+        dealMonthlyRent: item.dealMonthlyRentFen ? commissionFenToYuanText(item.dealMonthlyRentFen) : '',
+        landlordCommission: item.landlordCommissionFen ? commissionFenToYuanText(item.landlordCommissionFen) : '',
+        uploaderCommission: commissionFenToYuanText(item.uploaderCommissionFen || 0),
+        platformCommission: commissionFenToYuanText(item.platformCommissionFen || 0),
         status: item.status,
         time: item.time
       };
@@ -3412,6 +3515,7 @@
     updateCommissionConfig: updateCommissionConfig,
     getAdminLogs: getAdminLogs,
     getCommissionRows: getCommissionRows,
+    getCommissionRecords: getCommissionRecords,
     getPointLogs: getPointLogs,
     getRechargeBills: getRechargeBills,
     getGroupUploadRows: getGroupUploadRows,

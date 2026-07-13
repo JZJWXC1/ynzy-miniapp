@@ -261,6 +261,7 @@ function isMapMockActive(item = {}, listing = {}) {
 
 function safeMapMockListing(item = {}) {
   const listing = listingDisplay.normalizeListing(item || {})
+  const hasVideo = Boolean(listing.hasVideo || listing.video || listing.videoUrl || listing.videoKey || item.videoUrl || item.videoKey)
   return {
     id: listing.id,
     rent: mapRent(listing.rent || listing.price || item.price),
@@ -270,7 +271,22 @@ function safeMapMockListing(item = {}) {
     companyListing: Boolean(listing.companyListing),
     maintenanceText: listing.maintenanceText || item.maintenanceText || '',
     lastVerifiedAt: listing.lastVerifiedAt || item.lastVerifiedAt || '',
-    hasVideo: Boolean(listing.hasVideo || listing.video || listing.videoUrl || listing.videoKey || item.videoUrl || item.videoKey)
+    hasVideo,
+    video: hasVideo ? '已传视频' : ''
+  }
+}
+
+function publicMapMockListing(listing = {}) {
+  return {
+    id: listing.id,
+    rent: listing.rent,
+    layout: listing.layout || '',
+    rentMode: listing.rentMode || '',
+    sourceType: listing.sourceType || '',
+    lastVerifiedAt: listing.lastVerifiedAt || '',
+    maintenanceText: listing.maintenanceText || '',
+    hasVideo: Boolean(listing.hasVideo),
+    video: listing.video || ''
   }
 }
 
@@ -317,6 +333,11 @@ function mockMapCommunities(filter = {}) {
         longitude: coordinate.longitude,
         coordinateSource: coordinate.source,
         coordinateVerified: true,
+        coordinateLevel: 'verified',
+        coordinateAccuracy: 'verified',
+        coordinateStatus: '已确认小区坐标',
+        coordinateLabel: '已确认小区坐标',
+        coordinateCalloutNote: '',
         listingCount: 0,
         minRent: 0,
         maxRent: 0,
@@ -334,7 +355,7 @@ function mockMapCommunities(filter = {}) {
     group.activeListingIds.push(listing.id)
     pushUnique(group.layouts, listing.layout)
     pushUnique(group.sourceTypes, listing.sourceType)
-    group.listings.push(listing)
+    group.listings.push(publicMapMockListing(listing))
   })
   return Object.keys(groups)
     .map((key) => groups[key])
@@ -558,7 +579,7 @@ function getMapPins(filter) {
   const query = buildQuery(filter || {})
   return apiClient.call({
     path: `/mini/map/pins${query}`,
-    mock: () => mockData.getMapPins(mockListingAccessFilter(filter))
+    mock: () => mockMapCommunities(mockListingAccessFilter(filter))
   })
 }
 
@@ -740,6 +761,9 @@ function getProfileState() {
 }
 
 function getTodayTasks() {
+  if (!apiClient.getAuthToken()) {
+    return Promise.resolve(buildTodayTasksFromProfile({}))
+  }
   return apiClient.call({
     path: '/mini/today-tasks',
     mock: () => buildTodayTasksFromProfile(mockData.getProfileState())
@@ -784,7 +808,7 @@ function rechargePoints(points) {
 function getCommissionRecords() {
   return apiClient.call({
     path: '/mini/commissions',
-    mock: () => []
+    mock: () => mockData.getCommissionRecords()
   })
 }
 

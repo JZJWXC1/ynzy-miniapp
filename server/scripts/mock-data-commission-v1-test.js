@@ -107,6 +107,17 @@ function run() {
     ownerRate: 18
   })
   assert.strictEqual(savedConfig.secondLandlordRate, 12, 'mock commission config should update second-landlord rate')
+
+  const configBeforeNegative = mockData.getCommissionConfig()
+  const logsBeforeNegative = mockData.getAdminLogs().length
+  assert.throws(
+    () => mockData.updateCommissionConfig({ uploaderRates: { [TEXT.owner]: -1 } }),
+    (error) => error && error.statusCode === 400 && /不能小于 0/.test(error.message),
+    'mock nested negative commission rate must match server 400 behavior'
+  )
+  assert.deepStrictEqual(mockData.getCommissionConfig(), configBeforeNegative, 'mock negative config rejection must not mutate config')
+  assert.strictEqual(mockData.getAdminLogs().length, logsBeforeNegative, 'mock negative config rejection must not append audit records')
+
   const configurable = mockData.addNormalListing(listingPayload({
     roomNumber: '1202',
     ownerType: TEXT.secondLandlord,

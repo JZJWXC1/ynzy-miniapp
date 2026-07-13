@@ -308,7 +308,11 @@ function buildReply(need, listings, followUpQuestion) {
 function buildLocalMatch(payload) {
   const need = needFromPayload(payload)
   const followUpQuestion = followUpForNeed(need)
-  const rawResult = followUpQuestion ? { listings: [] } : dataCenter.matchListings(need)
+  // 本地 Mock/网络兜底同样只能从可信会话派生游客边界，不能接受页面透传的 companyOnly。
+  const localMatchNeed = Object.assign({}, need, {
+    companyOnly: !apiClient.getAuthToken()
+  })
+  const rawResult = followUpQuestion ? { listings: [] } : dataCenter.matchListings(localMatchNeed)
   const listings = normalizeListings(rawResult.listings || [], 'exact')
   return {
     need,
