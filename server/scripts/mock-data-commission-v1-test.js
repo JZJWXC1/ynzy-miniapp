@@ -140,13 +140,92 @@ function run() {
     assert.strictEqual(mockData.getAdminLogs().length, beforeInvalidLogs, 'mock malformed config rejection must not append audit records')
   })
 
+  ;[
+    null,
+    [],
+    {},
+    { ownerRate: null },
+    { uploaderRates: [] },
+    { platformRates: false },
+    { uploaderRates: {} },
+    { unknownRate: 10 }
+  ].forEach((payload) => {
+    const beforeInvalidConfig = mockData.getCommissionConfig()
+    const beforeInvalidLogs = mockData.getAdminLogs().length
+    assert.throws(
+      () => mockData.updateCommissionConfig(payload),
+      (error) => error && error.statusCode === 400,
+      'mock empty or malformed commission container must fail closed'
+    )
+    assert.deepStrictEqual(mockData.getCommissionConfig(), beforeInvalidConfig, 'mock invalid container rejection must not mutate config')
+    assert.strictEqual(mockData.getAdminLogs().length, beforeInvalidLogs, 'mock invalid container rejection must not append audit records')
+  })
+
+  const numericStringConfig = mockData.updateCommissionConfig({ ownerRate: '12.5' })
+  assert.strictEqual(numericStringConfig.ownerRate, 12.5, 'mock strict decimal string must remain compatible')
+
+  const aliasConfig = mockData.updateCommissionConfig({
+    secondLandlordUploaderRate: 31,
+    ownerUploaderRate: 27,
+    secondLandlordPlatformRate: 9,
+    ownerPlatformRate: 8
+  })
+  assert.strictEqual(aliasConfig.secondLandlordRate, 31, 'mock must honor second-landlord uploader alias')
+  assert.strictEqual(aliasConfig.ownerRate, 27, 'mock must honor owner uploader alias')
+
+  const nestedConfig = mockData.updateCommissionConfig({
+    uploaderRates: { [TEXT.secondLandlord]: 19, [TEXT.owner]: 17 },
+    platformRates: { [TEXT.secondLandlord]: 13, [TEXT.owner]: 11 }
+  })
+  assert.strictEqual(nestedConfig.secondLandlordRate, 19, 'mock nested second-landlord uploader rate must take effect')
+  assert.strictEqual(nestedConfig.ownerRate, 17, 'mock nested owner uploader rate must take effect')
+  assert.strictEqual(nestedConfig.secondLandlordPlatformRate, 13, 'mock nested second-landlord platform rate must take effect')
+  assert.strictEqual(nestedConfig.ownerPlatformRate, 11, 'mock nested owner platform rate must take effect')
+
+  const priorityConfig = mockData.updateCommissionConfig({
+    ownerRate: 21,
+    ownerUploaderRate: 22,
+    uploaderRates: { [TEXT.owner]: 23 }
+  })
+  assert.strictEqual(priorityConfig.ownerRate, 21, 'mock canonical field must win over alias and nested values')
+  assert.strictEqual(priorityConfig.secondLandlordRate, 19, 'mock partial update must preserve unrelated rates')
+
+  const exactHundred = mockData.updateCommissionConfig({ ownerRate: 60, ownerPlatformRate: 40 })
+  assert.strictEqual(exactHundred.ownerRate + exactHundred.ownerPlatformRate, 100, 'mock uploader+platform exactly 100 must remain valid')
+
+  const beforeOverflowConfig = mockData.getCommissionConfig()
+  const beforeOverflowLogs = mockData.getAdminLogs().length
+  assert.throws(
+    () => mockData.updateCommissionConfig({ ownerRate: 70, ownerPlatformRate: 40 }),
+    (error) => error && error.statusCode === 400,
+    'mock owner uploader+platform over 100 must match production fail-closed behavior'
+  )
+  assert.deepStrictEqual(mockData.getCommissionConfig(), beforeOverflowConfig, 'mock overflow rejection must not mutate config')
+  assert.strictEqual(mockData.getAdminLogs().length, beforeOverflowLogs, 'mock overflow rejection must not append audit records')
+
+  const beforeNestedOverflowConfig = mockData.getCommissionConfig()
+  const beforeNestedOverflowLogs = mockData.getAdminLogs().length
+  assert.throws(
+    () => mockData.updateCommissionConfig({
+      uploaderRates: { [TEXT.secondLandlord]: 70 },
+      platformRates: { [TEXT.secondLandlord]: 40 }
+    }),
+    (error) => error && error.statusCode === 400,
+    'mock nested uploader+platform over 100 must fail closed'
+  )
+  assert.deepStrictEqual(mockData.getCommissionConfig(), beforeNestedOverflowConfig, 'mock nested overflow rejection must not mutate config')
+  assert.strictEqual(mockData.getAdminLogs().length, beforeNestedOverflowLogs, 'mock nested overflow rejection must not append audit records')
+
+  const clampedConfig = mockData.updateCommissionConfig({ ownerRate: 200, ownerPlatformRate: 0 })
+  assert.strictEqual(clampedConfig.ownerRate, 100, 'mock single rate over 100 with other side zero keeps historical clamp compatibility')
+
   const configurable = mockData.addNormalListing(listingPayload({
     roomNumber: '1202',
     ownerType: TEXT.secondLandlord,
     houseSourceType: TEXT.secondLandlord,
     source: TEXT.secondLandlord
   }))
-  assert.strictEqual(configurable.commissionRate, 12, 'mock new second-landlord listing should use configured 12% rate')
+  assert.strictEqual(configurable.commissionRate, 19, 'mock new second-landlord listing should use latest configured nested rate')
 }
 
 run()

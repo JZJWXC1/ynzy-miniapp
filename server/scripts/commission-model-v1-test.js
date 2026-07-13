@@ -160,6 +160,64 @@ function makeDb() {
   })
 }
 
+// 7.3) 顶层/嵌套容器和空请求必须 fail-closed，不能“比例没变但假成功留一条调整审计”。
+{
+  const cases = [
+    { label: 'null 顶层', payload: null },
+    { label: '数组顶层', payload: [] },
+    { label: '空对象', payload: {} },
+    { label: '显式 null 比例', payload: { ownerRate: null } },
+    { label: '数组 uploaderRates', payload: { uploaderRates: [] } },
+    { label: '布尔 platformRates', payload: { platformRates: false } },
+    { label: '空嵌套配置', payload: { uploaderRates: {} } },
+    { label: '仅未知字段', payload: { unknownRate: 10 } }
+  ]
+  cases.forEach(({ label, payload }) => {
+    const d = makeDb()
+    d.commissionConfig = { ownerRate: 25, ownerPlatformRate: 15, secondLandlordRate: 18, secondLandlordPlatformRate: 12, updatedBy: 'OLD' }
+    d.footprints = [{ id: 'EXISTING' }]
+    const before = JSON.parse(JSON.stringify(d))
+    assert.throws(
+      () => domain.setCommissionConfig(d, 'ADM', payload),
+      (error) => error && error.statusCode === 400,
+      `${label}必须返回 400`
+    )
+    assert.deepStrictEqual(d, before, `${label}拒绝后不得改配置或新增足迹`)
+  })
+
+  const numericString = makeDb()
+  domain.setCommissionConfig(numericString, 'ADM', { ownerRate: '12.5' })
+  assert.strictEqual(domain.commissionConfig(numericString).ownerRate, 12.5, '非空严格十进制数字字符串仍兼容')
+}
+
+// 7.4) 顶层 canonical、兼容 alias、嵌套对象的优先级与部分更新必须稳定。
+{
+  const d = makeDb()
+  domain.setCommissionConfig(d, 'ADM', {
+    secondLandlordUploaderRate: 31,
+    ownerUploaderRate: 27,
+    secondLandlordPlatformRate: 9,
+    ownerPlatformRate: 8
+  })
+  assert.strictEqual(domain.commissionConfig(d).secondLandlordRate, 31, '二房东 alias 必须生效')
+  assert.strictEqual(domain.commissionConfig(d).ownerRate, 27, '业主 alias 必须生效')
+
+  domain.setCommissionConfig(d, 'ADM', {
+    uploaderRates: { [SUBLEASE]: 19, [OWNER]: 17 },
+    platformRates: { [SUBLEASE]: 13, [OWNER]: 11 }
+  })
+  assert.strictEqual(domain.commissionConfig(d).secondLandlordRate, 19, '二房东嵌套上传人比例必须生效')
+  assert.strictEqual(domain.commissionConfig(d).ownerRate, 17, '业主嵌套上传人比例必须生效')
+
+  domain.setCommissionConfig(d, 'ADM', {
+    ownerRate: 21,
+    ownerUploaderRate: 22,
+    uploaderRates: { [OWNER]: 23 }
+  })
+  assert.strictEqual(domain.commissionConfig(d).ownerRate, 21, 'canonical 必须优先于 alias 与 nested')
+  assert.strictEqual(domain.commissionConfig(d).secondLandlordRate, 19, '部分更新不得改动无关比例')
+}
+
 // 8) 上传人比例可配到 >30%（不再被默认总分出卡死）——阻断1 规则层。
 {
   const d = makeDb()

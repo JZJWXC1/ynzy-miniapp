@@ -610,7 +610,23 @@
   }
 
   function updateCommissionConfig(payload) {
-    var data = payload || {};
+    function invalidInput(message) {
+      var error = new Error(message);
+      error.statusCode = 400;
+      throw error;
+    }
+    function isPlainRecord(value) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      var prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function owns(value, key) {
+      return Object.prototype.hasOwnProperty.call(value, key);
+    }
+    if (!isPlainRecord(payload)) invalidInput('分佣配置必须是对象');
+    var data = payload;
+    if (owns(data, 'uploaderRates') && !isPlainRecord(data.uploaderRates)) invalidInput('上传人比例配置必须是对象');
+    if (owns(data, 'platformRates') && !isPlainRecord(data.platformRates)) invalidInput('平台比例配置必须是对象');
     var upRates = data.uploaderRates || {};
     var platRates = data.platformRates || {};
     function parseSuppliedRate(value) {
@@ -621,18 +637,22 @@
       }
       return Number.NaN;
     }
-    [
-      ['二房东上传人比例', data.secondLandlordRate],
-      ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE]],
-      ['业主上传人比例', data.ownerRate],
-      ['业主上传人比例', upRates[OWNER_SOURCE]],
-      ['二房东平台比例', data.secondLandlordPlatformRate],
-      ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE]],
-      ['业主平台比例', data.ownerPlatformRate],
-      ['业主平台比例', platRates[OWNER_SOURCE]]
-    ].forEach(function (entry) {
+    var suppliedRates = [
+      ['二房东上传人比例', data.secondLandlordRate, owns(data, 'secondLandlordRate')],
+      ['二房东上传人比例', data.secondLandlordUploaderRate, owns(data, 'secondLandlordUploaderRate')],
+      ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE], owns(upRates, SECOND_LANDLORD_SOURCE)],
+      ['业主上传人比例', data.ownerRate, owns(data, 'ownerRate')],
+      ['业主上传人比例', data.ownerUploaderRate, owns(data, 'ownerUploaderRate')],
+      ['业主上传人比例', upRates[OWNER_SOURCE], owns(upRates, OWNER_SOURCE)],
+      ['二房东平台比例', data.secondLandlordPlatformRate, owns(data, 'secondLandlordPlatformRate')],
+      ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE], owns(platRates, SECOND_LANDLORD_SOURCE)],
+      ['业主平台比例', data.ownerPlatformRate, owns(data, 'ownerPlatformRate')],
+      ['业主平台比例', platRates[OWNER_SOURCE], owns(platRates, OWNER_SOURCE)]
+    ];
+    var providedRates = suppliedRates.filter(function (entry) { return entry[2]; });
+    if (!providedRates.length) invalidInput('至少提供一项受支持的分佣比例');
+    providedRates.forEach(function (entry) {
       var value = entry[1];
-      if (value === undefined || value === null) return;
       var number = parseSuppliedRate(value);
       if (!Number.isFinite(number)) {
         var invalidError = new Error(entry[0] + '必须是有限数字');
@@ -647,13 +667,27 @@
     });
     var current = getCommissionConfig();
     var uploaderRates = {};
-    uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordRate, upRates[SECOND_LANDLORD_SOURCE]), current.secondLandlordRate);
-    uploaderRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerRate, upRates[OWNER_SOURCE]), current.ownerRate);
+    var secondLandlordRateInput = firstDefinedValue(
+      data.secondLandlordRate,
+      firstDefinedValue(data.secondLandlordUploaderRate, upRates[SECOND_LANDLORD_SOURCE])
+    );
+    var ownerRateInput = firstDefinedValue(
+      data.ownerRate,
+      firstDefinedValue(data.ownerUploaderRate, upRates[OWNER_SOURCE])
+    );
+    uploaderRates[SECOND_LANDLORD_SOURCE] = boundedRate(secondLandlordRateInput, current.secondLandlordRate);
+    uploaderRates[OWNER_SOURCE] = boundedRate(ownerRateInput, current.ownerRate);
     uploaderRates[COMPANY_SOURCE] = 0;
     var platformRates = {};
     platformRates[SECOND_LANDLORD_SOURCE] = boundedRate(firstDefinedValue(data.secondLandlordPlatformRate, platRates[SECOND_LANDLORD_SOURCE]), current.secondLandlordPlatformRate);
     platformRates[OWNER_SOURCE] = boundedRate(firstDefinedValue(data.ownerPlatformRate, platRates[OWNER_SOURCE]), current.ownerPlatformRate);
     platformRates[COMPANY_SOURCE] = 0;
+    if (uploaderRates[SECOND_LANDLORD_SOURCE] + platformRates[SECOND_LANDLORD_SOURCE] > 100) {
+      invalidInput('二房东房源：上传人比例 + 平台比例不得超过 100%');
+    }
+    if (uploaderRates[OWNER_SOURCE] + platformRates[OWNER_SOURCE] > 100) {
+      invalidInput('业主房源：上传人比例 + 平台比例不得超过 100%');
+    }
     state.commissionConfig = {
       uploaderRates: uploaderRates,
       platformRates: platformRates,

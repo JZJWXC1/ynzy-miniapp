@@ -5509,20 +5509,34 @@ function normalizeListingForm(form = {}, current = {}, options = {}) {
 }
 
 function setCommissionConfig(db = {}, adminId = '', payload = {}) {
+  const invalidInput = (message) => {
+    const error = new Error(message)
+    error.statusCode = 400
+    throw error
+  }
+  const isPlainRecord = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+  }
+  const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key)
+  if (!isPlainRecord(payload)) invalidInput('分佣配置必须是对象')
+  if (owns(payload, 'uploaderRates') && !isPlainRecord(payload.uploaderRates)) invalidInput('上传人比例配置必须是对象')
+  if (owns(payload, 'platformRates') && !isPlainRecord(payload.platformRates)) invalidInput('平台比例配置必须是对象')
   const current = commissionConfig(db)
   const upRates = payload.uploaderRates || {}
   const platRates = payload.platformRates || {}
   const suppliedRates = [
-    ['二房东上传人比例', payload.secondLandlordRate],
-    ['二房东上传人比例', payload.secondLandlordUploaderRate],
-    ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE]],
-    ['业主上传人比例', payload.ownerRate],
-    ['业主上传人比例', payload.ownerUploaderRate],
-    ['业主上传人比例', upRates[OWNER_SOURCE]],
-    ['二房东平台比例', payload.secondLandlordPlatformRate],
-    ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE]],
-    ['业主平台比例', payload.ownerPlatformRate],
-    ['业主平台比例', platRates[OWNER_SOURCE]]
+    ['二房东上传人比例', payload.secondLandlordRate, owns(payload, 'secondLandlordRate')],
+    ['二房东上传人比例', payload.secondLandlordUploaderRate, owns(payload, 'secondLandlordUploaderRate')],
+    ['二房东上传人比例', upRates[SECOND_LANDLORD_SOURCE], owns(upRates, SECOND_LANDLORD_SOURCE)],
+    ['业主上传人比例', payload.ownerRate, owns(payload, 'ownerRate')],
+    ['业主上传人比例', payload.ownerUploaderRate, owns(payload, 'ownerUploaderRate')],
+    ['业主上传人比例', upRates[OWNER_SOURCE], owns(upRates, OWNER_SOURCE)],
+    ['二房东平台比例', payload.secondLandlordPlatformRate, owns(payload, 'secondLandlordPlatformRate')],
+    ['二房东平台比例', platRates[SECOND_LANDLORD_SOURCE], owns(platRates, SECOND_LANDLORD_SOURCE)],
+    ['业主平台比例', payload.ownerPlatformRate, owns(payload, 'ownerPlatformRate')],
+    ['业主平台比例', platRates[OWNER_SOURCE], owns(platRates, OWNER_SOURCE)]
   ]
   const parseSuppliedRate = (value) => {
     if (typeof value === 'number') return value
@@ -5532,8 +5546,9 @@ function setCommissionConfig(db = {}, adminId = '', payload = {}) {
     }
     return Number.NaN
   }
-  suppliedRates.forEach(([label, value]) => {
-    if (value === undefined || value === null) return
+  const providedRates = suppliedRates.filter((entry) => entry[2])
+  if (!providedRates.length) invalidInput('至少提供一项受支持的分佣比例')
+  providedRates.forEach(([label, value]) => {
     const number = parseSuppliedRate(value)
     if (!Number.isFinite(number)) {
       const error = new Error(`${label}必须是有限数字`)
