@@ -10,6 +10,7 @@
   var NO_FEATURE = '无';
   var NO_COMMISSION_FEATURE = '不分佣';
   var DEPOSIT_FREE_FEATURE = '免押金';
+  var ELEVATOR_FEATURE = '电梯';
   var COMPANY_SOURCE = '公司房源';
   var V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算';
   var COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣';
@@ -1038,6 +1039,9 @@
     });
     if (companyListing && features.indexOf(DEPOSIT_FREE_FEATURE) === -1) {
       features.push(DEPOSIT_FREE_FEATURE);
+    }
+    if (companyListing && features.indexOf(ELEVATOR_FEATURE) === -1) {
+      features.push(ELEVATOR_FEATURE);
     }
     return features.length ? features : [NO_FEATURE];
   }

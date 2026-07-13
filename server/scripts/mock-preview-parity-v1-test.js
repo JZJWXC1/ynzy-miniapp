@@ -273,17 +273,23 @@ async function run() {
       contact: '',
       landlordPhone: '',
       videoKey: '',
-      videoUrl: ''
+      videoUrl: '',
+      features: ['无']
     })
     assert.strictEqual(optionalContactCompany.companyListing, true)
     assert.strictEqual(optionalContactCompany.landlordPhone, '')
     assert.strictEqual(optionalContactCompany.videoKey, '')
+    assert.ok(optionalContactCompany.features.includes('免押金'), 'Mock 公司新建必须补默认免押金')
+    assert.ok(optionalContactCompany.features.includes('电梯'), 'Mock 公司新建必须与生产一致补默认电梯')
     const companyRow = mockData.getListings({}).find((item) => item.id === optionalContactCompany.id)
     assert.ok(companyRow)
     assert.strictEqual(companyRow.hasVideo, false)
     const editedWithoutContact = mockData.updateNormalListing(optionalContactCompany.id, { rent: 3300 })
     assert.strictEqual(Number(editedWithoutContact.rent), 3300)
     assert.strictEqual(editedWithoutContact.landlordPhone, '', '编辑无号公司房源时不得反向强制补号')
+    const editedCompanyDefaults = mockData.updateNormalListing(optionalContactCompany.id, { features: ['无'] })
+    assert.ok(editedCompanyDefaults.features.includes('免押金'), 'Mock 公司编辑时不得移除默认免押金')
+    assert.ok(editedCompanyDefaults.features.includes('电梯'), 'Mock 公司编辑时不得移除默认电梯')
     const clearedContact = mockData.updateNormalListing(company.id, { contact: '' })
     assert.strictEqual(clearedContact.landlordPhone, '', 'Mock 应与生产一致允许显式清空公司房源已有手机号')
     assert.throws(
@@ -310,6 +316,10 @@ async function run() {
     })
     assert.strictEqual(converted.companyListing, false)
     assert.strictEqual(converted.videoKey, 'house-videos/synthetic/mock-company-converted.mp4')
+
+    const ordinary = addListing('9817', '二房东房源', { features: ['无'] })
+    assert.ok(!ordinary.features.includes('免押金'), '合作房源不得被补公司默认免押金')
+    assert.ok(!ordinary.features.includes('电梯'), '合作房源不得被补公司默认电梯')
   })
 
   if (failures.length) {
