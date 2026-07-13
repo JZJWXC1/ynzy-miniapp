@@ -4429,7 +4429,7 @@ function formatDealRecord(db, deal = {}) {
   const report = reportById(db, deal.reportId) || {}
   const broker = userById(db, deal.brokerId) || {}
   const uploader = userById(db, deal.uploaderId) || {}
-  const baseCommissionRule = commissionRuleForListing(listing, db, deal.uploaderId)
+  const baseCommissionRule = commissionRuleForListing(listing, db, deal.uploaderId, deal.brokerId)
   const commissionRule = clone(frozenCommissionRuleForDeal(deal, baseCommissionRule))
   const savedLandlordCommissionPercent = Number(
     deal.landlordCommissionPercent ??

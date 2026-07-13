@@ -481,4 +481,28 @@ function assertBreakdown(actual, expected, message) {
   assert.strictEqual(stringRow.expectedPlatformCommissionFen, 20000)
 }
 
+// 8) 真老签单缺少两处冻结规则时，列表与恢复确认必须用同一带看人身份回退；自传自带始终全免。
+{
+  const db = makeDb()
+  db.listings.push(activeListing())
+  db.dealRecords.push({
+    id: 'D-LEGACY-SELF-DEAL',
+    listingId: 'L1',
+    brokerId: 'U1',
+    uploaderId: 'U1',
+    landlordCommissionFen: 200000,
+    status: '待管理员确认'
+  })
+
+  const beforeRow = domain.adminDealRows(db)[0]
+  assert.deepStrictEqual(beforeRow.commissionRule, { rate: 0, uploaderRate: 0, platformRate: 0 }, '老单列表必须识别自传自带并显示全免')
+  assert.strictEqual(beforeRow.expectedUploaderCommissionFen, 0)
+  assert.strictEqual(beforeRow.expectedPlatformCommissionFen, 0)
+
+  const confirmed = domain.confirmDeal(db, 'ADM', 'D-LEGACY-SELF-DEAL')
+  assert.strictEqual(confirmed.noCommission, true, '老单恢复确认也必须识别自传自带全免')
+  assert.strictEqual(confirmed.commissionRecord, null, '自传自带不得生成分佣记录')
+  assert.deepStrictEqual(confirmed.deal.commissionRule, { rate: 0, uploaderRate: 0, platformRate: 0 }, '确认后列表口径不得从旧展示跳变')
+}
+
 console.log('listing detail commission v1 test passed')
