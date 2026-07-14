@@ -31,6 +31,102 @@
   var VERIFY_STALE_DAYS = 7;
   var OWNER_DAILY_VIEW_LIMIT = 3;
   var NORMAL_DAILY_VIEW_LIMIT = 15;
+
+  // 与服务端同策略的扫描抗性缓存；Mock 还会被后台 HTML 直接加载，因此保持为本文件内实现，
+  // 不新增浏览器脚本依赖。容量满后不逐项淘汰，完整列表开始前清理已失效指纹。
+  function createGuestPublicContextCache(options) {
+    var settings = options || {};
+    var requestedLimit = Number(settings.limit);
+    var limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : 8192;
+    var createEntry = typeof settings.createEntry === 'function'
+      ? settings.createEntry
+      : function (contextKey) { return { contextKey: contextKey }; };
+    var objectCache = new WeakMap();
+    var fingerprintCache = new Map();
+    var counters = {
+      contextHits: 0,
+      contextMisses: 0,
+      objectHits: 0,
+      overflowMisses: 0,
+      admissions: 0,
+      evictions: 0,
+      preparations: 0
+    };
+
+    function resetStats() {
+      Object.keys(counters).forEach(function (key) { counters[key] = 0; });
+    }
+
+    function stats() {
+      return Object.assign({}, counters, {
+        cacheSize: fingerprintCache.size,
+        limit: limit
+      });
+    }
+
+    function prepare(contextKeys) {
+      var activeKeys = new Set(Array.from(contextKeys || []).map(function (item) { return String(item || ''); }));
+      counters.preparations += 1;
+      fingerprintCache.forEach(function (cachedEntry, contextKey) {
+        if (activeKeys.has(contextKey)) return;
+        fingerprintCache.delete(contextKey);
+        if (cachedEntry && typeof cachedEntry === 'object') cachedEntry.admitted = false;
+        counters.evictions += 1;
+      });
+      return activeKeys.size;
+    }
+
+    function admit(entryValue, contextKey) {
+      if (fingerprintCache.size >= limit) {
+        if (entryValue && typeof entryValue === 'object') entryValue.admitted = false;
+        counters.overflowMisses += 1;
+        return entryValue;
+      }
+      if (entryValue && typeof entryValue === 'object') entryValue.admitted = true;
+      fingerprintCache.set(contextKey, entryValue);
+      counters.admissions += 1;
+      return entryValue;
+    }
+
+    function entry(listing, contextKey) {
+      var key = String(contextKey || '');
+      var objectListing = listing && typeof listing === 'object' ? listing : null;
+      var objectEntry = objectListing ? objectCache.get(objectListing) : null;
+      var fingerprintEntry;
+      var created;
+      if (objectEntry && objectEntry.contextKey === key) {
+        counters.objectHits += 1;
+        counters.contextHits += 1;
+        fingerprintEntry = fingerprintCache.get(key);
+        if (fingerprintEntry && fingerprintEntry !== objectEntry) {
+          objectCache.set(objectListing, fingerprintEntry);
+          return fingerprintEntry;
+        }
+        if (!fingerprintEntry) admit(objectEntry, key);
+        return objectEntry;
+      }
+      fingerprintEntry = fingerprintCache.get(key);
+      if (fingerprintEntry) {
+        counters.contextHits += 1;
+        if (objectListing) objectCache.set(objectListing, fingerprintEntry);
+        return fingerprintEntry;
+      }
+      counters.contextMisses += 1;
+      created = createEntry(key);
+      if (!created || typeof created !== 'object') created = { value: created };
+      created.contextKey = key;
+      admit(created, key);
+      if (objectListing) objectCache.set(objectListing, created);
+      return created;
+    }
+
+    return {
+      entry: entry,
+      prepare: prepare,
+      stats: stats,
+      resetStats: resetStats
+    };
+  }
   var FEATURE_INFERENCE_RULES = [
     { name: '带阳台', pattern: /阳台/ },
     { name: '干湿分离', pattern: /干湿分离/ },
@@ -513,13 +609,11 @@
         })
       };
     }
-    var city = safeGuestPublicText(rawCity, listing, '杭州') || '杭州';
-    var area = safeGuestPublicText(rawArea, listing, '待分区') || '待分区';
-    var block = safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块';
+    var city = strictPartnerLocationText(rawCity, 'city') || safeGuestPublicText(rawCity, listing, '杭州') || '杭州';
+    var area = strictPartnerLocationText(rawArea, 'district') || safeGuestPublicText(rawArea, listing, '待分区') || '待分区';
+    var block = strictPartnerLocationText(listing.block, 'block') || safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块';
     var rawCommunity = stripGuestPublicInvisibleText(listing.community).trim();
-    var community = isKnownMockCommunity(rawCommunity) && !guestPublicIntrinsicUnsafe(rawCommunity)
-      ? rawCommunity
-      : safeGuestPublicText(listing.community, listing, '');
+    var community = strictPartnerLocationText(rawCommunity, 'community') || safeGuestPublicText(listing.community, listing, '');
     return {
       city: city,
       district: area,
@@ -643,7 +737,11 @@
       guestPublicDigitValue(source[previousIndex]) && guestPublicDigitValue(source[nextIndex]) ? '0' : '';
   }
 
-  function guestPublicSecurityProjection(value) {
+  var GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_LIMIT = 8192;
+  var GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_MAX_INPUT_LENGTH = 256;
+  var guestPublicSecurityProjectionCache = new Map();
+
+  function guestPublicSecurityProjectionUncached(value) {
     var source = Array.from(stripGuestPublicInvisibleText(value));
     var context = guestPublicProjectionContext(source);
     var skeleton = '';
@@ -667,6 +765,20 @@
       });
     });
     return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicSecurityProjection(value) {
+    var cacheKey = String(value === undefined || value === null ? '' : value);
+    var cacheable = cacheKey.length <= GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_MAX_INPUT_LENGTH;
+    var projection;
+    if (cacheable && guestPublicSecurityProjectionCache.has(cacheKey)) {
+      return guestPublicSecurityProjectionCache.get(cacheKey);
+    }
+    projection = guestPublicSecurityProjectionUncached(cacheKey);
+    if (cacheable && guestPublicSecurityProjectionCache.size < GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_LIMIT) {
+      guestPublicSecurityProjectionCache.set(cacheKey, projection);
+    }
+    return projection;
   }
 
   function guestPublicDigitOnlyProjection(value) {
@@ -1686,34 +1798,16 @@
 
   var GUEST_PUBLIC_CONTEXT_CACHE_LIMIT = 8192;
   var GUEST_PUBLIC_TEXT_VALUE_CACHE_LIMIT = 48;
-  // 与生产一致：同对象用 WeakMap，跨预览数据克隆仍由完整安全上下文指纹复用。
-  var guestPublicObjectContextCache = new WeakMap();
-  var guestPublicFingerprintContextCache = new Map();
+  // 与生产一致：完整敏感上下文指纹跨克隆复用，容量外条目不淘汰既有热点。
+  var guestPublicContextCache = createGuestPublicContextCache({
+    limit: GUEST_PUBLIC_CONTEXT_CACHE_LIMIT,
+    createEntry: function (contextKey) {
+      return { contextKey: contextKey, fragments: null, textBucket: new Map() };
+    }
+  });
 
   function guestPublicContextEntry(listing, contextKey) {
-    var objectListing = listing && typeof listing === 'object' ? listing : null;
-    var objectEntry = objectListing ? guestPublicObjectContextCache.get(objectListing) : null;
-    var entry;
-    if (objectEntry && objectEntry.contextKey === contextKey) {
-      entry = objectEntry;
-      if (guestPublicFingerprintContextCache.get(contextKey) !== entry) {
-        guestPublicFingerprintContextCache.set(contextKey, entry);
-      }
-    } else {
-      entry = guestPublicFingerprintContextCache.get(contextKey);
-      if (entry) {
-        guestPublicFingerprintContextCache.delete(contextKey);
-        guestPublicFingerprintContextCache.set(contextKey, entry);
-      } else {
-        entry = { contextKey: contextKey, fragments: null, textBucket: new Map() };
-        guestPublicFingerprintContextCache.set(contextKey, entry);
-      }
-      if (objectListing) guestPublicObjectContextCache.set(objectListing, entry);
-    }
-    while (guestPublicFingerprintContextCache.size > GUEST_PUBLIC_CONTEXT_CACHE_LIMIT) {
-      guestPublicFingerprintContextCache.delete(guestPublicFingerprintContextCache.keys().next().value);
-    }
-    return entry;
+    return guestPublicContextCache.entry(listing, contextKey);
   }
 
   function guestPublicTextCacheBucket(listing, contextKey) {
@@ -1769,6 +1863,35 @@
     ].map(function (item) {
       return String(item === undefined || item === null ? '' : item);
     }));
+  }
+
+  function prepareGuestPublicContextCache(listings) {
+    guestPublicContextCache.prepare((listings || []).filter(function (listing) {
+      return listing && !isCompanyListing(listing);
+    }).map(function (listing) {
+      return guestPublicSecurityContextKey(listing);
+    }));
+  }
+
+  // Node 单元测试专用：浏览器/小程序运行时不导出此能力，也不接任何网络输入。
+  function withGuestPublicContextCacheForTest(limit, action) {
+    if (typeof action !== 'function') throw new TypeError('测试回调必填');
+    var previousCache = guestPublicContextCache;
+    guestPublicContextCache = createGuestPublicContextCache({
+      limit: limit,
+      createEntry: function (contextKey) {
+        return { contextKey: contextKey, fragments: null, textBucket: new Map() };
+      }
+    });
+    var controls = {
+      resetStats: function () { guestPublicContextCache.resetStats(); },
+      stats: function () { return guestPublicContextCache.stats(); }
+    };
+    try {
+      return action(controls);
+    } finally {
+      guestPublicContextCache = previousCache;
+    }
   }
 
   function guestPublicSensitiveFragments(listing, providedContextKey) {
@@ -2386,6 +2509,31 @@
       var layoutPattern = /^(?:整租|合租|单间)?(?:\d{1,4}(?:\.\d{1,2})?(?:㎡|m²|m2|平方米))?(?:(?:[0-9]{1,2}|[一二两兩三四五六七八九十])(?:室|房|厅|卫)){1,4}$/i;
       return layoutPattern.test(compact) ? text : '';
     }
+    return '';
+  }
+
+  var GUEST_PUBLIC_CANONICAL_CITIES = { '杭州': true, '杭州市': true };
+  var GUEST_PUBLIC_CANONICAL_DISTRICTS = {
+    '待分区': true,
+    '拱墅区': true,
+    '上城区': true,
+    '余杭区': true
+  };
+  var GUEST_PUBLIC_CANONICAL_BLOCKS = [
+    '待板块', '万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山',
+    '东新园', '杭氧', '新天地', '闸弄口', '新塘', '元宝塘', '东站', '祥符'
+  ].reduce(function (result, item) {
+    result[item] = true;
+    return result;
+  }, {});
+
+  function strictPartnerLocationText(value, kind) {
+    var text = stripGuestPublicInvisibleText(value).trim();
+    if (!text || text.length > 64) return '';
+    if (kind === 'city') return GUEST_PUBLIC_CANONICAL_CITIES[text] ? text : '';
+    if (kind === 'district') return GUEST_PUBLIC_CANONICAL_DISTRICTS[text] ? text : '';
+    if (kind === 'block') return GUEST_PUBLIC_CANONICAL_BLOCKS[text] ? text : '';
+    if (kind === 'community') return isKnownMockCommunity(text) ? text : '';
     return '';
   }
 
@@ -3398,7 +3546,9 @@
     var requestedFeatures = parseFeatureInput(query.features || query.feature);
     var needsLocation = Boolean(districtFilter || query.area || query.block || query.community);
     var needsHousing = Boolean(query.layout || query.rentMode);
-    return publicListings().filter(function (listing) {
+    var listings = publicListings();
+    prepareGuestPublicContextCache(listings);
+    return listings.filter(function (listing) {
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
       var location = needsLocation ? publicListingLocationFields(listing) : null;
@@ -5849,7 +5999,7 @@
     syncListingRecommendationProfile(listing);
   });
 
-  return {
+  var api = {
     getCurrentUser: function () {
       var user = getUser();
       return user ? clone(user) : null;
@@ -5922,4 +6072,11 @@
     verifyAdminListing: verifyAdminListing,
     reviewOwnerListing: reviewOwnerListing
   };
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    Object.defineProperty(api, '__withGuestPublicContextCacheForTest', {
+      value: withGuestPublicContextCacheForTest,
+      enumerable: false
+    });
+  }
+  return api;
 });

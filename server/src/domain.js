@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const { clone } = require('./db')
 const { hashPassword, verifyPassword, passwordIssue } = require('./auth-util')
 const config = require('./config')
+const { createGuestPublicContextCache } = require('./guest-public-context-cache')
 const { coordinateByCommunity } = require('./community-coordinates')
 const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const locationMap = require('./location-map')
@@ -2366,7 +2367,9 @@ function filterListings(db, filter = {}) {
   const requestedFeatures = parseFeatureInput(filter.features || filter.feature)
   const needsLocation = Boolean(districtFilter || filter.area || filter.block || filter.community)
   const needsHousing = Boolean(filter.layout || filter.rentMode)
-  return publicListings(db)
+  const listings = publicListings(db)
+  prepareGuestPublicContextCache(listings)
+  return listings
     .filter((listing) => {
       if (companyOnly && !isCompanyListing(listing)) return false
       if (!matchesCategory(listing, filter.category)) return false
@@ -5477,7 +5480,11 @@ function guestPublicProjectedDigit(source, sourceIndex, context) {
     guestPublicDigitValue(source[previousIndex]) && guestPublicDigitValue(source[nextIndex]) ? '0' : ''
 }
 
-function guestPublicSecurityProjection(value) {
+const GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_LIMIT = 8192
+const GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_MAX_INPUT_LENGTH = 256
+const guestPublicSecurityProjectionCache = new Map()
+
+function guestPublicSecurityProjectionUncached(value) {
   const source = Array.from(stripGuestPublicInvisibleText(value))
   const context = guestPublicProjectionContext(source)
   let skeleton = ''
@@ -5502,6 +5509,21 @@ function guestPublicSecurityProjection(value) {
     })
   })
   return { source, skeleton, positions }
+}
+
+function guestPublicSecurityProjection(value) {
+  const cacheKey = String(value === undefined || value === null ? '' : value)
+  const cacheable = cacheKey.length <= GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_MAX_INPUT_LENGTH
+  if (cacheable && guestPublicSecurityProjectionCache.has(cacheKey)) {
+    return guestPublicSecurityProjectionCache.get(cacheKey)
+  }
+  const projection = guestPublicSecurityProjectionUncached(cacheKey)
+  // 达到上限后不逐项淘汰，避免顺序扫描把整个热点集冲掉；未准入值始终现场计算，
+  // 缓存只复用纯投影结果，不改变任何敏感判定。
+  if (cacheable && guestPublicSecurityProjectionCache.size < GUEST_PUBLIC_SECURITY_PROJECTION_CACHE_LIMIT) {
+    guestPublicSecurityProjectionCache.set(cacheKey, projection)
+  }
+  return projection
 }
 
 function guestPublicDigitOnlyProjection(value) {
@@ -6530,36 +6552,15 @@ function normalizeGuestPublicSecurityText(value) {
 
 const GUEST_PUBLIC_CONTEXT_CACHE_LIMIT = 8192
 const GUEST_PUBLIC_TEXT_VALUE_CACHE_LIMIT = 48
-// 同对象走 WeakMap，跨 readDb() 深克隆走完整安全上下文指纹 LRU。WeakMap 不能单独承担生产缓存，
-// 因为每个请求读库都会拿到新对象；指纹命中也必须先重算全部敏感字段，内容变化立即失效。
-const guestPublicObjectContextCache = new WeakMap()
-const guestPublicFingerprintContextCache = new Map()
+// 同对象走 WeakMap，跨 readDb() 深克隆走完整安全上下文指纹。容量满后新增条目不准入，
+// 全量列表开始前再清扫已删除/已编辑的旧指纹，避免 8192+1 顺序扫描触发整库 LRU 雪崩。
+let guestPublicContextCache = createGuestPublicContextCache({
+  limit: GUEST_PUBLIC_CONTEXT_CACHE_LIMIT,
+  createEntry: (contextKey) => ({ contextKey, fragments: null, textBucket: new Map() })
+})
 
 function guestPublicContextEntry(listing, contextKey) {
-  const objectListing = listing && typeof listing === 'object' ? listing : null
-  const objectEntry = objectListing ? guestPublicObjectContextCache.get(objectListing) : null
-  if (objectEntry && objectEntry.contextKey === contextKey) {
-    if (guestPublicFingerprintContextCache.get(contextKey) !== objectEntry) {
-      guestPublicFingerprintContextCache.set(contextKey, objectEntry)
-    }
-    while (guestPublicFingerprintContextCache.size > GUEST_PUBLIC_CONTEXT_CACHE_LIMIT) {
-      guestPublicFingerprintContextCache.delete(guestPublicFingerprintContextCache.keys().next().value)
-    }
-    return objectEntry
-  }
-  let entry = guestPublicFingerprintContextCache.get(contextKey)
-  if (entry) {
-    guestPublicFingerprintContextCache.delete(contextKey)
-    guestPublicFingerprintContextCache.set(contextKey, entry)
-  } else {
-    entry = { contextKey, fragments: null, textBucket: new Map() }
-    guestPublicFingerprintContextCache.set(contextKey, entry)
-  }
-  while (guestPublicFingerprintContextCache.size > GUEST_PUBLIC_CONTEXT_CACHE_LIMIT) {
-    guestPublicFingerprintContextCache.delete(guestPublicFingerprintContextCache.keys().next().value)
-  }
-  if (objectListing) guestPublicObjectContextCache.set(objectListing, entry)
-  return entry
+  return guestPublicContextCache.entry(listing, contextKey)
 }
 
 function guestPublicTextCacheBucket(listing, contextKey) {
@@ -6611,6 +6612,31 @@ function guestPublicSecurityContextKey(listing = {}) {
     listing.note,
     listing.memo
   ].map((item) => String(item === undefined || item === null ? '' : item)))
+}
+
+function prepareGuestPublicContextCache(listings = []) {
+  guestPublicContextCache.prepare((listings || [])
+    .filter((listing) => listing && !isCompanyListing(listing))
+    .map((listing) => guestPublicSecurityContextKey(listing)))
+}
+
+// 只供领域层单元测试在同步回调内缩小容量并读取统计；不接 HTTP，也不接受客户端输入。
+function withGuestPublicContextCacheForTest(limit, action) {
+  if (typeof action !== 'function') throw new TypeError('测试回调必填')
+  const previousCache = guestPublicContextCache
+  guestPublicContextCache = createGuestPublicContextCache({
+    limit,
+    createEntry: (contextKey) => ({ contextKey, fragments: null, textBucket: new Map() })
+  })
+  const controls = {
+    resetStats: () => guestPublicContextCache.resetStats(),
+    stats: () => guestPublicContextCache.stats()
+  }
+  try {
+    return action(controls)
+  } finally {
+    guestPublicContextCache = previousCache
+  }
 }
 
 function guestPublicSensitiveFragments(listing = {}, providedContextKey = '') {
@@ -7186,6 +7212,30 @@ function strictPartnerHousingText(value, kind = '') {
   return ''
 }
 
+const GUEST_PUBLIC_CANONICAL_CITIES = new Set(['杭州', '杭州市'])
+const GUEST_PUBLIC_CANONICAL_DISTRICTS = new Set([
+  '待分区',
+  ...Object.keys((config.location && config.location.districtBlocks) || {}),
+  ...Object.values((config.location && config.location.communityDistrictOverrides) || {})
+])
+const GUEST_PUBLIC_CANONICAL_BLOCKS = new Set([
+  '待板块',
+  ...Object.values((config.location && config.location.districtBlocks) || {}).flat(),
+  ...Object.keys((config.location && config.location.blockCenters) || {}),
+  ...Object.values((config.location && config.location.communityBlockOverrides) || {})
+])
+
+function strictPartnerLocationText(value, kind = '') {
+  const text = stripGuestPublicInvisibleText(value).trim()
+  if (!text || text.length > 64) return ''
+  if (kind === 'city') return GUEST_PUBLIC_CANONICAL_CITIES.has(text) ? text : ''
+  if (kind === 'district') return GUEST_PUBLIC_CANONICAL_DISTRICTS.has(text) ? text : ''
+  if (kind === 'block') return GUEST_PUBLIC_CANONICAL_BLOCKS.has(text) ? text : ''
+  // 小区只接受服务端小区库精确词条；手输或夹带内容仍走完整值级投影。
+  if (kind === 'community') return isKnownCommunity(text) ? text : ''
+  return ''
+}
+
 function publicListingHousingFields(listing = {}) {
   const rawRentMode = firstText(listing.rentMode, listing.type)
   if (isCompanyListing(listing)) {
@@ -7244,13 +7294,11 @@ function publicListingLocationFields(listing = {}) {
       locationSummary: structuredLocation({ city, area, block, community, building, unit, roomNumber })
     }
   }
-  const city = safeGuestPublicText(rawCity, listing, '杭州') || '杭州'
-  const area = safeGuestPublicText(rawArea, listing, '待分区') || '待分区'
-  const block = safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块'
+  const city = strictPartnerLocationText(rawCity, 'city') || safeGuestPublicText(rawCity, listing, '杭州') || '杭州'
+  const area = strictPartnerLocationText(rawArea, 'district') || safeGuestPublicText(rawArea, listing, '待分区') || '待分区'
+  const block = strictPartnerLocationText(listing.block, 'block') || safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块'
   const rawCommunity = stripGuestPublicInvisibleText(listing.community).trim()
-  const community = isKnownCommunity(rawCommunity) && !guestPublicIntrinsicUnsafe(rawCommunity)
-    ? rawCommunity
-    : safeGuestPublicText(listing.community, listing)
+  const community = strictPartnerLocationText(rawCommunity, 'community') || safeGuestPublicText(listing.community, listing)
   return {
     city,
     district: area,
@@ -8301,6 +8349,7 @@ module.exports = {
   formatHomeListing,
   homeListings,
   publicListingIds,
+  __withGuestPublicContextCacheForTest: withGuestPublicContextCacheForTest,
   sanitizeCompanyPublicText: safeCompanyPublicText,
   filterListings,
   favoriteListing,
