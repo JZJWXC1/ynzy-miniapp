@@ -1011,9 +1011,118 @@
       .replace(/(?:房\s*东\s*邮\s*箱|房\s*東\s*郵\s*箱|邮\s*箱|郵\s*箱|e\s*-?\s*mail)\s*[:：是为即]?/gi, ' ');
   }
 
+  var GUEST_PUBLIC_COMMON_EXTERNAL_TLDS = {
+    app: true, asia: true, biz: true, cc: true, club: true, cn: true, co: true, com: true,
+    email: true, fun: true, info: true, io: true, link: true, live: true, me: true, mobi: true,
+    name: true, net: true, online: true, org: true, pro: true, shop: true, site: true, social: true,
+    space: true, store: true, tech: true, top: true, tv: true, vip: true, wang: true, website: true,
+    work: true, world: true, xin: true, xyz: true, '中国': true, '公司': true, '网络': true, '網絡': true
+  };
+  var GUEST_PUBLIC_NATURAL_DOTTED_SUFFIXES = {
+    css: true, csv: true, doc: true, docx: true, gif: true, jpeg: true, jpg: true, js: true,
+    json: true, md: true, mov: true, mp3: true, mp4: true, pdf: true, png: true, ppt: true,
+    pptx: true, svg: true, ts: true, tsx: true, txt: true, webp: true, xls: true, xlsx: true, xml: true
+  };
+  var GUEST_PUBLIC_SOCIAL_HOST_SUFFIXES = [
+    'douyin.com', 'iesdouyin.com', 'xhslink.com', 'xiaohongshu.com', 'weibo.com', 'kuaishou.com',
+    'bilibili.com', 't.me', 'telegram.me', 'wa.me', 'whatsapp.com', 'line.me', 'signal.me'
+  ];
+
+  function guestPublicExternalLinkProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var skeleton = '';
+    var positions = [];
+    function push(character, sourceIndex) {
+      skeleton += character;
+      positions.push(sourceIndex);
+    }
+    source.forEach(function (character, sourceIndex) {
+      var normalized = character.normalize('NFKC');
+      var contactLetter = /^[A-Za-z]$/.test(normalized)
+        ? normalized.toLowerCase()
+        : (GUEST_PUBLIC_CONTACT_CONFUSABLES[character] || GUEST_PUBLIC_CONTACT_CONFUSABLES[normalized] || '');
+      if (contactLetter) {
+        push(contactLetter, sourceIndex);
+        return;
+      }
+      var punctuation = {
+        '。': '.', '．': '.', '｡': '.',
+        '／': '/', '∕': '/', '⁄': '/',
+        '：': ':', '？': '?', '＃': '#', '＆': '&', '＝': '=', '＠': '@', '％': '%', '＋': '+'
+      }[character];
+      if (punctuation) {
+        push(punctuation, sourceIndex);
+        return;
+      }
+      Array.from(normalized).forEach(function (normalizedCharacter) {
+        if (/^[a-z0-9._~:/?#@!$&'()*+,;=%+\-[\]]$/i.test(normalizedCharacter) || /[\u3400-\u9fff]/u.test(normalizedCharacter)) {
+          push(normalizedCharacter.toLowerCase(), sourceIndex);
+          return;
+        }
+        if (skeleton && skeleton.slice(-1) !== '\u0001') push('\u0001', sourceIndex);
+      });
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicExternalLinkCandidateIsValid(candidate, originalCandidate) {
+    var normalized = String(candidate || '').toLowerCase();
+    var withoutScheme = normalized.replace(/^(?:[a-z][a-z0-9+.-]{1,15}:\/\/|\/\/)/, '');
+    var authority = withoutScheme.split(/[/?#]/, 1)[0];
+    var host = authority.replace(/^[^@]{1,64}@/, '').replace(/:\d{1,5}$/, '');
+    if (!host || host.length > 253 || host.indexOf('.') === -1) return false;
+    var labels = host.split('.');
+    if (labels.length < 2 || labels.length > 9 || labels.some(function (label) {
+      return !label || label.length > 63 || label.charAt(0) === '-' || label.slice(-1) === '-';
+    })) return false;
+    var tld = labels[labels.length - 1];
+    if (/^\d+$/.test(tld)) return false;
+    var knownSuffix = Boolean(GUEST_PUBLIC_COMMON_EXTERNAL_TLDS[tld]) || tld.indexOf('xn--') === 0;
+    var socialHost = GUEST_PUBLIC_SOCIAL_HOST_SUFFIXES.some(function (suffix) {
+      return host === suffix || host.slice(0 - suffix.length - 1) === '.' + suffix;
+    });
+    var strongUrlCue = /^(?:[a-z][a-z0-9+.-]{1,15}:\/\/|\/\/)/.test(normalized) ||
+      /:\d{1,5}(?:[/?#]|$)/.test(withoutScheme) || /[/?#]/.test(withoutScheme.slice(authority.length));
+    if (knownSuffix || socialHost || strongUrlCue) return true;
+    if (GUEST_PUBLIC_NATURAL_DOTTED_SUFFIXES[tld]) return false;
+    var originalHost = String(originalCandidate || '')
+      .normalize('NFKC')
+      .replace(/^(?:[A-Za-z][A-Za-z0-9+.-]{1,15}:\/\/|\/\/)/, '')
+      .split(/[/?#]/, 1)[0];
+    return /^[a-z]{2,24}$/.test(tld) && !/[A-Z]/.test(originalHost) && /^[a-z0-9.-]+(?::\d{1,5})?$/.test(originalHost);
+  }
+
+  function redactGuestPublicExternalLinks(value) {
+    var sourceText = stripGuestPublicInvisibleText(value);
+    if (!/[.。．｡]/u.test(sourceText)) return sourceText;
+    var projection = guestPublicExternalLinkProjection(sourceText);
+    var label = '[a-z0-9\\u3400-\\u9fff](?:[a-z0-9\\u3400-\\u9fff-]{0,61}[a-z0-9\\u3400-\\u9fff])?';
+    var host = '(?:' + label + '\\.){1,8}' + label;
+    var scheme = '(?:[a-z][a-z0-9+.-]{1,15}:\\/\\/|\\/\\/)?';
+    var tail = '(?::\\d{1,5})?(?:[\\/?#][a-z0-9\\u3400-\\u9fff._~!$&\'()*+,;=:@%/?#-]{0,512})?';
+    var pattern = new RegExp('(^|[^a-z0-9\\u3400-\\u9fff@_-])(' + scheme + host + tail + ')', 'giu');
+    var spans = [];
+    var match;
+    while ((match = pattern.exec(projection.skeleton)) !== null) {
+      var candidateOffset = match.index + match[1].length;
+      var start = projection.positions[candidateOffset];
+      var end = projection.positions[candidateOffset + match[2].length - 1];
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+      var originalCandidate = projection.source.slice(start, end + 1).join('');
+      if (guestPublicExternalLinkCandidateIsValid(match[2], originalCandidate)) spans.push({ start: start, end: end });
+    }
+    if (!spans.length) return projection.source.join('');
+    return projection.source.map(function (character, index) {
+      var span = spans.find(function (item) { return index >= item.start && index <= item.end; });
+      if (!span) return character;
+      return index === span.start ? ' ' : '';
+    }).join('');
+  }
+
   function redactGuestPublicContactChannels(value) {
-    return redactGuestPublicEmailContacts(value)
+    var emailSafeValue = redactGuestPublicEmailContacts(value)
       .replace(/[A-Za-z0-9._%+-]{1,64}\s*(?:\(\s*at\s*\)|\[\s*at\s*\]|\bat\b)\s*[A-Za-z0-9-]{1,63}\s*(?:\(\s*dot\s*\)|\[\s*dot\s*\]|\bdot\b|\.)\s*[A-Za-z]{2,24}/gi, ' ')
+    return redactGuestPublicExternalLinks(emailSafeValue)
       .replace(/(?:https?:\/\/|www\.)[^\s,，;；]+/gi, ' ')
       .replace(/(^|[^A-Za-z0-9])(?:t(?:elegram)?\.me|wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|line\.me|signal\.me)\/[A-Za-z0-9_+./?=&%-]{3,}/gi, '$1 ')
       .replace(/@[A-Za-z][A-Za-z0-9_.-]{3,63}/g, ' ')

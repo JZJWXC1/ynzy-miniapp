@@ -71,6 +71,30 @@ const PRIVATE_CONTACT_CASES = [
   '安全板块 telegrаm:privateid 近地铁',
   '安全板块 whatsаpp:privateid 近地铁'
 ]
+const PRIVATE_EXTERNAL_LINK_CASES = [
+  { copy: '安全板块 douyin.com/user/privateid 近地铁', forbidden: ['douyin.com', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 m.douyin.com:8443/share/user/privateid?from=copy#profile 近地铁', forbidden: ['douyin.com', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 xdstore.cn 近地铁', forbidden: ['xdstore.cn'] },
+  { copy: '安全板块 sub.synthetic-store.cn/contact/privateid 近地铁', forbidden: ['synthetic-store.cn', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 ｄοｕｙｉｎ．ｃｏｍ／user／privateid 近地铁', forbidden: ['ｄοｕｙｉｎ', 'ｃｏｍ', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 xhslink。com／a／privateid 近地铁', forbidden: ['xhslink', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 xn--fiqs8s.cn/privateid 近地铁', forbidden: ['xn--fiqs8s.cn', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 synthetic-test.中国/联系 近地铁', forbidden: ['synthetic-test', '中国/联系'] },
+  { copy: '安全板块 //synthetic-store.cn/privateid 近地铁', forbidden: ['synthetic-store.cn', PRIVATE_CONTACT_ID] },
+  { copy: '安全板块 custom://synthetic-store.dev/privateid 近地铁', forbidden: ['synthetic-store.dev', PRIVATE_CONTACT_ID] }
+]
+const DOTTED_PUBLIC_COPY_CASES = [
+  '版本1.2.701',
+  '层高2.8米',
+  '月租3200.50元',
+  '日期2026-07-14',
+  '文档IP 192.0.2.1',
+  'Vanke.City',
+  'O.Park',
+  'The.Hub',
+  'Node.js parser',
+  'video.mp4'
+]
 const NATURAL_PUBLIC_COPY_CASES = [
   'phone signal strong',
   'mobile signal excellent',
@@ -197,6 +221,26 @@ function assertContactChannelsRemoved(rows, listings, label) {
   })
 }
 
+function assertExternalLinksRemoved(rows, listings, label) {
+  listings.forEach((listing, index) => {
+    const row = rows.find((item) => item.id === listing.id)
+    const block = String(row && row.block || '')
+    assert.ok(row, `${label} 必须保留裸域名对抗房源卡片`)
+    assert.ok(block.includes('安全板块') && block.includes('近地铁'), `${label} 清除外链后必须保留相邻公开文案，实际：${block}`)
+    PRIVATE_EXTERNAL_LINK_CASES[index].forbidden.forEach((fragment) => {
+      assert.ok(!block.toLowerCase().includes(fragment.toLowerCase()), `${label} 不得留下可重组外链片段 ${fragment}，实际：${block}`)
+    })
+  })
+}
+
+function assertDottedPublicCopyPreserved(rows, listings, label) {
+  listings.forEach((listing, index) => {
+    const row = rows.find((item) => item.id === listing.id)
+    assert.ok(row, `${label} 必须保留正常点号文案房源`)
+    assert.ok(String(row.block || '').includes(DOTTED_PUBLIC_COPY_CASES[index]), `${label} 不得把正常点号文案误判成外链：${DOTTED_PUBLIC_COPY_CASES[index]}，实际：${row.block || ''}`)
+  })
+}
+
 function assertNaturalCopyPreserved(rows, listings, label) {
   listings.forEach((listing, index) => {
     const row = rows.find((item) => item.id === listing.id)
@@ -216,6 +260,14 @@ function assertMultiplicativeAddressesRemoved(rows, listings, label) {
 
 function assertProductionProjection() {
   const legal = partnerListing('COPY-LEGAL')
+  const companyExternalLink = partnerListing('COPY-COMPANY-EXTERNAL-LINK', {
+    companyListing: true,
+    isCompanyListing: true,
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    source: '公司房源',
+    block: '公司公开板块 xdstore.cn/privateid 近地铁'
+  })
   const address = partnerListing('COPY-ADDRESS', {
     community: 'Address Boundary Community',
     communityName: 'Address Boundary Community',
@@ -252,6 +304,16 @@ function assertProductionProjection() {
     community: `Contact Boundary Community ${index}`,
     communityName: `Contact Boundary Community ${index}`
   }))
+  const externalLinkListings = PRIVATE_EXTERNAL_LINK_CASES.map((item, index) => partnerListing(`COPY-EXTERNAL-LINK-${index}`, {
+    block: item.copy,
+    community: `External Link Boundary Community ${index}`,
+    communityName: `External Link Boundary Community ${index}`
+  }))
+  const dottedPublicCopyListings = DOTTED_PUBLIC_COPY_CASES.map((block, index) => partnerListing(`COPY-DOTTED-PUBLIC-${index}`, {
+    block,
+    community: `Dotted Public Boundary Community ${index}`,
+    communityName: `Dotted Public Boundary Community ${index}`
+  }))
   const naturalCopyListings = NATURAL_PUBLIC_COPY_CASES.map((block, index) => partnerListing(`COPY-NATURAL-${index}`, {
     block,
     community: `Natural Boundary Community ${index}`,
@@ -268,11 +330,14 @@ function assertProductionProjection() {
   const db = {
     listings: [
       legal,
+      companyExternalLink,
       address,
       maliciousDate,
       ...isolatedAddressListings,
       ...legalPublicCopyListings,
       ...contactListings,
+      ...externalLinkListings,
+      ...dottedPublicCopyListings,
       ...naturalCopyListings,
       ...multiplicativeAddressListings
     ],
@@ -282,6 +347,17 @@ function assertProductionProjection() {
 
   const rows = domain.filterListings(db, { publicGuest: true })
   assertLegalEnglishCopy(rows.find((item) => item.id === legal.id), '生产列表')
+  const companyExternalRow = rows.find((item) => item.id === companyExternalLink.id)
+  assert.ok(companyExternalRow && String(companyExternalRow.block || '').includes('公司公开板块'), '生产公司房源必须保留公开板块文案')
+  assert.ok(!JSON.stringify(companyExternalRow).includes('xdstore.cn') && !JSON.stringify(companyExternalRow).includes(PRIVATE_CONTACT_ID), '生产公司房源自由文本也只能保留服务器统一联系通道')
+  const allowedCompanyPhone = '19900000001'
+  const sanitizedCompanyCopy = domain.sanitizeCompanyPublicText(
+    `公司统一号码 ${allowedCompanyPhone}；私人站点 xdstore.cn/privateid`,
+    '',
+    { allowedPhones: [allowedCompanyPhone] }
+  )
+  assert.ok(sanitizedCompanyCopy.includes(allowedCompanyPhone), '生产公司文案清洗不得误删服务器允许的统一测试号码')
+  assert.ok(!sanitizedCompanyCopy.includes('xdstore.cn') && !sanitizedCompanyCopy.includes(PRIVATE_CONTACT_ID), '生产公司文案清洗必须删除私人裸域名')
   assertAddressLabelsRemoved(rows.find((item) => item.id === address.id).block, '生产列表板块')
   isolatedAddressListings.forEach((listing, index) => {
     const projected = rows.find((item) => item.id === listing.id)
@@ -297,9 +373,12 @@ function assertProductionProjection() {
     assert.ok(String(projected.block || '').includes(LEGAL_PUBLIC_COPY_CASES[index]), `生产列表不得误删合法公开文案：${LEGAL_PUBLIC_COPY_CASES[index]}，实际：${projected.block || ''}`)
   })
   assertContactChannelsRemoved(rows, contactListings, '生产列表')
+  assertExternalLinksRemoved(rows, externalLinkListings, '生产列表')
+  assertDottedPublicCopyPreserved(rows, dottedPublicCopyListings, '生产列表')
   assertNaturalCopyPreserved(rows, naturalCopyListings, '生产列表')
   assertMultiplicativeAddressesRemoved(rows, multiplicativeAddressListings, '生产列表')
   const contactIds = new Set(contactListings.map((item) => item.id))
+  const externalLinkIds = new Set(externalLinkListings.map((item) => item.id))
   assert.deepStrictEqual(
     domain.filterListings(db, { publicGuest: true, area: PRIVATE_CONTACT_ID }).filter((item) => contactIds.has(item.id)),
     [],
@@ -310,6 +389,18 @@ function assertProductionProjection() {
     [],
     '生产简易匹配不得把私联 ID 变成搜索 oracle'
   )
+  ;[PRIVATE_CONTACT_ID, 'douyin.com', 'xdstore.cn', 'synthetic-store.cn'].forEach((probe) => {
+    assert.deepStrictEqual(
+      domain.filterListings(db, { publicGuest: true, area: probe }).filter((item) => externalLinkIds.has(item.id)),
+      [],
+      `生产列表不得把外链 ${probe} 变成位置搜索 oracle`
+    )
+    assert.deepStrictEqual(
+      (domain.matchListings(db, { publicGuest: true, area: probe }).listings || []).filter((item) => externalLinkIds.has(item.id)),
+      [],
+      `生产简易匹配不得把外链 ${probe} 变成搜索 oracle`
+    )
+  })
   const legalDetail = domain.listingDetail(db, legal.id)
   assertLegalEnglishCopy(legalDetail, '生产详情')
   assert.strictEqual(legalDetail.videoLabel, '2 rooms', '生产详情必须保留合法英文视频标题')
@@ -424,6 +515,7 @@ function assertMockProjection() {
   const nowBase = originalNow()
   let isolatedAddressListings
   let legalPublicCopyListings
+  let dottedPublicCopyListings
   Date.now = () => nowBase
   try {
     isolatedAddressListings = ENGLISH_ADDRESS_CASES.map((block, index) => mockData.addNormalListing({
@@ -482,13 +574,15 @@ function assertMockProjection() {
       communityMatched: true,
       landlordCommissionPercent: 50
     }))
+    dottedPublicCopyListings = DOTTED_PUBLIC_COPY_CASES.map((block, index) => addMockBoundaryListing(block, 'Dotted Public', index))
   } finally {
     Date.now = originalNow
   }
-  const frozenClockListings = isolatedAddressListings.concat(legalPublicCopyListings)
+  const frozenClockListings = isolatedAddressListings.concat(legalPublicCopyListings, dottedPublicCopyListings)
   assert.strictEqual(new Set(frozenClockListings.map((item) => item.id)).size, frozenClockListings.length, 'Mock 同一毫秒快速新增房源也必须生成唯一 ID')
 
   const contactListings = PRIVATE_CONTACT_CASES.map((block, index) => addMockBoundaryListing(block, 'Contact', index))
+  const externalLinkListings = PRIVATE_EXTERNAL_LINK_CASES.map((item, index) => addMockBoundaryListing(item.copy, 'External Link', index))
   const naturalCopyListings = NATURAL_PUBLIC_COPY_CASES.map((block, index) => addMockBoundaryListing(block, 'Natural', index))
   const multiplicativeAddressListings = MULTIPLICATIVE_ADDRESS_CASES.map((item, index) => addMockBoundaryListing(item.copy, 'Chinese Address', index))
 
@@ -509,9 +603,12 @@ function assertMockProjection() {
     assert.ok(String(projected.block || '').includes(LEGAL_PUBLIC_COPY_CASES[index]), `Mock 列表不得误删合法公开文案：${LEGAL_PUBLIC_COPY_CASES[index]}，实际：${projected.block || ''}`)
   })
   assertContactChannelsRemoved(rows, contactListings, 'Mock 列表')
+  assertExternalLinksRemoved(rows, externalLinkListings, 'Mock 列表')
+  assertDottedPublicCopyPreserved(rows, dottedPublicCopyListings, 'Mock 列表')
   assertNaturalCopyPreserved(rows, naturalCopyListings, 'Mock 列表')
   assertMultiplicativeAddressesRemoved(rows, multiplicativeAddressListings, 'Mock 列表')
   const contactIds = new Set(contactListings.map((item) => item.id))
+  const externalLinkIds = new Set(externalLinkListings.map((item) => item.id))
   assert.deepStrictEqual(
     mockData.getListings({ publicGuest: true, area: PRIVATE_CONTACT_ID }).filter((item) => contactIds.has(item.id)),
     [],
@@ -522,6 +619,42 @@ function assertMockProjection() {
     [],
     'Mock 简易匹配不得把私联 ID 变成搜索 oracle'
   )
+  ;[PRIVATE_CONTACT_ID, 'douyin.com', 'xdstore.cn', 'synthetic-store.cn'].forEach((probe) => {
+    assert.deepStrictEqual(
+      mockData.getListings({ publicGuest: true, area: probe }).filter((item) => externalLinkIds.has(item.id)),
+      [],
+      `Mock 列表不得把外链 ${probe} 变成位置搜索 oracle`
+    )
+    assert.deepStrictEqual(
+      (mockData.matchListings({ publicGuest: true, area: probe }).listings || []).filter((item) => externalLinkIds.has(item.id)),
+      [],
+      `Mock 简易匹配不得把外链 ${probe} 变成搜索 oracle`
+    )
+  })
+  mockData.loginByPhone('13800010004')
+  const companyExternalLink = mockData.addNormalListing({
+    city: '杭州',
+    district: '拱墅区',
+    area: '拱墅区',
+    block: '公司公开板块 xdstore.cn/privateid 近地铁',
+    community: 'Mock Company External Boundary',
+    communityName: 'Mock Company External Boundary',
+    building: '1',
+    roomNumber: '888',
+    rent: 3200,
+    layout: '两室1厅1卫',
+    rentMode: '整租',
+    features: ['电梯'],
+    companyListing: true,
+    isCompanyListing: true,
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    source: '公司房源',
+    landlordCommissionPercent: 50
+  })
+  const companyExternalRow = mockData.getListings({ publicGuest: true }).find((item) => item.id === companyExternalLink.id)
+  assert.ok(companyExternalRow && String(companyExternalRow.block || '').includes('公司公开板块'), 'Mock 公司房源必须保留公开板块文案')
+  assert.ok(!JSON.stringify(companyExternalRow).includes('xdstore.cn') && !JSON.stringify(companyExternalRow).includes(PRIVATE_CONTACT_ID), 'Mock 公司房源自由文本也只能保留统一联系通道')
   assertLegalEnglishCopy(mockData.getListingDetail(legal.id), 'Mock 详情')
 }
 

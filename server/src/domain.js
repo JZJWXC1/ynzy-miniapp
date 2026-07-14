@@ -5847,10 +5847,114 @@ function redactGuestPublicEmailContacts(value) {
     .replace(/(?:房\s*东\s*邮\s*箱|房\s*東\s*郵\s*箱|邮\s*箱|郵\s*箱|e\s*-?\s*mail)\s*[:：是为即]?/gi, ' ')
 }
 
+const GUEST_PUBLIC_COMMON_EXTERNAL_TLDS = new Set([
+  'app', 'asia', 'biz', 'cc', 'club', 'cn', 'co', 'com', 'email', 'fun', 'info', 'io', 'link',
+  'live', 'me', 'mobi', 'name', 'net', 'online', 'org', 'pro', 'shop', 'site', 'social', 'space',
+  'store', 'tech', 'top', 'tv', 'vip', 'wang', 'website', 'work', 'world', 'xin', 'xyz', '中国',
+  '公司', '网络', '網絡'
+])
+const GUEST_PUBLIC_NATURAL_DOTTED_SUFFIXES = new Set([
+  'css', 'csv', 'doc', 'docx', 'gif', 'jpeg', 'jpg', 'js', 'json', 'md', 'mov', 'mp3', 'mp4',
+  'pdf', 'png', 'ppt', 'pptx', 'svg', 'ts', 'tsx', 'txt', 'webp', 'xls', 'xlsx', 'xml'
+])
+const GUEST_PUBLIC_SOCIAL_HOST_SUFFIXES = [
+  'douyin.com', 'iesdouyin.com', 'xhslink.com', 'xiaohongshu.com', 'weibo.com', 'kuaishou.com',
+  'bilibili.com', 't.me', 'telegram.me', 'wa.me', 'whatsapp.com', 'line.me', 'signal.me'
+]
+
+function guestPublicExternalLinkProjection(value) {
+  const source = Array.from(stripGuestPublicInvisibleText(value))
+  let skeleton = ''
+  const positions = []
+  const push = (character, sourceIndex) => {
+    skeleton += character
+    positions.push(sourceIndex)
+  }
+  source.forEach((character, sourceIndex) => {
+    const normalized = character.normalize('NFKC')
+    const contactLetter = /^[A-Za-z]$/.test(normalized)
+      ? normalized.toLowerCase()
+      : (GUEST_PUBLIC_CONTACT_CONFUSABLES[character] || GUEST_PUBLIC_CONTACT_CONFUSABLES[normalized] || '')
+    if (contactLetter) {
+      push(contactLetter, sourceIndex)
+      return
+    }
+    const punctuation = ({
+      '。': '.', '．': '.', '｡': '.',
+      '／': '/', '∕': '/', '⁄': '/',
+      '：': ':', '？': '?', '＃': '#', '＆': '&', '＝': '=', '＠': '@', '％': '%', '＋': '+'
+    })[character]
+    if (punctuation) {
+      push(punctuation, sourceIndex)
+      return
+    }
+    Array.from(normalized).forEach((normalizedCharacter) => {
+      if (/^[a-z0-9._~:/?#@!$&'()*+,;=%+\-[\]]$/i.test(normalizedCharacter) || /[\u3400-\u9fff]/u.test(normalizedCharacter)) {
+        push(normalizedCharacter.toLowerCase(), sourceIndex)
+        return
+      }
+      if (skeleton && !skeleton.endsWith('\u0001')) push('\u0001', sourceIndex)
+    })
+  })
+  return { source, skeleton, positions }
+}
+
+function guestPublicExternalLinkCandidateIsValid(candidate, originalCandidate) {
+  const normalized = String(candidate || '').toLowerCase()
+  const withoutScheme = normalized.replace(/^(?:[a-z][a-z0-9+.-]{1,15}:\/\/|\/\/)/, '')
+  const authority = withoutScheme.split(/[/?#]/, 1)[0]
+  const host = authority.replace(/^[^@]{1,64}@/, '').replace(/:\d{1,5}$/, '')
+  if (!host || host.length > 253 || !host.includes('.')) return false
+  const labels = host.split('.')
+  if (labels.length < 2 || labels.length > 9 || labels.some((label) => !label || label.length > 63 || label.startsWith('-') || label.endsWith('-'))) return false
+  const tld = labels[labels.length - 1]
+  if (/^\d+$/.test(tld)) return false
+  const knownSuffix = GUEST_PUBLIC_COMMON_EXTERNAL_TLDS.has(tld) || tld.startsWith('xn--')
+  const socialHost = GUEST_PUBLIC_SOCIAL_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
+  const strongUrlCue = /^(?:[a-z][a-z0-9+.-]{1,15}:\/\/|\/\/)/.test(normalized) ||
+    /:\d{1,5}(?:[/?#]|$)/.test(withoutScheme) || /[/?#]/.test(withoutScheme.slice(authority.length))
+  if (knownSuffix || socialHost || strongUrlCue) return true
+  if (GUEST_PUBLIC_NATURAL_DOTTED_SUFFIXES.has(tld)) return false
+  const originalHost = String(originalCandidate || '')
+    .normalize('NFKC')
+    .replace(/^(?:[A-Za-z][A-Za-z0-9+.-]{1,15}:\/\/|\/\/)/, '')
+    .split(/[/?#]/, 1)[0]
+  // 未知后缀的裸域名只对全小写 ASCII 主机判定；保留 Vanke.City、O.Park 等楼盘品牌写法。
+  return /^[a-z]{2,24}$/.test(tld) && !/[A-Z]/.test(originalHost) && /^[a-z0-9.-]+(?::\d{1,5})?$/.test(originalHost)
+}
+
+function redactGuestPublicExternalLinks(value) {
+  const sourceText = stripGuestPublicInvisibleText(value)
+  if (!/[.。．｡]/u.test(sourceText)) return sourceText
+  const projection = guestPublicExternalLinkProjection(sourceText)
+  const label = '[a-z0-9\\u3400-\\u9fff](?:[a-z0-9\\u3400-\\u9fff-]{0,61}[a-z0-9\\u3400-\\u9fff])?'
+  const host = `(?:${label}\\.){1,8}${label}`
+  const scheme = '(?:[a-z][a-z0-9+.-]{1,15}:\\/\\/|\\/\\/)?'
+  const tail = '(?::\\d{1,5})?(?:[\\/?#][a-z0-9\\u3400-\\u9fff._~!$&\'()*+,;=:@%/?#-]{0,512})?'
+  const pattern = new RegExp(`(^|[^a-z0-9\\u3400-\\u9fff@_-])(${scheme}${host}${tail})`, 'giu')
+  const spans = []
+  let match
+  while ((match = pattern.exec(projection.skeleton)) !== null) {
+    const candidateOffset = match.index + match[1].length
+    const start = projection.positions[candidateOffset]
+    const end = projection.positions[candidateOffset + match[2].length - 1]
+    if (!Number.isInteger(start) || !Number.isInteger(end)) continue
+    const originalCandidate = projection.source.slice(start, end + 1).join('')
+    if (guestPublicExternalLinkCandidateIsValid(match[2], originalCandidate)) spans.push({ start, end })
+  }
+  if (!spans.length) return projection.source.join('')
+  return projection.source.map((character, index) => {
+    const span = spans.find((item) => index >= item.start && index <= item.end)
+    if (!span) return character
+    return index === span.start ? ' ' : ''
+  }).join('')
+}
+
 function redactGuestPublicContactChannels(value) {
-  return redactGuestPublicEmailContacts(value)
+  const emailSafeValue = redactGuestPublicEmailContacts(value)
     // 反爬邮箱写法仍可被人工还原，按联系方式整体清除。
     .replace(/[A-Za-z0-9._%+-]{1,64}\s*(?:\(\s*at\s*\)|\[\s*at\s*\]|\bat\b)\s*[A-Za-z0-9-]{1,63}\s*(?:\(\s*dot\s*\)|\[\s*dot\s*\]|\bdot\b|\.)\s*[A-Za-z]{2,24}/gi, ' ')
+  return redactGuestPublicExternalLinks(emailSafeValue)
     // 自由文本里的站外链接、@handle 都属于可绕过平台的联系通道。公司房源同样只允许
     // 服务器配置的三个统一号码，不能借地址/备注再下发第四种联系方式。
     .replace(/(?:https?:\/\/|www\.)[^\s,，;；]+/gi, ' ')
