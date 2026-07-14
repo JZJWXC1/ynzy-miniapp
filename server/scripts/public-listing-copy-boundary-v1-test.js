@@ -57,6 +57,34 @@ const LEGAL_PUBLIC_COPY_CASES = [
   'Safe 层高2.8米',
   'Safe 2层复式'
 ]
+const PRIVATE_CONTACT_ID = 'privateid'
+const PRIVATE_CONTACT_CASES = [
+  '安全板块 t.me/privateid 近地铁',
+  '安全板块 wa.me/privateid 近地铁',
+  '安全板块 xhs privateid 近地铁',
+  '安全板块 dy privateid 近地铁',
+  '安全板块 ins privateid 近地铁',
+  '安全板块 phοne:privateid 近地铁',
+  '安全板块 phоne:privateid 近地铁',
+  '安全板块 cοntact:privateid 近地铁',
+  '安全板块 weсhat:privateid 近地铁',
+  '安全板块 telegrаm:privateid 近地铁',
+  '安全板块 whatsаpp:privateid 近地铁'
+]
+const NATURAL_PUBLIC_COPY_CASES = [
+  'phone signal strong',
+  'mobile signal excellent',
+  'Signal coverage good',
+  'contact tracing available',
+  'password protected WiFi'
+]
+const MULTIPLICATIVE_ADDRESS_CASES = [
+  { copy: '安全板块 十二/二/七零一 近地铁', forbidden: /[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖]/ },
+  { copy: '安全板块 拾贰/贰/柒零壹 近地铁', forbidden: /[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖]/ },
+  { copy: '安全板块 二十一🫥三🫥七零一 近地铁', forbidden: /[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖]/ },
+  { copy: '安全板块 文一西路九十六号 近地铁', forbidden: /(?:九十六|十六)号/ },
+  { copy: '安全板块 文一西路玖拾陆号 近地铁', forbidden: /(?:玖拾陆|拾陆)号/ }
+]
 const ENGLISH_ADDRESS_CASES = [
   'Safe Unit B near subway',
   'Safe Room 701 near subway',
@@ -160,6 +188,32 @@ function assertAddressLabelsRemoved(value, label) {
   assert.ok(text.includes('Safe') && text.includes('near subway') && text.includes('with elevator'), `${label} 删除精确地址后必须保留相邻公开文案，实际：${text}`)
 }
 
+function assertContactChannelsRemoved(rows, listings, label) {
+  listings.forEach((listing) => {
+    const row = rows.find((item) => item.id === listing.id)
+    assert.ok(row, `${label} 必须保留私联对抗房源卡片`)
+    assert.ok(String(row.block || '').includes('安全板块') && String(row.block || '').includes('近地铁'), `${label} 清除私联后必须保留相邻公开文案`)
+    assert.ok(!JSON.stringify(row).includes(PRIVATE_CONTACT_ID), `${label} 不得公开站外私联 ID`)
+  })
+}
+
+function assertNaturalCopyPreserved(rows, listings, label) {
+  listings.forEach((listing, index) => {
+    const row = rows.find((item) => item.id === listing.id)
+    assert.ok(row, `${label} 必须保留正常英文设施文案房源`)
+    assert.ok(String(row.block || '').includes(NATURAL_PUBLIC_COPY_CASES[index]), `${label} 不得误删正常英文设施文案 ${NATURAL_PUBLIC_COPY_CASES[index]}，实际：${row.block || ''}`)
+  })
+}
+
+function assertMultiplicativeAddressesRemoved(rows, listings, label) {
+  listings.forEach((listing, index) => {
+    const row = rows.find((item) => item.id === listing.id)
+    const block = String(row && row.block || '')
+    assert.ok(row && block.includes('安全板块') && block.includes('近地铁'), `${label} 清除中文数词精确地址后必须保留相邻公开文案`)
+    assert.ok(!MULTIPLICATIVE_ADDRESS_CASES[index].forbidden.test(block), `${label} 不得留下可重组的中文数词地址残片，实际：${block}`)
+  })
+}
+
 function assertProductionProjection() {
   const legal = partnerListing('COPY-LEGAL')
   const address = partnerListing('COPY-ADDRESS', {
@@ -193,8 +247,35 @@ function assertProductionProjection() {
     mapLatitude: 30.315 + index * 0.0001,
     mapLongitude: 120.185 + index * 0.0001
   }))
+  const contactListings = PRIVATE_CONTACT_CASES.map((block, index) => partnerListing(`COPY-CONTACT-${index}`, {
+    block,
+    community: `Contact Boundary Community ${index}`,
+    communityName: `Contact Boundary Community ${index}`
+  }))
+  const naturalCopyListings = NATURAL_PUBLIC_COPY_CASES.map((block, index) => partnerListing(`COPY-NATURAL-${index}`, {
+    block,
+    community: `Natural Boundary Community ${index}`,
+    communityName: `Natural Boundary Community ${index}`
+  }))
+  const multiplicativeAddressListings = MULTIPLICATIVE_ADDRESS_CASES.map((item, index) => partnerListing(`COPY-CHINESE-ADDRESS-${index}`, {
+    block: item.copy,
+    community: `Chinese Address Boundary Community ${index}`,
+    communityName: `Chinese Address Boundary Community ${index}`,
+    building: index < 2 ? '12' : '21',
+    unit: index < 2 ? '2' : '3',
+    roomNumber: '701'
+  }))
   const db = {
-    listings: [legal, address, maliciousDate, ...isolatedAddressListings, ...legalPublicCopyListings],
+    listings: [
+      legal,
+      address,
+      maliciousDate,
+      ...isolatedAddressListings,
+      ...legalPublicCopyListings,
+      ...contactListings,
+      ...naturalCopyListings,
+      ...multiplicativeAddressListings
+    ],
     users: [{ id: 'COPY-BOUNDARY-UPLOADER', name: '合成上传人', status: '正常', authed: '已实名' }],
     commissionConfig: {}
   }
@@ -215,6 +296,20 @@ function assertProductionProjection() {
     assert.ok(projected, `生产列表必须保留合法公开文案单例 ${index}`)
     assert.ok(String(projected.block || '').includes(LEGAL_PUBLIC_COPY_CASES[index]), `生产列表不得误删合法公开文案：${LEGAL_PUBLIC_COPY_CASES[index]}，实际：${projected.block || ''}`)
   })
+  assertContactChannelsRemoved(rows, contactListings, '生产列表')
+  assertNaturalCopyPreserved(rows, naturalCopyListings, '生产列表')
+  assertMultiplicativeAddressesRemoved(rows, multiplicativeAddressListings, '生产列表')
+  const contactIds = new Set(contactListings.map((item) => item.id))
+  assert.deepStrictEqual(
+    domain.filterListings(db, { publicGuest: true, area: PRIVATE_CONTACT_ID }).filter((item) => contactIds.has(item.id)),
+    [],
+    '生产列表不得把私联 ID 变成位置搜索 oracle'
+  )
+  assert.deepStrictEqual(
+    (domain.matchListings(db, { publicGuest: true, area: PRIVATE_CONTACT_ID }).listings || []).filter((item) => contactIds.has(item.id)),
+    [],
+    '生产简易匹配不得把私联 ID 变成搜索 oracle'
+  )
   const legalDetail = domain.listingDetail(db, legal.id)
   assertLegalEnglishCopy(legalDetail, '生产详情')
   assert.strictEqual(legalDetail.videoLabel, '2 rooms', '生产详情必须保留合法英文视频标题')
@@ -232,6 +327,38 @@ function assertProductionProjection() {
     const serialized = JSON.stringify(publicSurfaces[surface])
     assert.ok(!serialized.includes(SYNTHETIC_PHONE), `${surface} 不得通过畸形核验时间公开电话`)
     assert.ok(!serialized.includes('Tue, 14 Jul 2026'), `${surface} 不得公开非白名单核验时间原文`)
+    assert.ok(!serialized.includes(PRIVATE_CONTACT_ID), `${surface} 不得公开站外私联 ID`)
+  })
+}
+
+function addMockBoundaryListing(block, group, index) {
+  return mockData.addNormalListing({
+    city: '杭州',
+    district: '拱墅区',
+    area: '拱墅区',
+    block,
+    community: `${group} Boundary Community ${index}`,
+    communityName: `${group} Boundary Community ${index}`,
+    building: group === 'Chinese Address' ? (index < 2 ? '12' : '21') : '1',
+    unit: group === 'Chinese Address' ? (index < 2 ? '2' : '3') : '8',
+    roomNumber: group === 'Chinese Address' ? '701' : '888',
+    address: `杭州市拱墅区${group} Boundary Community ${index} 1栋8单元888室`,
+    contact: SYNTHETIC_PHONE,
+    landlordPhone: SYNTHETIC_PHONE,
+    rent: 3200,
+    layout: '2 rooms',
+    room: '2 rooms',
+    hall: '1 hall',
+    bath: '1 bath',
+    rentMode: '整租',
+    features: ['近地铁'],
+    videoUrl: `https://example.invalid/synthetic/${group.toLowerCase().replace(/\s+/g, '-')}-${index}.mp4`,
+    viewingMethod: '联系房东',
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    source: '二房东房源',
+    communityMatched: true,
+    landlordCommissionPercent: 50
   })
 }
 
@@ -361,6 +488,10 @@ function assertMockProjection() {
   const frozenClockListings = isolatedAddressListings.concat(legalPublicCopyListings)
   assert.strictEqual(new Set(frozenClockListings.map((item) => item.id)).size, frozenClockListings.length, 'Mock 同一毫秒快速新增房源也必须生成唯一 ID')
 
+  const contactListings = PRIVATE_CONTACT_CASES.map((block, index) => addMockBoundaryListing(block, 'Contact', index))
+  const naturalCopyListings = NATURAL_PUBLIC_COPY_CASES.map((block, index) => addMockBoundaryListing(block, 'Natural', index))
+  const multiplicativeAddressListings = MULTIPLICATIVE_ADDRESS_CASES.map((item, index) => addMockBoundaryListing(item.copy, 'Chinese Address', index))
+
   const rows = mockData.getListings({ publicGuest: true })
   assertLegalEnglishCopy(rows.find((item) => item.id === legal.id), 'Mock 列表')
   assertAddressLabelsRemoved(rows.find((item) => item.id === address.id).block, 'Mock 列表板块')
@@ -377,6 +508,20 @@ function assertMockProjection() {
     assert.ok(projected, `Mock 列表必须保留合法公开文案单例 ${index}`)
     assert.ok(String(projected.block || '').includes(LEGAL_PUBLIC_COPY_CASES[index]), `Mock 列表不得误删合法公开文案：${LEGAL_PUBLIC_COPY_CASES[index]}，实际：${projected.block || ''}`)
   })
+  assertContactChannelsRemoved(rows, contactListings, 'Mock 列表')
+  assertNaturalCopyPreserved(rows, naturalCopyListings, 'Mock 列表')
+  assertMultiplicativeAddressesRemoved(rows, multiplicativeAddressListings, 'Mock 列表')
+  const contactIds = new Set(contactListings.map((item) => item.id))
+  assert.deepStrictEqual(
+    mockData.getListings({ publicGuest: true, area: PRIVATE_CONTACT_ID }).filter((item) => contactIds.has(item.id)),
+    [],
+    'Mock 列表不得把私联 ID 变成位置搜索 oracle'
+  )
+  assert.deepStrictEqual(
+    (mockData.matchListings({ publicGuest: true, area: PRIVATE_CONTACT_ID }).listings || []).filter((item) => contactIds.has(item.id)),
+    [],
+    'Mock 简易匹配不得把私联 ID 变成搜索 oracle'
+  )
   assertLegalEnglishCopy(mockData.getListingDetail(legal.id), 'Mock 详情')
 }
 

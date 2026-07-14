@@ -1255,7 +1255,26 @@ function replaceUnconfiguredMobileNumbers(value, replacement, allowedPhones, opt
 
 function replaceUnconfiguredContactValues(value, replacement, allowedPhones, options = {}) {
   if (typeof value !== 'string') return value
-  let sanitized = replaceUnconfiguredMobileNumbers(value, replacement, allowedPhones, options)
+  const protectedPhones = []
+  const phonePattern = /(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}|(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}/g
+  let channelSafeValue = value.replace(phonePattern, (matched) => {
+    // 联系标签投影会忽略纯私用区字符；加入超过 contactBridge 上限的中文正文，
+    // 防止“联系电话<占位> 普通文案”越过占位把后续普通文案误认成账号。
+    let token = `\uE200临时占位甲乙丙丁戊己庚辛${String.fromCodePoint(0xE300 + protectedPhones.length)}\uE201`
+    while (value.includes(token)) token += '\uE202'
+    protectedPhones.push({ token, matched })
+    return token
+  })
+  if (typeof domain.sanitizeCompanyPublicText === 'function') {
+    channelSafeValue = domain.sanitizeCompanyPublicText(channelSafeValue, '', {
+      kind: options.kind === 'access' ? 'access' : 'generic',
+      allowedPhones: Array.from(allowedPhones || [])
+    })
+  }
+  protectedPhones.forEach(({ token, matched }) => {
+    channelSafeValue = channelSafeValue.split(token).join(matched)
+  })
+  let sanitized = replaceUnconfiguredMobileNumbers(channelSafeValue, replacement, allowedPhones, options)
   sanitized = sanitized.replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, (matched, prefix) => `${prefix}联系方式：${replacement}`)
   sanitized = sanitized.replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/gi, `联系方式：${replacement}`)
   sanitized = sanitized.replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')

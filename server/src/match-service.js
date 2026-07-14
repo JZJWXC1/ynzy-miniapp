@@ -1,6 +1,7 @@
 const domain = require('./domain')
 const config = require('./config')
 const { normalizeAsrText } = require('./asr-normalizer')
+const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const {
   DEFAULT_RADIUS_KM,
   SERVICE_AREAS,
@@ -853,6 +854,9 @@ function communityMatches(listing, community) {
   if (!community) return true
   const target = normalizeCommunity(community)
   const listingCommunity = normalizeCommunity(listing.community)
+  if (isKnownCommunity(community)) {
+    return normalizeCommunityKey(listing.community) === normalizeCommunityKey(community)
+  }
   if (target && listingCommunity && (listingCommunity.indexOf(target) !== -1 || target.indexOf(listingCommunity) !== -1)) {
     return true
   }

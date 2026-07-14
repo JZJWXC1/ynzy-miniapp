@@ -150,6 +150,7 @@ function emptyFilters() {
     rentMode: '',
     sourceType: '',
     area: '',
+    community: '',
     listingIds: []
   }
 }
@@ -270,7 +271,8 @@ Page({
     const layout = pending.layout || pending.houseType || ''
     const rentMode = pending.rentMode || pending.mode || pending.type || ''
     const sourceType = pending.sourceType || pending.houseSourceType || pending.category || ''
-    const area = pending.area || pending.region || pending.district || pending.block || pending.community || ''
+    const area = pending.area || pending.region || pending.district || pending.block || ''
+    const community = pending.community || ''
     const listingIds = toArray(pending.listingIds || pending.ids || pending.listingId)
     const needId = pending.needId || pending.rentalNeedId || pending.clientNeedId || ''
     return {
@@ -283,6 +285,7 @@ Page({
       rentMode: rentMode === '全部' ? '' : rentMode,
       sourceType: sourceType === '全部' ? '' : sourceType,
       area,
+      community,
       listingIds
     }
   },
@@ -300,6 +303,7 @@ Page({
       rentMode: filters.rentMode,
       sourceType: filters.sourceType,
       area: filters.area,
+      community: filters.community,
       listingIds: filters.listingIds
     }
   },
@@ -577,7 +581,7 @@ Page({
         needId: filters.needId || '',
         area: selectedCommunity ? '' : (filters.area || ''),
         block: '',
-        community: selectedCommunity ? selectedCommunity.community : '',
+        community: selectedCommunity ? selectedCommunity.community : (filters.community || ''),
         layout: filters.layout || '',
         rentMode: filters.rentMode || '',
         rentMin: filters.rentMin || '',

@@ -954,6 +954,361 @@ async function run() {
     assert.strictEqual(companySquareMeterPublic.layout, '17㎡三室', 'Mock 公司原文 17㎡三室 必须保留平方米符号，不得改写')
   })
 
+  await check('Mock 生产同口径阻断无数字噪声联系方式与异体中文手机号', () => {
+    mockData.loginByPhone('13800010005')
+    const privateValues = [
+      '微🫥信:privateid',
+      'p🫥hone:privateid',
+      '房🫥东电话:privateid',
+      'landlordphone:privateid',
+      'mycontact:a1_b2',
+      'p🫥hone:a1 b2',
+      'c🫥ontact:real wx123',
+      '电话是privateid',
+      '联系方式为privateid',
+      '房东电话即abc123',
+      '联系人小王电话privateid',
+      '电话:小王abc123',
+      '联系方式:小李privateid',
+      '热线:小张a1b2',
+      'owner@example.com',
+      'email:owner@example.com',
+      '房东邮箱:owner@example.com',
+      'ｏｗｎｅｒ＠ｅｘａｍｐｌｅ．ｃｏｍ',
+      '加微:abc123',
+      '加V:abc123',
+      'V号:abc123',
+      'QQ号:privateid',
+      '小红书号 privateid',
+      '抖音账号 privateid',
+      '钉钉ID privateid',
+      'Telegram @privateid',
+      'WhatsApp privateid',
+      'Line privateid',
+      '个人主页 https://example.invalid/u/privateid',
+      '二维码见 www.example.invalid/privateid',
+      'owner(at)example.invalid',
+      'owner [at] example [dot] invalid',
+      '联系方式 privateid；contact privateid',
+      '幺參參幺幺幺幺幺幺幺幺'
+    ]
+    privateValues.forEach((privateValue, index) => {
+      const community = `Mock合作无数字联系方式小区${index + 1}`
+      const row = addListing(`993${index}`, '二房东房源', {
+        block: `Mock安全板块 ${privateValue}`,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.ok(projected, 'Mock 合作无数字联系方式样本必须进入公共投影')
+      const normalized = String(projected.block || '').replace(/[\s,，;；:：\-—_·]+/g, '')
+      assert.strictEqual(normalized, 'Mock安全板块', `Mock 不得残留噪声联系方式/异体手机号：${privateValue}`)
+    })
+  })
+
+  await check('Mock 合作访问凭据 fail-closed、公司同文案继续公开', () => {
+    const privateAccessValues = [
+      '密🫥码:a1_b2-c3',
+      '密🫥码:12-34',
+      'p🫥in:12-34',
+      '钥🫥匙:门-口花盆',
+      '密🫥码:12 34',
+      '密码就是 12 34',
+      'pass🫥word:a1 b2',
+      '钥🫥匙:门 口花盆',
+      '钥🫥匙在门口花盆',
+      '开🫥门找保安',
+      '门🫥禁问前台'
+      ,'房卡在前台'
+      ,'门卡在保安处'
+      ,'前台取卡'
+      ,'找管家拿卡'
+      ,'accesscode:1234'
+      ,'lockcode:1234'
+      ,'entrycode:1234'
+      ,'入户码 1234'
+      ,'进门码 1234'
+      ,'大门口令 1234'
+      ,'看房方式：物业带看'
+      ,'看房：联系房东'
+      ,'带看方式：管家带看'
+      ,'查看方式：自行看房'
+      ,'看房方式：租客开门'
+      ,'租客在家直接敲门'
+      ,'物业带看'
+      ,'管家带看'
+      ,'提前预约房东'
+      ,'门口有人直接进'
+      ,'电话联系看房'
+      ,'白天电话联系租客'
+    ]
+    mockData.loginByPhone('13800010005')
+    privateAccessValues.forEach((privateValue, index) => {
+      const community = `Mock合作访问凭据小区${index + 1}`
+      const row = addListing(`994${index}`, '业主房源', {
+        block: `Mock安全板块 ${privateValue}`,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.strictEqual(
+        String(projected.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+        'Mock安全板块',
+        `Mock 合作房源不得残留访问凭据尾部：${privateValue}`
+      )
+    })
+
+    mockData.loginByPhone('13800010004')
+    const companyAccess = '密🫥码:a1_b2-c3'
+    const companyCommunity = 'Mock公司访问凭据正向小区'
+    const companyAccessRow = addListing('9950', '公司房源', {
+      block: `Mock公司板块 ${companyAccess}`,
+      communityName: companyCommunity,
+      community: companyCommunity,
+      companyListing: true,
+      isCompanyListing: true,
+      noCommission: true
+    })
+    const companyProjected = mockData.getListings({ publicGuest: true }).find((item) => item.id === companyAccessRow.id)
+    assert.ok(String(companyProjected.block || '').includes(companyAccess), 'Mock 公司钥匙/密码仍须保持完整公开')
+  })
+
+  await check('Mock 公司公开字段不得夹带前缀联系方式，普通英文词不得误伤', () => {
+    mockData.loginByPhone('13800010004')
+    ;[
+      'landlordwechat:privateid',
+      'ownerphone:privateid',
+      'agentwx:privateid',
+      'p🫥hone:a1 b2',
+      'c🫥ontact:real wx123',
+      '电话是privateid',
+      '联系方式为privateid',
+      '房东电话即abc123',
+      '联系人小王电话privateid',
+      '电话:小王abc123',
+      '联系方式:小李privateid',
+      '热线:小张a1b2',
+      'owner@example.com',
+      'email:owner@example.com',
+      '房东邮箱:owner@example.com',
+      'ｏｗｎｅｒ＠ｅｘａｍｐｌｅ．ｃｏｍ',
+      '加微:abc123',
+      '加V:abc123',
+      'V号:abc123',
+      'QQ号:privateid',
+      '小红书号 privateid',
+      '抖音账号 privateid',
+      '钉钉ID privateid',
+      'Telegram @privateid',
+      'WhatsApp privateid',
+      'Line privateid',
+      '个人主页 https://example.invalid/u/privateid',
+      '二维码见 www.example.invalid/privateid',
+      'owner(at)example.invalid',
+      'owner [at] example [dot] invalid',
+      '联系方式 privateid；contact privateid'
+    ].forEach((privateContact, index) => {
+      const community = `Mock公司前缀联系方式小区${index + 1}`
+      const row = addListing(`996${index}`, '公司房源', {
+        block: `Mock公司板块 ${privateContact}`,
+        communityName: community,
+        community,
+        companyListing: true,
+        isCompanyListing: true,
+        noCommission: true
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.strictEqual(
+        String(projected.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+        'Mock公司板块',
+        `Mock 公司字段只能保留服务器统一号码，不得夹带第四联系方式：${privateContact}`
+      )
+    })
+
+    mockData.loginByPhone('13800010005')
+    const positive = 'contactless payment · telephonebook available'
+    const positiveCommunity = 'Mock普通英文词正向小区'
+    const positiveRow = addListing('9970', '二房东房源', {
+      block: positive,
+      communityName: positiveCommunity,
+      community: positiveCommunity
+    })
+    const positiveProjected = mockData.getListings({ publicGuest: true }).find((item) => item.id === positiveRow.id)
+    assert.strictEqual(
+      String(positiveProjected.block || '').replace(/[·\s]+/g, ' ').trim(),
+      positive.replace(/[·\s]+/g, ' ').trim(),
+      'Mock 普通英文词不得被联系方式标签误伤'
+    )
+  })
+
+  await check('Mock 合作多字母及中文楼栋单元楼层全部隐藏', () => {
+    mockData.loginByPhone('13800010005')
+    ;[
+      'Building AB',
+      'Tower AB',
+      'Unit AB',
+      'AB栋',
+      'AB12室',
+      '甲栋',
+      '乙单元',
+      '丙幢',
+      '东栋',
+      '西楼',
+      '南座',
+      '北单元',
+      '负一层',
+      '地下二层',
+      'B2层',
+      '12A栋',
+      'A-北栋',
+      '楼栋甲乙',
+      '房号甲',
+      '甲室',
+      '甲乙室',
+      'Building ABCDE',
+      'Building NORTH',
+      'AB Tower',
+      'A1 Building',
+      '1号楼2门701',
+      '1幢2梯701',
+      '1座2梯701',
+      'Unit 2-B',
+      'A-1栋',
+      'B1层',
+      '负1F',
+      '9栋8单元7-01',
+      '7层01',
+      '7楼01',
+      '7F01',
+      'A-701室',
+      '1/2/701',
+      '1\\2\\701',
+      '1.2.701',
+      '1#2#701',
+      '9—8—701',
+      '9_8_701',
+      '9 8 701',
+      '9🫥8🫥701',
+      '一/二/七零一',
+      '壹/贰/柒零壹',
+      '١/٢/٧٠١',
+      '１．２．７０１',
+      '一🫥二🫥七零一',
+      '文一西路969',
+      '文一西路969弄',
+      '文一西路九六九',
+      '文一西路玖陆玖',
+      '文一西路９６９',
+      'Wenyi Rd 969',
+      'Wenyi Rd 九六九',
+      '969 Wenyi West Road',
+      '九六九 Wenyi West Road'
+    ].forEach((privateAddress, index) => {
+      const community = `Mock合作地址 token 小区${index + 1}`
+      const row = addListing(`998${index}`, '二房东房源', {
+        block: privateAddress,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.strictEqual(
+        String(projected.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+        '拱墅区',
+        `Mock 合作房源不得公开多字母或中文楼栋/单元/楼层 token：${privateAddress}`
+      )
+    })
+  })
+
+  await check('Mock 三段地址不误伤业务数字、自然文案与敏感后缀严格分离', () => {
+    mockData.loginByPhone('13800010005')
+    ;['版本1.2.70', '比例1/2/100', '日期1/2/2026', '1.2.30公里'].forEach((publicCopy, index) => {
+      const community = `Mock合法业务数字小区${index + 1}`
+      const row = addListing(`9988${index}`, '二房东房源', {
+        block: publicCopy,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.strictEqual(String(projected.block || '').replace(/\s+/g, ''), publicCopy, `Mock 不得误删版本/比例/日期/距离：${publicCopy}`)
+    })
+
+    ;['安全板块 phone booth nearby wx:abc123', 'wx:abc123；安全板块 phone booth nearby'].forEach((mixedCopy, index) => {
+      const community = `Mock合法设施联系方式混排小区${index + 1}`
+      const row = addListing(`9989${index}`, '二房东房源', {
+        block: mixedCopy,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      assert.ok(String(projected.block || '').includes('安全板块 phone booth nearby'), `Mock 必须保留联系方式前后的合法设施文案：${mixedCopy}`)
+      assert.ok(!String(projected.block || '').toLowerCase().includes('abc123'), `Mock 必须删除混排站外账号：${mixedCopy}`)
+    })
+
+    ;['安全板块 密码1234，近地铁', '安全板块 钥匙在前台；近地铁', '安全板块 入户码1234。近地铁', '安全板块 看房方式：物业带看；近地铁'].forEach((mixedSecret, index) => {
+      const community = `Mock敏感段合法后缀小区${index + 1}`
+      const row = addListing(`9990${index}`, '业主房源', {
+        block: mixedSecret,
+        communityName: community,
+        community
+      })
+      const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+      const text = String(projected.block || '')
+      assert.ok(text.includes('安全板块') && text.includes('近地铁'), `Mock 删除敏感段时必须保留合法后缀：${mixedSecret}`)
+      assert.ok(!/(?:1234|钥匙|入户码|看房方式|物业带看)/.test(text), `Mock 不得残留访问凭据或看房方式：${mixedSecret}`)
+    })
+
+    const collision = '安全板块 phone booth nearby'
+    const collisionCommunity = 'Mock自然短语敏感值碰撞小区'
+    const collisionRow = addListing('99909', '二房东房源', {
+      block: collision,
+      viewingKeyLocation: collision,
+      communityName: collisionCommunity,
+      community: collisionCommunity
+    })
+    const collisionProjected = mockData.getListings({ publicGuest: true }).find((item) => item.id === collisionRow.id)
+    assert.ok(!String(collisionProjected.block || '').includes(collision), 'Mock 公开短语与真实取钥匙位置碰撞时必须按敏感值删除')
+  })
+
+  await check('Mock 公司与合作普通联系方式词组和设施文案保持公开', () => {
+    ;[
+      'phone booth nearby',
+      'mobile home style',
+      'call center nearby',
+      'contact person available',
+      'key features include elevator',
+      '门禁系统完善',
+      '密码锁很方便',
+      '钥匙房很方便',
+      '安全板块 phone booth nearby',
+      '安全板块 mobile home style',
+      '安全板块 call center nearby',
+      '安全板块 contact person available',
+      '安全板块 key features include elevator',
+      '西湖区 Building better homes',
+      '余杭区 Tower bridge nearby',
+      '安全板块 密码系统正常',
+      '安全板块 钥匙功能很方便'
+    ].forEach((publicCopy, copyIndex) => {
+      ;[
+        { label: '公司', source: '公司房源', phone: '13800010004' },
+        { label: '合作', source: '二房东房源', phone: '13800010005' }
+      ].forEach(({ label, source, phone }, sourceIndex) => {
+        mockData.loginByPhone(phone)
+        const community = `Mock${label}普通设施文案小区${copyIndex + 1}`
+        const row = addListing(`999${copyIndex}${sourceIndex}`, source, {
+          block: publicCopy,
+          communityName: community,
+          community,
+          companyListing: source === '公司房源',
+          isCompanyListing: source === '公司房源',
+          noCommission: source === '公司房源'
+        })
+        const projected = mockData.getListings({ publicGuest: true }).find((item) => item.id === row.id)
+        assert.strictEqual(projected.block, publicCopy, `Mock ${label}普通设施/自然语言不得被误伤：${publicCopy}`)
+      })
+    })
+  })
+
   for (const sourceCase of [
     { label: '公司', source: '公司房源', companyListing: true },
     { label: '合作', source: '业主房源', companyListing: false }

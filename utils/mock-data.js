@@ -103,6 +103,23 @@
 	    昌运里三区: { latitude: 30.342866, longitude: 120.131563, source: 'amap-poi-B0J6VZ5YOP' }
 	  };
 
+  var mockOfficialCommunityNames = [];
+  if (typeof require === 'function') {
+    try {
+      mockOfficialCommunityNames = require('./gongshu-communities');
+    } catch (error) {
+      mockOfficialCommunityNames = [];
+    }
+  }
+  function mockOfficialCommunityKey(value) {
+    return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
+  }
+  var mockOfficialCommunityKeys = {};
+  mockOfficialCommunityNames.concat(Object.keys(communityCoordinates)).forEach(function (name) {
+    var key = mockOfficialCommunityKey(name);
+    if (key) mockOfficialCommunityKeys[key] = true;
+  });
+
   function parseFeatureInput(value) {
     var source = Array.isArray(value) ? value : String(value || '').split(/[，,、|]/);
     var seen = {};
@@ -441,11 +458,31 @@
   }
 
   function isKnownMockCommunity(name) {
-    var normalized = normalizeCommunityName(name);
-    if (!normalized) return false;
-    return Object.keys(communityCoordinates).some(function (item) {
-      return normalizeCommunityName(item) === normalized;
-    });
+    var key = mockOfficialCommunityKey(name);
+    return Boolean(key && mockOfficialCommunityKeys[key]);
+  }
+
+  function publicCommunityFilterMatches(actual, requested) {
+    var expected = String(requested || '').trim();
+    if (!expected) return true;
+    var candidate = String(actual || '').trim();
+    if (isKnownMockCommunity(expected)) {
+      return mockOfficialCommunityKey(candidate) === mockOfficialCommunityKey(expected);
+    }
+    return candidate.indexOf(expected) !== -1;
+  }
+
+  function publicLocationFilterMatches(location, requested) {
+    var data = location || {};
+    var expected = String(requested || '').trim();
+    if (!expected) return true;
+    if (isKnownMockCommunity(expected)) {
+      return mockOfficialCommunityKey(data.community) === mockOfficialCommunityKey(expected);
+    }
+    return [data.city, data.district, data.area, data.block, data.community]
+      .map(function (item) { return String(item || ''); })
+      .join('')
+      .indexOf(expected) !== -1;
   }
 
   function publicListingLocationFields(listing) {
@@ -479,7 +516,10 @@
     var city = safeGuestPublicText(rawCity, listing, '杭州') || '杭州';
     var area = safeGuestPublicText(rawArea, listing, '待分区') || '待分区';
     var block = safeGuestPublicText(listing.block, listing, area || '待板块') || area || '待板块';
-    var community = safeGuestPublicText(listing.community, listing, '');
+    var rawCommunity = stripGuestPublicInvisibleText(listing.community).trim();
+    var community = isKnownMockCommunity(rawCommunity) && !guestPublicIntrinsicUnsafe(rawCommunity)
+      ? rawCommunity
+      : safeGuestPublicText(listing.community, listing, '');
     return {
       city: city,
       district: area,
@@ -692,11 +732,11 @@
 
   function guestPublicAddressProjection(value) {
     var source = Array.from(stripGuestPublicInvisibleText(value));
-    var context = guestPublicProjectionContext(source);
     var skeleton = '';
     var positions = [];
     source.forEach(function (character, sourceIndex) {
-      var digit = guestPublicProjectedDigit(source, sourceIndex, context);
+      // 地址里的短中文数字同样能组成“1/2/701”，不能沿用电话投影的 7 位门槛。
+      var digit = guestPublicDigitValue(character);
       if (digit) {
         skeleton += digit;
         positions.push(sourceIndex);
@@ -708,6 +748,44 @@
     });
     return { source: source, skeleton: skeleton, positions: positions };
   }
+
+  function guestPublicUniversalAddressProjection(value) {
+    var source = Array.from(stripGuestPublicInvisibleText(value));
+    var skeleton = '';
+    var positions = [];
+    function push(character, sourceIndex) {
+      if ((character === '\u0001' || character === '\u0002') && skeleton.slice(-1) === character) return;
+      skeleton += character;
+      positions.push(sourceIndex);
+    }
+    source.forEach(function (character, sourceIndex) {
+      var digit = guestPublicDigitValue(character);
+      if (digit) {
+        push(digit, sourceIndex);
+        return;
+      }
+      var normalized = character.normalize('NFKC');
+      if (/^[A-Za-z]$/.test(normalized)) {
+        push(normalized.toLowerCase(), sourceIndex);
+        return;
+      }
+      if (/^[\u3400-\u9fff]$/u.test(character)) {
+        push(character, sourceIndex);
+        return;
+      }
+      push(guestPublicSecurityNoise(character) || guestPublicSecurityNoise(normalized) ? '\u0001' : '\u0002', sourceIndex);
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  var GUEST_PUBLIC_CONTACT_CONFUSABLES = {
+    'ο': 'o', 'Ο': 'o', 'о': 'o', 'О': 'o',
+    'а': 'a', 'А': 'a', 'с': 'c', 'С': 'c',
+    'е': 'e', 'Е': 'e', 'р': 'p', 'Р': 'p',
+    'х': 'x', 'Х': 'x', 'у': 'y', 'У': 'y',
+    'і': 'i', 'І': 'i', 'ј': 'j', 'Ј': 'j',
+    'ɡ': 'g', 'ı': 'i'
+  };
 
   function guestPublicContactProjection(value) {
     var source = Array.from(stripGuestPublicInvisibleText(value));
@@ -722,8 +800,11 @@
         return;
       }
       var normalized = character.normalize('NFKC');
-      if (/^[A-Za-z]$/.test(normalized)) {
-        skeleton += normalized.toLowerCase();
+      var contactLetter = /^[A-Za-z]$/.test(normalized)
+        ? normalized.toLowerCase()
+        : (GUEST_PUBLIC_CONTACT_CONFUSABLES[character] || GUEST_PUBLIC_CONTACT_CONFUSABLES[normalized] || '');
+      if (contactLetter) {
+        skeleton += contactLetter;
         positions.push(sourceIndex);
         return;
       }
@@ -746,6 +827,235 @@
       }
     });
     return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicLabeledSecretPatterns(includeAccess) {
+    var contactLabels = '(?:联系电话|联络电话|聯絡電話|联系方式|联系方法|联络方式|聯繫方式|聯絡方式|联系房东|联络房东|聯絡房東|联系人|聯絡人|房东电话|房東電話|房东邮箱|房東郵箱|邮箱|郵箱|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服|微信号|微信|企业微信|微号|v信|加微|加v|v号|qq号?|小红书(?:号|账号|帐号|id)?|抖音(?:号|账号|帐号|id)?|钉钉(?:号|账号|帐号|id)?|微博(?:号|账号|帐号|id)?|快手(?:号|账号|帐号|id)?|b站(?:号|账号|帐号|id)?|公众号|个人主页|主页|二维码|扫码|网址|网站|官网|账号|帐号|联络|聯絡|联系|聯繫|email|e-mail|telegram|whatsapp|instagram|facebook|signal|discord|skype|line|(?:landlord|owner|agent|my)(?:telephone|mobile|contact|phone|wechat|weixin|wx|vx|tel)|telephone|mobile|contact|phone|call|tel|qq|tg|url)';
+    var contactBridge = '(?:\\u0001*[\\u3400-\\u9fff]){0,4}\\u0001*';
+    var patterns = [new RegExp('(' + contactLabels + ')' + contactBridge + '([a-z](?:\\u0001*[a-z0-9]){3,63}|\\d(?:\\u0001*\\d){3,31})', 'gi')];
+    if (includeAccess) {
+      var accessLabels = '(?:取钥匙|拿钥匙|钥匙|鑰匙|房卡|门卡|門卡|取卡|拿卡|开门|開門|门禁|門禁|门锁|門鎖|密码|密碼|入户码|入戶碼|进门码|進門碼|大门口令|大門口令|口令|accesscode|lockcode|entrycode|doorpassword|doorcode|password|passcode|keycode|pin|key)';
+      patterns.push(new RegExp('(' + accessLabels + ')([a-z0-9](?:\\u0001*[a-z0-9]){0,63}|[\\u3400-\\u9fff](?:\\u0001*[\\u3400-\\u9fff]){0,31})', 'gi'));
+    }
+    return patterns;
+  }
+
+  function guestPublicAccessLabel(value) {
+    return /^(?:取钥匙|拿钥匙|钥匙|鑰匙|房卡|门卡|門卡|取卡|拿卡|开门|開門|门禁|門禁|门锁|門鎖|密码|密碼|入户码|入戶碼|进门码|進門碼|大门口令|大門口令|口令|accesscode|lockcode|entrycode|doorpassword|doorcode|password|passcode|keycode|pin|key)$/i.test(String(value || ''));
+  }
+
+  function guestPublicLabeledSecretMatchIsValid(projection, match) {
+    var label = String(match && match[1] || '');
+    var secret = String(match && match[2] || '');
+    if (!label || !secret) return false;
+    var labelStartIndex = match.index;
+    var secretOffset = match[0].lastIndexOf(secret);
+    var labelEndIndex = labelStartIndex + label.length - 1;
+    var secretStartIndex = labelStartIndex + secretOffset;
+    var secretEndIndex = secretStartIndex + secret.length - 1;
+    var labelStartPosition = projection.positions[labelStartIndex];
+    var labelEndPosition = projection.positions[labelEndIndex];
+    var secretStartPosition = projection.positions[secretStartIndex];
+    var secretEndPosition = projection.positions[secretEndIndex];
+    if (![labelStartPosition, labelEndPosition, secretStartPosition, secretEndPosition].every(Number.isInteger)) return false;
+    var previousCharacter = projection.source[labelStartPosition - 1] || '';
+    var nextCharacter = projection.source[secretEndPosition + 1] || '';
+    if (/^[A-Za-z]/.test(label) && /^[A-Za-z0-9]$/.test(previousCharacter.normalize('NFKC'))) return false;
+    if (/^[A-Za-z0-9]$/.test(nextCharacter.normalize('NFKC'))) return false;
+    var labelSource = projection.source.slice(labelStartPosition, labelEndPosition + 1).join('');
+    var labelWasObfuscated = Array.from(labelSource).some(function (character) {
+      return !/^[A-Za-z0-9\u3400-\u9fff]$/u.test(character.normalize('NFKC'));
+    });
+    var sourceGap = projection.source.slice(labelEndPosition + 1, secretStartPosition).join('');
+    var hasSourceSeparator = Array.from(sourceGap).some(function (character) {
+      return !/^[A-Za-z0-9\u3400-\u9fff]$/u.test(character.normalize('NFKC'));
+    });
+    var normalizedLabel = label.replace(/\u0001/g, '').toLowerCase();
+    var remainingSource = projection.source.slice(labelEndPosition + 1).join('').normalize('NFKC').trim();
+    var naturalEnglishPhrases = {
+      phone: ['booth nearby', 'signal strong'],
+      mobile: ['home style', 'signal excellent'],
+      call: ['center nearby'],
+      contact: ['person available', 'tracing available'],
+      signal: ['coverage good'],
+      password: ['protected wifi'],
+      key: ['features include elevator']
+    };
+    if (!labelWasObfuscated && (naturalEnglishPhrases[normalizedLabel] || []).indexOf(remainingSource.toLowerCase()) !== -1) return false;
+    if (guestPublicAccessLabel(label) && /[\u3400-\u9fff]/u.test(label) && !labelWasObfuscated) {
+      if (/^(?:系统(?:完善|正常|升级|维护|可用)?|锁(?:很方便|方便|正常|好用)?|房(?:很方便|方便|可用)?)$/u.test(remainingSource)) return false;
+    }
+    return labelWasObfuscated || hasSourceSeparator || /[\u3400-\u9fff]/u.test(label);
+  }
+
+  function guestPublicLabeledSecretMatches(projection, includeAccess) {
+    return guestPublicLabeledSecretPatterns(includeAccess).some(function (pattern) {
+      var match;
+      while ((match = pattern.exec(projection.skeleton)) !== null) {
+        if (guestPublicLabeledSecretMatchIsValid(projection, match)) return true;
+      }
+      return false;
+    });
+  }
+
+  function guestPublicLabeledSecretEndPosition(projection, match) {
+    var secret = String(match && match[2] || '');
+    var secretOffset = match[0].lastIndexOf(secret);
+    var secretStartIndex = match.index + secretOffset;
+    var endIndex = secretStartIndex + secret.length - 1;
+    while (endIndex >= secretStartIndex && projection.skeleton[endIndex] === '\u0001') endIndex -= 1;
+    return projection.positions[endIndex];
+  }
+
+  function guestPublicAccessSecretEndPosition(projection, match) {
+    var labelStart = projection.positions[match.index];
+    if (!Number.isInteger(labelStart)) return guestPublicLabeledSecretEndPosition(projection, match);
+    for (var index = labelStart; index < projection.source.length; index += 1) {
+      if (/[,，;；。]/u.test(projection.source[index] || '')) return index;
+    }
+    return projection.source.length - 1;
+  }
+
+  function guestPublicContactSecretEndPosition(projection, match) {
+    var secret = String(match && match[2] || '');
+    var secretOffset = match[0].lastIndexOf(secret);
+    var secretStartIndex = match.index + secretOffset;
+    var secretEndIndex = secretStartIndex + secret.length - 1;
+    var tokens = [];
+    var index = secretStartIndex;
+    while (index <= secretEndIndex) {
+      while (index <= secretEndIndex && projection.skeleton[index] === '\u0001') index += 1;
+      if (index > secretEndIndex) break;
+      var startIndex = index;
+      var text = '';
+      var previousSourcePosition = null;
+      while (index <= secretEndIndex && projection.skeleton[index] !== '\u0001') {
+        var currentSourcePosition = projection.positions[index];
+        var sourceGap = Number.isInteger(previousSourcePosition)
+          ? projection.source.slice(previousSourcePosition + 1, currentSourcePosition).join('')
+          : '';
+        if (text && /[\s,，;；。|]/u.test(sourceGap)) break;
+        text += projection.skeleton[index];
+        previousSourcePosition = currentSourcePosition;
+        index += 1;
+      }
+      tokens.push({ startIndex: startIndex, endIndex: index - 1, text: text });
+    }
+    if (!tokens.length) return guestPublicLabeledSecretEndPosition(projection, match);
+    var includedIndex = 0;
+    var combined = tokens[0].text;
+    for (var tokenIndex = 1; tokenIndex < tokens.length; tokenIndex += 1) {
+      var previous = tokens[includedIndex];
+      var current = tokens[tokenIndex];
+      var previousPosition = projection.positions[previous.endIndex];
+      var currentPosition = projection.positions[current.startIndex];
+      var sourceGap = projection.source.slice(previousPosition + 1, currentPosition).join('');
+      var hasStrongSeparator = /[,，;；。|]/u.test(sourceGap);
+      var allDigits = /^\d+$/.test(combined) && /^\d+$/.test(current.text);
+      var desiredDigitLength = /^(?:86)?1/.test(combined) ? (combined.slice(0, 2) === '86' ? 13 : 11) : 8;
+      var knownContinuation = /^(?:[a-z0-9]*(?:wx|vx|qq|wechat|weixin)[a-z0-9]*)$/i.test(current.text);
+      var splitShortIdentifier = combined.replace(/[^a-z0-9]/gi, '').length < 4;
+      if (!hasStrongSeparator && (!/\s/u.test(sourceGap) || knownContinuation || splitShortIdentifier || (allDigits && combined.length < desiredDigitLength))) {
+        includedIndex = tokenIndex;
+        combined += current.text;
+        continue;
+      }
+      break;
+    }
+    return projection.positions[tokens[includedIndex].endIndex];
+  }
+
+  function guestPublicEmailProjection(value) {
+    var source = Array.from(String(value === undefined || value === null ? '' : value));
+    var skeleton = '';
+    var positions = [];
+    source.forEach(function (character, index) {
+      var normalized = character.normalize('NFKC').toLowerCase();
+      if (/^[a-z0-9._%+@-]$/.test(normalized)) {
+        skeleton += normalized;
+        positions.push(index);
+        return;
+      }
+      if (skeleton && skeleton.slice(-1) !== '\u0001') {
+        skeleton += '\u0001';
+        positions.push(index);
+      }
+    });
+    return { source: source, skeleton: skeleton, positions: positions };
+  }
+
+  function guestPublicEmailMatches(value) {
+    var projection = guestPublicEmailProjection(value);
+    var pattern = /[a-z0-9][a-z0-9._%+-]{0,63}\u0001*@\u0001*[a-z0-9][a-z0-9-]{0,62}(?:\u0001*\.\u0001*[a-z]{2,24})+/gi;
+    return pattern.test(projection.skeleton);
+  }
+
+  function redactGuestPublicEmails(value) {
+    var projection = guestPublicEmailProjection(value);
+    var pattern = /[a-z0-9][a-z0-9._%+-]{0,63}\u0001*@\u0001*[a-z0-9][a-z0-9-]{0,62}(?:\u0001*\.\u0001*[a-z]{2,24})+/gi;
+    var spans = [];
+    var match;
+    while ((match = pattern.exec(projection.skeleton)) !== null) {
+      var start = projection.positions[match.index];
+      var end = projection.positions[match.index + match[0].length - 1];
+      if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start: start, end: end });
+    }
+    if (!spans.length) return projection.source.join('');
+    return projection.source.map(function (character, index) {
+      return spans.some(function (span) { return index >= span.start && index <= span.end; }) ? '' : character;
+    }).join('');
+  }
+
+  function redactGuestPublicEmailContacts(value) {
+    return redactGuestPublicEmails(value)
+      .replace(/(?:房\s*东\s*邮\s*箱|房\s*東\s*郵\s*箱|邮\s*箱|郵\s*箱|e\s*-?\s*mail)\s*[:：是为即]?/gi, ' ');
+  }
+
+  function redactGuestPublicContactChannels(value) {
+    return redactGuestPublicEmailContacts(value)
+      .replace(/[A-Za-z0-9._%+-]{1,64}\s*(?:\(\s*at\s*\)|\[\s*at\s*\]|\bat\b)\s*[A-Za-z0-9-]{1,63}\s*(?:\(\s*dot\s*\)|\[\s*dot\s*\]|\bdot\b|\.)\s*[A-Za-z]{2,24}/gi, ' ')
+      .replace(/(?:https?:\/\/|www\.)[^\s,，;；]+/gi, ' ')
+      .replace(/(^|[^A-Za-z0-9])(?:t(?:elegram)?\.me|wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|line\.me|signal\.me)\/[A-Za-z0-9_+./?=&%-]{3,}/gi, '$1 ')
+      .replace(/@[A-Za-z][A-Za-z0-9_.-]{3,63}/g, ' ')
+      .replace(/(^|[^A-Za-z0-9_])(?:xhs|dy|ins|tg|telegram|wa|whatsapp)\s*(?:[:：号@]\s*|\s+)@?[A-Za-z][A-Za-z0-9_.-]{3,63}/gi, '$1 ')
+      .replace(/(?:个人主页|二维码(?:见)?|扫码(?:联系|添加)?|网址|网站|官网)\s*[:：是为即]?/gi, ' ');
+  }
+
+  function redactGuestPublicLabeledSecretsOnce(value, includeAccess) {
+    var projection = guestPublicContactProjection(redactGuestPublicEmailContacts(value));
+    var spans = [];
+    guestPublicLabeledSecretPatterns(includeAccess).forEach(function (pattern) {
+      var match;
+      while ((match = pattern.exec(projection.skeleton)) !== null) {
+        if (!guestPublicLabeledSecretMatchIsValid(projection, match)) continue;
+        var start = projection.positions[match.index];
+        var end = includeAccess && guestPublicAccessLabel(match[1])
+          ? guestPublicAccessSecretEndPosition(projection, match)
+          : guestPublicContactSecretEndPosition(projection, match);
+        if (Number.isInteger(start) && Number.isInteger(end)) spans.push({ start: start, end: end });
+      }
+    });
+    if (!spans.length) return projection.source.join('');
+    spans.sort(function (left, right) { return left.start - right.start || left.end - right.end; });
+    var merged = [];
+    spans.forEach(function (span) {
+      var previous = merged[merged.length - 1];
+      if (previous && span.start <= previous.end + 1) previous.end = Math.max(previous.end, span.end);
+      else merged.push({ start: span.start, end: span.end });
+    });
+    return projection.source.map(function (character, index) {
+      return merged.some(function (span) { return index >= span.start && index <= span.end; }) ? '' : character;
+    }).join('');
+  }
+
+  function redactGuestPublicLabeledSecrets(value, includeAccess) {
+    var result = String(value === undefined || value === null ? '' : value);
+    for (var attempt = 0; attempt < 8; attempt += 1) {
+      var next = redactGuestPublicLabeledSecretsOnce(result, includeAccess);
+      if (next === result) break;
+      result = next;
+    }
+    return result;
   }
 
   function guestPublicProtectedNumericGroups(value) {
@@ -792,6 +1102,23 @@
       if (block <= 999 && transit >= 1 && transit <= 30 && minutes <= 300 &&
         room >= 1 && room <= 20 && hall >= 1 && hall <= 20 && bath >= 1 && bath <= 20 &&
         year >= 1900 && year <= 2200) addGroup(securityProjection, business);
+    }
+    var englishRoomCount;
+    var englishRoomCountPattern = /(\d{1,2})rooms?(?=$|\u0001)/gi;
+    while ((englishRoomCount = englishRoomCountPattern.exec(securityProjection.skeleton)) !== null) {
+      addGroup(securityProjection, englishRoomCount);
+    }
+    for (var sourceIndex = 0; sourceIndex < securityProjection.source.length; sourceIndex += 1) {
+      if (!/^\d$/.test((securityProjection.source[sourceIndex] || '').normalize('NFKC'))) continue;
+      var positions = new Set([sourceIndex]);
+      var endIndex = sourceIndex;
+      while (positions.size < 2 && /^\d$/.test((securityProjection.source[endIndex + 1] || '').normalize('NFKC'))) {
+        endIndex += 1;
+        positions.add(endIndex);
+      }
+      var suffix = securityProjection.source.slice(endIndex + 1, endIndex + 16).join('');
+      if (/^\s+rooms?\b/i.test(suffix)) groups.push(positions);
+      sourceIndex = endIndex;
     }
     function layoutCountValue(value) {
       var text = String(value || '');
@@ -895,7 +1222,7 @@
   }
 
   function guestPublicEnglishAddressPattern() {
-    return /(room|rm|apartment|apt|unit|building|bldg|bld|house|door|suite|ste|flat|floor|fl|level|lvl|tower|block|no)\u0001*(?:no\u0001*)?(\d{1,4}(?:\u0001\d{1,4}){0,2}(?:(?:st|nd|rd|th)|[a-z])?|[a-z]\d{0,4}(?:\u0001\d{1,4}){0,2})/gi;
+    return /(room|rm|apartment|apt|unit|building|bldg|bld|house|door|suite|ste|flat|floor|fl|level|lvl|tower|block|no)\u0001*(?:no\u0001*)?(\d{1,4}(?:(?:st|nd|rd|th)|[a-z])?|[a-z]{1,12}\d{0,4})/gi;
   }
 
   function guestPublicEnglishAddressMatchIsValid(projection, match) {
@@ -914,7 +1241,21 @@
     var nextCharacter = projection.source[targetEndPosition + 1] || '';
     if (/^[A-Za-z0-9]$/.test(previousCharacter.normalize('NFKC'))) return false;
     if (/^[A-Za-z0-9]$/.test(nextCharacter.normalize('NFKC'))) return false;
-    if (/^[A-Za-z]$/.test(target) && targetStartPosition <= keywordEndPosition + 1) return false;
+    if (/^[A-Za-z]/.test(target) && targetStartPosition <= keywordEndPosition + 1) return false;
+    if (/^[A-Za-z]+$/.test(target)) {
+      var targetPositions = projection.positions.slice(match.index + targetOffset, match.index + targetOffset + target.length);
+      if (targetPositions.some(function (position, index) {
+        return index > 0 && /\s/u.test(projection.source.slice(targetPositions[index - 1] + 1, position).join(''));
+      })) return false;
+      var naturalTargets = {
+        unit: ['price'],
+        floor: ['plan'],
+        level: ['up'],
+        block: ['chain'],
+        room: ['service']
+      };
+      if ((naturalTargets[keyword.toLowerCase()] || []).indexOf(target.toLowerCase()) !== -1) return false;
+    }
     return true;
   }
 
@@ -928,7 +1269,7 @@
   }
 
   function redactGuestPublicAlphaContacts(value) {
-    return String(value === undefined || value === null ? '' : value)
+    return redactGuestPublicContactChannels(value)
       .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
       .replace(/(^|[^A-Za-z0-9_])p[^A-Za-z0-9_\u3400-\u9fff]{1,4}h[^A-Za-z0-9_\u3400-\u9fff]{1,4}o[^A-Za-z0-9_\u3400-\u9fff]{1,4}n[^A-Za-z0-9_\u3400-\u9fff]{1,4}e[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
       .replace(/(^|[^A-Za-z0-9_])(?:w[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|v[^A-Za-z0-9_\u3400-\u9fff]{1,4}x|we[^A-Za-z0-9_\u3400-\u9fff]{1,4}chat|wei[^A-Za-z0-9_\u3400-\u9fff]{1,4}xin)[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}(?:[^A-Za-z0-9_\u3400-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_-]{3,31}){0,3}/gi, '$1 ')
@@ -936,9 +1277,22 @@
   }
 
   function redactGuestPublicDirectContacts(value) {
-    return redactGuestPublicAlphaContacts(value)
+    var naturalPublicProtection = guestPublicProtectNaturalPublicSuffix(value, []);
+    var result = redactGuestPublicAlphaContacts(naturalPublicProtection.text)
       .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1 ')
-      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1 ');
+      .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1 ')
+      .replace(/(?:联系电话|联络电话|聯絡電話|联系方式|联络方式|聯繫方式|房东电话|房東電話|手机号|手機號|手机|手機|电话|電話|座机|座機|热线|熱線|客服)[^\d]{0,12}\d(?:[^\d]{0,8}\d){6,7}/gi, ' ');
+    return naturalPublicProtection.restore(result);
+  }
+
+  function redactGuestPublicAccessInstructions(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/(?:看房方式|带看方式|查看方式|看房\s*[:：])\s*(?:是|为|[:：])?\s*[^,，;；。]*/gi, ' ')
+      .replace(/(?:租客|房东|物业|管家|门卫|保安)[^,，;；。]{0,8}(?:开门|带看|陪看|敲门)/g, ' ')
+      .replace(/(?:提前)?预约(?:房东|租客|物业|管家)/g, ' ')
+      .replace(/(?:白天)?(?:电话|微信)?联系(?:房东|租客)(?:看房)?/g, ' ')
+      .replace(/(?:租客在家直接敲门|门口有人直接进|电话联系看房|物业带看|管家带看|自行看房|随时看房|房东开门)/g, ' ')
+      .replace(/(?:找|问)?(?:前台|保安(?:处)?|管家|物业|门卫)[^,，;；。]{0,8}(?:取卡|拿卡)/g, ' ');
   }
 
   function redactGuestPublicStandaloneFloorTokens(value) {
@@ -949,28 +1303,99 @@
         var after = source.slice(offset + match.length);
         var layoutBefore = /(?:loft|复式|複式|跃层|躍層)\s*$/i.test(before);
         var layoutAfter = /^\s*(?:loft\b|复式|複式|跃层|躍層)/i.test(after);
-        return layoutBefore || layoutAfter ? match : boundary + ' ';
+        var englishAddressLabelBefore = /(?:floor|fl|level|lvl)\s*$/i.test(before);
+        return layoutBefore || layoutAfter || englishAddressLabelBefore ? match : boundary + ' ';
       }
     );
   }
 
+  function redactGuestPublicProjectedAddressShapes(value) {
+    var projection = guestPublicUniversalAddressProjection(value);
+    var spans = [];
+    function addMatches(pattern, options) {
+      options = options || {};
+      var match;
+      while ((match = pattern.exec(projection.skeleton)) !== null) {
+        var prefixLength = options.skipPrefix && match[1] ? match[1].length : 0;
+        var startIndex = match.index + prefixLength;
+        var endIndex = match.index + match[0].length - 1;
+        var start = projection.positions[startIndex];
+        var end = projection.positions[endIndex];
+        if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+        if (options.genericTriple) {
+          var before = projection.source.slice(0, start).join('');
+          var after = projection.source.slice(end + 1).join('');
+          if (/(?:版本|日期|比例)\s*$/i.test(before) || /^\s*(?:公里|km|米|m|%|％)(?:\b|$)/i.test(after)) continue;
+        }
+        spans.push({ start: start, end: end });
+      }
+    }
+    addMatches(/(^|[^0-9a-z])(\d{1,3})\u0001(\d{1,2})\u0001([a-z]?\d{2,4})(?=$|[^0-9a-z])/gi, {
+      skipPrefix: true,
+      genericTriple: true
+    });
+    addMatches(/[\u3400-\u9fffA-Za-z0-9]{1,30}(?:路|街|巷|弄|道)\u0001*\d{1,5}(?:号|號|弄)?/gi);
+    addMatches(/(?:[a-z][a-z0-9\u0001]{0,30}(?:road|rd|street|st|avenue|ave|lane|ln))\u0001+\d{1,5}(?!\d)/gi);
+    addMatches(/(^|[^0-9a-z])\d{1,5}\u0001+[a-z][a-z0-9\u0001]{0,30}(?:road|rd|street|st|avenue|ave|lane|ln)(?![a-z])/gi, { skipPrefix: true });
+    if (!spans.length) return projection.source.join('');
+    return projection.source.map(function (character, index) {
+      return spans.some(function (span) { return index >= span.start && index <= span.end; }) ? '' : character;
+    }).join('');
+  }
+
   function redactGuestPublicDirectAddresses(value) {
-    return redactGuestPublicStandaloneFloorTokens(value)
+    return redactGuestPublicStandaloneFloorTokens(
+      redactGuestPublicProjectedAddressShapes(value)
+        .replace(/(?:负|負)\s*\d{1,3}\s*[Ff](?![A-Za-z0-9])/g, ' ')
+    )
+      .replace(/(^|[^0-9])\d{1,3}[^0-9A-Za-z\u3400-\u9fff]{1,4}\d{1,2}[^0-9A-Za-z\u3400-\u9fff]{1,4}[A-Za-z]?\d{2,4}(?!\d)/gu, function (matched, boundary, offset, source) {
+        var before = source.slice(0, offset + boundary.length);
+        var after = source.slice(offset + matched.length);
+        if (/(?:版本|日期|比例)\s*$/i.test(before) || /^\s*(?:公里|km|米|m|%|％)(?:\b|$)/i.test(after)) return matched;
+        return boundary + ' ';
+      })
+      .replace(/[\u3400-\u9fffA-Za-z0-9]{1,30}(?:路|街|巷|弄|道)\s*\d{1,5}(?:号|號|弄)?/gi, ' ')
+      .replace(/(^|[^A-Za-z0-9])(?:[A-Za-z][A-Za-z\s]{0,30}\s(?:road|rd|street|st|avenue|ave|lane|ln))\s+\d{1,5}(?!\d)/gi, '$1 ')
+      .replace(/(^|[^A-Za-z0-9])\d{1,5}\s+[A-Za-z][A-Za-z\s]{0,30}\s(?:road|rd|street|st|avenue|ave|lane|ln)(?![A-Za-z])/gi, '$1 ')
+      .replace(/(?:\d{1,3})(?:栋|棟|幢|座|号楼|號樓)(?:\d{1,2})(?:门|門|梯)(?:\d{2,4})(?:室|房|户|戶)?/gi, ' ')
+      .replace(/(?:\d{1,3})(?:栋|棟|幢|座|号楼|號樓)(?:\d{1,2})(?:单元|單元)(?:[A-Za-z]?\d{1,2}[-－]?\d{2,4}|[A-Za-z]?\d{2,4})(?:室|房|户|戶)?/gi, ' ')
+      .replace(/(?:\d{1,3})(?:楼|樓|层|層)(?:\d{2,4})(?:室|房|户|戶)?/gi, ' ')
+      .replace(/(?:\d{1,3})[Ff](?:\d{2,4})(?:室|房|户|戶)?/g, ' ')
+      .replace(/(?:地下|地库|地庫)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)/gi, ' ')
+      .replace(/(^|[^A-Za-z0-9])(?:[Bb]\s*\d{1,3})\s*(?:楼层|樓層|层|層)(?![A-Za-z0-9])/g, '$1 ')
+      .replace(/(^|[^A-Za-z0-9Ａ-Ｚａ-ｚ０-９])(room|rm|apartment|apt|unit|building|bldg|bld|house|door|suite|ste|flat|tower|floor|fl|level|lvl|block|no)(\s*)(?:no\s*)?([A-Za-z0-9Ａ-Ｚａ-ｚ０-９〇]{1,12}(?:[-－][A-Za-z0-9Ａ-Ｚａ-ｚ０-９〇]{1,12})?)(?![A-Za-z0-9Ａ-Ｚａ-ｚ０-９])/gi, function (matched, boundary, keyword, gap, target) {
+        if (!gap && /^[A-Za-zＡ-Ｚａ-ｚ]/.test(target)) return matched;
+        if (/^(?:unit\s+price|room\s+service)$/i.test((keyword + gap + target).trim())) return matched;
+        var normalizedTarget = target.normalize('NFKC');
+        if (/^[A-Za-z]+$/.test(normalizedTarget) && normalizedTarget !== normalizedTarget.toUpperCase()) return matched;
+        return boundary + ' ';
+      })
+      .replace(/(^|[^A-Za-z0-9Ａ-Ｚａ-ｚ０-９])([A-Za-z0-9Ａ-Ｚａ-ｚ０-９〇]{1,12}(?:[-－][A-Za-z0-9Ａ-Ｚａ-ｚ０-９〇]{1,12})?)\s+(?:tower|building|bldg|bld|unit|room|suite|flat)(?![A-Za-z0-9Ａ-Ｚａ-ｚ０-９])/gi, function (matched, boundary, identifier) {
+        var normalizedIdentifier = identifier.normalize('NFKC');
+        var looksLikeCode = /\d/.test(normalizedIdentifier) || normalizedIdentifier === normalizedIdentifier.toUpperCase();
+        return looksLikeCode ? boundary + ' ' : matched;
+      })
       .replace(/(^|[^A-Za-z0-9])(?:#|＃)[\s:：-]*[0-9０-９]{2,5}(?![A-Za-z0-9０-９])/gi, '$1 ')
       .replace(/(^|[^A-Za-z0-9])\d{1,3}(?:st|nd|rd|th)\s*(?:floor|fl|lvl)(?![A-Za-z0-9])/gi, '$1 ')
+      .replace(/(?:负|負)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)/gi, ' ')
       .replace(/(^|[^0-9０-９])(?:第\s*)?[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)(?!\s*(?:复式|複式|跃层|躍層|loft))/gi, '$1 ')
       .replace(/(?:楼层|樓層)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}/gi, ' ')
-      .replace(/(?:\d{1,3}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+)(?:栋|棟|幢|座|号楼|號樓|单元|單元)/gi, ' ')
-      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,6})(?:室|房|号房|號房|户|戶|门|門)/gi, ' ')
+      .replace(/(?:\d{1,3}[A-Za-z]{0,2}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,4}|[A-Za-z]{1,12}(?:[-－][A-Za-z0-9甲乙丙丁东西南北中前后]{1,4})?\d{0,4})(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/gi, ' ')
+      // “一室/两室/三室”是合法户型；中文数字门牌至少三位。甲乙丙与方位房号走独立分支。
+      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]{1,12}(?:[-－][A-Za-z0-9]{1,12})?\d{0,4}|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,4}|[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,6})(?:室|房|号房|號房|户|戶|门|門)/gi, ' ')
       .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
-      .replace(/(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|栋号|棟號|幢号|幢號|单元号|單元號)[:：\s-]*[A-Za-z0-9Oo〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺-]{1,12}/gi, ' ')
+      .replace(/(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|栋号|棟號|幢号|幢號|单元号|單元號)[:：\s-]*[A-Za-z0-9Oo〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺甲乙丙丁戊己庚辛壬癸东西南北中前后-]{1,12}/gi, ' ')
       .replace(/(?:路|街|巷|弄|道)\d{1,4}(?:号|號)/g, ' ');
   }
 
   function redactGuestPublicSecuritySpans(value, options) {
     var settings = options || {};
-    var contactSafeValue = redactGuestPublicDirectContacts(value);
-    var directSafeValue = settings.includeAddress === true ? redactGuestPublicDirectAddresses(contactSafeValue) : contactSafeValue;
+    var labeledSafeValue = settings.skipLabeledSecrets === true
+      ? String(value === undefined || value === null ? '' : value)
+      : redactGuestPublicLabeledSecrets(value, settings.includeAddress === true);
+    var contactSafeValue = redactGuestPublicDirectContacts(labeledSafeValue);
+    var accessSafeValue = settings.includeAddress === true ? redactGuestPublicAccessInstructions(contactSafeValue) : contactSafeValue;
+    var directSafeValue = settings.includeAddress === true ? redactGuestPublicDirectAddresses(accessSafeValue) : accessSafeValue;
     var projection = guestPublicSecurityProjection(directSafeValue);
     var digitProjection = guestPublicDigitOnlyProjection(directSafeValue);
     var localPhoneProjection = guestPublicLocalPhoneProjection(directSafeValue);
@@ -1006,13 +1431,14 @@
       // 与生产投影保持同一坐标系，避免预清洗地址后误删相邻公开文案。
       var addressProjection = guestPublicAddressProjection(directSafeValue);
       patterns.push(
-        { projection: addressProjection, pattern: /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g },
-        { projection: addressProjection, pattern: /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g },
+        { projection: addressProjection, pattern: /(?:第)?(?:[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,2})(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g },
+        { projection: addressProjection, pattern: /(?:负|負)[0-9〇零一二两兩三四五六七八九十]+(?:楼层|樓層|层|層)/g },
+        { projection: addressProjection, pattern: /(?:[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}|[a-z]{1,4}[0-9]{0,4})(?:室|房|号房|號房|户|戶|门|門|号|號)/gi },
         { projection: addressProjection, pattern: /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi },
         { projection: addressProjection, pattern: /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g },
         { projection: contactProjection, pattern: guestPublicEnglishAddressPattern(), englishAddressLabel: true },
-        { projection: contactProjection, pattern: /(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/gi },
-        { projection: contactProjection, pattern: /[a-z]\d{2,4}(?:室|房|号房|號房)/gi }
+        { projection: contactProjection, pattern: /(?:[a-z]{1,12}\d{0,4}(?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z]{1,12}\d{0,4})/gi, latinAddressToken: true },
+        { projection: contactProjection, pattern: /[a-z]{1,12}\d{0,4}(?:室|房|号房|號房)/gi, latinAddressToken: true }
       );
       guestPublicCompositeDigitPatterns(settings.listing || {}).forEach(function (entry) {
         patterns.push({ projection: digitProjection, pattern: entry.pattern, compositeAddress: true, tokenBoundaries: entry.tokenBoundaries });
@@ -1031,6 +1457,10 @@
         var next = targetProjection.skeleton[match.index + match[0].length] || '';
         var start = targetProjection.positions[match.index];
         if (entry.englishAddressLabel && !guestPublicEnglishAddressMatchIsValid(targetProjection, match)) continue;
+        if (entry.latinAddressToken) {
+          var previousSourceCharacter = targetProjection.source[start - 1] || '';
+          if (/^[A-Za-z0-9]$/.test(previousSourceCharacter.normalize('NFKC'))) continue;
+        }
         if (entry.preserveEnglishBoundary && /^[^a-z]/i.test(match[0][0] || '') &&
           /^(?:telephone|phone|mobile|contact|call|tel|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x)/i.test(match[0].slice(1))) {
           start = targetProjection.positions[match.index + 1];
@@ -1145,15 +1575,47 @@
     return stripGuestPublicInvisibleText(value).normalize('NFKC').trim();
   }
 
-  var GUEST_PUBLIC_PROJECTION_CACHE_LIMIT = 4096;
-  var guestPublicSensitiveFragmentCache = new Map();
-  var guestPublicTextCache = new Map();
+  var GUEST_PUBLIC_CONTEXT_CACHE_LIMIT = 8192;
+  var GUEST_PUBLIC_TEXT_VALUE_CACHE_LIMIT = 48;
+  // 与生产一致：同对象用 WeakMap，跨预览数据克隆仍由完整安全上下文指纹复用。
+  var guestPublicObjectContextCache = new WeakMap();
+  var guestPublicFingerprintContextCache = new Map();
 
-  function guestPublicProjectionCacheSet(cache, key, value) {
-    if (cache.has(key)) cache.delete(key);
-    cache.set(key, value);
-    while (cache.size > GUEST_PUBLIC_PROJECTION_CACHE_LIMIT) {
-      cache.delete(cache.keys().next().value);
+  function guestPublicContextEntry(listing, contextKey) {
+    var objectListing = listing && typeof listing === 'object' ? listing : null;
+    var objectEntry = objectListing ? guestPublicObjectContextCache.get(objectListing) : null;
+    var entry;
+    if (objectEntry && objectEntry.contextKey === contextKey) {
+      entry = objectEntry;
+      if (guestPublicFingerprintContextCache.get(contextKey) !== entry) {
+        guestPublicFingerprintContextCache.set(contextKey, entry);
+      }
+    } else {
+      entry = guestPublicFingerprintContextCache.get(contextKey);
+      if (entry) {
+        guestPublicFingerprintContextCache.delete(contextKey);
+        guestPublicFingerprintContextCache.set(contextKey, entry);
+      } else {
+        entry = { contextKey: contextKey, fragments: null, textBucket: new Map() };
+        guestPublicFingerprintContextCache.set(contextKey, entry);
+      }
+      if (objectListing) guestPublicObjectContextCache.set(objectListing, entry);
+    }
+    while (guestPublicFingerprintContextCache.size > GUEST_PUBLIC_CONTEXT_CACHE_LIMIT) {
+      guestPublicFingerprintContextCache.delete(guestPublicFingerprintContextCache.keys().next().value);
+    }
+    return entry;
+  }
+
+  function guestPublicTextCacheBucket(listing, contextKey) {
+    return guestPublicContextEntry(listing, contextKey).textBucket;
+  }
+
+  function guestPublicTextCacheSet(bucket, key, value) {
+    if (bucket.has(key)) bucket.delete(key);
+    bucket.set(key, value);
+    while (bucket.size > GUEST_PUBLIC_TEXT_VALUE_CACHE_LIMIT) {
+      bucket.delete(bucket.keys().next().value);
     }
     return value;
   }
@@ -1200,12 +1662,11 @@
     }));
   }
 
-  function guestPublicSensitiveFragments(listing) {
+  function guestPublicSensitiveFragments(listing, providedContextKey) {
     var data = listing || {};
-    var cacheKey = guestPublicSecurityContextKey(data);
-    if (guestPublicSensitiveFragmentCache.has(cacheKey)) {
-      return guestPublicSensitiveFragmentCache.get(cacheKey);
-    }
+    var cacheKey = providedContextKey || guestPublicSecurityContextKey(data);
+    var contextEntry = guestPublicContextEntry(data, cacheKey);
+    if (Array.isArray(contextEntry.fragments)) return contextEntry.fragments;
     function normalized(values) {
       return uniqueTextList(values.map(function (item) {
         return normalizeGuestPublicSecurityText(item);
@@ -1288,7 +1749,8 @@
     var fragments = uniqueTextList(hardSecrets.concat(addressSecrets, noteSecrets)).sort(function (left, right) {
       return right.length - left.length;
     });
-    return guestPublicProjectionCacheSet(guestPublicSensitiveFragmentCache, cacheKey, fragments);
+    contextEntry.fragments = fragments;
+    return fragments;
   }
 
   function guestPublicSecretBoundaryClass() {
@@ -1335,10 +1797,129 @@
     });
   }
 
+  function redactGuestPublicMultiplicativeAddressSpans(value) {
+    var source = String(value === undefined || value === null ? '' : value);
+    var numberToken = '[0-9０-９〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}';
+    var separator = '[^A-Za-z0-9０-９\\u3400-\\u9fff]{1,8}';
+    var composite = new RegExp('(' + numberToken + ')(?:' + separator + ')(' + numberToken + ')(?:' + separator + ')(' + numberToken + ')', 'gu');
+    var chineseDigit = /[〇零一二两兩三四五六七八九壹贰貳叁參肆伍陆陸柒捌玖幺]/;
+    var multiplier = /[十百千拾佰仟]/;
+    return source
+      .replace(/(?:路|街|巷|弄|道)\s*[〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}\s*(?:号|號)/gu, ' ')
+      .replace(composite, function (matched, first, second, third, offset, whole) {
+        var prefix = whole.slice(Math.max(0, offset - 8), offset);
+        if (/(?:版本|日期|比例)\s*$/i.test(prefix)) return matched;
+        if (!multiplier.test(matched) && !chineseDigit.test(third)) return matched;
+        return ' ';
+      });
+  }
+
+  var GUEST_PUBLIC_NATURAL_PUBLIC_SUFFIXES = [
+    'contactless payment · telephonebook available',
+    'phone booth nearby',
+    'mobile home style',
+    'call center nearby',
+    'contact person available',
+    'phone signal strong',
+    'mobile signal excellent',
+    'signal coverage good',
+    'contact tracing available',
+    'password protected wifi',
+    'key features include elevator',
+    'level up · floor plan',
+    'level up',
+    'floor plan',
+    'block chain',
+    'building better homes',
+    'tower bridge nearby',
+    '门禁系统完善',
+    '密码锁很方便',
+    '钥匙房很方便',
+    '密码系统正常',
+    '钥匙功能很方便',
+    '门锁很方便',
+    '门锁正常',
+    '门禁正常',
+    '门禁系统正常',
+    '钥匙很好用',
+    '密码很好记',
+    '智能门锁',
+    '2 rooms · unit price follows'
+  ];
+
+  function guestPublicNaturalTrailingSensitive(value) {
+    var tail = String(value || '');
+    if (!tail.trim()) return true;
+    return /^[\s,，;；|·:：\-—]*(?:@|https?:\/\/|www\.|(?:wx|vx|qq|tg|wechat|weixin|telegram|whatsapp|line|contact|phone|mobile|tel)\b|(?:微信|微号|加微|加v|v号|qq号|小红书|抖音|钉钉|微博|快手|公众号|联系方式|联系房东|房东电话|电话|手机|邮箱|个人主页|二维码|扫码|网址|网站|官网|密码|门禁|钥匙|入户码|进门码|口令))/i.test(tail);
+  }
+
+  function guestPublicNaturalPublicSuffixMatch(value) {
+    var source = String(value === undefined || value === null ? '' : value);
+    var lower = source.toLowerCase();
+    for (var index = 0; index < GUEST_PUBLIC_NATURAL_PUBLIC_SUFFIXES.length; index += 1) {
+      var suffix = GUEST_PUBLIC_NATURAL_PUBLIC_SUFFIXES[index];
+      var start = lower.lastIndexOf(suffix);
+      if (start < 0 || (start > 0 && !/[\s,，;；|·。]/u.test(source[start - 1]))) continue;
+      var end = start + suffix.length;
+      var trailing = source.slice(end);
+      if (!guestPublicNaturalTrailingSensitive(trailing)) continue;
+      return { start: start, end: end, text: source.slice(start, end), trailing: trailing };
+    }
+    return null;
+  }
+
+  function guestPublicProtectNaturalPublicSuffix(value, sensitiveFragments) {
+    var source = String(value === undefined || value === null ? '' : value);
+    var fragments = sensitiveFragments || [];
+    var match = guestPublicNaturalPublicSuffixMatch(source);
+    if (!match || fragments.some(function (fragment) {
+      return guestPublicSensitiveFragmentMatches(match.text, fragment);
+    })) {
+      return { text: source, restore: function (result) { return result; } };
+    }
+    var token = '【公开自然文案保护】';
+    while (source.indexOf(token) !== -1) token += '甲';
+    return {
+      text: source.slice(0, match.start) + token + match.trailing,
+      restore: function (result) { return String(result || '').split(token).join(match.text); }
+    };
+  }
+
+  function guestPublicProtectBusinessNumericCopy(value, sensitiveFragments) {
+    sensitiveFragments = sensitiveFragments || [];
+    var source = String(value === undefined || value === null ? '' : value);
+    var restorations = [];
+    var pattern = /(?:版本|日期|比例)\s*[0-9０-９]{1,4}\s*[./／．]\s*[0-9０-９]{1,3}\s*[./／．]\s*[0-9０-９]{1,4}|[0-9０-９]{1,3}\s*[./／．]\s*[0-9０-９]{1,3}\s*[./／．]\s*[0-9０-９]{1,4}\s*(?:公里|km|米|m|%|％)/gi;
+    var text = source.replace(pattern, function (matched) {
+      if (sensitiveFragments.some(function (fragment) { return guestPublicSensitiveFragmentMatches(matched, fragment); })) return matched;
+      var token = '【公开业务数字保护' + restorations.length + '】';
+      while (source.indexOf(token) !== -1) token += '甲';
+      restorations.push({ token: token, matched: matched });
+      return token;
+    });
+    return {
+      text: text,
+      restore: function (result) {
+        return restorations.reduce(function (restored, item) {
+          return String(restored || '').split(item.token).join(item.matched);
+        }, result);
+      }
+    };
+  }
+
+  function guestPublicWithoutNaturalPublicSuffix(value) {
+    var source = String(value === undefined || value === null ? '' : value);
+    var match = guestPublicNaturalPublicSuffixMatch(source);
+    return match ? source.slice(0, match.start) + match.trailing : source;
+  }
+
   function guestPublicIntrinsicUnsafe(value) {
-    var rawText = stripGuestPublicInvisibleText(value).trim();
+    var rawText = guestPublicWithoutNaturalPublicSuffix(stripGuestPublicInvisibleText(value)).trim();
     var text = rawText.normalize('NFKC').trim();
     if (!text) return false;
+    if (guestPublicEmailMatches(rawText)) return true;
+    if (normalizeGuestPublicSecurityText(redactGuestPublicDirectContacts(rawText)) !== normalizeGuestPublicSecurityText(rawText)) return true;
+    if (normalizeGuestPublicSecurityText(redactGuestPublicLabeledSecrets(rawText, true)) !== normalizeGuestPublicSecurityText(rawText)) return true;
     if (listingRemarkContainsContact(text)) return true;
     var skeleton = guestPublicSecurityProjection(rawText).skeleton;
     var digitProjection = guestPublicDigitOnlyProjection(rawText);
@@ -1368,6 +1949,7 @@
     var addressSkeleton = guestPublicAddressProjection(rawText).skeleton;
     var contactProjection = guestPublicContactProjection(rawText);
     var contactSkeleton = contactProjection.skeleton;
+    if (guestPublicLabeledSecretMatches(contactProjection, true)) return true;
     if (hasUnsafeNumericContact(/(?:86)?1[3-9]\d{9}/g)) return true;
     if (hasUnsafeNumericContact(/0\d{9,11}/g)) return true;
     if (hasUnsafeNumericContact(/(?:400|800)\d{7}/g)) return true;
@@ -1376,8 +1958,9 @@
     if (/(?:微\u0001*信号?|微号|wei\u0001*xin|we\u0001*chat|w\u0001*x|v\u0001*x|v\u0001*信)\u0001*[a-z][a-z0-9]{3,31}/i.test(contactSkeleton)) return true;
     if (/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))/i.test(text)) return true;
     var compact = skeleton.replace(/(\d+(?:\.\d+)?)(?:㎡|m2|平方米)(?=[1-9一二两三四五六七八九](?:室|房))/gi, '$1面积');
-    if (/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/i.test(compact)) return true;
-    if (/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/i.test(compact)) return true;
+    if (/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,2}|[A-Za-z]{1,4}\d{0,4})(?:栋|幢|座|号楼|楼|单元)/i.test(compact)) return true;
+    if (/(?:负|負)[0-9〇零一二两三四五六七八九十]+(?:楼层|樓層|层|層)/i.test(compact)) return true;
+    if (/(?:[0-9Oo]{3,4}|[A-Za-z]{1,4}\d{0,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/i.test(compact)) return true;
     function projectionHasUnsafeAddress(targetProjection, patterns) {
       return patterns.some(function (pattern) {
         var match;
@@ -1394,13 +1977,14 @@
       });
     }
     if (projectionHasUnsafeAddress(guestPublicAddressProjection(rawText), [
-      /(?:第)?[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g,
-      /[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}(?:室|房|号房|號房|户|戶|门|門|号|號)/g,
+      /(?:第)?(?:[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]+|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,2})(?:栋|棟|幢|座|号楼|號樓|楼|樓|单元|單元)/g,
+      /(?:负|負)[0-9〇零一二两兩三四五六七八九十]+(?:楼层|樓層|层|層)/g,
+      /(?:[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{3,12}|[a-z]{1,4}[0-9]{0,4})(?:室|房|号房|號房|户|戶|门|門|号|號)/gi,
       /(?:房号|房號|房间号|房間號|房间|房間|室号|室號|门牌号|門牌號|楼栋|樓棟|楼号|樓號|栋号|棟號|幢号|幢號|单元号|單元號)[A-Za-z0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}/gi,
       /(?:路|街|巷|弄|道)[0-9〇零一二两兩三四五六七八九十百千拾佰仟壹贰貳叁參肆伍陆陸柒捌玖幺]{1,12}(?:号|號)/g
     ])) return true;
     if (guestPublicEnglishAddressMatches(contactProjection)) return true;
-    if (/(?:[a-z](?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z])/i.test(contactSkeleton)) return true;
+    if (/(?:[a-z]{1,4}\d{0,4}(?:栋|棟|幢|座|楼|樓|单元|單元)|(?:楼栋|樓棟|楼号|樓號|栋号|棟號|单元号|單元號)[a-z]{1,4}\d{0,4})/i.test(contactSkeleton)) return true;
     if (/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/.test(text)) return true;
     if (/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/i.test(text)) return true;
     if (/(?:路|街|巷|弄|道)\d{1,4}号/.test(compact)) return true;
@@ -1466,23 +2050,34 @@
     }).join('');
   }
 
-  function guestPublicTextUnsafe(value, listing) {
+  function guestPublicTextUnsafe(value, listing, contextKey) {
     var text = normalizeGuestPublicSecurityText(value);
     if (!text) return false;
     if (guestPublicIntrinsicUnsafe(value)) return true;
     if (guestPublicCompositeSecretMatches(text, listing || {})) return true;
-    return guestPublicSensitiveFragments(listing || {}).some(function (fragment) {
+    return guestPublicSensitiveFragments(listing || {}, contextKey).some(function (fragment) {
       return guestPublicSensitiveFragmentMatches(text, fragment);
     });
   }
 
-  function redactGuestPublicText(value, listing) {
+  function redactGuestPublicText(value, listing, contextKey) {
     var data = listing || {};
-    var knownSafeText = stripGuestPublicInvisibleText(value);
+    var sensitiveFragments = guestPublicSensitiveFragments(data, contextKey);
+    var prefilteredText = redactGuestPublicMultiplicativeAddressSpans(stripGuestPublicInvisibleText(value));
+    sensitiveFragments.filter(function (fragment) {
+      return fragment.length >= 6;
+    }).forEach(function (fragment) {
+      if (guestPublicSensitiveFragmentMatches(prefilteredText, fragment)) {
+        prefilteredText = redactGuestPublicProjectedFragment(prefilteredText, fragment);
+      }
+    });
+    var businessNumericProtection = guestPublicProtectBusinessNumericCopy(prefilteredText, sensitiveFragments);
+    var naturalPublicProtection = guestPublicProtectNaturalPublicSuffix(businessNumericProtection.text, sensitiveFragments);
+    var knownSafeText = redactGuestPublicDirectAddresses(naturalPublicProtection.text);
     guestPublicCompositeSecretPatterns(data).forEach(function (pattern) {
       knownSafeText = knownSafeText.replace(pattern, '$1 ');
     });
-    guestPublicSensitiveFragments(data).forEach(function (fragment) {
+    sensitiveFragments.forEach(function (fragment) {
       if (!guestPublicSensitiveFragmentMatches(knownSafeText, fragment)) return;
       var shortPattern = guestPublicShortSecretPattern(fragment);
       knownSafeText = shortPattern
@@ -1494,12 +2089,13 @@
     guestPublicCompositeSecretPatterns(listing || {}).forEach(function (pattern) {
       text = text.replace(pattern, '$1 ');
     });
-    guestPublicSensitiveFragments(listing || {}).forEach(function (fragment) {
+    sensitiveFragments.forEach(function (fragment) {
       if (!guestPublicSensitiveFragmentMatches(text, fragment)) return;
       var shortPattern = guestPublicShortSecretPattern(fragment);
       text = shortPattern ? text.replace(shortPattern, '$1 ') : redactGuestPublicProjectedFragment(text, fragment);
     });
-    return text
+    var postSecurityNaturalProtection = guestPublicProtectNaturalPublicSuffix(text, sensitiveFragments);
+    var cleaned = postSecurityNaturalProtection.text
       .replace(/(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}/g, ' ')
       .replace(/0\d{2,3}(?:[\s\-()./—–·]*\d){7,8}/g, ' ')
       .replace(/(?:微信号?|微信|wei\s*xin|we\s*chat|weixin|wechat|v\s*信|微号|(?:^|[^a-z0-9])(?:wx|vx)(?=\s*[:：号]?))\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, ' ')
@@ -1509,8 +2105,9 @@
       .replace(/(^|[^A-Za-z0-9_])(?:telephone|phone|mobile|contact|call|tel|wechat|weixin|wx|vx)\b(?:\s*[:：号])?/gi, '$1 ')
       .replace(/(^|[^A-Za-z0-9_])(?:p\s+h\s+o\s+n\s+e|w\s+x|v\s+x|we\s+chat|wei\s+xin)(?:\s*[:：号])?/gi, '$1 ')
       .replace(/(?:联\s*系\s*(?:方\s*式|方\s*法|房\s*东)?|联\s*络\s*(?:方\s*式|房\s*东)?|聯\s*[繫絡]\s*(?:方\s*式|房\s*東)?|微[\s·・]*信(?:\s*号)?|微\s*号|v\s*信)(?:\s*[:：号])?/gi, ' ')
-      .replace(/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+)(?:栋|幢|座|号楼|单元)/gi, ' ')
-      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]\d{2,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/gi, ' ')
+      .replace(/(?:负|負)\s*[0-9０-９〇零一二两兩三四五六七八九十]{1,3}\s*(?:楼层|樓層|层|層)/gi, ' ')
+      .replace(/(?:\d{1,3}|[〇零一二两三四五六七八九十百千]+|[甲乙丙丁戊己庚辛壬癸东西南北中前后]{1,2}|[A-Za-z]{1,4}\d{0,4})(?:栋|幢|座|号楼|楼|单元)/gi, ' ')
+      .replace(/(?:[0-9Oo]{3,4}|[A-Za-z]{1,4}\d{0,4}|[〇零一二两三四五六七八九十百千]{3,6})(?:室|房|号房)/gi, ' ')
       .replace(/\b\d{1,3}[-－]\d{1,3}[-－]\d{2,4}\b/g, ' ')
       .replace(/(?:房号|房间|室号|门牌号?|楼栋|栋号|幢号|单元号)[:：\s-]*[A-Za-z0-9Oo〇零一二两三四五六七八九十百千-]{1,12}/gi, ' ')
       .replace(/(?:路|街|巷|弄|道)\d{1,4}号/g, ' ')
@@ -1518,23 +2115,33 @@
       .replace(/[\s·|,/，；;]+/g, ' ')
       .replace(/^[\s.。:：\-—]+|[\s.。:：\-—]+$/g, '')
       .trim();
+    return businessNumericProtection.restore(
+      naturalPublicProtection.restore(postSecurityNaturalProtection.restore(cleaned))
+    ).trim();
   }
 
   function safeGuestPublicText(value, listing, fallback) {
     var data = listing || {};
+    var contextKey = guestPublicSecurityContextKey(data);
     var cacheKey = JSON.stringify([
-      guestPublicSecurityContextKey(data),
       String(value === undefined || value === null ? '' : value),
       String(fallback === undefined || fallback === null ? '' : fallback)
     ]);
-    if (guestPublicTextCache.has(cacheKey)) return guestPublicTextCache.get(cacheKey);
-    var text = redactGuestPublicText(value, data);
-    if (text && !guestPublicTextUnsafe(text, data)) {
-      return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, text);
+    var bucket = guestPublicTextCacheBucket(data, contextKey);
+    if (bucket.has(cacheKey)) return bucket.get(cacheKey);
+    var text = redactGuestPublicText(value, data, contextKey);
+    if (text && !guestPublicTextUnsafe(text, data, contextKey)) {
+      return guestPublicTextCacheSet(bucket, cacheKey, text);
     }
-    var fallbackText = redactGuestPublicText(fallback, data);
-    var result = fallbackText && !guestPublicTextUnsafe(fallbackText, data) ? fallbackText : '';
-    return guestPublicProjectionCacheSet(guestPublicTextCache, cacheKey, result);
+    var fallbackText = redactGuestPublicText(fallback, data, contextKey);
+    var result = fallbackText && !guestPublicTextUnsafe(fallbackText, data, contextKey) ? fallbackText : '';
+    return guestPublicTextCacheSet(bucket, cacheKey, result);
+  }
+
+  function guestPublicNaturalPublicPhrase(value) {
+    var source = String(value === undefined || value === null ? '' : value).trim();
+    var match = guestPublicNaturalPublicSuffixMatch(source);
+    return Boolean(match && match.start === 0 && !match.trailing.trim());
   }
 
   function configuredCompanyContactPhones() {
@@ -1581,9 +2188,12 @@
       });
       // 先完整清除常规私号和座机，避免纯数字投影跨多个号码交叉后留下区号残片。
       function sanitizeUnprotected(segment) {
-        return redactGuestPublicSecuritySpans(segment
-          .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1')
-          .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1')).trim();
+        return redactGuestPublicSecuritySpans(
+          redactGuestPublicLabeledSecrets(segment, false)
+            .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?1[3-9](?:[\s\-()./—–·]*\d){9}(?!\d)/g, '$1')
+            .replace(/(^|[^\d])(?:\+?86[\s\-()./—–·]*)?(?:(?:\(\s*0\d{2,3}\s*\))|(?:0\d{2,3}))(?:[\s\-()./—–·]*\d){7,8}(?!\d)/g, '$1'),
+          { skipLabeledSecrets: true }
+        ).trim();
       }
       if (protectedPhones.length) {
         var tokenLookup = {};
@@ -1654,6 +2264,22 @@
     };
   }
 
+  function strictPartnerHousingText(value, kind) {
+    var text = stripGuestPublicInvisibleText(value).trim();
+    if (!text || text.length > 64) return '';
+    if (kind === 'rentMode') return ['整租', '合租', '单间'].indexOf(text) !== -1 ? text : '';
+    if (kind === 'count') {
+      if (['主卧', '次卧', '单间', '独卫', '公卫', '无厅', '无卫'].indexOf(text) !== -1) return text;
+      return /^(?:[0-9]{1,2}|[一二两兩三四五六七八九十])(?:室|房|厅|卫)$/.test(text) ? text : '';
+    }
+    if (kind === 'layout') {
+      var compact = text.replace(/\s+/g, '');
+      var layoutPattern = /^(?:整租|合租|单间)?(?:\d{1,4}(?:\.\d{1,2})?(?:㎡|m²|m2|平方米))?(?:(?:[0-9]{1,2}|[一二两兩三四五六七八九十])(?:室|房|厅|卫)){1,4}$/i;
+      return layoutPattern.test(compact) ? text : '';
+    }
+    return '';
+  }
+
   function publicListingHousingFields(listing) {
     var data = listing || {};
     var rawRentMode = firstText(data.rentMode, data.type);
@@ -1673,14 +2299,16 @@
         bath: companyBath
       };
     }
-    var rentMode = safeGuestPublicText(rawRentMode, data, '');
-    var type = safeGuestPublicText(firstText(data.type, data.rentMode), data, rentMode);
-    var room = safeGuestPublicText(data.room, data, '');
-    var hall = safeGuestPublicText(data.hall, data, '');
-    var bath = safeGuestPublicText(data.bath, data, '');
+    var rentMode = strictPartnerHousingText(rawRentMode, 'rentMode') || safeGuestPublicText(rawRentMode, data, '');
+    var rawType = firstText(data.type, data.rentMode);
+    var type = strictPartnerHousingText(rawType, 'rentMode') || safeGuestPublicText(rawType, data, rentMode);
+    var room = strictPartnerHousingText(data.room, 'count') || safeGuestPublicText(data.room, data, '');
+    var hall = strictPartnerHousingText(data.hall, 'count') || safeGuestPublicText(data.hall, data, '');
+    var bath = strictPartnerHousingText(data.bath, 'count') || safeGuestPublicText(data.bath, data, '');
     var fallbackLayout = [rentMode, room, hall, bath].filter(Boolean).join('');
+    var strictLayout = strictPartnerHousingText(data.layout, 'layout');
     return {
-      layout: safeGuestPublicText(data.layout, data, fallbackLayout),
+      layout: strictLayout || safeGuestPublicText(data.layout, data, fallbackLayout),
       rentMode: rentMode,
       type: type,
       room: room,
@@ -2513,31 +3141,40 @@
     var text = String(value === undefined || value === null ? '' : value).trim();
     if (text === '刚刚' || text === '未核验') return text;
     if (!isValidPublicDateTimeText(text)) return '';
-    return safeGuestPublicText(text, listing || {});
+    return text;
   }
 
   function authenticatedPartnerDisplayFields(listing) {
     var data = listing || {};
-    var display = listingDisplayFields(data);
-    var safeDisplay = Object.keys(display).reduce(function (result, key) {
-      var value = display[key];
-      result[key] = typeof value === 'string' ? safeGuestPublicText(value, data) : value;
-      return result;
-    }, {});
-    var features = (display.features || []).map(function (item) {
-      return safeGuestPublicText(item, data);
-    }).filter(Boolean);
-    var safeReviewStatus = safeGuestPublicText(display.reviewStatus, data);
-    var safeCommunityMatchStatus = safeGuestPublicText(display.communityMatchStatus, data);
-    safeDisplay.reviewStatus = ['无需审核', '待审核', '已通过', '已驳回'].indexOf(safeReviewStatus) !== -1
-      ? safeReviewStatus
+    var features = listingFeatureFields(data);
+    var source = listingSourceFields(data);
+    var freshness = listingFreshness(data);
+    var reviewStatus = ['无需审核', '待审核', '已通过', '已驳回'].indexOf(source.reviewStatus) !== -1
+      ? source.reviewStatus
       : (requiresListingReview(data) ? (isPendingOwnerReview(data) ? '待审核' : '已通过') : '无需审核');
-    safeDisplay.communityMatchStatus = ['已匹配', '未匹配'].indexOf(safeCommunityMatchStatus) !== -1
-      ? safeCommunityMatchStatus
-      : (display.communityMatched === false ? '未匹配' : '已匹配');
-    safeDisplay.features = features;
-    safeDisplay.featureText = safeGuestPublicText(featureText(features), data);
-    return safeDisplay;
+    return {
+      features: features.features,
+      featureText: features.featureText,
+      companyListing: source.companyListing,
+      isCompanyListing: source.isCompanyListing,
+      ownerType: source.ownerType,
+      isOwnerListing: source.isOwnerListing,
+      reviewStatus: reviewStatus,
+      requiresManualReview: source.requiresManualReview,
+      manualReviewReason: safeGuestPublicText(source.manualReviewReason, data),
+      communityMatched: source.communityMatched,
+      communityMatchStatus: source.communityMatched === false ? '未匹配' : '已匹配',
+      noCommission: source.noCommission,
+      sourceLabel: source.sourceLabel,
+      commissionText: source.commissionText,
+      commissionBadge: source.commissionBadge,
+      lastVerifiedAt: guestPublicFreshnessTime(freshness.lastVerifiedAt, data),
+      staleDays: freshness.staleDays,
+      verifyStatus: freshness.verifyStatus,
+      verifyTip: isExpiredListing(data) ? safeGuestPublicText(freshness.verifyTip, data) : freshness.verifyTip,
+      needsVerify: freshness.needsVerify,
+      maintenanceText: maintenanceText(freshness)
+    };
   }
 
   function listingMatchFeatureSet(listing) {
@@ -2648,21 +3285,24 @@
 
   function getListings(filter) {
     var query = filter || {};
+    var districtFilter = String(query.district || '').trim();
+    var requestedFeatures = parseFeatureInput(query.features || query.feature);
+    var needsLocation = Boolean(districtFilter || query.area || query.block || query.community);
+    var needsHousing = Boolean(query.layout || query.rentMode);
     return publicListings().filter(function (listing) {
-      var location = publicListingLocationFields(listing);
-      var housing = publicListingHousingFields(listing);
-      var areaText = publicLocationSearchText(listing);
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
-      if (query.district && String((location.district || '') + (location.area || '')).indexOf(query.district) === -1) return false;
-      if (query.area && areaText.indexOf(query.area) === -1) return false;
+      var location = needsLocation ? publicListingLocationFields(listing) : null;
+      if (districtFilter && String((location.district || '') + (location.area || '')).indexOf(districtFilter) === -1) return false;
+      var areaText = query.block ? publicLocationSearchText(listing) : '';
+      if (!publicLocationFilterMatches(location, query.area)) return false;
       if (query.block && areaText.indexOf(query.block) === -1) return false;
-      if (query.community && String(location.community || '').indexOf(query.community) === -1) return false;
+      if (!publicCommunityFilterMatches(location && location.community, query.community)) return false;
+      var housing = needsHousing ? publicListingHousingFields(listing) : null;
       if (query.layout && String(housing.layout || '').indexOf(query.layout) === -1) return false;
       if (query.rentMode && housing.rentMode !== query.rentMode) return false;
       if (query.rentMin && publicListingRentValue(listing) < Number(query.rentMin)) return false;
       if (query.rentMax && publicListingRentValue(listing) > Number(query.rentMax)) return false;
-      var requestedFeatures = parseFeatureInput(query.features || query.feature);
       if (requestedFeatures.length) {
         var featureSet = listingMatchFeatureSet(listing);
         if (!requestedFeatures.every(function (feature) { return featureSet.has(feature); })) return false;
@@ -2670,14 +3310,7 @@
       return true;
     }).map(function (listing) {
       var row = formatHomeListing(listing, { publicGuest: query.publicGuest === true });
-      var housing = publicListingHousingFields(listing);
-      row.layout = housing.layout;
       row.rent = publicListingRentValue(listing);
-      row.type = housing.type;
-      row.rentMode = housing.rentMode;
-      row.room = housing.room;
-      row.hall = housing.hall;
-      row.bath = housing.bath;
       row.source = !row.companyListing ? (row.sourceLabel || '') : safeCompanyPublicText(listing.source || '');
       row.status = publicListingStatus(listing);
       return row;
@@ -2869,7 +3502,7 @@
         if (query.category && !matchesCategory(listing, query.category)) return false;
         if (district && [location.district, location.area].join('').indexOf(district) === -1) return false;
         if (query.block && String(location.block || '').indexOf(query.block) === -1) return false;
-        if (query.community && String(location.community || '').indexOf(query.community) === -1) return false;
+        if (!publicCommunityFilterMatches(location.community, query.community)) return false;
         if (!mockFavoriteLayoutMatches(listing, query.layout)) return false;
         if (query.rentMode && housing.rentMode !== query.rentMode) return false;
         if (query.rentMin && publicListingRentValue(listing) < Number(query.rentMin)) return false;
@@ -2908,8 +3541,7 @@
         reasons.push('预算匹配');
       }
       if (budget && listingRent > budget) score -= Math.min(30, Math.ceil((listingRent - budget) / 200));
-      var areaSearchText = publicLocationSearchText(listing);
-      if (area && areaSearchText.indexOf(area) !== -1) {
+      if (area && publicLocationFilterMatches(publicListingLocationFields(listing), area)) {
         score += 24;
         reasons.push('区域匹配');
       }
@@ -3820,6 +4452,9 @@
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (query.sourceType && query.sourceType !== '全部' && [COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(query.sourceType) === -1) return false;
       if (query.sourceType && query.sourceType !== '全部' && listingSourceType(listing) !== query.sourceType) return false;
+      var location = publicListingLocationFields(listing);
+      if (!publicLocationFilterMatches(location, query.area || query.region)) return false;
+      if (!publicCommunityFilterMatches(location.community, query.community)) return false;
       return true;
     }).map(function (listing) {
       var companyListing = isCompanyListing(listing);
@@ -3827,7 +4462,8 @@
       var display = companyListing ? companyPublicDisplayFields(listing) : guestPartnerDisplayFields(listing);
       var location = publicListingLocationFields(listing);
       var housing = publicListingHousingFields(listing);
-      return Object.assign({
+      // display 可能来自存量自由字段；可信坐标与媒体标记必须最后覆盖，不能被同名脏值反向写回。
+      return Object.assign({}, display, {
         id: listing.id,
         title: publicListingTitle(listing, location),
         city: location.city,
@@ -3852,7 +4488,7 @@
         hasVideo: hasListingVideo(listing),
         left: listing.mapLeft,
         top: listing.mapTop
-      }, display);
+      });
     });
   }
 
@@ -4766,9 +5402,23 @@
     return getEditableListing(id);
   }
 
+  function assertListingOwnerOrAdmin(listing) {
+    var user = getUser();
+    if (!user || !user.id) {
+      var loginError = new Error('请先登录内部中介账号');
+      loginError.statusCode = 401;
+      throw loginError;
+    }
+    if (listing && (listing.uploaderId === user.id || user.isAdmin)) return user;
+    var permissionError = new Error('只能修改自己上传的房源');
+    permissionError.statusCode = 403;
+    throw permissionError;
+  }
+
   function getEditableListing(id) {
     var listing = getListing(id);
     if (!listing) return null;
+    assertListingOwnerOrAdmin(listing);
     var location = listingLocationFields(listing);
     var display = listingDisplayFields(listing);
     return Object.assign({
@@ -4814,6 +5464,7 @@
   function updateNormalListing(id, form) {
     var listing = getListing(id);
     if (!listing) throw new Error('未找到该房源');
+    assertListingOwnerOrAdmin(listing);
     var city = firstText(form.city, listing.city, '杭州');
     var area = normalizeDistrict(firstText(form.district, form.area, listing.district, listing.area, '拱墅区'));
     var community = firstText(form.communityName, form.community, listing.community);
@@ -4940,6 +5591,7 @@
 
   function verifyMyListing(id, outcome) {
     var listing = getListing(id);
+    if (listing) assertListingOwnerOrAdmin(listing);
     if (listing && !isExpiredListing(listing)) {
       var normalized = String(outcome == null ? '' : outcome).trim();
       if (normalized === '已出租' || normalized === '不租了') {

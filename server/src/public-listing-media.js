@@ -11,6 +11,7 @@ const DEFAULT_TTL_SECONDS = 6 * 60 * 60
 const DEFAULT_TIMEOUT_MS = 15000
 const DEFAULT_MAX_BYTES = 300 * 1024 * 1024
 const DEFAULT_MAX_CONCURRENT = 24
+const DEFAULT_MAX_CONCURRENT_PER_CLIENT = 6
 const VIDEO_EXTENSION_RE = /\.(mp4|mov|m4v|webm)$/i
 
 function normalizedOrigin(value) {
@@ -228,9 +229,38 @@ function createPublicListingMediaService(options = {}) {
   const maxBytes = Math.max(1, Number(options.maxBytes) || DEFAULT_MAX_BYTES)
   const timeoutMs = Math.max(100, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS)
   const maxConcurrent = Math.max(1, Number(options.maxConcurrent) || DEFAULT_MAX_CONCURRENT)
+  const maxConcurrentPerClient = Math.max(1, Math.min(
+    maxConcurrent,
+    Number(options.maxConcurrentPerClient) || DEFAULT_MAX_CONCURRENT_PER_CLIENT
+  ))
   const allowedOrigins = normalizedAllowedOrigins(options.allowedOrigins)
   const sourceOptions = { uploadDir: options.uploadDir, allowedOrigins }
   let activeRequests = 0
+  const activeRequestsByClient = new Map()
+
+  function normalizedClientKey(value) {
+    const key = String(value || '').trim()
+    // 键只用于进程内公平限流；限制长度，避免异常代理头制造大键驻留。
+    return (key || 'unknown').slice(0, 256)
+  }
+
+  function acquireConcurrency(clientKeyValue) {
+    const clientKey = normalizedClientKey(clientKeyValue)
+    const clientActive = activeRequestsByClient.get(clientKey) || 0
+    if (clientActive >= maxConcurrentPerClient) throw mediaError(429, '当前网络媒体连接过多，请稍后重试')
+    if (activeRequests >= maxConcurrent) throw mediaError(503, '媒体服务繁忙')
+    activeRequests += 1
+    activeRequestsByClient.set(clientKey, clientActive + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      activeRequests = Math.max(0, activeRequests - 1)
+      const nextClientActive = Math.max(0, (activeRequestsByClient.get(clientKey) || 0) - 1)
+      if (nextClientActive === 0) activeRequestsByClient.delete(clientKey)
+      else activeRequestsByClient.set(clientKey, nextClientActive)
+    }
+  }
 
   function capabilityToken(listingId, kind, objectKey, capabilityOptions = {}) {
     const expiresAt = Math.floor(now() / 1000) + ttlSeconds
@@ -300,160 +330,226 @@ function createPublicListingMediaService(options = {}) {
       writeRangeRejected(res)
       return Promise.resolve()
     }
-    if (activeRequests >= maxConcurrent) return Promise.reject(mediaError(503, '媒体服务繁忙'))
-
     let upstreamUrl
+    let releaseConcurrency = null
     try {
+      // 公共/owner、游客/登录、GET/HEAD、视频/封面和 Range 全部共享同一可信网络桶。
+      releaseConcurrency = acquireConcurrency(input.clientKey)
       upstreamUrl = upstreamSignedUrl(objectKey, kind, method)
     } catch (error) {
+      if (releaseConcurrency) releaseConcurrency()
       return Promise.reject(error)
     }
-    activeRequests += 1
+
     return new Promise((resolve, reject) => {
       let settled = false
       let upstreamReq = null
       let upstreamRes = null
+      const cleanupListeners = () => {
+        req.removeListener('aborted', onRequestAborted)
+        res.removeListener('close', onResponseClose)
+        res.removeListener('drain', onDrain)
+      }
       const settle = (error) => {
         if (settled) return
         settled = true
-        activeRequests = Math.max(0, activeRequests - 1)
+        cleanupListeners()
+        releaseConcurrency()
         if (error) reject(error)
         else resolve()
       }
       const abortUpstream = () => {
-        if (upstreamReq) upstreamReq.destroy()
-        if (upstreamRes) upstreamRes.destroy()
+        try {
+          if (upstreamReq && typeof upstreamReq.destroy === 'function') upstreamReq.destroy()
+        } catch (error) {
+          // 释放并发槽优先，销毁异常不得打断 settle。
+        }
+        try {
+          if (upstreamRes && typeof upstreamRes.destroy === 'function') upstreamRes.destroy()
+        } catch (error) {
+          // 同上。
+        }
       }
-      req.once('aborted', () => {
+      const onRequestAborted = () => {
         abortUpstream()
         settle(mediaError(499, '客户端已断开'))
-      })
-      res.once('close', () => {
+      }
+      const onResponseClose = () => {
         if (!res.writableEnded) {
           abortUpstream()
           settle(mediaError(499, '客户端已断开'))
         }
-      })
+      }
+      const onDrain = () => {
+        try {
+          if (upstreamRes && !settled) upstreamRes.resume()
+        } catch (error) {
+          abortUpstream()
+          settle(mediaError(502, '媒体源读取失败'))
+        }
+      }
+      req.once('aborted', onRequestAborted)
+      res.once('close', onResponseClose)
+      res.on('drain', onDrain)
 
       const requestImpl = typeof options.requestImpl === 'function'
         ? options.requestImpl
         : (upstreamUrl.protocol === 'https:' ? https.request : http.request)
       const headers = {}
       if (requestedRange) headers.Range = requestedRange
-      upstreamReq = requestImpl(upstreamUrl, { method, headers }, (received) => {
+      const handleUpstreamResponse = (received) => {
+        if (settled) {
+          try {
+            received.destroy()
+          } catch (error) {
+            // 已结算的迟到响应只需尽力销毁。
+          }
+          return
+        }
         upstreamRes = received
-        const statusCode = Number(received.statusCode || 0)
-        if (statusCode >= 300 && statusCode < 400) {
-          received.resume()
-          settle(mediaError(502, '媒体源不可用'))
-          return
-        }
-        if (statusCode === 416 && requestedRange) {
-          const total = parseUnsatisfiedContentRange(received.headers['content-range'])
-          received.resume()
-          if (total === null || total > maxBytes) {
-            settle(mediaError(502, '媒体源响应无效'))
-            return
-          }
-          writeRangeRejected(res, total)
-          settle()
-          return
-        }
-        const expectedStatus = requestedRange ? 206 : 200
-        if (statusCode !== expectedStatus) {
-          received.resume()
-          settle(mediaError(502, '媒体源响应无效'))
-          return
-        }
-        const contentType = allowedContentType(kind, received.headers['content-type'], objectKey)
-        const contentLength = parseContentLength(received.headers['content-length'])
-        if (!contentType || contentLength === null || contentLength > maxBytes) {
-          received.resume()
-          settle(mediaError(502, '媒体源响应无效'))
-          return
-        }
-        let contentRange = null
-        if (statusCode === 206) {
-          contentRange = parseContentRange(received.headers['content-range'])
-          if (!contentRange || contentRange.total > maxBytes || contentRange.end - contentRange.start + 1 !== contentLength) {
-            received.resume()
-            settle(mediaError(502, '媒体源响应无效'))
-            return
-          }
-        }
-        const videoMetadata = videoMediaMetadata(objectKey)
-        const responseHeaders = {
-          'Content-Type': contentType,
-          'Content-Length': String(contentLength),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'private, no-store, no-transform',
-          'Content-Disposition': kind === 'cover'
-            ? 'inline; filename="listing-cover.jpg"'
-            : `inline; filename="listing-video.${videoMetadata.extension}"`,
-          Vary: 'Range',
-          'X-Content-Type-Options': 'nosniff',
-          'Access-Control-Allow-Origin': '*'
-        }
-        if (contentRange) responseHeaders['Content-Range'] = `bytes ${contentRange.start}-${contentRange.end}/${contentRange.total}`
-        res.writeHead(statusCode, responseHeaders)
-        if (method === 'HEAD') {
-          received.resume()
-          res.end()
-          settle()
-          return
-        }
-
-        let bytesWritten = 0
-        received.on('data', (chunk) => {
-          if (settled) return
-          bytesWritten += chunk.length
-          if (bytesWritten > contentLength || bytesWritten > maxBytes) {
+        try {
+          const statusCode = Number(received.statusCode || 0)
+          if (statusCode >= 300 && statusCode < 400) {
             abortUpstream()
-            res.destroy()
+            settle(mediaError(502, '媒体源不可用'))
+            return
+          }
+          if (statusCode === 416 && requestedRange) {
+            const total = parseUnsatisfiedContentRange(received.headers['content-range'])
+            abortUpstream()
+            if (total === null || total > maxBytes) {
+              settle(mediaError(502, '媒体源响应无效'))
+              return
+            }
+            writeRangeRejected(res, total)
+            settle()
+            return
+          }
+          const expectedStatus = requestedRange ? 206 : 200
+          if (statusCode !== expectedStatus) {
+            abortUpstream()
             settle(mediaError(502, '媒体源响应无效'))
             return
           }
-          if (!res.write(chunk)) received.pause()
-        })
-        res.on('drain', () => {
-          if (upstreamRes && !settled) upstreamRes.resume()
-        })
-        received.on('end', () => {
-          if (settled) return
-          if (bytesWritten !== contentLength) {
-            res.destroy()
+          const contentType = allowedContentType(kind, received.headers['content-type'], objectKey)
+          const contentLength = parseContentLength(received.headers['content-length'])
+          if (!contentType || contentLength === null || contentLength > maxBytes) {
+            abortUpstream()
             settle(mediaError(502, '媒体源响应无效'))
             return
           }
-          res.end()
-          settle()
-        })
-        received.on('aborted', () => {
-          if (!settled) {
-            res.destroy()
-            settle(mediaError(502, '媒体源响应中断'))
+          let contentRange = null
+          if (statusCode === 206) {
+            contentRange = parseContentRange(received.headers['content-range'])
+            if (!contentRange || contentRange.total > maxBytes || contentRange.end - contentRange.start + 1 !== contentLength) {
+              abortUpstream()
+              settle(mediaError(502, '媒体源响应无效'))
+              return
+            }
           }
-        })
-        received.on('error', (error) => {
-          if (!settled) {
-            res.destroy()
-            settle(mediaError(502, '媒体源读取失败'))
+          const videoMetadata = videoMediaMetadata(objectKey)
+          const responseHeaders = {
+            'Content-Type': contentType,
+            'Content-Length': String(contentLength),
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'private, no-store, no-transform',
+            'Content-Disposition': kind === 'cover'
+              ? 'inline; filename="listing-cover.jpg"'
+              : `inline; filename="listing-video.${videoMetadata.extension}"`,
+            Vary: 'Range',
+            'X-Content-Type-Options': 'nosniff',
+            'Access-Control-Allow-Origin': '*'
           }
+          if (contentRange) responseHeaders['Content-Range'] = `bytes ${contentRange.start}-${contentRange.end}/${contentRange.total}`
+          res.writeHead(statusCode, responseHeaders)
+          if (method === 'HEAD') {
+            abortUpstream()
+            res.end()
+            settle()
+            return
+          }
+
+          let bytesWritten = 0
+          received.on('data', (chunk) => {
+            if (settled) return
+            try {
+              bytesWritten += chunk.length
+              if (bytesWritten > contentLength || bytesWritten > maxBytes) {
+                abortUpstream()
+                res.destroy()
+                settle(mediaError(502, '媒体源响应无效'))
+                return
+              }
+              if (!res.write(chunk)) received.pause()
+            } catch (error) {
+              abortUpstream()
+              res.destroy()
+              settle(mediaError(502, '媒体源读取失败'))
+            }
+          })
+          received.on('end', () => {
+            if (settled) return
+            try {
+              if (bytesWritten !== contentLength) {
+                res.destroy()
+                settle(mediaError(502, '媒体源响应无效'))
+                return
+              }
+              res.end()
+              settle()
+            } catch (error) {
+              abortUpstream()
+              res.destroy()
+              settle(mediaError(502, '媒体源读取失败'))
+            }
+          })
+          received.on('aborted', () => {
+            if (!settled) {
+              abortUpstream()
+              res.destroy()
+              settle(mediaError(502, '媒体源响应中断'))
+            }
+          })
+          received.on('error', () => {
+            if (!settled) {
+              abortUpstream()
+              res.destroy()
+              settle(mediaError(502, '媒体源读取失败'))
+            }
+          })
+        } catch (error) {
+          abortUpstream()
+          if (res.headersSent && !res.destroyed) res.destroy()
+          settle(mediaError(502, '媒体源响应无效'))
+        }
+      }
+
+      try {
+        upstreamReq = requestImpl(upstreamUrl, { method, headers }, handleUpstreamResponse)
+        if (!upstreamReq || typeof upstreamReq.on !== 'function' || typeof upstreamReq.end !== 'function') {
+          throw new Error('invalid upstream request')
+        }
+        upstreamReq.setTimeout(timeoutMs, () => {
+          abortUpstream()
+          settle(mediaError(504, '媒体源响应超时'))
         })
-      })
-      upstreamReq.setTimeout(timeoutMs, () => {
+        upstreamReq.on('error', () => {
+          abortUpstream()
+          settle(mediaError(502, '媒体源连接失败'))
+        })
+        upstreamReq.end()
+      } catch (error) {
         abortUpstream()
-        settle(mediaError(504, '媒体源响应超时'))
-      })
-      upstreamReq.on('error', () => settle(mediaError(502, '媒体源连接失败')))
-      upstreamReq.end()
+        settle(mediaError(502, '媒体源连接失败'))
+      }
     })
   }
 
   return {
     urlsForListing,
     verifyCapability,
-    serve
+    serve,
+    concurrencyState: () => ({ activeRequests, activeClients: activeRequestsByClient.size })
   }
 }
 

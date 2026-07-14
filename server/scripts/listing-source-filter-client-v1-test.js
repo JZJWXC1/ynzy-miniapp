@@ -155,6 +155,13 @@ async function run() {
   }
   const mapDefinition = loadMapDefinition()
   const mapPage = makePage(mapDefinition)
+  const pendingCommunityFilters = mapPage.mergePendingFilters({
+    needId: '', rentKey: '', rentMin: '', rentMax: '', layout: '', rentMode: '', sourceType: '', area: '', community: '', listingIds: []
+  }, { community: '城发天地' })
+  assert.strictEqual(pendingCommunityFilters.community, '城发天地', '地图必须把跨页官方小区保留在 community 槽，不能折成模糊 area')
+  assert.strictEqual(pendingCommunityFilters.area, '', '地图收到明确小区时不得同时制造 area 模糊筛选')
+  mapPage.data.filters = pendingCommunityFilters
+  assert.strictEqual(mapPage.buildQuery().community, '城发天地', '地图请求必须把官方小区参数传给服务端精确筛选')
   ;['公司房源', '业主房源', '二房东房源'].forEach((sourceType) => {
     storedListingFilters = null
     switchedTab = ''

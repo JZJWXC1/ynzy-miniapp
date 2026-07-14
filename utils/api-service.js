@@ -3,6 +3,9 @@ const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
 const { anonymousPublicRequestData } = require('./public-request-safety')
+const OFFICIAL_COMMUNITY_KEYS = new Set(require('./gongshu-communities')
+  .map((name) => String(name || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase())
+  .filter(Boolean))
 
 const ASSISTANT_CHAT_TIMEOUT_MS = 60000
 const LISTING_SOURCE_TYPES = ['公司房源', '业主房源', '二房东房源']
@@ -244,6 +247,7 @@ function normalizeMapMockFilter(filter = {}) {
     sourceType: String(filter.sourceType || '').trim(),
     companyOnly: filter.companyOnly === true || filter.companyOnly === 'true' || filter.companyOnly === 1 || filter.companyOnly === '1',
     area: String(filter.area || filter.region || '').trim(),
+    community: String(filter.community || '').trim(),
     listingIds: mapFilterList(filter.listingIds)
   }
 }
@@ -280,6 +284,30 @@ function mapMockLocationText(item = {}) {
     item.block,
     item.community
   ].map((part) => String(part || '')).join('')
+}
+
+function normalizedPublicCommunityKey(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+}
+
+function mapMockLocationMatches(item = {}, requested = '') {
+  const expected = String(requested || '').trim()
+  if (!expected) return true
+  const expectedKey = normalizedPublicCommunityKey(expected)
+  if (OFFICIAL_COMMUNITY_KEYS.has(expectedKey)) {
+    return normalizedPublicCommunityKey(item.community) === expectedKey
+  }
+  return mapMockLocationText(item).indexOf(expected) !== -1
+}
+
+function mapMockCommunityMatches(actual, requested = '') {
+  const expected = String(requested || '').trim()
+  if (!expected) return true
+  const expectedKey = normalizedPublicCommunityKey(expected)
+  const actualKey = normalizedPublicCommunityKey(actual)
+  return OFFICIAL_COMMUNITY_KEYS.has(expectedKey)
+    ? actualKey === expectedKey
+    : String(actual || '').indexOf(expected) !== -1
 }
 
 function mapMockStaleDays(item = {}, listing = {}) {
@@ -342,7 +370,8 @@ function mapMockMatchesFilter(item = {}, listing = {}, filter) {
       return false
     }
   }
-  if (filter.area && mapMockLocationText(item).indexOf(filter.area) === -1) return false
+  if (!mapMockLocationMatches(item, filter.area)) return false
+  if (!mapMockCommunityMatches(item.community, filter.community)) return false
   return true
 }
 

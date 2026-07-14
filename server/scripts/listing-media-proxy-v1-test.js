@@ -4,6 +4,7 @@ const assert = require('assert')
 const fs = require('fs')
 const http = require('http')
 const path = require('path')
+const { EventEmitter } = require('events')
 const {
   createPublicListingMediaService,
   resolveManagedVideoObjectKey,
@@ -54,6 +55,286 @@ function rangeSlice(body, header) {
   const end = matched[2] ? Number(matched[2]) : body.length - 1
   if (start > end || start >= body.length) return null
   return { start, end: Math.min(end, body.length - 1) }
+}
+
+function fakeClientRequest(method = 'GET', headers = {}) {
+  const req = new EventEmitter()
+  req.method = method
+  req.headers = headers
+  return req
+}
+
+function fakeClientResponse() {
+  const res = new EventEmitter()
+  res.headersSent = false
+  res.writableEnded = false
+  res.destroyed = false
+  res.writeHead = () => { res.headersSent = true }
+  res.write = () => true
+  res.end = () => { res.writableEnded = true }
+  res.destroy = () => {
+    if (res.destroyed) return
+    res.destroyed = true
+    // Node 的真实 ServerResponse.destroy() 不会在当前调用栈同步触发 close。
+    // 若实现先 settle 并移除 close 监听，再等待 close 清理上游，就会留下后台连接。
+    setImmediate(() => res.emit('close'))
+  }
+  return res
+}
+
+const PENDING = Symbol('pending')
+
+function nextTurnOutcome(promise) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setImmediate(() => resolve(PENDING)))
+  ])
+}
+
+function directMediaService(options = {}) {
+  return createPublicListingMediaService({
+    secret: 'synthetic-concurrency-secret',
+    baseUrl: 'https://api.example.test/',
+    uploadDir: 'house-videos',
+    maxBytes: 1024,
+    timeoutMs: 2000,
+    allowHttpUpstreamForTests: true,
+    allowedOrigins: ['http://127.0.0.1:18080'],
+    signVideoUrl: () => 'http://127.0.0.1:18080/video',
+    signCoverUrl: () => 'http://127.0.0.1:18080/cover',
+    ...options
+  })
+}
+
+function startDirectServe(service, listing, capabilityUrl, options = {}) {
+  const parsed = new URL(capabilityUrl)
+  const kind = options.kind || (parsed.pathname.endsWith('/cover') ? 'cover' : 'video')
+  const req = fakeClientRequest(options.method || 'GET', options.headers || {})
+  const res = fakeClientResponse()
+  const promise = service.serve(req, res, {
+    listing,
+    listingId: listing.id,
+    kind,
+    token: parsed.searchParams.get('token') || '',
+    clientKey: options.clientKey || ''
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error })
+  )
+  return { req, res, promise }
+}
+
+async function cleanupDirectAttempts(attempts) {
+  attempts.forEach((attempt) => attempt.req.emit('aborted'))
+  await Promise.all(attempts.map((attempt) => attempt.promise))
+}
+
+async function assertPerClientConcurrencyFairness(listing) {
+  const pendingUpstreams = []
+  const service = directMediaService({
+    maxConcurrent: 3,
+    maxConcurrentPerClient: 2,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => pendingUpstreams.push({ upstreamReq, url, requestOptions, callback })
+      return upstreamReq
+    }
+  })
+  const urls = service.urlsForListing(listing)
+  const attempts = []
+  try {
+    const first = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-a', method: 'GET' })
+    const second = startDirectServe(service, listing, urls.coverUrl, { clientKey: 'client-a', method: 'HEAD', kind: 'cover' })
+    attempts.push(first, second)
+    assert.strictEqual(await nextTurnOutcome(first.promise), PENDING, '首个 GET 应占用媒体槽位')
+    assert.strictEqual(await nextTurnOutcome(second.promise), PENDING, '同 IP 的 HEAD/封面也必须占用同一并发桶')
+
+    const sameClientOverflow = startDirectServe(service, listing, urls.videoUrl, {
+      clientKey: 'client-a',
+      method: 'GET',
+      headers: { range: 'bytes=0-1' }
+    })
+    attempts.push(sameClientOverflow)
+    const sameClientOutcome = await nextTurnOutcome(sameClientOverflow.promise)
+    assert.notStrictEqual(sameClientOutcome, PENDING, '同 IP 超过子上限必须立即拒绝，不能继续占全局槽')
+    assert.strictEqual(sameClientOutcome.error && sameClientOutcome.error.statusCode, 429, '同 IP 并发超限必须返回 429')
+
+    const otherClient = startDirectServe(service, listing, urls.coverUrl, { clientKey: 'client-b', kind: 'cover' })
+    attempts.push(otherClient)
+    assert.strictEqual(await nextTurnOutcome(otherClient.promise), PENDING, 'A 达到子上限后，B 仍须能使用剩余全局槽')
+
+    const globalOverflow = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-c' })
+    attempts.push(globalOverflow)
+    const globalOutcome = await nextTurnOutcome(globalOverflow.promise)
+    assert.strictEqual(globalOutcome.error && globalOutcome.error.statusCode, 503, '全局并发满时必须返回 503')
+
+    first.req.emit('aborted')
+    const firstOutcome = await first.promise
+    assert.strictEqual(firstOutcome.error && firstOutcome.error.statusCode, 499, '客户端断开必须释放全局与单 IP 槽')
+    const afterRelease = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-c' })
+    attempts.push(afterRelease)
+    assert.strictEqual(await nextTurnOutcome(afterRelease.promise), PENDING, '任一连接释放后其他 IP 必须立即可进入')
+  } finally {
+    await cleanupDirectAttempts(attempts)
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '连接全部结束后不得残留客户端并发桶')
+}
+
+async function assertSynchronousFailureReleasesSlot(listing, stage) {
+  let callCount = 0
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: () => {
+      callCount += 1
+      const call = callCount
+      if (stage === 'requestImpl' && call === 1) throw new Error('synthetic requestImpl failure')
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => {
+        if (stage === 'setTimeout' && call === 1) throw new Error('synthetic setTimeout failure')
+        return upstreamReq
+      }
+      upstreamReq.end = () => {
+        if (stage === 'end' && call === 1) throw new Error('synthetic end failure')
+      }
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const first = startDirectServe(service, listing, url, { clientKey: `failure-${stage}` })
+  const firstOutcome = await first.promise
+  assert.ok(firstOutcome.error, `${stage} 同步异常必须返回失败`)
+  const second = startDirectServe(service, listing, url, { clientKey: `failure-${stage}` })
+  try {
+    assert.strictEqual(await nextTurnOutcome(second.promise), PENDING, `${stage} 同步异常后必须释放槽位`)
+  } finally {
+    await cleanupDirectAttempts([first, second])
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `${stage} 后不得残留并发计数`)
+}
+
+async function assertInvalidUpstreamDestroyed(listing) {
+  let invalidResponse = null
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        invalidResponse = new EventEmitter()
+        invalidResponse.statusCode = 302
+        invalidResponse.headers = { location: 'http://127.0.0.1:18080/redirect' }
+        invalidResponse.destroyed = false
+        invalidResponse.resume = () => {}
+        invalidResponse.destroy = () => { invalidResponse.destroyed = true }
+        callback(invalidResponse)
+      }
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const attempt = startDirectServe(service, listing, url, { clientKey: 'invalid-upstream' })
+  const outcome = await attempt.promise
+  assert.strictEqual(outcome.error && outcome.error.statusCode, 502, '非法上游响应必须失败')
+  assert.strictEqual(invalidResponse && invalidResponse.destroyed, true, '非法上游响应必须主动销毁，不能释放计数后继续后台吞流量')
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '非法上游响应后不得残留并发计数')
+}
+
+function syntheticValidUpstreamResponse(contentLength = 4) {
+  const response = new EventEmitter()
+  response.statusCode = 200
+  response.headers = { 'content-type': 'video/mp4', 'content-length': String(contentLength) }
+  response.destroyed = false
+  response.paused = false
+  response.destroy = () => { response.destroyed = true }
+  response.resume = () => { response.paused = false }
+  response.pause = () => { response.paused = true }
+  return response
+}
+
+async function assertAsynchronousReleasePath(listing, stage) {
+  const controls = []
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      const control = { upstreamReq, callback, timeout: null, upstreamRes: null }
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = (milliseconds, handler) => {
+        control.timeout = handler
+        return upstreamReq
+      }
+      upstreamReq.end = () => {
+        if (stage === 'upstream-aborted' || stage === 'upstream-error') {
+          control.upstreamRes = syntheticValidUpstreamResponse()
+          callback(control.upstreamRes)
+        }
+      }
+      controls.push(control)
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const first = startDirectServe(service, listing, url, { clientKey: `async-${stage}` })
+  assert.strictEqual(await nextTurnOutcome(first.promise), PENDING, `${stage} 触发前应占用唯一媒体槽位`)
+  const control = controls[0]
+  if (stage === 'timeout') control.timeout()
+  else if (stage === 'request-error') control.upstreamReq.emit('error', new Error('synthetic async request error'))
+  else if (stage === 'response-close') first.res.emit('close')
+  else if (stage === 'upstream-aborted') control.upstreamRes.emit('aborted')
+  else if (stage === 'upstream-error') control.upstreamRes.emit('error', new Error('synthetic async response error'))
+  const outcome = await first.promise
+  assert.ok(outcome.error, `${stage} 必须以失败结束`)
+  if (stage === 'timeout') assert.strictEqual(outcome.error.statusCode, 504, '真实 timeout 回调必须返回 504')
+  if (stage === 'request-error') assert.strictEqual(outcome.error.statusCode, 502, '上游请求异步 error 必须返回 502')
+  if (stage === 'response-close') assert.strictEqual(outcome.error.statusCode, 499, '客户端响应关闭必须返回 499')
+  assert.strictEqual(control.upstreamReq.destroyed, true, `${stage} 必须销毁上游请求`)
+  if (control.upstreamRes) assert.strictEqual(control.upstreamRes.destroyed, true, `${stage} 必须销毁上游响应`)
+
+  const afterRelease = startDirectServe(service, listing, url, { clientKey: `async-${stage}` })
+  try {
+    assert.strictEqual(await nextTurnOutcome(afterRelease.promise), PENDING, `${stage} 后下一请求必须立即获得已释放槽位`)
+  } finally {
+    afterRelease.req.emit('aborted')
+    await afterRelease.promise
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `${stage} 后不得残留并发计数`)
+}
+
+async function assertSuccessfulCompletionReleasesSlot(listing, method) {
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        const upstreamRes = syntheticValidUpstreamResponse(4)
+        callback(upstreamRes)
+        if (method === 'GET') {
+          upstreamRes.emit('data', Buffer.from('test'))
+          upstreamRes.emit('end')
+        }
+      }
+      return upstreamReq
+    }
+  })
+  const attempt = startDirectServe(service, listing, service.urlsForListing(listing).videoUrl, {
+    clientKey: `success-${method}`,
+    method
+  })
+  const outcome = await attempt.promise
+  assert.strictEqual(outcome.ok, true, `正常 ${method} 必须成功完成`)
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `正常 ${method} 完成后不得残留并发计数`)
 }
 
 async function run() {
@@ -143,6 +424,17 @@ async function run() {
   assert.ok(!serializedUrls.includes('19900008888'), '能力 URL 不得包含历史手机号文件名')
   assert.ok(!/OSSAccessKeyId|Signature/.test(serializedUrls), '客户端不得直接拿 OSS 签名参数')
 
+  await assertPerClientConcurrencyFairness(listing)
+  for (const stage of ['requestImpl', 'setTimeout', 'end']) {
+    await assertSynchronousFailureReleasesSlot(listing, stage)
+  }
+  await assertInvalidUpstreamDestroyed(listing)
+  for (const stage of ['timeout', 'request-error', 'response-close', 'upstream-aborted', 'upstream-error']) {
+    await assertAsynchronousReleasePath(listing, stage)
+  }
+  await assertSuccessfulCompletionReleasesSlot(listing, 'GET')
+  await assertSuccessfulCompletionReleasesSlot(listing, 'HEAD')
+
   const videoCapability = new URL(urls.videoUrl)
   const coverCapability = new URL(urls.coverUrl)
   const capabilityExpiresAt = Number(String(videoCapability.searchParams.get('token') || '').split('.')[0])
@@ -158,6 +450,7 @@ async function run() {
   assert.ok(indexSource.includes('isSecureSameOrigin(miniProgram.requestDomain, miniProgram.downloadDomain)'), '发布门禁必须使用 HTTPS 同源校验')
   assert.ok(!indexSource.includes('function sameConfiguredOrigin('), '不得保留仅比较 origin、会放行 HTTP 的旧门禁')
   assert.ok(indexSource.includes('if (res.headersSent || res.destroyed)'), '流式响应发头后异常不得二次 writeHead')
+  assert.ok(indexSource.includes('clientKey: requestClientKey(req)'), '媒体并发客户端键必须由服务端可信网络键注入')
   let currentOwnerAudience = ownerCapabilityOptions.audience
   let currentOwnerStateKey = ownerCapabilityOptions.stateKey
   const mediaServer = http.createServer(async (req, res) => {

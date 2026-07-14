@@ -359,7 +359,7 @@ function seedDb() {
       updatedBy: 'PRIVATE_ADMIN_ID'
     },
     companySheetSnapshot: {
-      title: '游客模式公司房源表 19800007777',
+      title: '游客模式公司房源表 19800007777 Telegram @private_title_id owner@example.invalid',
       sheetUrl: 'https://synthetic.feishu.example/sheets/PRIVATE_SHEET_TOKEN',
       range: 'PRIVATE_SHEET_TOKEN!A1:ZZ1000',
       cachedAt: '内部缓存时间',
@@ -367,9 +367,9 @@ function seedDb() {
       startCol: 2,
       updatedAt: nowText(),
       rows: [
-        ['公司简介，联系电话：+86 198-0000-9999；座机：0571-12345678；微信号：private_wx_01'],
+        ['公司简介，联系电话：+86 198-0000-9999；座机：0571-12345678；微信号：private_wx_01；t.me/private_tg_id；WhatsApp private_wa_id'],
         ['区域', '小区', '房号', '户型描述', '户型分类', '押一付一', '押二付一', '看房方式密码', '备注', '房东电话', '微信号'],
-        ['拱墅', '游客公司小区', '1-1-101', '两室一厅', '两室', '2800', '2600', '246810#', '水电自理', '139 0000 1111', 'raw_wechat_02']
+        ['拱墅', '游客公司小区', '1-1-101', '两室一厅', '两室', '2800', '2600', '246810#', '水电自理 https://social.invalid/u/private_url_id owner-row@example.invalid', '139 0000 1111', 'raw_wechat_02']
       ],
       rowCount: 3,
       columnCount: 11
@@ -721,6 +721,451 @@ async function run() {
     })
   })
 
+  ;[
+    '微🫥信:privateid',
+    'w🫥x:privateid',
+    'p🫥hone:privateid',
+    'c🫥ontact:privateid',
+    'landlordphone:privateid',
+    'myphone:privateid',
+    'mycontact:a1_b2',
+    'p🫥hone:a1 b2',
+    'c🫥ontact:real wx123',
+    '电话是privateid',
+    '联系方式为privateid',
+    '房东电话即abc123',
+    '联系人小王电话privateid',
+    '电话:小王abc123',
+    '联系方式:小李privateid',
+    '热线:小张a1b2',
+    'owner@example.com',
+    'email:owner@example.com',
+    '房东邮箱:owner@example.com',
+    'ｏｗｎｅｒ＠ｅｘａｍｐｌｅ．ｃｏｍ',
+    '加微:abc123',
+    '加V:abc123',
+    'V号:abc123',
+    'QQ号:privateid',
+    '小红书号 privateid',
+    '抖音账号 privateid',
+    '钉钉ID privateid',
+    'Telegram @privateid',
+    'WhatsApp privateid',
+    'Line privateid',
+    '个人主页 https://example.invalid/u/privateid',
+    '二维码见 www.example.invalid/privateid',
+    'owner(at)example.invalid',
+    'owner [at] example [dot] invalid',
+    '联系方式 privateid；contact privateid'
+  ].forEach((privateContact, index) => {
+    const noDigitNoisyWechatListing = listing({
+      id: `INDEPENDENT-PARTNER-NO-DIGIT-NOISY-WECHAT-${index + 1}`,
+      block: `测试板块 ${privateContact}`,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const noDigitNoisyWechatPublic = domain.filterListings({ listings: [noDigitNoisyWechatListing] }, { publicGuest: true })[0]
+    assert.ok(noDigitNoisyWechatPublic, '独立无数字噪声微信样本必须进入公共投影')
+    assert.strictEqual(
+      String(noDigitNoisyWechatPublic.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+      '测试板块',
+      `噪声联系方式不得绕过公开文本投影：${privateContact}`
+    )
+  })
+
+  const noArabicDigitPhone = '幺參參幺幺幺幺幺幺幺幺'
+  const noArabicDigitPhoneListing = listing({
+    id: 'INDEPENDENT-PARTNER-NO-ARABIC-DIGIT-PHONE',
+    block: `测试板块 ${noArabicDigitPhone}`,
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    source: '普通上传',
+    companyListing: false,
+    isCompanyListing: false,
+    landlordPhone: '13911112222'
+  })
+  const noArabicDigitPhonePublic = domain.filterListings({ listings: [noArabicDigitPhoneListing] }, { publicGuest: true })[0]
+  assert.ok(noArabicDigitPhonePublic, '独立无阿拉伯数字手机号样本必须进入公共投影')
+  assert.ok(
+    !String(noArabicDigitPhonePublic.block || '').includes(noArabicDigitPhone),
+    '中文异体数字组成的手机号不得绕过公开文本投影'
+  )
+
+  ;[
+    '房🫥东电话:privateid',
+    '手🫥机号:abc123',
+    '客🫥服:privateid',
+    '热🫥线:abc123'
+  ].forEach((privateContact, index) => {
+    const noisyChineseContactListing = listing({
+      id: `INDEPENDENT-PARTNER-NOISY-CHINESE-CONTACT-${index + 1}`,
+      block: `测试板块 ${privateContact}`,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const noisyChineseContactPublic = domain.filterListings({ listings: [noisyChineseContactListing] }, { publicGuest: true })[0]
+    assert.ok(noisyChineseContactPublic, '独立中文噪声联系方式样本必须进入公共投影')
+    assert.ok(!/(?:privateid|abc123)/i.test(String(noisyChineseContactPublic.block || '')), `中文噪声联系方式不得绕过公开文本投影：${privateContact}`)
+  })
+
+  ;[
+    '密🫥码:abcdef',
+    '密🫥码:1234',
+    '门🫥禁:123456',
+    '钥🫥匙:abcdef',
+    '开🫥门:abcdef',
+    'pass🫥word:a1b2c3',
+    'door🫥code:abcdef',
+    '密🫥码:a1_b2-c3',
+    '密🫥码:12-34',
+    'p🫥in:12-34',
+    '钥🫥匙:门-口花盆',
+    '密🫥码:12 34',
+    '密码就是 12 34',
+    'pass🫥word:a1 b2',
+    '钥🫥匙:门 口花盆',
+    '钥🫥匙在门口花盆',
+    '开🫥门找保安',
+    '门🫥禁问前台',
+    '房卡在前台',
+    '门卡在保安处',
+    '前台取卡',
+    '找管家拿卡',
+    'accesscode:1234',
+    'lockcode:1234',
+    'entrycode:1234',
+    '入户码 1234',
+    '进门码 1234',
+    '大门口令 1234',
+    '看房方式：物业带看',
+    '看房：联系房东',
+    '带看方式：管家带看',
+    '查看方式：自行看房',
+    '看房方式：租客开门',
+    '租客在家直接敲门',
+    '物业带看',
+    '管家带看',
+    '提前预约房东',
+    '门口有人直接进',
+    '电话联系看房',
+    '白天电话联系租客'
+  ].forEach((privateAccess, index) => {
+    const noisyAccessListing = listing({
+      id: `INDEPENDENT-PARTNER-NOISY-ACCESS-${index + 1}`,
+      block: `测试板块 ${privateAccess}`,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const noisyAccessPublic = domain.filterListings({ listings: [noisyAccessListing] }, { publicGuest: true })[0]
+    assert.ok(noisyAccessPublic, '独立噪声访问凭据样本必须进入公共投影')
+    assert.strictEqual(String(noisyAccessPublic.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''), '测试板块', `噪声访问凭据不得残留值尾部：${privateAccess}`)
+  })
+
+  ;[
+    'c🫥ontact:privateid',
+    '房🫥东电话:privateid',
+    'landlordwechat:privateid',
+    'ownerphone:privateid',
+    'agentwx:privateid',
+    'p🫥hone:a1 b2',
+    'c🫥ontact:real wx123',
+    '电话是privateid',
+    '联系方式为privateid',
+    '房东电话即abc123',
+    '联系人小王电话privateid',
+    '电话:小王abc123',
+    '联系方式:小李privateid',
+    '热线:小张a1b2',
+    'owner@example.com',
+    'email:owner@example.com',
+    '房东邮箱:owner@example.com',
+    'ｏｗｎｅｒ＠ｅｘａｍｐｌｅ．ｃｏｍ',
+    '加微:abc123',
+    '加V:abc123',
+    'V号:abc123',
+    'QQ号:privateid',
+    '小红书号 privateid',
+    '抖音账号 privateid',
+    '钉钉ID privateid',
+    'Telegram @privateid',
+    'WhatsApp privateid',
+    'Line privateid',
+    '个人主页 https://example.invalid/u/privateid',
+    '二维码见 www.example.invalid/privateid',
+    'owner(at)example.invalid',
+    'owner [at] example [dot] invalid',
+    '联系方式 privateid；contact privateid'
+  ].forEach((privateContact, index) => {
+    const companyNoisyContactListing = listing({
+      id: `INDEPENDENT-COMPANY-NOISY-CONTACT-${index + 1}`,
+      block: `公司测试板块 ${privateContact}`,
+      ownerType: '公司房源',
+      houseSourceType: '公司房源',
+      source: '公司房源',
+      companyListing: true,
+      isCompanyListing: true,
+      noCommission: true,
+      landlordPhone: COMPANY_RAW_LISTING_PHONE
+    })
+    const companyNoisyContactPublic = domain.filterListings({ listings: [companyNoisyContactListing] }, { publicGuest: true })[0]
+    assert.ok(companyNoisyContactPublic, '独立公司噪声联系方式样本必须进入公共投影')
+    assert.strictEqual(
+      String(companyNoisyContactPublic.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+      '公司测试板块',
+      `公司公开字段只能保留服务器统一号码，不得夹带第四种联系方式：${privateContact}`
+    )
+  })
+
+  const companyNoisyAccess = '密🫥码:a1_b2-c3'
+  const companyNoisyAccessListing = listing({
+    id: 'INDEPENDENT-COMPANY-NOISY-ACCESS-PRESERVED',
+    block: `公司测试板块 ${companyNoisyAccess}`,
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    source: '公司房源',
+    companyListing: true,
+    isCompanyListing: true,
+    noCommission: true,
+    landlordPhone: COMPANY_RAW_LISTING_PHONE
+  })
+  const companyNoisyAccessPublic = domain.filterListings({ listings: [companyNoisyAccessListing] }, { publicGuest: true })[0]
+  assert.ok(String(companyNoisyAccessPublic.block || '').includes(companyNoisyAccess), '公司房源噪声门锁凭据仍须按用户确认的完整公开规则保留')
+
+  const positiveEnglishWords = 'contactless payment · telephonebook available'
+  const positiveEnglishWordsListing = listing({
+    id: 'INDEPENDENT-PARTNER-POSITIVE-ENGLISH-WORDS',
+    block: positiveEnglishWords,
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    source: '普通上传',
+    companyListing: false,
+    isCompanyListing: false,
+    landlordPhone: '13911112222'
+  })
+  const positiveEnglishWordsPublic = domain.filterListings({ listings: [positiveEnglishWordsListing] }, { publicGuest: true })[0]
+  assert.strictEqual(
+    String(positiveEnglishWordsPublic.block || '').replace(/[·\s]+/g, ' ').trim(),
+    positiveEnglishWords.replace(/[·\s]+/g, ' ').trim(),
+    '普通英文单词不得被联系方式标签规则误伤'
+  )
+
+  ;[
+    'phone booth nearby',
+    'mobile home style',
+    'call center nearby',
+    'contact person available',
+    'key features include elevator',
+    '门禁系统完善',
+    '密码锁很方便',
+    '钥匙房很方便',
+    '安全板块 phone booth nearby',
+    '安全板块 mobile home style',
+    '安全板块 call center nearby',
+    '安全板块 contact person available',
+    '安全板块 key features include elevator',
+    '西湖区 Building better homes',
+    '余杭区 Tower bridge nearby',
+    '安全板块 密码系统正常',
+    '安全板块 钥匙功能很方便'
+  ].forEach((publicCopy, copyIndex) => {
+    ;[
+      { label: '公司', source: '公司房源', companyListing: true },
+      { label: '合作', source: '二房东房源', companyListing: false }
+    ].forEach(({ label, source, companyListing }, sourceIndex) => {
+      const publicCopyListing = listing({
+        id: `INDEPENDENT-${label}-PUBLIC-ACCESS-CONTACT-COPY-${copyIndex + 1}-${sourceIndex + 1}`,
+        block: publicCopy,
+        ownerType: source,
+        houseSourceType: source,
+        source: companyListing ? '公司房源' : '普通上传',
+        companyListing,
+        isCompanyListing: companyListing,
+        noCommission: companyListing,
+        landlordPhone: companyListing ? COMPANY_RAW_LISTING_PHONE : '13911112222'
+      })
+      const publicCopyRow = domain.filterListings({ listings: [publicCopyListing] }, { publicGuest: true })[0]
+      assert.strictEqual(publicCopyRow.block, publicCopy, `${label}普通设施/自然语言不得被联系方式或访问凭据规则误伤：${publicCopy}`)
+    })
+  })
+
+  ;[
+    'Building AB',
+    'Tower AB',
+    'Unit AB',
+    'AB栋',
+    'AB12室',
+    '甲栋',
+    '乙单元',
+    '丙幢',
+    '东栋',
+    '西楼',
+    '南座',
+    '北单元',
+    '负一层',
+    '地下二层',
+    'B2层',
+    '12A栋',
+    'A-北栋',
+    '楼栋甲乙',
+    '房号甲',
+    '甲室',
+    '甲乙室',
+    'Building ABCDE',
+    'Building NORTH',
+    'AB Tower',
+    'A1 Building',
+    '1号楼2门701',
+    '1幢2梯701',
+    '1座2梯701',
+    'Unit 2-B',
+    'A-1栋',
+    'B1层',
+    '负1F',
+    '9栋8单元7-01',
+    '7层01',
+    '7楼01',
+    '7F01',
+    'A-701室',
+    '1/2/701',
+    '1\\2\\701',
+    '1.2.701',
+    '1#2#701',
+    '9—8—701',
+    '9_8_701',
+    '9 8 701',
+    '9🫥8🫥701',
+    '一/二/七零一',
+    '壹/贰/柒零壹',
+    '١/٢/٧٠١',
+    '１．２．７０１',
+    '一🫥二🫥七零一',
+    '文一西路969',
+    '文一西路969弄',
+    '文一西路九六九',
+    '文一西路玖陆玖',
+    '文一西路９６９',
+    'Wenyi Rd 969',
+    'Wenyi Rd 九六九',
+    '969 Wenyi West Road',
+    '九六九 Wenyi West Road'
+  ].forEach((privateAddress, index) => {
+    const addressTokenListing = listing({
+      id: `INDEPENDENT-PARTNER-ADDRESS-TOKEN-${index + 1}`,
+      block: privateAddress,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const addressTokenPublic = domain.filterListings({ listings: [addressTokenListing] }, { publicGuest: true })[0]
+    assert.ok(addressTokenPublic, `独立合作房源地址 token 样本必须进入公共投影：${privateAddress}`)
+    assert.strictEqual(
+      String(addressTokenPublic.block || '').replace(/[\s,，;；:：\-—_·]+/g, ''),
+      '拱墅区',
+      `合作房源不得公开多字母或中文楼栋/单元/楼层 token：${privateAddress}`
+    )
+  })
+
+  ;[
+    '版本1.2.70',
+    '比例1/2/100',
+    '日期1/2/2026',
+    '1.2.30公里'
+  ].forEach((publicCopy, index) => {
+    const numericCopyListing = listing({
+      id: `INDEPENDENT-PARTNER-NUMERIC-COPY-${index + 1}`,
+      block: publicCopy,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const numericCopyPublic = domain.filterListings({ listings: [numericCopyListing] }, { publicGuest: true })[0]
+    assert.ok(numericCopyPublic, `合法业务数字样本必须进入公共投影：${publicCopy}`)
+    assert.strictEqual(
+      String(numericCopyPublic.block || '').replace(/\s+/g, ''),
+      publicCopy,
+      `版本/比例/日期/距离数字不得被三段地址规则误删：${publicCopy}`
+    )
+  })
+
+  ;[
+    '安全板块 phone booth nearby wx:abc123',
+    'wx:abc123；安全板块 phone booth nearby'
+  ].forEach((mixedCopy, index) => {
+    const mixedCopyListing = listing({
+      id: `INDEPENDENT-PARTNER-NATURAL-CONTACT-${index + 1}`,
+      block: mixedCopy,
+      ownerType: '二房东房源',
+      houseSourceType: '二房东房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      landlordPhone: '13911112222'
+    })
+    const mixedCopyPublic = domain.filterListings({ listings: [mixedCopyListing] }, { publicGuest: true })[0]
+    assert.ok(mixedCopyPublic, `设施文案与联系方式混排样本必须进入公共投影：${mixedCopy}`)
+    assert.ok(String(mixedCopyPublic.block || '').includes('安全板块 phone booth nearby'), `联系方式前后均不得误删合法设施文案：${mixedCopy}`)
+    assert.ok(!String(mixedCopyPublic.block || '').toLowerCase().includes('abc123'), `联系方式前后均必须删除站外账号：${mixedCopy}`)
+  })
+
+  ;[
+    '安全板块 密码1234，近地铁',
+    '安全板块 钥匙在前台；近地铁',
+    '安全板块 入户码1234。近地铁',
+    '安全板块 看房方式：物业带看；近地铁'
+  ].forEach((mixedSecret, index) => {
+    const mixedSecretListing = listing({
+      id: `INDEPENDENT-PARTNER-SECRET-SUFFIX-${index + 1}`,
+      block: mixedSecret,
+      ownerType: '业主房源',
+      houseSourceType: '业主房源',
+      source: '普通上传',
+      companyListing: false,
+      isCompanyListing: false,
+      reviewStatus: '已通过',
+      requiresManualReview: true,
+      landlordPhone: '13911112222'
+    })
+    const mixedSecretPublic = domain.filterListings({ listings: [mixedSecretListing] }, { publicGuest: true })[0]
+    assert.ok(mixedSecretPublic, `敏感段与合法后缀样本必须进入公共投影：${mixedSecret}`)
+    const mixedSecretText = String(mixedSecretPublic.block || '')
+    assert.ok(mixedSecretText.includes('安全板块') && mixedSecretText.includes('近地铁'), `删除敏感段时必须保留两侧合法文案：${mixedSecret}`)
+    assert.ok(!/(?:1234|钥匙|入户码|看房方式|物业带看)/.test(mixedSecretText), `合作房源不得残留访问凭据或看房方式：${mixedSecret}`)
+  })
+
+  const sensitivePhraseCollision = '安全板块 phone booth nearby'
+  const sensitivePhraseListing = listing({
+    id: 'INDEPENDENT-PARTNER-NATURAL-PHRASE-COLLISION',
+    block: sensitivePhraseCollision,
+    viewingKeyLocation: sensitivePhraseCollision,
+    ownerType: '二房东房源',
+    houseSourceType: '二房东房源',
+    source: '普通上传',
+    companyListing: false,
+    isCompanyListing: false,
+    landlordPhone: '13911112222'
+  })
+  const sensitivePhrasePublic = domain.filterListings({ listings: [sensitivePhraseListing] }, { publicGuest: true })[0]
+  assert.ok(sensitivePhrasePublic, '公开短语与敏感值碰撞样本必须进入公共投影')
+  assert.ok(!String(sensitivePhrasePublic.block || '').includes(sensitivePhraseCollision), '公开自然短语与本房源真实取钥匙位置相同时必须按敏感值删除')
+
   PUBLIC_WANYANG_ADDRESS_VARIANTS.forEach((block, index) => {
     const addressVariantListing = listing({
       id: `INDEPENDENT-WANYANG-ADDRESS-VARIANT-${index + 1}`,
@@ -1045,6 +1490,17 @@ async function run() {
     ;['private_wx_01', 'raw_wechat_02'].forEach((privateWechat) => {
       assert.ok(!sheetText.includes(privateWechat), `匿名飞书快照不得返回原始微信号 ${privateWechat}`)
     })
+    ;[
+      'private_title_id',
+      'private_tg_id',
+      'private_wa_id',
+      'private_url_id',
+      'owner@example.invalid',
+      'owner-row@example.invalid',
+      'social.invalid'
+    ].forEach((privateChannel) => {
+      assert.ok(!sheetText.includes(privateChannel), `匿名飞书快照不得返回站外私联通道 ${privateChannel}`)
+    })
     ;['19900000001', '19900000002', '19900000003'].forEach((phone) => {
       assert.ok(sheetText.includes(phone), `匿名飞书快照只应返回服务器统一号码 ${phone}`)
     })
@@ -1327,6 +1783,78 @@ async function run() {
     const otherPendingCover = await requestBuffer('GET', pendingOwnerCoverUrl, otherAuthHeaders)
     assert.strictEqual(otherPendingCover.statusCode, 200, 'owner 媒体链接是短时 bearer capability，持有已签 URL 即可供微信原生媒体组件加载')
     assert.ok(otherPendingCover.body.length > 4 && otherPendingCover.body[0] === 0xff && otherPendingCover.body[1] === 0xd8, '他号持有已签 bearer URL 时也只能读取对应媒体字节，不能据此签发其他 URL')
+
+    // 媒体能力必须绑定唯一房源实体：历史脏数据出现重复 ID 后，无论两条顺序、状态、上传人或对象键
+    // 是否相同，都不得继续签发；重复产生前已签的 bearer URL 也必须在读取时立即失效。
+    const duplicateDb = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+    const publicOriginal = duplicateDb.listings.find((item) => item.id === 'GUEST_PARTNER')
+    const ownerOriginal = duplicateDb.listings.find((item) => item.id === 'GUEST_PENDING_OWNER')
+    const reversePublicInactive = {
+      ...publicOriginal,
+      id: 'GUEST_DUPLICATE_REVERSE',
+      title: '重复 ID 反序无效项',
+      status: '已出租',
+      lifecycleStatus: 'rented'
+    }
+    const reversePublicActive = {
+      ...publicOriginal,
+      id: 'GUEST_DUPLICATE_REVERSE',
+      title: '重复 ID 反序有效项'
+    }
+    const forwardPublicActive = {
+      ...publicOriginal,
+      id: 'GUEST_DUPLICATE_FORWARD',
+      title: '重复 ID 正序有效项'
+    }
+    const forwardPublicInactive = {
+      ...publicOriginal,
+      id: 'GUEST_DUPLICATE_FORWARD',
+      title: '重复 ID 正序无效项',
+      status: '已出租',
+      lifecycleStatus: 'rented'
+    }
+    duplicateDb.listings.push(
+      { ...publicOriginal, title: '重复 ID 同状态同对象键副本' },
+      { ...ownerOriginal, uploaderId: 'U2', title: '重复 ID 跨上传人同对象键副本' },
+      reversePublicInactive,
+      reversePublicActive,
+      forwardPublicActive,
+      forwardPublicInactive
+    )
+    fs.writeFileSync(dataFile, JSON.stringify(duplicateDb, null, 2), 'utf8')
+
+    const stalePublicVideoUrl = dataOf(partnerDetail).videoUrl
+    for (const method of ['GET', 'HEAD']) {
+      const stalePublicMedia = await requestBuffer(method, stalePublicVideoUrl)
+      assert.strictEqual(stalePublicMedia.statusCode, 404, `房源 ID 变为重复后旧 public ${method} 能力必须立即失效`)
+      const staleOwnerMedia = await requestBuffer(method, pendingOwnerCoverUrl)
+      assert.strictEqual(staleOwnerMedia.statusCode, 404, `房源 ID 变为重复后旧 owner ${method} 能力必须立即失效`)
+    }
+
+    const duplicatedPublicRows = dataOf(await request('GET', '/mini/listings')).filter((item) => (
+      ['GUEST_PARTNER', 'GUEST_DUPLICATE_REVERSE', 'GUEST_DUPLICATE_FORWARD'].includes(item.id)
+    ))
+    assert.ok(duplicatedPublicRows.length >= 3, '重复 ID 的前台有效行仍可按业务规则展示，但媒体必须 fail-closed')
+    duplicatedPublicRows.forEach((row) => {
+      assert.strictEqual(row.videoUrl || '', '', `重复 ID ${row.id} 不得签发 public 视频能力`)
+      assert.strictEqual(row.coverUrl || '', '', `重复 ID ${row.id} 不得签发 public 封面能力`)
+      assert.strictEqual(row.hasVideo, false, `重复 ID ${row.id} 必须强制标记无可用视频`)
+      assert.ok(!Object.prototype.hasOwnProperty.call(row, 'videoKey'), `重复 ID ${row.id} 不得下发对象键`)
+    })
+    const duplicateOwnerRows = dataOf(await request('GET', '/mini/my/listings', null, authHeaders)).filter((item) => item.id === 'GUEST_PENDING_OWNER')
+    assert.ok(duplicateOwnerRows.length >= 1, '原上传人列表仍应返回重复 ID 房源业务行')
+    duplicateOwnerRows.forEach((row) => {
+      assert.strictEqual(row.videoUrl || '', '', '跨上传人重复 ID 不得向原上传人签发 owner 视频能力')
+      assert.strictEqual(row.coverUrl || '', '', '跨上传人重复 ID 不得向原上传人签发 owner 封面能力')
+      assert.strictEqual(row.hasVideo, false, '跨上传人重复 ID 必须强制标记无可用视频')
+    })
+    const otherDuplicateOwnerRows = dataOf(await request('GET', '/mini/my/listings', null, otherAuthHeaders)).filter((item) => item.id === 'GUEST_PENDING_OWNER')
+    assert.ok(otherDuplicateOwnerRows.length >= 1, '另一上传人列表应返回自己的重复 ID 业务行')
+    otherDuplicateOwnerRows.forEach((row) => {
+      assert.strictEqual(row.videoUrl || '', '', '跨上传人重复 ID 不得向另一上传人签发 owner 视频能力')
+      assert.strictEqual(row.coverUrl || '', '', '跨上传人重复 ID 不得向另一上传人签发 owner 封面能力')
+      assert.strictEqual(row.hasVideo, false, '另一上传人的重复 ID 也必须强制标记无可用视频')
+    })
   } finally {
     server.kill()
     fs.rmSync(tempDir, { recursive: true, force: true })

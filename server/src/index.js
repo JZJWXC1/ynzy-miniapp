@@ -218,6 +218,7 @@ function mapQueryFilter(searchParams) {
     rentMode: searchParams.get('rentMode') || '',
     sourceType: searchParams.get('sourceType') || '',
     area: searchParams.get('area') || searchParams.get('region') || '',
+    community: searchParams.get('community') || '',
     listingIds: searchParamValues(searchParams, ['listingIds', 'listingIds[]'])
   }
 }
@@ -1514,15 +1515,52 @@ function ownerListingMediaEligible(db, listing = {}) {
   return domain.ownedListings(db, uploaderId).some((row) => String(row.id || '') === listingId)
 }
 
-function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptionsForListing) {
-  if (Array.isArray(value)) return value.map((item) => withPublicListingMedia(item, db, eligibleListingIds, capabilityOptionsForListing))
+function createUniqueListingIndex(listings = []) {
+  const byId = new Map()
+  const duplicateIds = new Set()
+  ;(Array.isArray(listings) ? listings : []).forEach((listing) => {
+    const listingId = String(listing && listing.id || '').trim()
+    if (!listingId || duplicateIds.has(listingId)) return
+    if (byId.has(listingId)) {
+      byId.delete(listingId)
+      duplicateIds.add(listingId)
+      return
+    }
+    byId.set(listingId, listing)
+  })
+  return { byId, duplicateIds }
+}
+
+function uniqueListingFromIndex(index, listingId) {
+  const normalizedId = String(listingId || '').trim()
+  if (!normalizedId || !index || index.duplicateIds.has(normalizedId)) return null
+  return index.byId.get(normalizedId) || null
+}
+
+function scrubAmbiguousListingMedia(result) {
+  result.videoUrl = ''
+  result.coverUrl = ''
+  result.video = ''
+  result.hasVideo = false
+  delete result.videoKey
+  return result
+}
+
+function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptionsForListing, listingIndex) {
+  const sourceListingIndex = listingIndex && listingIndex.byId instanceof Map && listingIndex.duplicateIds instanceof Set
+    ? listingIndex
+    : createUniqueListingIndex(db.listings || [])
+  if (Array.isArray(value)) {
+    return value.map((item) => withPublicListingMedia(item, db, eligibleListingIds, capabilityOptionsForListing, sourceListingIndex))
+  }
   if (!value || typeof value !== 'object') return value
   const result = {}
   Object.keys(value).forEach((key) => {
-    result[key] = withPublicListingMedia(value[key], db, eligibleListingIds, capabilityOptionsForListing)
+    result[key] = withPublicListingMedia(value[key], db, eligibleListingIds, capabilityOptionsForListing, sourceListingIndex)
   })
   const listingId = String(value.id || '').trim()
-  const listing = listingId ? (db.listings || []).find((item) => String(item.id || '') === listingId) : null
+  if (listingId && sourceListingIndex.duplicateIds.has(listingId)) return scrubAmbiguousListingMedia(result)
+  const listing = uniqueListingFromIndex(sourceListingIndex, listingId)
   if (!listing) return result
   const mediaEligible = eligibleListingIds instanceof Set && eligibleListingIds.has(listingId) &&
     value.unavailable !== true && value.isAvailable !== false && value.hasVideo !== false
@@ -1548,23 +1586,27 @@ function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptions
 function sendPublicListingJson(res, db, data, statusCode = 200) {
   // 能力 URL 短时有效且每次访问都会重验房源状态；JSON 本身不得被共享缓存长期持有。
   res.noStore = true
-  const eligibleListingIds = new Set(
-    domain.filterListings(db, { publicGuest: true }).map((listing) => String(listing.id || '')).filter(Boolean)
-  )
-  return sendJson(res, withPublicListingMedia(data, db, eligibleListingIds), statusCode)
+  const listingIndex = createUniqueListingIndex(db.listings || [])
+  const eligibleListingIds = new Set(domain.publicListingIds(db).filter((listingId) => (
+    Boolean(uniqueListingFromIndex(listingIndex, listingId))
+  )))
+  return sendJson(res, withPublicListingMedia(data, db, eligibleListingIds, null, listingIndex), statusCode)
 }
 
 function sendOwnedListingJson(res, db, data, userId, statusCode = 200) {
   const trustedUserId = String(userId || '').trim()
+  const listingIndex = createUniqueListingIndex(db.listings || [])
   const eligibleListingIds = new Set(
-    domain.ownedListings(db, trustedUserId).map((listing) => String(listing.id || '')).filter(Boolean)
+    domain.ownedListings(db, trustedUserId)
+      .map((listing) => String(listing.id || '').trim())
+      .filter((listingId) => Boolean(uniqueListingFromIndex(listingIndex, listingId)))
   )
   res.noStore = true
   return sendJson(res, withPublicListingMedia(data, db, eligibleListingIds, (listing) => ({
     scope: 'owner',
     audience: trustedUserId,
     stateKey: ownerListingMediaStateKey(listing)
-  })), statusCode)
+  }), listingIndex), statusCode)
 }
 
 function withSignedListingVideoUrls(rows) {
@@ -1625,11 +1667,16 @@ async function handleMini(req, res, pathname, searchParams) {
     assertGuestRateLimit(req, 'mini-public-listing-media', 180)
     res.noStore = true
     const capabilityScope = searchParams.get('scope') === 'owner' ? 'owner' : 'public'
-    let listing
+    const listingIndex = createUniqueListingIndex(db.listings || [])
+    let listing = uniqueListingFromIndex(listingIndex, listingId)
     let capabilityOptions = { scope: 'public', audience: '', stateKey: '' }
+    if (!listing) {
+      const error = new Error('媒体不存在')
+      error.statusCode = 404
+      throw error
+    }
     if (capabilityScope === 'owner') {
-      listing = (db.listings || []).find((item) => String(item.id || '') === String(listingId || ''))
-      if (!listing || !ownerListingMediaEligible(db, listing)) {
+      if (!ownerListingMediaEligible(db, listing)) {
         const error = new Error('媒体不存在')
         error.statusCode = 404
         throw error
@@ -1640,19 +1687,19 @@ async function handleMini(req, res, pathname, searchParams) {
         stateKey: ownerListingMediaStateKey(listing)
       }
     } else {
-      const state = domain.listingDetailState(db, listingId, authContext ? authContext.userId : '')
-      if (state.status !== 'available' || !state.listing) {
+      const publicListingIdSet = new Set(domain.publicListingIds(db))
+      if (!publicListingIdSet.has(String(listingId || '').trim())) {
         const error = new Error('媒体不存在')
         error.statusCode = 404
         throw error
       }
-      listing = state.listing
     }
     await publicListingMediaService().serve(req, res, {
       listing,
       listingId,
       kind: publicMediaMatch[2],
       token: searchParams.get('token') || '',
+      clientKey: requestClientKey(req),
       ...capabilityOptions
     })
     return
