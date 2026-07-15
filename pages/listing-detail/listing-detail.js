@@ -189,6 +189,25 @@ Page({
     }
     if (this.reloadForAuthSessionChange(nextToken)) return
     if (this.data.currentUserId) this.flushPhoneFootprints(this.data.currentUserId)
+    // 后台可能已调整分佣比例：会话未变的正常返回静默重拉详情、仅更新分佣展示字段（结算仍以服务端为准），
+    // 不触碰敏感查看态/足迹/其它状态，避免清屏闪烁或重置已解锁的敏感信息。
+    this.refreshCommissionDisplay()
+  },
+
+  // 静默刷新分佣展示：仅在同房源同会话、非加载态时用服务端最新配置更新分佣明细字段，不影响其它页面状态。
+  refreshCommissionDisplay() {
+    const id = this.listingId
+    if (!id || this.data.listingLoading) return
+    const requestSessionKey = currentAuthSessionKey()
+    apiService.getListingDetail(id).then((listing) => {
+      if (this.listingId !== id || currentAuthSessionKey() !== requestSessionKey) return
+      if (!listing || listing.unavailable || !listing.id) return
+      const patch = {}
+      for (const key of ['commissionBreakdown', 'commissionText', 'commission', 'commissionBadge', 'commissionRate']) {
+        if (key in listing) patch['listing.' + key] = listing[key]
+      }
+      if (Object.keys(patch).length > 0) this.setData(patch)
+    }).catch(() => {})
   },
 
   reloadForAuthSessionChange(nextSessionKey) {

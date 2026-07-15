@@ -276,6 +276,9 @@ Page({
 
   onShow() {
     this._pageActive = true
+    // 后台可能已调整分佣比例：每次显示页面都以服务端为准重新拉取，避免展示后台修改前的旧比例。
+    // loadCommissionConfig 自带 activeCommissionRequestId 代次守卫，重复调用安全。
+    this.loadCommissionConfig()
     const nextToken = currentAuthSessionKey()
     const previousHadLogin = this.authHadLoginSnapshot === true
     const nextHadLogin = Boolean(currentAuthToken())
