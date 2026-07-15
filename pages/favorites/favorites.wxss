@@ -1,10 +1,15 @@
+/* 导航栏在 scroll-view 之外：page 纵向 flex 占满视口，滚动区取剩余高度，避免「导航栏 + 100vh」超高。 */
 page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: #f4f8f5;
   color: #183c34;
 }
 
 .page-scroll {
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .page-shell {

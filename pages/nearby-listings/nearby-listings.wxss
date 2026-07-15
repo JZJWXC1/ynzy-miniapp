@@ -1,10 +1,20 @@
+/* 导航栏在 scroll-view 之外，原 calc(100vh - 96rpx) 是猜的导航高度、不覆盖 44/48px + 顶部安全区。
+   改 page 纵向 flex 占满视口、滚动区取剩余高度（flex:1），高度自动正确、无需猜测。 */
+page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
 .page-scroll {
-  height: calc(100vh - 96rpx);
+  flex: 1;
+  min-height: 0;
   background: #f7fbf8;
 }
 
 .nearby-page {
-  padding: 28rpx 24rpx 56rpx;
+  /* 底部留白叠加安全区，全面屏 home indicator 机型下末条不被遮挡（非刘海机型 env 为 0）。 */
+  padding: 28rpx 24rpx calc(56rpx + env(safe-area-inset-bottom));
 }
 
 .nearby-hero,
