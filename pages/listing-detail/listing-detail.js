@@ -195,12 +195,22 @@ Page({
   },
 
   // 静默刷新分佣展示：仅在同房源同会话、非加载态时用服务端最新配置更新分佣明细字段，不影响其它页面状态。
+  // 完整异步门禁：捕获独立刷新序号 + 详情加载代次 + 页面存活状态，在卸载、全量重载、换号、乱序迟到时统一作废，
+  // 避免 onUnload 后 setData、迟到响应覆盖新比例、或全量重载清屏后写入只含佣金字段的半成品 listing。
   refreshCommissionDisplay() {
     const id = this.listingId
-    if (!id || this.data.listingLoading) return
+    if (!id || this._pageActive === false || this.data.listingLoading) return
     const requestSessionKey = currentAuthSessionKey()
+    const refreshSeq = Number(this._commissionRefreshSeq || 0) + 1
+    this._commissionRefreshSeq = refreshSeq
+    const loadGeneration = this.listingLoadGeneration
     apiService.getListingDetail(id).then((listing) => {
+      if (this._pageActive === false) return
+      if (this._commissionRefreshSeq !== refreshSeq) return // 有更晚的刷新，丢弃迟到响应
+      if (this.listingLoadGeneration !== loadGeneration) return // 期间发生过全量重载，丢弃半成品写入
+      if (this.data.listingLoading) return
       if (this.listingId !== id || currentAuthSessionKey() !== requestSessionKey) return
+      if (!this.data.listing || String(this.data.listing.id || '') !== String(id)) return
       if (!listing || listing.unavailable || !listing.id) return
       const patch = {}
       for (const key of ['commissionBreakdown', 'commissionText', 'commission', 'commissionBadge', 'commissionRate']) {

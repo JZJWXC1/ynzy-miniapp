@@ -28,6 +28,8 @@ function run() {
   const uploadOnShow = methodBody(uploadSrc, 'onShow')
   if (!uploadOnShow || !/this\.loadCommissionConfig\(\)/.test(uploadOnShow)) {
     failures.push('upload.onShow 未在生命周期重新拉取分佣配置，后台改配置后会继续显示旧比例')
+  } else if (!/_commissionConfigShownOnce/.test(uploadOnShow)) {
+    failures.push('upload.onShow 未跳过首次显示：onLoad 已拉取，首屏会固定发两次请求并浪费限流额度')
   }
 
   const detailSrc = read('pages/listing-detail/listing-detail.js')
@@ -38,8 +40,16 @@ function run() {
   const refreshBody = methodBody(detailSrc, 'refreshCommissionDisplay')
   if (!refreshBody) {
     failures.push('listing-detail 缺少 refreshCommissionDisplay 方法')
-  } else if (/sensitiveVisible|isVerified|listing:\s*\{\}/.test(refreshBody)) {
-    failures.push('refreshCommissionDisplay 不得清空 listing 或重置敏感查看态，必须仅静默更新分佣字段')
+  } else {
+    if (/sensitiveVisible|isVerified|listing:\s*\{\}/.test(refreshBody)) {
+      failures.push('refreshCommissionDisplay 不得清空 listing 或重置敏感查看态，必须仅静默更新分佣字段')
+    }
+    // 完整异步门禁：迟到响应/全量重载/卸载期间必须作废，否则乱序覆盖新比例或写入半成品详情。
+    for (const guard of ['_commissionRefreshSeq', 'listingLoadGeneration', '_pageActive']) {
+      if (!refreshBody.includes(guard)) {
+        failures.push('refreshCommissionDisplay 缺少异步门禁 ' + guard + '，会乱序覆盖或写入只含佣金字段的半成品详情')
+      }
+    }
   }
 
   assert.deepStrictEqual(failures, [], failures.join('；'))

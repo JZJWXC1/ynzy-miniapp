@@ -276,9 +276,14 @@ Page({
 
   onShow() {
     this._pageActive = true
-    // 后台可能已调整分佣比例：每次显示页面都以服务端为准重新拉取，避免展示后台修改前的旧比例。
+    // onLoad 已拉取过一次分佣配置：跳过首次 onShow 的重复拉取，仅在后续恢复显示（从后台切回、从其它页返回）
+    // 时以服务端为准刷新，避免每次首屏固定发两次请求、令第一次响应失效并浪费游客 /mini/commission-config 限流额度。
     // loadCommissionConfig 自带 activeCommissionRequestId 代次守卫，重复调用安全。
-    this.loadCommissionConfig()
+    if (this._commissionConfigShownOnce) {
+      this.loadCommissionConfig()
+    } else {
+      this._commissionConfigShownOnce = true
+    }
     const nextToken = currentAuthSessionKey()
     const previousHadLogin = this.authHadLoginSnapshot === true
     const nextHadLogin = Boolean(currentAuthToken())
