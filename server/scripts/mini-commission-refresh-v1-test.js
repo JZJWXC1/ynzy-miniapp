@@ -70,57 +70,63 @@ function validCommissionConfig() {
   return { secondLandlordRate: 20, ownerRate: 20, secondLandlordPlatformRate: 10, ownerPlatformRate: 10 }
 }
 
-// ---- P2③-a：详情静默刷新的异步门禁（乱序 / 卸载 / 全量重载 / 正常不重置敏感态）----
+// ---- P2③-a：详情静默刷新的异步门禁——全部经真实 onLoad/onShow/onUnload 生命周期入口 + A→B 换号驱动。----
 async function testDetailCommissionRefreshGuards() {
-  authToken = 'TOKEN_X'
-  authSessionKey = 'SESSION_X'
-  const requests = []
+  authToken = 'TOKEN_A'
+  authSessionKey = 'SESSION_A'
+  const detailReqs = []
   installApiStub({
-    getListingDetail() { const d = deferred(); requests.push(d); return d.promise }
+    getListingDetail() { const d = deferred(); detailReqs.push(d); return d.promise },
+    getListingLogs() { return Promise.resolve([]) },
+    // 无 id 的空 user：避开足迹补发机制，聚焦分佣刷新门禁。
+    getProfileState() { return Promise.resolve({ user: {} }) }
   })
   const page = makePage(loadPage(detailPagePath))
-  page._pageActive = true
-  page.listingId = 'L-1'
-  page.listingLoadGeneration = 5
-  page.data.listingLoading = false
-  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'OLD' } }
 
-  // 乱序：两次刷新，第二次(NEW)先回、第一次(STALE)后回不得覆盖 NEW。
-  page.refreshCommissionDisplay() // seq=1 → requests[0]
-  page.refreshCommissionDisplay() // seq=2 → requests[1]
-  requests[1].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'NEW' } })
+  // 真实 onLoad → loadListing 首屏加载（detailReqs[0]，listingLoadGeneration 前进）。
+  page.onLoad({ id: 'L-1' })
+  detailReqs[0].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'INIT' }, videoUrl: '' })
   await flushPromises()
-  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '最新刷新应写入 NEW')
-  requests[0].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'STALE' } })
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'INIT', '首屏加载分佣应为 INIT')
+
+  // 真实 onShow（同会话）触发 refreshCommissionDisplay；两次 onShow 造乱序，第二次先回不得被第一次迟到覆盖。
+  page.onShow() // refresh#1 → detailReqs[1]
+  page.onShow() // refresh#2 → detailReqs[2]
+  detailReqs[2].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'NEW' } })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '最新 onShow 刷新应写入 NEW')
+  detailReqs[1].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'STALE' } })
   await flushPromises()
   assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '迟到的旧刷新不得乱序覆盖 NEW')
 
-  // 卸载：刷新后 _pageActive=false，响应到达不得 setData。
-  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'BEFORE-UNLOAD' } }
-  page.refreshCommissionDisplay() // seq=3 → requests[2]
-  page._pageActive = false
-  requests[2].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'AFTER-UNLOAD' } })
+  // 真实 onUnload：刷新在途、页面卸载后响应到达不得 setData。
+  page.onShow() // refresh → detailReqs[3]
+  page.onUnload()
+  detailReqs[3].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'AFTER-UNLOAD' } })
   await flushPromises()
-  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'BEFORE-UNLOAD', '卸载后不得写入')
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '卸载后刷新响应不得写入')
 
-  // 全量重载：刷新后 listingLoadGeneration 变化，响应不得写入半成品详情。
-  page._pageActive = true
-  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'BEFORE-RELOAD' } }
-  page.refreshCommissionDisplay() // 捕获 loadGeneration=5 → requests[3]
-  page.listingLoadGeneration = 6
-  requests[3].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'AFTER-RELOAD' } })
+  // 真实 A→B 换号：刷新在途时会话变为 B，旧会话响应（requestSessionKey=A）须被 sessionKey 校验作废。
+  page.onShow() // 恢复显示（_pageActive=true，同会话）→ refresh → detailReqs[4]，requestSessionKey=SESSION_A
+  authToken = 'TOKEN_B'
+  authSessionKey = 'SESSION_B'
+  detailReqs[4].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'CROSS-ACCOUNT' } })
   await flushPromises()
-  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'BEFORE-RELOAD', '全量重载期间旧刷新不得写半成品')
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '换号后旧会话刷新响应不得写入（sessionKey 校验）')
 
-  // 正常：只更新分佣字段，不重置敏感展示态。
-  page.listingLoadGeneration = 6
-  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'D-OLD' } }
+  // 换号后真实 onShow 走全量重载而非静默刷新：detailReqs[5] 为 B 的全量重载（重载会正确重置敏感态）。
+  page.onShow() // 会话已变 → reloadForAuthSessionChange → loadListing(B) → detailReqs[5]
+  detailReqs[5].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'B-INIT' }, videoUrl: '' })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'B-INIT', '换号后应重载出 B 的详情')
+
+  // 用户在 B 详情页解锁敏感信息后，同会话 onShow 走静默刷新：只改分佣、不得重置敏感态。
   page.data.sensitiveVisible = true
   page.data.isVerified = true
-  page.refreshCommissionDisplay() // → requests[4]
-  requests[4].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'D-NEW' }, sensitiveVisible: false, isVerified: false })
+  page.onShow() // 同为 B 会话 → 静默刷新 → detailReqs[6]
+  detailReqs[6].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'B-NEW' }, sensitiveVisible: false, isVerified: false })
   await flushPromises()
-  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'D-NEW', '正常刷新应更新分佣明细')
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'B-NEW', '正常静默刷新应更新分佣明细')
   assert.strictEqual(page.data.sensitiveVisible, true, '刷新不得重置敏感展示态')
   assert.strictEqual(page.data.isVerified, true, '刷新不得重置已验证态')
 }
@@ -138,16 +144,15 @@ async function testUploadFirstShowSkipsDuplicate() {
   const uploadPage = makePage(loadPage(uploadPagePath))
   uploadPage.onLoad({})
   await flushPromises()
-  const afterLoad = configLoads
-  assert.ok(afterLoad >= 1, 'onLoad 应至少拉取一次分佣配置')
+  assert.strictEqual(configLoads, 1, 'onLoad 应恰好拉取 1 次分佣配置（onLoad 本身不得双拉）')
 
   uploadPage.onShow() // 首次 onShow：onLoad 已拉过，应跳过
   await flushPromises()
-  assert.strictEqual(configLoads, afterLoad, '首次 onShow 不得重复拉取分佣配置（避免首屏固定双请求）')
+  assert.strictEqual(configLoads, 1, '首次 onShow 不得重复拉取（onLoad + 首次 onShow 合计恰好 1 次）')
 
   uploadPage.onShow() // 后续恢复显示：应刷新一次
   await flushPromises()
-  assert.strictEqual(configLoads, afterLoad + 1, '后续恢复显示应重新拉取一次分佣配置')
+  assert.strictEqual(configLoads, 2, '后续恢复显示应再拉 1 次分佣配置')
 }
 
 async function run() {

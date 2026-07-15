@@ -24,6 +24,23 @@ function ruleBlock(css, selector) {
   return m ? m[1] : null
 }
 
+// 提取 `@media (query) { ... }` 块内容（大括号配平，可含嵌套规则）。
+function mediaBlock(css, query) {
+  const idx = css.indexOf('@media (' + query + ')')
+  if (idx === -1) return null
+  const braceStart = css.indexOf('{', idx)
+  if (braceStart === -1) return null
+  let depth = 0
+  for (let i = braceStart; i < css.length; i += 1) {
+    if (css[i] === '{') depth += 1
+    else if (css[i] === '}') {
+      depth -= 1
+      if (depth === 0) return css.slice(braceStart + 1, i)
+    }
+  }
+  return null
+}
+
 function declNumber(block, prop) {
   if (!block) return null
   const m = block.match(new RegExp(prop + ':\\s*(-?\\d+(?:\\.\\d+)?)'))
@@ -64,6 +81,11 @@ function run() {
   if (!videoCopyBlock || !/min-width:\s*0/.test(videoCopyBlock)) {
     failures.push('listing-detail 视频文案区缺少 min-width:0，无法在窄卡片内收缩')
   }
+  // 锁死 ≤360px 窄屏兜底：极窄屏两按钮必须能拉伸平分（width:auto!important + flex:1 1 0），否则窄屏仍溢出。
+  const narrowMedia = mediaBlock(detailCss, 'max-width: 360px')
+  if (!narrowMedia || !/\.video-share-actions\s+\.video-share-button[^}]*width:\s*auto\s*!important/.test(narrowMedia) || !/\.video-share-actions\s+\.video-share-button[^}]*flex:\s*1\s*1\s*0/.test(narrowMedia)) {
+    failures.push('listing-detail 缺少 ≤360px 窄屏视频按钮兜底（width:auto!important + flex:1 1 0），极窄屏会溢出')
+  }
 
   // ---- P2①：FAQ 问题按钮同根被微信原生宽度压窄，必须强选择器强制全宽 + 重置最小宽度。----
   const faqCss = readCss('pages/faq/faq.wxss')
@@ -77,6 +99,11 @@ function run() {
   if (!addrGridBlock || !/display:\s*flex/.test(addrGridBlock) || !/flex-wrap:\s*wrap/.test(addrGridBlock)) {
     failures.push('详情地址列仍用固定三列 grid，4/7 项会留 3+1/3+3+1 孤项；应改 flex-wrap 使末行不足项拉伸填满')
   }
+  // 锁死地址子项：必须有 flex-grow + flex-basis（三列基准且末行孤项拉伸），仅容器 flex-wrap 不足以让孤项填满。
+  const addrItemBlock = ruleBlock(detailCss, '.location-compact-item')
+  if (!addrItemBlock || !/flex:\s*1\s+1\s+/.test(addrItemBlock)) {
+    failures.push('详情地址子项 .location-compact-item 缺少 flex:1 1 <basis>，末行孤项无法拉伸填满整行')
+  }
 
   // ---- P3：视口根因页（导航栏在 scroll-view 外）。page 必须纵向 flex，滚动区 flex:1 占剩余高度，----
   // ---- 且滚动区不得再写死 100vh/calc(100vh...)，否则「导航栏 + 100vh」叠成超高。----
@@ -87,8 +114,14 @@ function run() {
     if (!pageBlock || !/display:\s*flex/.test(pageBlock) || !/flex-direction:\s*column/.test(pageBlock)) {
       failures.push(file + ' 的 page 未设纵向 flex，导航栏在 scroll-view 外时无法让滚动区占剩余高度')
     }
+    if (!pageBlock || !/height:\s*100vh/.test(pageBlock)) {
+      failures.push(file + ' 的 page 未设 height:100vh，纵向 flex 无参照高度、滚动区无法确定剩余高度')
+    }
     if (!scrollBlock || !/flex:\s*1/.test(scrollBlock)) {
       failures.push(file + ' 的 .page-scroll 未用 flex:1 占剩余高度')
+    }
+    if (!scrollBlock || !/min-height:\s*0/.test(scrollBlock)) {
+      failures.push(file + ' 的 .page-scroll 缺 min-height:0，flex 子项默认不收缩、内部滚动会失效')
     }
     if (scrollBlock && /100vh/.test(scrollBlock)) {
       failures.push(file + ' 的 .page-scroll 仍写死 100vh/calc(100vh...)，会与外部导航栏叠加成超高')
