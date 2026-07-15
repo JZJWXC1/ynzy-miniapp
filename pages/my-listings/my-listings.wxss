@@ -5,7 +5,8 @@ page {
 }
 
 .my-listings-page {
-  padding-bottom: 64rpx;
+  /* 固定 64rpx 改为叠加安全区：全面屏 home indicator 机型下末条房源不被遮挡（非刘海机型 env 为 0）。 */
+  padding-bottom: calc(64rpx + env(safe-area-inset-bottom));
 }
 
 .owner-card {

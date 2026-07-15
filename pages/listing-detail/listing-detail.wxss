@@ -135,15 +135,21 @@ page {
   border: 0;
 }
 
-/* 微信 WebView 下原生 wx-button 带默认最小宽度，会把两个操作按钮各撑到约 184px，撑爆 362px
-   卡片、把文案区挤成 0 并横向溢出。用卡片内强选择器 + !important 重置最小宽度并让两按钮平分
-   操作区，文案区正常收缩。不改全局 button 重置以免影响其它页面。 */
+/* 真实根因：微信 WebView 下原生 wx-button 的默认 width 约 184px（min-width 本就为 0），单类
+   .video-share-button 的 width:150rpx 被它压过，两按钮各 184px、撑爆 362px 卡片、文案区挤成 0。
+   必须用卡片内强选择器 + !important 覆盖 width（不是 min-width），两按钮各 150rpx（约 156px 操作区），
+   文案区 min-width:0 收缩留足空间。此规则在 375/390/414 及更窄屏均生效。不改全局 button。 */
+.video-share-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .video-share-actions .video-share-button {
+  width: 150rpx !important;
   min-width: 0 !important;
   flex: 0 0 auto;
 }
 
-/* 极窄屏纵向排列兜底：文案独占一行，操作区两按钮平分整行，彻底避免文案被操作区挤压。 */
+/* 极窄屏（≤360px）纵向兜底：文案独占一行，操作区占满整行、两按钮平分并可收缩。 */
 @media (max-width: 360px) {
   .video-share-card {
     flex-direction: column;
@@ -153,8 +159,8 @@ page {
     width: 100%;
   }
   .video-share-actions .video-share-button {
+    width: auto !important;
     flex: 1 1 0;
-    width: auto;
   }
 }
 
@@ -323,14 +329,17 @@ page {
   word-break: break-all;
 }
 
+/* 原 repeat(3) 网格在地址 4 项（3+1）或 7 项（3+3+1）时留下末行孤项空档。改 flex-wrap：以三列为基准，
+   末行不足项自动拉伸填满整行，孤项变整行、读感自然，且与地址项数量无关。 */
 .location-compact-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10rpx;
   margin-top: 18rpx;
 }
 
 .location-compact-item {
+  flex: 1 1 calc((100% - 20rpx) / 3);
   min-width: 0;
   padding: 13rpx 14rpx;
   background: #F6F2EA;

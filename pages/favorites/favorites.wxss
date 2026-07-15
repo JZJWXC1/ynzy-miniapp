@@ -9,7 +9,8 @@ page {
 
 .page-shell {
   box-sizing: border-box;
-  padding: 28rpx 28rpx 72rpx;
+  /* 底部叠加安全区内边距：全面屏 home indicator 机型下末条收藏不被遮挡（非刘海机型 env 为 0）。 */
+  padding: 28rpx 28rpx calc(72rpx + env(safe-area-inset-bottom));
 }
 
 .favorite-hero,
