@@ -67,6 +67,13 @@ page {
   border-radius: 0;
 }
 
+/* 微信 WebView 原生 wx-button 默认宽度压过 .faq-question 单类的 width:100%，把问题按钮限成约
+   184px、正文挤成约 97px。用卡片内强选择器 + !important 强制全宽并重置最小宽度。不改全局 button。 */
+.faq-item .faq-question {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
 .faq-number {
   flex: 0 0 48rpx;
   height: 48rpx;

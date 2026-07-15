@@ -51,6 +51,25 @@ function run() {
     }
   }
 
+  // ---- P1：带视频详情操作区。微信 WebView 原生 wx-button 默认最小宽度会把两按钮撑到 ~184px，----
+  // ---- 撑爆卡片并把文案区挤成 0。操作按钮必须重置最小宽度，文案区必须可收缩。 ----
+  const detailWxss = readText('pages/listing-detail/listing-detail.wxss')
+  const videoBtnBlock = ruleBlock(detailWxss, '.video-share-actions .video-share-button')
+  if (!videoBtnBlock || !/min-width:\s*0/.test(videoBtnBlock)) {
+    failures.push('listing-detail 视频操作按钮缺少 min-width:0 覆盖，会被微信原生按钮默认宽度撑爆卡片')
+  }
+  const videoCopyBlock = ruleBlock(detailWxss, '.video-share-copy')
+  if (!videoCopyBlock || !/min-width:\s*0/.test(videoCopyBlock)) {
+    failures.push('listing-detail 视频文案区缺少 min-width:0，无法在窄卡片内收缩')
+  }
+
+  // ---- P2①：FAQ 问题按钮同根被微信原生宽度压窄，必须强选择器强制全宽 + 重置最小宽度。----
+  const faqWxss = readText('pages/faq/faq.wxss')
+  const faqQuestionBlock = ruleBlock(faqWxss, '.faq-item .faq-question')
+  if (!faqQuestionBlock || !/width:\s*100%/.test(faqQuestionBlock) || !/min-width:\s*0/.test(faqQuestionBlock)) {
+    failures.push('faq 问题按钮缺少强选择器 width:100%/min-width:0 覆盖，会被微信原生按钮宽度压窄、正文被挤')
+  }
+
   assert.deepStrictEqual(failures, [], failures.join('；'))
 }
 
