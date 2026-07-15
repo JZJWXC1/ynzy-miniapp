@@ -65,6 +65,15 @@
         </view>
       </view>
     </block>
+    <block wx:else>
+      <view class="video-card video-empty-card">
+        <view class="video-placeholder">
+          <view class="video-empty-icon">—</view>
+          <view class="video-title">暂无房源视频</view>
+          <view class="video-sub">可先查看房源基本信息，视频素材补齐后会自动显示。</view>
+        </view>
+      </view>
+    </block>
 
     <view class="detail-card soft-card">
       <view class="detail-head">

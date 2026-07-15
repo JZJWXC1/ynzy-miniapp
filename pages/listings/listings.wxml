@@ -18,8 +18,8 @@
     ></listing-filter>
 
     <view class="list-summary">
-      <view>{{loadFailed ? '刷新失败，当前为上次结果' : (category + ' · ' + listings.length + ' 套')}}</view>
-      <view>实名查看留痕 · 视频房源</view>
+      <view class="list-summary-count">{{loadFailed ? '刷新失败，当前为上次结果' : (category + ' · ' + listings.length + ' 套')}}</view>
+      <view class="list-summary-note">合作敏感信息需留痕 · 有视频可预览</view>
     </view>
 
     <view wx:if="{{loadFailed}}" class="empty-card">
@@ -33,8 +33,15 @@
         <view class="listing-media">
           <view class="listing-favorite"><favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle></view>
           <image wx:if="{{item.coverUrl}}" class="listing-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
+          <view wx:elif="{{item.hasVideo}}" class="media-empty-state media-video-pending">
+            <text class="media-empty-mark">影</text>
+            <text class="media-empty-label">点开播放</text>
+          </view>
+          <view wx:else class="media-empty-state">
+            <text class="media-empty-mark">—</text>
+            <text class="media-empty-label">暂无视频</text>
+          </view>
           <view wx:if="{{item.hasVideo}}" class="video-badge">视频</view>
-          <view wx:if="{{!item.coverUrl}}" class="media-window"></view>
         </view>
         <view class="listing-body">
           <view class="listing-title-row">

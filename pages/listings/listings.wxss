@@ -183,6 +183,17 @@ page {
   font-weight: 900;
 }
 
+.list-summary-count {
+  flex: 0 0 auto;
+}
+
+.list-summary-note {
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.35;
+  text-align: right;
+}
+
 .listing-list {
   display: flex;
   flex-direction: column;
@@ -220,12 +231,42 @@ page {
   height: 100%;
 }
 
-.media-window {
+.media-empty-state {
   position: absolute;
   inset: 42rpx 28rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10rpx;
+  color: #6A7671;
   background: rgba(255, 255, 255, 0.62);
   border: 1rpx solid rgba(46, 81, 74, 0.18);
   border-radius: 16rpx;
+}
+
+.media-empty-state.media-video-pending {
+  color: #2E514A;
+  background: rgba(237, 243, 239, 0.88);
+}
+
+.media-empty-mark {
+  width: 48rpx;
+  height: 48rpx;
+  color: #2E514A;
+  font-size: 24rpx;
+  font-weight: 900;
+  line-height: 48rpx;
+  text-align: center;
+  background: rgba(201, 164, 93, 0.35);
+  border-radius: 50%;
+}
+
+.media-empty-label {
+  font-size: 21rpx;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
 }
 
 .video-badge {

@@ -69,6 +69,36 @@ page {
   height: 100%;
 }
 
+.video-empty-card {
+  min-height: 300rpx;
+  height: auto;
+  padding: 36rpx;
+  color: #2E514A;
+  background: linear-gradient(145deg, #F7FBF8, #E7F0EB);
+  border: 1rpx solid #D8E5DE;
+  box-sizing: border-box;
+  box-shadow: 0 14rpx 34rpx rgba(46, 81, 74, 0.1);
+}
+
+.video-empty-icon {
+  width: 78rpx;
+  height: 78rpx;
+  color: #49615B;
+  font-size: 32rpx;
+  font-weight: 900;
+  line-height: 78rpx;
+  text-align: center;
+  background: #DDE8E2;
+  border-radius: 50%;
+}
+
+.video-empty-card .video-sub {
+  max-width: 520rpx;
+  color: #6A7671;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .video-share-card {
   min-height: 112rpx;
   display: flex;
@@ -85,7 +115,7 @@ page {
 
 .video-share-copy {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
 }
 
 .video-share-actions {
@@ -140,7 +170,7 @@ page {
    必须用卡片内强选择器 + !important 覆盖 width（不是 min-width），两按钮各 150rpx（约 156px 操作区），
    文案区 min-width:0 收缩留足空间。此规则在 375/390/414 及更窄屏均生效。不改全局 button。 */
 .video-share-actions {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
 }
 .video-share-actions .video-share-button {
