@@ -1,59 +1,163 @@
 'use strict'
 
+// P2③ 动态回归：后台改分佣配置后，上传页/详情页在生命周期以服务端为准刷新展示；且必须真正闭合异步竞态。
+// 不做静态字符串断言（会被注释/字段名假绿），而是实例化 Page、用 deferred Promise 驱动 onLoad/onShow/
+// refreshCommissionDisplay，验证：上传首屏不双拉；详情静默刷新在乱序、卸载、全量重载时作废，正常刷新只改
+// 分佣字段且不重置敏感态。
+
 const assert = require('assert')
-const fs = require('fs')
 const path = require('path')
 
-// P2③：后台修改分佣配置后，上传页与详情页必须在生命周期（onShow）重新拉取，使展示以服务端当前配置为准；
-// 且详情页只能静默更新分佣字段，不得清空 listing 或重置敏感查看态。行为回归由微信开发者工具执行，
-// 本测试锁定静态生命周期契约，防止刷新逻辑被回退。
+const repoRoot = path.join(__dirname, '..', '..')
+const apiServicePath = require.resolve(path.join(repoRoot, 'utils', 'api-service.js'))
+const detailPagePath = require.resolve(path.join(repoRoot, 'pages', 'listing-detail', 'listing-detail.js'))
+const uploadPagePath = require.resolve(path.join(repoRoot, 'pages', 'upload', 'upload.js'))
 
-const root = path.resolve(__dirname, '../..')
+let authToken = ''
+let authSessionKey = ''
 
-function read(rel) {
-  return fs.readFileSync(path.join(root, rel), 'utf8')
+global.getApp = () => ({ globalData: { authToken, authSessionKey } })
+global.wx = {
+  hideShareMenu() {}, showToast() {}, showModal() {}, showLoading() {}, hideLoading() {},
+  navigateTo() {}, navigateBack() {}, redirectTo() {}, switchTab() {},
+  chooseMedia() {}, getStorageSync() { return authToken }, setStorageSync() {}, removeStorageSync() {}
 }
 
-// 提取页面方法体：页面方法均为 2 空格缩进、`名称(...) {` 开头、以 `\n  },` 结束。
-function methodBody(src, name) {
-  const re = new RegExp('\\n  ' + name + '\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n  \\},')
-  const m = src.match(re)
-  return m ? m[1] : null
+function setAtPath(target, key, value) {
+  const parts = key.split('.')
+  let current = target
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    if (!current[parts[i]] || typeof current[parts[i]] !== 'object') current[parts[i]] = {}
+    current = current[parts[i]]
+  }
+  current[parts[parts.length - 1]] = value
 }
 
-function run() {
-  const failures = []
-
-  const uploadSrc = read('pages/upload/upload.js')
-  const uploadOnShow = methodBody(uploadSrc, 'onShow')
-  if (!uploadOnShow || !/this\.loadCommissionConfig\(\)/.test(uploadOnShow)) {
-    failures.push('upload.onShow 未在生命周期重新拉取分佣配置，后台改配置后会继续显示旧比例')
-  } else if (!/_commissionConfigShownOnce/.test(uploadOnShow)) {
-    failures.push('upload.onShow 未跳过首次显示：onLoad 已拉取，首屏会固定发两次请求并浪费限流额度')
+function makePage(definition) {
+  const page = Object.assign({}, definition)
+  page.data = JSON.parse(JSON.stringify(definition.data || {}))
+  page.setData = function setData(patch, callback) {
+    Object.keys(patch || {}).forEach((key) => setAtPath(page.data, key, patch[key]))
+    if (typeof callback === 'function') callback()
   }
-
-  const detailSrc = read('pages/listing-detail/listing-detail.js')
-  const detailOnShow = methodBody(detailSrc, 'onShow')
-  if (!detailOnShow || !/this\.refreshCommissionDisplay\(\)/.test(detailOnShow)) {
-    failures.push('listing-detail.onShow 未在生命周期静默刷新分佣展示')
-  }
-  const refreshBody = methodBody(detailSrc, 'refreshCommissionDisplay')
-  if (!refreshBody) {
-    failures.push('listing-detail 缺少 refreshCommissionDisplay 方法')
-  } else {
-    if (/sensitiveVisible|isVerified|listing:\s*\{\}/.test(refreshBody)) {
-      failures.push('refreshCommissionDisplay 不得清空 listing 或重置敏感查看态，必须仅静默更新分佣字段')
-    }
-    // 完整异步门禁：迟到响应/全量重载/卸载期间必须作废，否则乱序覆盖新比例或写入半成品详情。
-    for (const guard of ['_commissionRefreshSeq', 'listingLoadGeneration', '_pageActive']) {
-      if (!refreshBody.includes(guard)) {
-        failures.push('refreshCommissionDisplay 缺少异步门禁 ' + guard + '，会乱序覆盖或写入只含佣金字段的半成品详情')
-      }
-    }
-  }
-
-  assert.deepStrictEqual(failures, [], failures.join('；'))
+  return page
 }
 
-run()
-console.log('mini-commission-refresh-v1-test passed')
+function installApiStub(stub) {
+  require.cache[apiServicePath] = { id: apiServicePath, filename: apiServicePath, loaded: true, exports: stub }
+}
+
+function loadPage(pagePath) {
+  let definition = null
+  global.Page = (value) => { definition = value }
+  delete require.cache[pagePath]
+  require(pagePath)
+  assert.ok(definition, `未捕获页面定义：${pagePath}`)
+  return definition
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise((r) => { resolve = r })
+  return { promise, resolve }
+}
+
+function validCommissionConfig() {
+  return { secondLandlordRate: 20, ownerRate: 20, secondLandlordPlatformRate: 10, ownerPlatformRate: 10 }
+}
+
+// ---- P2③-a：详情静默刷新的异步门禁（乱序 / 卸载 / 全量重载 / 正常不重置敏感态）----
+async function testDetailCommissionRefreshGuards() {
+  authToken = 'TOKEN_X'
+  authSessionKey = 'SESSION_X'
+  const requests = []
+  installApiStub({
+    getListingDetail() { const d = deferred(); requests.push(d); return d.promise }
+  })
+  const page = makePage(loadPage(detailPagePath))
+  page._pageActive = true
+  page.listingId = 'L-1'
+  page.listingLoadGeneration = 5
+  page.data.listingLoading = false
+  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'OLD' } }
+
+  // 乱序：两次刷新，第二次(NEW)先回、第一次(STALE)后回不得覆盖 NEW。
+  page.refreshCommissionDisplay() // seq=1 → requests[0]
+  page.refreshCommissionDisplay() // seq=2 → requests[1]
+  requests[1].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'NEW' } })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '最新刷新应写入 NEW')
+  requests[0].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'STALE' } })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'NEW', '迟到的旧刷新不得乱序覆盖 NEW')
+
+  // 卸载：刷新后 _pageActive=false，响应到达不得 setData。
+  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'BEFORE-UNLOAD' } }
+  page.refreshCommissionDisplay() // seq=3 → requests[2]
+  page._pageActive = false
+  requests[2].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'AFTER-UNLOAD' } })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'BEFORE-UNLOAD', '卸载后不得写入')
+
+  // 全量重载：刷新后 listingLoadGeneration 变化，响应不得写入半成品详情。
+  page._pageActive = true
+  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'BEFORE-RELOAD' } }
+  page.refreshCommissionDisplay() // 捕获 loadGeneration=5 → requests[3]
+  page.listingLoadGeneration = 6
+  requests[3].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'AFTER-RELOAD' } })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'BEFORE-RELOAD', '全量重载期间旧刷新不得写半成品')
+
+  // 正常：只更新分佣字段，不重置敏感展示态。
+  page.listingLoadGeneration = 6
+  page.data.listing = { id: 'L-1', commissionBreakdown: { total: 'D-OLD' } }
+  page.data.sensitiveVisible = true
+  page.data.isVerified = true
+  page.refreshCommissionDisplay() // → requests[4]
+  requests[4].resolve({ id: 'L-1', unavailable: false, commissionBreakdown: { total: 'D-NEW' }, sensitiveVisible: false, isVerified: false })
+  await flushPromises()
+  assert.strictEqual(page.data.listing.commissionBreakdown.total, 'D-NEW', '正常刷新应更新分佣明细')
+  assert.strictEqual(page.data.sensitiveVisible, true, '刷新不得重置敏感展示态')
+  assert.strictEqual(page.data.isVerified, true, '刷新不得重置已验证态')
+}
+
+// ---- P2③-b：上传页首屏不重复拉取（onLoad + 首次 onShow 合计 1 次），后续恢复显示再刷新 ----
+async function testUploadFirstShowSkipsDuplicate() {
+  authToken = 'TOKEN_A'
+  authSessionKey = 'SESSION_A'
+  let configLoads = 0
+  installApiStub({
+    getCurrentUser() { return Promise.resolve({ id: 'U-A', isAdmin: false }) },
+    getCommissionConfig() { configLoads += 1; return Promise.resolve(validCommissionConfig()) },
+    getEditableListing() { return Promise.reject(new Error('本用例不进入编辑态')) }
+  })
+  const uploadPage = makePage(loadPage(uploadPagePath))
+  uploadPage.onLoad({})
+  await flushPromises()
+  const afterLoad = configLoads
+  assert.ok(afterLoad >= 1, 'onLoad 应至少拉取一次分佣配置')
+
+  uploadPage.onShow() // 首次 onShow：onLoad 已拉过，应跳过
+  await flushPromises()
+  assert.strictEqual(configLoads, afterLoad, '首次 onShow 不得重复拉取分佣配置（避免首屏固定双请求）')
+
+  uploadPage.onShow() // 后续恢复显示：应刷新一次
+  await flushPromises()
+  assert.strictEqual(configLoads, afterLoad + 1, '后续恢复显示应重新拉取一次分佣配置')
+}
+
+async function run() {
+  await testDetailCommissionRefreshGuards()
+  await testUploadFirstShowSkipsDuplicate()
+}
+
+run().then(() => {
+  console.log('mini-commission-refresh-v1-test passed')
+}).catch((error) => {
+  console.error(`mini-commission-refresh-v1-test failed: ${error.stack || error.message}`)
+  process.exit(1)
+})
