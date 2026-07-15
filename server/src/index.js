@@ -2386,8 +2386,10 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'PUT' && pathname === '/admin/commission-config') {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    return sendJson(res, dbStore.updateDb((nextDb) => (
-      domain.setCommissionConfig(nextDb, adminAccount.userId || adminAccount.id, body)
+    // 资损向高危写：读 body 期间发起管理员可能被降权/禁用，必须在写锁内用最新数据库重新核验超管身份，
+    // 并以复验后的身份作为 updatedBy，避免已失权账号越过锁外快照改动全站分佣。
+    return sendJson(res, updateAdminDb(req, (nextDb, freshAccount) => (
+      domain.setCommissionConfig(nextDb, freshAccount.userId || freshAccount.id, body)
     )))
   }
   if (method === 'GET' && pathname === '/admin/launch-check') {
