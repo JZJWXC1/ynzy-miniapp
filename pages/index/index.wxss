@@ -320,7 +320,8 @@ page {
   right: 0;
   top: 0;
   bottom: 0;
-  z-index: 999;
+  /* 高于导航栏与自定义底栏（均为 10000），录音全屏浮层期间遮住导航/底栏，避免误触。 */
+  z-index: 10001;
   display: flex;
   align-items: center;
   justify-content: center;
