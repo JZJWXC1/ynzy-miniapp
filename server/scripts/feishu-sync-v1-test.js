@@ -1,5 +1,9 @@
 const assert = require('assert')
+const fs = require('fs')
+const path = require('path')
 const feishuSync = require('../src/feishu-sync')
+const config = require('../src/config')
+const oss = require('../src/oss')
 
 const FALSE_SAFE_SUFFIX_PHONE = '187号线0000号线1111'
 const LEGAL_PUBLIC_NUMERIC_VALUES = [
@@ -52,6 +56,11 @@ function makeDb() {
 
 function row(fields) {
   return { fields: { 联系电话: '13900001111', ...fields } }
+}
+
+function managedKey(fileName) {
+  const uploadDir = String(config.oss.uploadDir || 'house-videos').replace(/^\/+|\/+$/g, '') || 'house-videos'
+  return `${uploadDir}/${fileName}`
 }
 
 function record(recordId, fields) {
@@ -188,9 +197,11 @@ async function main() {
       押一付一: '2800'
     })
   ], [
-    { name: '601D.mp4', videoUrl: 'https://example.com/601D.mp4', videoKey: 'house-videos/601D.mp4' }
+    { name: '601D.mp4', token: 'SYNTHETIC-601D', videoUrl: 'https://example.com/601D.mp4', videoKey: managedKey('601D.mp4') }
   ], 'A1', { dryRun: true })
   assert.ok(staleVideoDb.listings[0].videoUrl || staleVideoDb.listings[0].videoKey, '命中素材后应先写入视频字段')
+  const previousManagedVideoKey = staleVideoDb.listings[0].videoKey
+  const previousMaterialToken = staleVideoDb.listings[0].sourceMaterialToken
 
   const staleMissing = await feishuSync.applySync(staleVideoDb, [
     row({
@@ -206,9 +217,290 @@ async function main() {
   const staleMissingListing = staleVideoDb.listings[0]
   assert.strictEqual(staleMissing.updated, 1, '旧房源再次同步缺素材时应更新原房源')
   assert.strictEqual(staleMissingListing.missingVideoMaterial, true, '旧房源缺素材时应标记缺视频素材')
-  assert.strictEqual(staleMissingListing.videoUrl, '', '旧房源缺素材时必须清空旧 videoUrl')
-  assert.strictEqual(staleMissingListing.videoKey, '', '旧房源缺素材时必须清空旧 videoKey')
-  assert.strictEqual(staleMissingListing.recommendationProfile.hasVideo, false, '推荐画像也必须同步清空视频状态')
+  assert.strictEqual(staleMissingListing.videoKey, previousManagedVideoKey, '暂时漏匹配素材时必须保留同一存量房源最后一份受控 videoKey')
+  assert.strictEqual(staleMissingListing.videoUrl, '', '受控 key 伴随的外部测试 URL 不得借保留分支继续存活')
+  assert.strictEqual(staleMissingListing.sourceMaterialToken, previousMaterialToken, '沿用旧视频时不得把来源标识清空，否则下轮无法安全复用')
+  assert.strictEqual(staleMissingListing.videoMaterialStatus, '沿用上次视频·素材待核', '后台应明确区分沿用旧视频与本轮新素材成功')
+  assert.strictEqual(staleMissingListing.recommendationProfile.hasVideo, true, '推荐画像必须与仍可播放的保留视频一致')
+  assert.ok((staleMissing.auditRows || []).some((item) => item.syncResult === '上架-沿用上次视频·素材待核' && item.failureReason), '缺素材沿用旧视频的逐行对账必须明确待核且保留原因')
+
+  const signedUrlDb = makeDb()
+  const controlledOrigin = oss.readSourceOrigins()[0]
+  assert.ok(controlledOrigin, '测试环境必须至少提供一个服务端受控媒体 origin')
+  const signedVideoKey = managedKey('607A.mp4')
+  const syntheticSignedUrl = `${controlledOrigin}/${signedVideoKey}?Signature=SYNTHETIC_DO_NOT_USE&Expires=1`
+  await feishuSync.applySync(signedUrlDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '607A',
+      户型: '一室一厅一卫',
+      押一付一: '2850'
+    })
+  ], [
+    { name: '607A.mp4', token: 'SYNTHETIC-607A', videoUrl: syntheticSignedUrl }
+  ], 'A1', { dryRun: true })
+  assert.strictEqual(signedUrlDb.listings[0].videoUrl, syntheticSignedUrl, '测试前置必须先保存带合成短签 query 的受控源 URL')
+  await feishuSync.applySync(signedUrlDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '607A',
+      户型: '一室一厅一卫',
+      押一付一: '2850'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(signedUrlDb.listings[0].videoKey, signedVideoKey, 'URL-only 受控旧数据应只提取规范化 object key 继续播放')
+  assert.strictEqual(signedUrlDb.listings[0].videoUrl, '', '沿用受控视频时不得延寿旧短签 videoUrl')
+  assert.strictEqual(signedUrlDb.listings[0].sourceMaterialUrl, '', '沿用受控视频时不得延寿旧短签 sourceMaterialUrl')
+  assert.ok(!JSON.stringify(signedUrlDb.listings[0]).includes('SYNTHETIC_DO_NOT_USE'), '短签 query 不得残留在房源对象任何字段')
+
+  const reactivatedVideoDb = makeDb()
+  await feishuSync.applySync(reactivatedVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '606A',
+      户型: '一室一厅一卫',
+      押一付一: '2840'
+    })
+  ], [
+    { name: '606A.mp4', token: 'SYNTHETIC-606A', videoKey: managedKey('606A.mp4') }
+  ], 'A1', { dryRun: true })
+  await feishuSync.applySync(reactivatedVideoDb, [], [], 'A1', { dryRun: true })
+  assert.strictEqual(reactivatedVideoDb.listings[0].status, '已下架', '测试前置必须先让旧房源进入下架资产池')
+  await feishuSync.applySync(reactivatedVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '606A',
+      户型: '一室一厅一卫',
+      押一付一: '2840'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(reactivatedVideoDb.listings[0].videoKey, '', '曾下架后重新出现但无素材的房源不得公开沿用旧视频')
+  assert.strictEqual(reactivatedVideoDb.listings[0].videoUrl, '', '重新上架无素材时不得保留旧视频 URL')
+  assert.strictEqual(reactivatedVideoDb.listings[0].videoMaterialStatus, '缺视频素材', '重新上架无素材应回到普通缺素材状态')
+  assert.strictEqual(reactivatedVideoDb.listings[0].recommendationProfile.hasVideo, false, '重新上架无素材时推荐画像必须同步清除视频标记')
+
+  const changedIdentityDb = makeDb()
+  await feishuSync.applySync(changedIdentityDb, [
+    record('SYNTHETIC-SAME-RECORD', {
+      区域: '测试板块甲',
+      小区: '测试小区甲',
+      几栋: '1',
+      几单元: '1',
+      房号: '101A',
+      户型: '一室一厅一卫',
+      押一付一: '2800'
+    })
+  ], [
+    { name: '101A.mp4', token: 'SYNTHETIC-101A', videoKey: managedKey('101A.mp4') }
+  ], 'A1', { dryRun: true })
+  assert.strictEqual(changedIdentityDb.listings[0].videoKey, managedKey('101A.mp4'), '测试前置必须先为原物理房源保存受控视频')
+  await feishuSync.applySync(changedIdentityDb, [
+    record('SYNTHETIC-SAME-RECORD', {
+      区域: '测试板块乙',
+      小区: '测试小区乙',
+      几栋: '2',
+      几单元: '2',
+      房号: '202B',
+      户型: '两室一厅一卫',
+      押一付一: '3600'
+    })
+  ], [], 'A1', { dryRun: true })
+  const changedIdentityListing = changedIdentityDb.listings[0]
+  assert.strictEqual(changedIdentityListing.community, '测试小区乙', '同一飞书记录改指另一套时仍应更新本轮房源字段')
+  assert.strictEqual(changedIdentityListing.roomNumber, '202B', '同一飞书记录改指另一套时应切换到新房号')
+  assert.strictEqual(changedIdentityListing.videoKey, '', '物理房源标识变化后不得把上一套视频沿用到新套')
+  assert.notStrictEqual(changedIdentityListing.videoMaterialStatus, '沿用上次视频·素材待核', '跨物理房源时不得伪装为同房源暂态漏素材')
+  assert.strictEqual(changedIdentityListing.recommendationProfile.hasVideo, false, '跨物理房源清除旧视频后推荐画像必须同步为无视频')
+
+  const crossIdentityTokenDb = makeDb()
+  await feishuSync.applySync(crossIdentityTokenDb, [
+    record('SYNTHETIC-SAME-TOKEN-RECORD', {
+      区域: '测试板块甲', 小区: '测试小区甲', 几栋: '1', 几单元: '1', 房号: '111A', 户型: '一室一厅一卫', 押一付一: '2800'
+    })
+  ], [
+    { name: '111A.mp4', token: 'SYNTHETIC-SAME-TOKEN', videoKey: managedKey('111A.mp4') }
+  ], 'A1', { dryRun: true })
+  const originalSameTokenUploadToOss = config.feishu.uploadToOss
+  let crossIdentityTokenResult
+  try {
+    config.feishu.uploadToOss = false
+    crossIdentityTokenResult = await feishuSync.applySync(crossIdentityTokenDb, [
+      record('SYNTHETIC-SAME-TOKEN-RECORD', {
+        区域: '测试板块乙', 小区: '测试小区乙', 几栋: '2', 几单元: '2', 房号: '222B', 户型: '两室一厅一卫', 押一付一: '3600'
+      })
+    ], [
+      { name: '222B.mp4', token: 'SYNTHETIC-SAME-TOKEN' }
+    ], 'A1', { dryRun: false })
+  } finally {
+    config.feishu.uploadToOss = originalSameTokenUploadToOss
+  }
+  assert.strictEqual(crossIdentityTokenResult.materialTransferFailed, 1, '跨物理房源即使素材 token 相同也必须尝试本轮素材，不能把旧 key 当成功复用')
+  assert.strictEqual(crossIdentityTokenDb.listings[0].roomNumber, '222B', '同 token 场景仍应更新到本轮物理房源')
+  assert.strictEqual(crossIdentityTokenDb.listings[0].videoKey, '', '跨物理房源的同 token 不得绕过身份门沿用旧套视频')
+  assert.notStrictEqual(crossIdentityTokenDb.listings[0].videoMaterialStatus, '已匹配视频素材', '旧 key 不得被伪装成本轮同 token 素材成功')
+
+  const signedTokenReuseDb = makeDb()
+  const signedTokenReuseKey = managedKey('333C.mp4')
+  const signedTokenReuseUrl = `${controlledOrigin}/${signedTokenReuseKey}?Signature=SYNTHETIC_REUSE_QUERY&Expires=1`
+  const signedTokenReuseFields = {
+    区域: '测试板块', 小区: '测试复用小区', 几栋: '3', 几单元: '3', 房号: '333C', 户型: '一室一厅一卫', 押一付一: '3300'
+  }
+  await feishuSync.applySync(signedTokenReuseDb, [record('SYNTHETIC-SIGNED-REUSE', signedTokenReuseFields)], [
+    { name: '333C.mp4', token: 'SYNTHETIC-SIGNED-REUSE-TOKEN', videoUrl: signedTokenReuseUrl }
+  ], 'A1', { dryRun: true })
+  try {
+    config.feishu.uploadToOss = false
+    await feishuSync.applySync(signedTokenReuseDb, [record('SYNTHETIC-SIGNED-REUSE', signedTokenReuseFields)], [
+      { name: '333C.mp4', token: 'SYNTHETIC-SIGNED-REUSE-TOKEN' }
+    ], 'A1', { dryRun: false })
+  } finally {
+    config.feishu.uploadToOss = originalSameTokenUploadToOss
+  }
+  assert.strictEqual(signedTokenReuseDb.listings[0].videoKey, signedTokenReuseKey, '同一持续在架房源的同 token 可从受控旧 URL 规范化复用 object key')
+  assert.strictEqual(signedTokenReuseDb.listings[0].videoUrl, '', '同 token 复用只保留规范 key，不得延寿旧短签 videoUrl')
+  assert.strictEqual(signedTokenReuseDb.listings[0].sourceMaterialUrl, '', '同 token 复用不得通过 sourceMaterialUrl 延寿旧短签')
+  assert.ok(!JSON.stringify(signedTokenReuseDb.listings[0]).includes('SYNTHETIC_REUSE_QUERY'), '同 token 复用后任何字段都不得残留旧短签 query')
+
+  const currentMaterialWinsDb = makeDb()
+  const currentMaterialFields = {
+    区域: '测试板块', 小区: '测试新素材小区', 几栋: '5', 几单元: '1', 房号: '501A', 户型: '一室一厅一卫', 押一付一: '3500'
+  }
+  await feishuSync.applySync(currentMaterialWinsDb, [record('SYNTHETIC-CURRENT-WINS', currentMaterialFields)], [
+    { name: '501A.mp4', token: 'SYNTHETIC-CURRENT-WINS-TOKEN', videoKey: managedKey('501A-old.mp4') }
+  ], 'A1', { dryRun: true })
+  const currentMaterialKey = managedKey('501A-new.mp4')
+  const currentMaterialUrl = `${controlledOrigin}/${currentMaterialKey}`
+  await feishuSync.applySync(currentMaterialWinsDb, [record('SYNTHETIC-CURRENT-WINS', currentMaterialFields)], [
+    { name: '501A.mp4', token: 'SYNTHETIC-CURRENT-WINS-TOKEN', videoKey: currentMaterialKey, videoUrl: currentMaterialUrl }
+  ], 'A1', { dryRun: false })
+  assert.strictEqual(currentMaterialWinsDb.listings[0].videoKey, currentMaterialKey, '本轮显式新视频必须优先于同 token 的旧 key')
+  assert.strictEqual(currentMaterialWinsDb.listings[0].videoUrl, currentMaterialUrl, '本轮显式新视频 URL 必须随新 key 生效')
+
+  for (const identityChanged of [false, true]) {
+    const urlOnlyDb = makeDb()
+    const recordId = `SYNTHETIC-URL-ONLY-${identityChanged ? 'CROSS' : 'SAME'}`
+    const oldFields = {
+      区域: '测试板块甲', 小区: '测试 URL 小区甲', 几栋: '6', 几单元: '1', 房号: '601A', 户型: '一室一厅一卫', 押一付一: '3600'
+    }
+    const nextFields = identityChanged
+      ? { 区域: '测试板块乙', 小区: '测试 URL 小区乙', 几栋: '7', 几单元: '2', 房号: '702B', 户型: '两室一厅一卫', 押一付一: '4200' }
+      : oldFields
+    await feishuSync.applySync(urlOnlyDb, [record(recordId, oldFields)], [
+      { name: '601A.mp4', token: `SYNTHETIC-URL-OLD-${identityChanged}`, videoKey: managedKey(`url-old-${identityChanged}.mp4`) }
+    ], 'A1', { dryRun: true })
+    const nextVideoUrl = `https://material.example.test/url-only-${identityChanged ? 'cross' : 'same'}.mp4`
+    try {
+      config.feishu.uploadToOss = false
+      await feishuSync.applySync(urlOnlyDb, [record(recordId, nextFields)], [
+        { name: `${nextFields.房号}.mp4`, token: `SYNTHETIC-URL-NEW-${identityChanged}`, videoUrl: nextVideoUrl }
+      ], 'A1', { dryRun: false })
+    } finally {
+      config.feishu.uploadToOss = originalSameTokenUploadToOss
+    }
+    assert.strictEqual(urlOnlyDb.listings[0].videoKey, '', `${identityChanged ? '跨物理' : '同物理'}本轮 URL-only 素材必须显式清除旧 videoKey`)
+    assert.strictEqual(urlOnlyDb.listings[0].videoUrl, nextVideoUrl, `${identityChanged ? '跨物理' : '同物理'}本轮 URL-only 素材必须使用本轮 URL`)
+  }
+
+  const historicalSameTokenDb = makeDb()
+  const historicalSameTokenFields = {
+    区域: '测试板块', 小区: '测试历史小区', 几栋: '4', 几单元: '1', 房号: '401A', 户型: '一室一厅一卫', 押一付一: '3100'
+  }
+  await feishuSync.applySync(historicalSameTokenDb, [record('SYNTHETIC-HISTORICAL-TOKEN', historicalSameTokenFields)], [
+    { name: '401A.mp4', token: 'SYNTHETIC-HISTORICAL-SAME-TOKEN', videoKey: managedKey('401A.mp4') }
+  ], 'A1', { dryRun: true })
+  historicalSameTokenDb.listings[0].lifecycleStatus = 'active'
+  historicalSameTokenDb.listings[0].status = '已出租'
+  try {
+    config.feishu.uploadToOss = false
+    await feishuSync.applySync(historicalSameTokenDb, [record('SYNTHETIC-HISTORICAL-TOKEN', historicalSameTokenFields)], [
+      { name: '401A.mp4', token: 'SYNTHETIC-HISTORICAL-SAME-TOKEN' }
+    ], 'A1', { dryRun: false })
+  } finally {
+    config.feishu.uploadToOss = originalSameTokenUploadToOss
+  }
+  assert.strictEqual(historicalSameTokenDb.listings[0].videoKey, '', '非持续在架房源不得用同 token 复用旧视频 key')
+  assert.notStrictEqual(historicalSameTokenDb.listings[0].videoMaterialStatus, '已匹配视频素材', '历史终态旧 key 不得被标成本轮素材成功')
+
+  const historicalStates = [
+    { lifecycleStatus: 'sold', status: '已成交' },
+    { lifecycleStatus: 'active', status: '已签单待确认' },
+    { lifecycleStatus: 'active', status: '已出租' },
+    { lifecycleStatus: 'active', status: '不租了' },
+    { lifecycleStatus: 'active', status: '暂停出租' },
+    { lifecycleStatus: 'active', status: '未上架' },
+    { lifecycleStatus: 'active', status: '不上架' },
+    { lifecycleStatus: 'active', status: '未在租' },
+    { lifecycleStatus: 'active', status: '不在租' },
+    { lifecycleStatus: 'expired', status: '已失效' }
+  ]
+  for (const [index, historicalState] of historicalStates.entries()) {
+    const historicalDb = makeDb()
+    const roomNumber = `${index + 3}01A`
+    const recordId = `SYNTHETIC-HISTORICAL-${index}`
+    const fields = {
+      区域: '测试板块',
+      小区: '测试历史小区',
+      几栋: '3',
+      几单元: '1',
+      房号: roomNumber,
+      户型: '一室一厅一卫',
+      押一付一: '3000'
+    }
+    await feishuSync.applySync(historicalDb, [record(recordId, fields)], [
+      { name: `${roomNumber}.mp4`, token: `SYNTHETIC-${roomNumber}`, videoKey: managedKey(`${roomNumber}.mp4`) }
+    ], 'A1', { dryRun: true })
+    Object.assign(historicalDb.listings[0], historicalState)
+    await feishuSync.applySync(historicalDb, [record(recordId, fields)], [], 'A1', { dryRun: true })
+    assert.strictEqual(
+      historicalDb.listings[0].videoKey,
+      '',
+      `${historicalState.lifecycleStatus}/${historicalState.status} 不是持续在架状态，重新同步缺素材时不得复活旧视频`
+    )
+    assert.strictEqual(historicalDb.listings[0].recommendationProfile.hasVideo, false, '历史终态重新同步缺素材后推荐画像必须为无视频')
+  }
+
+  const unmanagedVideoDb = makeDb()
+  await feishuSync.applySync(unmanagedVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '608B',
+      户型: '一室一厅一卫',
+      押一付一: '2860'
+    })
+  ], [
+    { name: '608B.mp4', videoUrl: 'https://unmanaged.example/608B.mp4' }
+  ], 'A1', { dryRun: true })
+  assert.ok(unmanagedVideoDb.listings[0].videoUrl, '测试前置应先写入外部非受控视频 URL')
+  await feishuSync.applySync(unmanagedVideoDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '608B',
+      户型: '一室一厅一卫',
+      押一付一: '2860'
+    })
+  ], [], 'A1', { dryRun: true })
+  assert.strictEqual(unmanagedVideoDb.listings[0].videoUrl, '', '外部任意 URL 不得借“沿用上次视频”进入公开保留路径')
+  assert.strictEqual(unmanagedVideoDb.listings[0].videoKey, '', '非受控视频不得伪造受控 object key')
+  assert.notStrictEqual(unmanagedVideoDb.listings[0].videoMaterialStatus, '沿用上次视频·素材待核', '非受控视频不得标记为已安全保留')
+  assert.strictEqual(unmanagedVideoDb.listings[0].recommendationProfile.hasVideo, false, '非受控视频被清除后推荐画像不得继续宣称有视频')
 
   const mismatchDb = makeDb()
   const mismatch = await feishuSync.applySync(mismatchDb, [
@@ -250,6 +542,102 @@ async function main() {
   assert.strictEqual(degradedListing.videoMaterialStatus, '素材转存失败', '后台应保留素材转存失败状态')
   assert.ok(degradedListing.videoMaterialFailureReason, '后台应保留素材失败原因')
   assert.ok((transferFailed.auditRows || []).some((item) => item.syncResult === '上架-素材失败降级缺视频素材' && item.failureReason), '对账表应记录素材失败降级原因')
+
+  const retainedTransferDb = makeDb()
+  await feishuSync.applySync(retainedTransferDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '610C',
+      户型: '一室一厅一卫',
+      押一付一: '2920'
+    })
+  ], [
+    { name: '610C.mp4', token: 'SYNTHETIC-610C-OLD', videoUrl: 'https://example.com/610C.mp4', videoKey: managedKey('610C.mp4') }
+  ], 'A1', { dryRun: true })
+  const retainedTransferBefore = { ...retainedTransferDb.listings[0] }
+  const originalFetch = global.fetch
+  const originalUploadToOss = config.feishu.uploadToOss
+  const originalRetryCount = config.feishu.materialTransferRetryCount
+  const originalPutObjectBuffer = oss.putObjectBuffer
+  const syntheticMissingPath = path.join(__dirname, '__synthetic_missing_media__', '610C.mp4')
+  assert.strictEqual(fs.existsSync(syntheticMissingPath), false, '合成转存失败路径必须不存在，避免测试读取宿主文件')
+  let syntheticFetchAttempts = 0
+  let syntheticOssPutAttempts = 0
+  let retainedTransferFailed
+  try {
+    // 无论宿主是否配置了真实 OSS，测试都用明确不存在的合成本地路径在读盘阶段稳定失败；
+    // global.fetch 只作“不得联网”探针，若被调用即说明单测重新依赖了飞书/OSS 外部环境。
+    config.feishu.uploadToOss = true
+    config.feishu.materialTransferRetryCount = 0
+    global.fetch = async () => {
+      syntheticFetchAttempts += 1
+      throw new Error('SYNTHETIC_TEST_MUST_NOT_USE_NETWORK')
+    }
+    oss.putObjectBuffer = async () => {
+      syntheticOssPutAttempts += 1
+      throw new Error('SYNTHETIC_TEST_MUST_NOT_UPLOAD_TO_OSS')
+    }
+    retainedTransferFailed = await feishuSync.applySync(retainedTransferDb, [
+      row({
+        区域: '闸弄口',
+        小区: '京漾东韵府',
+        几栋: '1',
+        几单元: '2',
+        房号: '610C',
+        户型: '一室一厅一卫',
+        押一付一: '2920'
+      })
+    ], [
+      {
+        name: '610C.mp4',
+        token: 'SYNTHETIC-610C-NEW',
+        key: 'synthetic-610c-material',
+        sourcePath: 'SYNTHETIC/610C.mp4',
+        localFilePath: syntheticMissingPath
+      }
+    ], 'A1', { dryRun: false })
+  } finally {
+    config.feishu.uploadToOss = originalUploadToOss
+    config.feishu.materialTransferRetryCount = originalRetryCount
+    oss.putObjectBuffer = originalPutObjectBuffer
+    global.fetch = originalFetch
+  }
+  assert.strictEqual(syntheticFetchAttempts, 0, '飞书同步单测不得访问真实飞书或 OSS 网络')
+  assert.strictEqual(syntheticOssPutAttempts, 0, '合成缺文件路径必须在读盘阶段失败，单测不得发起 OSS 写入')
+  const retainedTransferListing = retainedTransferDb.listings[0]
+  assert.strictEqual(retainedTransferFailed.materialTransferFailed, 1, '存量房源新素材转存失败也必须如实计数')
+  assert.strictEqual(retainedTransferListing.videoKey, retainedTransferBefore.videoKey, '新素材转存失败不得抹掉存量受控视频')
+  assert.strictEqual(retainedTransferListing.videoUrl, '', '新素材转存失败时仍须丢弃与受控 key 不同源的旧外链 URL')
+  assert.strictEqual(retainedTransferListing.sourceMaterialToken, retainedTransferBefore.sourceMaterialToken, '转存失败时不得把新 token 绑定到旧视频，避免下轮错误复用')
+  assert.strictEqual(retainedTransferListing.videoMaterialStatus, '沿用上次视频·素材待核', '转存失败沿用旧视频必须显式标记')
+  assert.strictEqual(retainedTransferListing.videoMaterialFailureReason.length > 0, true, '沿用旧视频仍必须保留本轮转存失败原因')
+  assert.strictEqual(retainedTransferListing.recommendationProfile.hasVideo, true, '转存失败但沿用旧视频时推荐画像仍应可播放')
+  assert.ok((retainedTransferFailed.auditRows || []).some((item) => item.syncResult === '上架-沿用上次视频·转存待核' && item.failureReason), '转存失败沿用旧视频的逐行对账必须明确待核且保留原因')
+
+  const retainedRecovered = await feishuSync.applySync(retainedTransferDb, [
+    row({
+      区域: '闸弄口',
+      小区: '京漾东韵府',
+      几栋: '1',
+      几单元: '2',
+      房号: '610C',
+      户型: '一室一厅一卫',
+      押一付一: '2920'
+    })
+  ], [
+    { name: '610C.mp4', token: 'SYNTHETIC-610C-NEW', videoKey: managedKey('610C-new.mp4') }
+  ], 'A1', { dryRun: true })
+  const recoveredTransferListing = retainedTransferDb.listings[0]
+  assert.strictEqual(retainedRecovered.updated, 1, '素材恢复后必须更新原房源')
+  assert.strictEqual(recoveredTransferListing.missingVideoMaterial, false, '素材恢复后必须清除缺素材标记')
+  assert.strictEqual(recoveredTransferListing.syncStatus, '已同步飞书', '素材恢复后必须恢复正常同步状态')
+  assert.strictEqual(recoveredTransferListing.videoMaterialStatus, '已匹配视频素材', '素材恢复后必须恢复已匹配状态')
+  assert.strictEqual(recoveredTransferListing.sourceMaterialToken, 'SYNTHETIC-610C-NEW', '素材恢复后必须绑定本轮成功的新 token')
+  assert.strictEqual(recoveredTransferListing.videoKey, managedKey('610C-new.mp4'), '素材恢复后必须更新到本轮成功的新受控视频')
+  assert.strictEqual('videoMaterialFailureReason' in recoveredTransferListing, false, '素材恢复后必须清除旧失败原因')
 
   const districtUpdated = await feishuSync.applySync(db, [
     row({

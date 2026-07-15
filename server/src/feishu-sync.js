@@ -6,14 +6,17 @@ const locationMap = require('./location-map')
 const oss = require('./oss')
 const { refreshRecommendationProfile } = require('./listing-recommendation-profile')
 const { normalizeListingFeatures } = require('./listing-features')
+const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 
 const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
 const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
+const RETAINED_VIDEO_MATERIAL_STATUS = '沿用上次视频·素材待核'
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
 const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
 const UP_STATUS_PATTERN = /上架|在租|待租|空置|可租|有效|up|on|active/i
 const NOT_UP_PATTERN = /未上架|不上架|否|false|no|0/i
+const RETAINABLE_ACTIVE_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|up|on|active)$/i
 const SENSITIVE_FEISHU_FIELD_PATTERN = /(看房方式密码|看房方式|看房密码|门锁密码|密码|联系方式|联系电话|房东联系方式|房东电话|联系人电话|手机号|手机|电话|微信|身份证|证件)/i
 
 function nowText() {
@@ -1452,19 +1455,25 @@ async function ensureMaterialVideo(token, material, options = {}) {
       materialUrl: material.videoUrl || material.url || material.sourcePath || material.name || ''
     }
   }
+  // 本轮素材若已经携带完整视频结果，必须优先于任何旧 token 复用；否则同 token 会把旧对象
+  // 抢在新对象之前返回，令本轮明确的新视频永远无法生效。
+  if (material.videoKey && material.videoUrl) {
+    return { videoKey: material.videoKey, videoUrl: material.videoUrl, materialUrl: material.videoUrl }
+  }
   // 复用：目标房源若已保存过同一素材（token 一致）的视频且有 OSS videoKey，直接沿用，避免
   // 每轮同步都重新下载整只视频再重传 OSS。原跳过条件 material.videoKey 来自 drive 文件列表恒为
   // 空、从不命中，导致每次同步对每个匹配素材全量下载+重传，产生 GB 级重复流量与孤儿对象。
   const reuseTarget = options.existing
-  if (reuseTarget && material.token && reuseTarget.sourceMaterialToken === material.token && reuseTarget.videoKey) {
-    return {
-      videoKey: reuseTarget.videoKey,
-      videoUrl: reuseTarget.videoUrl || '',
-      materialUrl: reuseTarget.sourceMaterialUrl || material.url || ''
+  if (reuseTarget && options.allowExistingVideoReuse === true && material.token && reuseTarget.sourceMaterialToken === material.token) {
+    const snapshot = managedVideoSnapshot(reuseTarget)
+    if (snapshot) {
+      return {
+        videoKey: snapshot.videoKey,
+        videoUrl: '',
+        materialUrl: '',
+        reusedExisting: true
+      }
     }
-  }
-  if (material.videoKey && material.videoUrl) {
-    return { videoKey: material.videoKey, videoUrl: material.videoUrl, materialUrl: material.videoUrl }
   }
   if (!config.feishu.uploadToOss && (material.videoUrl || material.url)) {
     return { videoKey: '', videoUrl: material.videoUrl || material.url, materialUrl: material.videoUrl || material.url }
@@ -1579,9 +1588,70 @@ function materialLabel(material = null) {
 function clearListingVideoFields(listing = {}) {
   listing.videoUrl = ''
   listing.videoKey = ''
+  clearListingDerivedVideoFields(listing)
+}
+
+function clearListingDerivedVideoFields(listing = {}) {
   delete listing.videoSignedUrl
   delete listing.signedVideoUrl
   delete listing.videoPreviewUrl
+}
+
+function managedVideoSnapshot(listing = {}) {
+  const sourceOptions = {
+    uploadDir: config.oss && config.oss.uploadDir,
+    allowedOrigins: typeof oss.readSourceOrigins === 'function' ? oss.readSourceOrigins() : []
+  }
+  const videoKey = resolveManagedVideoObjectKey(listing, sourceOptions)
+  if (!videoKey) return null
+  return {
+    videoKey,
+    // object key 是公开代理唯一需要的可信根。旧 URL/素材 URL 可能携带短签 query，保留会把临时能力延寿并下发后台；
+    // 即使 URL 自身来自受控 origin，也只取出规范化 key，所有 URL 一律清空。
+    videoUrl: '',
+    sourceMaterialToken: String(listing.sourceMaterialToken || ''),
+    sourceMaterialName: String(listing.sourceMaterialName || ''),
+    sourceMaterialPath: String(listing.sourceMaterialPath || ''),
+    sourceMaterialUrl: ''
+  }
+}
+
+function restoreManagedVideoSnapshot(listing, snapshot) {
+  listing.videoKey = snapshot.videoKey
+  listing.videoUrl = snapshot.videoUrl
+  listing.sourceMaterialToken = snapshot.sourceMaterialToken
+  listing.sourceMaterialName = snapshot.sourceMaterialName
+  listing.sourceMaterialPath = snapshot.sourceMaterialPath
+  listing.sourceMaterialUrl = snapshot.sourceMaterialUrl
+  clearListingDerivedVideoFields(listing)
+}
+
+function isRetainingManagedVideo(listing = {}) {
+  return listing.videoMaterialStatus === RETAINED_VIDEO_MATERIAL_STATUS
+}
+
+function wasContinuouslyActiveFeishuListing(listing = {}) {
+  if (listing.externalSource !== 'feishu') return false
+  const lifecycleStatus = normalizeText(listing.lifecycleStatus)
+  if (lifecycleStatus && lifecycleStatus !== 'active') return false
+  const status = normalizeText(listing.status)
+  // 这里不能复用“包含式”UP_STATUS_PATTERN：未上架/未在租同样包含正向词，会把否定状态误判为持续在架。
+  // 飞书同步成功后本来就会固化为“在租”，因此保留资格使用完整值白名单并 fail-closed。
+  if (!RETAINABLE_ACTIVE_STATUS_PATTERN.test(status)) return false
+  if (listing.reviewStatus === '待审核' || listing.requiresManualReview || listing.manualReviewRequired) return false
+  return true
+}
+
+function hasSamePhysicalRoomIdentity(listing = {}, row = {}) {
+  const nextIdentity = normalizeText(row.roomIdentityKey)
+  if (!nextIdentity) return false
+  const previousIdentities = unique([
+    normalizeText(listing.feishuRoomIdentityKey),
+    roomIdentityKey(listing)
+  ])
+  // 旧存量若“持久化物理键”和当前字段互相矛盾，也必须 fail-closed；只要任一旧证据不等于
+  // 本轮完整小区/楼栋/单元/房号，就不能把旧套视频带到本轮房源。
+  return previousIdentities.length > 0 && previousIdentities.every((identity) => identity === nextIdentity)
 }
 
 function buildAuditRow(row, material, syncResult, failureReason = '') {
@@ -1604,7 +1674,7 @@ function combineFailureReasons(...reasons) {
   return reasons.map((item) => String(item || '').trim()).filter(Boolean).join('；')
 }
 
-function attachFeishuFields(listing, row, material, video, materialFailureReason = '') {
+function attachFeishuFields(listing, row, material, video, materialFailureReason = '', options = {}) {
   listing.externalSource = 'feishu'
   listing.feishuRecordId = String(row.externalId)
   listing.feishuMatchKey = row.matchKey
@@ -1637,10 +1707,22 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
   const hasMaterial = Boolean(material)
   const materialReady = hasMaterial && !materialFailureReason
+  // domain.updateNormalListing 会在本轮视频字段为空时保留旧值，因此这里仍能先验证并快照最后一份有效视频。
+  // 只接受受控 uploadDir/OSS 源；任意外链、客户端 URL 或畸形 object key 均不得进入沿用路径。
+  const retainedManagedVideo = materialReady || options.allowRetainedVideo === false
+    ? null
+    : managedVideoSnapshot(listing)
   listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
   listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''
   listing.sourceMaterialPath = hasMaterial ? (material.sourcePath || '') : ''
-  listing.sourceMaterialUrl = hasMaterial ? (video.materialUrl || material.url || '') : ''
+  listing.sourceMaterialUrl = hasMaterial && !video.reusedExisting ? (video.materialUrl || material.url || '') : ''
+  if (materialReady) {
+    // updateNormalListing 为普通编辑兼容“空值不覆盖”，但飞书同步必须让本轮素材成为唯一真相：
+    // URL-only 新素材要显式清旧 key，key-only/受控复用要显式清旧 URL，避免新旧两个房源媒体拼接。
+    listing.videoKey = String(video.videoKey || '')
+    listing.videoUrl = video.reusedExisting ? '' : String(video.videoUrl || '')
+    clearListingDerivedVideoFields(listing)
+  }
   listing.syncStatus = materialReady ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
   listing.videoMaterialStatus = materialReady ? '已匹配视频素材' : (hasMaterial ? '素材转存失败' : MISSING_VIDEO_MATERIAL_STATUS)
   listing.missingVideoMaterial = !materialReady
@@ -1658,7 +1740,13 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.lastVerifiedAt = listing.syncedAt
   listing.updatedAt = listing.syncedAt
   if (!materialReady) {
-    clearListingVideoFields(listing)
+    if (retainedManagedVideo) {
+      restoreManagedVideoSnapshot(listing, retainedManagedVideo)
+      listing.syncStatus = '视频沿用待核'
+      listing.videoMaterialStatus = RETAINED_VIDEO_MATERIAL_STATUS
+    } else {
+      clearListingVideoFields(listing)
+    }
     refreshRecommendationProfile(listing, { generatedAt: listing.updatedAt })
   }
   delete listing.expiredAt
@@ -1671,18 +1759,24 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
 function upsertFeishuListing(db, adminId, existing, byExternalId, row, material, video, materialFailureReason = '') {
   const payload = buildListingPayload(row, video)
   if (existing) {
-    if (existing.lifecycleStatus === 'expired' || existing.status === '已下架') {
+    // 必须在 updateNormalListing/attachFeishuFields 改写状态和物理字段之前冻结资格。
+    // “持续在架”与“同一物理房源”缺一不可；成交/签单/暂停/失效、来源不明、物理键变化或不完整均清旧视频。
+    const allowRetainedVideo = wasContinuouslyActiveFeishuListing(existing) && hasSamePhysicalRoomIdentity(existing, row)
+    const wasInactive = existing.lifecycleStatus === 'expired' || existing.status === '已下架'
+    if (wasInactive) {
       existing.lifecycleStatus = 'active'
       existing.status = '在租'
     }
     domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true, allowMissingLandlordPhone: true })
-    attachFeishuFields(existing, row, material, video, materialFailureReason)
+    // 曾下架后重新出现的房源可能已换租客/装修/拍摄内容；没有本轮素材时不能复活旧视频。
+    // 只有持续在架的同一房源遇到瞬时漏素材/转存失败，才允许沿用上次受控视频。
+    attachFeishuFields(existing, row, material, video, materialFailureReason, { allowRetainedVideo })
     existing.feishuLastSyncAction = 'updated'
     return { action: 'updated', listing: existing }
   }
   const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true, allowMissingLandlordPhone: true })
   const listing = db.listings.find((item) => item.id === detail.id)
-  attachFeishuFields(listing, row, material, video, materialFailureReason)
+  attachFeishuFields(listing, row, material, video, materialFailureReason, { allowRetainedVideo: false })
   if (listing) listing.feishuLastSyncAction = 'created'
   if (listing && row.externalId) byExternalId.set(String(row.externalId), listing)
   if (listing && row.roomIdentityKey) byExternalId.set(String(row.roomIdentityKey), listing)
@@ -1761,7 +1855,13 @@ async function applySync(db, rows, materials, adminId, options = {}) {
 
     try {
       const video = material
-        ? await ensureMaterialVideo(options.feishuToken || '', material, { ...options, existing })
+        ? await ensureMaterialVideo(options.feishuToken || '', material, {
+          ...options,
+          existing,
+          allowExistingVideoReuse: Boolean(existing) &&
+            wasContinuouslyActiveFeishuListing(existing) &&
+            hasSamePhysicalRoomIdentity(existing, row)
+        })
         : { videoKey: '', videoUrl: '', materialUrl: '' }
       const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video)
       if (upsert.action === 'updated') {
@@ -1772,7 +1872,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       result.auditRows.push(buildAuditRow(
         row,
         material,
-        material ? '上架-已配视频' : '上架-缺视频素材',
+        material
+          ? '上架-已配视频'
+          : (isRetainingManagedVideo(upsert.listing) ? '上架-沿用上次视频·素材待核' : '上架-缺视频素材'),
         combineFailureReasons(material ? '' : '未匹配素材', missingContactReason)
       ))
     } catch (error) {
@@ -1796,7 +1898,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
           result.auditRows.push(buildAuditRow(
             row,
             material,
-            '上架-素材失败降级缺视频素材',
+            isRetainingManagedVideo(upsert.listing)
+              ? '上架-沿用上次视频·转存待核'
+              : '上架-素材失败降级缺视频素材',
             combineFailureReasons(failureReason, missingContactReason)
           ))
         } catch (retryError) {
