@@ -122,6 +122,9 @@ App({
   },
 
   bindWechatOpenid() {
+    // 第一版为人工支付，OpenID 绑定只属于未来微信支付模式。把门禁放在方法本身，
+    // 确保登录页及后续任何调用者都不会在 manual 模式误发预留接口请求。
+    if (this.globalData.apiConfig.paymentMode !== 'wechat') return
     if (!wx.login) return
     if (!this.globalData.authToken) return
     const sessionKey = this.globalData.authSessionKey
