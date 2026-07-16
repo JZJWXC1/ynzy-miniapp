@@ -52,6 +52,11 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function restoreClonedObject(target, snapshot) {
+  Object.keys(target).forEach((key) => delete target[key])
+  Object.assign(target, snapshot)
+}
+
 function trimSlash(value) {
   return String(value || '').replace(/\/+$/, '')
 }
@@ -1759,20 +1764,28 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
 function upsertFeishuListing(db, adminId, existing, byExternalId, row, material, video, materialFailureReason = '') {
   const payload = buildListingPayload(row, video)
   if (existing) {
-    // 必须在 updateNormalListing/attachFeishuFields 改写状态和物理字段之前冻结资格。
-    // “持续在架”与“同一物理房源”缺一不可；成交/签单/暂停/失效、来源不明、物理键变化或不完整均清旧视频。
-    const allowRetainedVideo = wasContinuouslyActiveFeishuListing(existing) && hasSamePhysicalRoomIdentity(existing, row)
-    const wasInactive = existing.lifecycleStatus === 'expired' || existing.status === '已下架'
-    if (wasInactive) {
-      existing.lifecycleStatus = 'active'
-      existing.status = '在租'
+    const snapshot = clone(existing)
+    try {
+      // 必须在 updateNormalListing/attachFeishuFields 改写状态和物理字段之前冻结资格。
+      // “持续在架”与“同一物理房源”缺一不可；成交/签单/暂停/失效、来源不明、物理键变化或不完整均清旧视频。
+      const allowRetainedVideo = wasContinuouslyActiveFeishuListing(existing) && hasSamePhysicalRoomIdentity(existing, row)
+      const wasInactive = existing.lifecycleStatus === 'expired' || existing.status === '已下架'
+      if (wasInactive) {
+        existing.lifecycleStatus = 'active'
+        existing.status = '在租'
+      }
+      domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true, allowMissingLandlordPhone: true })
+      // 曾下架后重新出现的房源可能已换租客/装修/拍摄内容；没有本轮素材时不能复活旧视频。
+      // 只有持续在架的同一房源遇到瞬时漏素材/转存失败，才允许沿用上次受控视频。
+      attachFeishuFields(existing, row, material, video, materialFailureReason, { allowRetainedVideo })
+      existing.feishuLastSyncAction = 'updated'
+      return { action: 'updated', listing: existing }
+    } catch (error) {
+      // 领域校验或后续字段挂载失败时，必须恢复同一个对象实例。否则调用方虽然收到失败，
+      // 列表数组里却会残留“已复活但未更新完整”的半成品，并被重新公开。
+      restoreClonedObject(existing, snapshot)
+      throw error
     }
-    domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true, allowMissingLandlordPhone: true })
-    // 曾下架后重新出现的房源可能已换租客/装修/拍摄内容；没有本轮素材时不能复活旧视频。
-    // 只有持续在架的同一房源遇到瞬时漏素材/转存失败，才允许沿用上次受控视频。
-    attachFeishuFields(existing, row, material, video, materialFailureReason, { allowRetainedVideo })
-    existing.feishuLastSyncAction = 'updated'
-    return { action: 'updated', listing: existing }
   }
   const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true, allowMissingLandlordPhone: true })
   const listing = db.listings.find((item) => item.id === detail.id)

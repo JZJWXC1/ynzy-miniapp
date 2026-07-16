@@ -291,6 +291,40 @@ async function main() {
   assert.strictEqual(reactivatedVideoDb.listings[0].videoMaterialStatus, '缺视频素材', '重新上架无素材应回到普通缺素材状态')
   assert.strictEqual(reactivatedVideoDb.listings[0].recommendationProfile.hasVideo, false, '重新上架无素材时推荐画像必须同步清除视频标记')
 
+  const failedReactivationDb = makeDb()
+  const failedReactivationFields = {
+    区域: '测试原子回滚板块',
+    小区: '测试原子回滚小区',
+    几栋: '6',
+    几单元: '6',
+    房号: '606B',
+    户型: '一室一厅一卫',
+    押一付一: '2860',
+    房东佣金占月租比例: 50
+  }
+  await feishuSync.applySync(failedReactivationDb, [
+    record('SYNTHETIC-FAILED-REACTIVATION', failedReactivationFields)
+  ], [
+    { name: '606B.mp4', token: 'SYNTHETIC-606B', videoKey: managedKey('606B.mp4') }
+  ], 'A1', { dryRun: true })
+  await feishuSync.applySync(failedReactivationDb, [], [], 'A1', { dryRun: true })
+  const failedReactivationBefore = JSON.parse(JSON.stringify(failedReactivationDb.listings[0]))
+  const failedReactivationFootprintsBefore = JSON.parse(JSON.stringify(failedReactivationDb.footprints))
+  const failedReactivationResult = await feishuSync.applySync(failedReactivationDb, [
+    record('SYNTHETIC-FAILED-REACTIVATION', {
+      ...failedReactivationFields,
+      房东佣金占月租比例: '60%'
+    })
+  ], [
+    { name: '606B-new.mp4', token: 'SYNTHETIC-606B-NEW', videoKey: managedKey('606B-new.mp4') }
+  ], 'A1', { dryRun: true })
+  assert.strictEqual(failedReactivationResult.failed, 1, '重新上架更新校验失败必须计入失败，不能伪报已更新')
+  assert.strictEqual(failedReactivationResult.updated, 0, '更新失败不得计入成功更新')
+  assert.deepStrictEqual(failedReactivationDb.listings[0], failedReactivationBefore, '重新上架更新失败必须原子恢复整条房源，不能残留在租状态或半套字段')
+  assert.deepStrictEqual(failedReactivationDb.footprints, failedReactivationFootprintsBefore, '重新上架更新失败不得残留足迹副作用')
+  assert.strictEqual(failedReactivationDb.listings[0].status, '已下架', '失败房源必须继续留在下架资产池')
+  assert.strictEqual(failedReactivationDb.listings[0].lifecycleStatus, 'expired', '失败房源生命周期不得被提前复活')
+
   const changedIdentityDb = makeDb()
   await feishuSync.applySync(changedIdentityDb, [
     record('SYNTHETIC-SAME-RECORD', {
@@ -323,6 +357,39 @@ async function main() {
   assert.strictEqual(changedIdentityListing.videoKey, '', '物理房源标识变化后不得把上一套视频沿用到新套')
   assert.notStrictEqual(changedIdentityListing.videoMaterialStatus, '沿用上次视频·素材待核', '跨物理房源时不得伪装为同房源暂态漏素材')
   assert.strictEqual(changedIdentityListing.recommendationProfile.hasVideo, false, '跨物理房源清除旧视频后推荐画像必须同步为无视频')
+
+  async function verifyConflictingPreviousIdentityEvidence(caseName, mutateListing) {
+    const conflictDb = makeDb()
+    const recordId = `SYNTHETIC-IDENTITY-CONFLICT-${caseName}`
+    const fields = {
+      区域: '测试身份冲突板块',
+      小区: '测试身份冲突小区',
+      几栋: '7',
+      几单元: '7',
+      房号: '707C',
+      户型: '一室一厅一卫',
+      押一付一: '3070'
+    }
+    await feishuSync.applySync(conflictDb, [record(recordId, fields)], [
+      { name: '707C.mp4', token: `SYNTHETIC-${caseName}`, videoKey: managedKey(`707C-${caseName}.mp4`) }
+    ], 'A1', { dryRun: true })
+    const listing = conflictDb.listings[0]
+    assert.ok(listing.videoKey, `${caseName} 测试前置必须先保存受控视频`)
+    mutateListing(listing)
+    await feishuSync.applySync(conflictDb, [record(recordId, fields)], [], 'A1', { dryRun: true })
+    assert.strictEqual(listing.videoKey, '', `${caseName} 任一旧物理身份凭据冲突时都不得沿用视频`)
+    assert.strictEqual(listing.recommendationProfile.hasVideo, false, `${caseName} 清旧视频后推荐画像必须同步更新`)
+  }
+
+  await verifyConflictingPreviousIdentityEvidence('字段冲突', (listing) => {
+    listing.community = '被篡改的旧小区'
+    listing.building = '9'
+    listing.unit = '9'
+    listing.roomNumber = '999Z'
+  })
+  await verifyConflictingPreviousIdentityEvidence('持久键冲突', (listing) => {
+    listing.feishuRoomIdentityKey = 'synthetic|conflicting|identity'
+  })
 
   const crossIdentityTokenDb = makeDb()
   await feishuSync.applySync(crossIdentityTokenDb, [
