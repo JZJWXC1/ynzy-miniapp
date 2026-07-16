@@ -325,6 +325,71 @@ async function main() {
   assert.strictEqual(failedReactivationDb.listings[0].status, '已下架', '失败房源必须继续留在下架资产池')
   assert.strictEqual(failedReactivationDb.listings[0].lifecycleStatus, 'expired', '失败房源生命周期不得被提前复活')
 
+  const atomicOriginalUploadToOss = config.feishu.uploadToOss
+  const atomicOriginalRetryCount = config.feishu.materialTransferRetryCount
+  const atomicOriginalCreateVideoUploadPolicy = oss.createVideoUploadPolicy
+  const atomicOriginalPutObjectBuffer = oss.putObjectBuffer
+  let atomicOssUploads = 0
+  let failedReactivationWithTransfer
+  const failedNewTransferDb = makeDb()
+  let failedNewWithTransfer
+  try {
+    config.feishu.uploadToOss = true
+    config.feishu.materialTransferRetryCount = 0
+    oss.createVideoUploadPolicy = () => ({
+      uploadMode: 'oss-post',
+      objectKey: managedKey('606B-preflight.mp4'),
+      fileUrl: 'https://synthetic.invalid/606B-preflight.mp4'
+    })
+    oss.putObjectBuffer = async (objectKey, buffer) => {
+      atomicOssUploads += 1
+      assert.ok(Buffer.isBuffer(buffer) && buffer.length > 0, '合成 OSS 上传必须收到本地只读 fixture')
+      return { objectKey, fileUrl: 'https://synthetic.invalid/606B-preflight.mp4', statusCode: 200 }
+    }
+    failedReactivationWithTransfer = await feishuSync.applySync(failedReactivationDb, [
+      record('SYNTHETIC-FAILED-REACTIVATION', {
+        ...failedReactivationFields,
+        房东佣金占月租比例: '60%'
+      })
+    ], [
+      {
+        name: '606B.mp4',
+        token: 'SYNTHETIC-606B-PREFLIGHT',
+        localFilePath: __filename
+      }
+    ], 'A1', { dryRun: false })
+    failedNewWithTransfer = await feishuSync.applySync(failedNewTransferDb, [
+      record('SYNTHETIC-FAILED-NEW', {
+        区域: '测试新增预校验板块',
+        小区: '测试新增预校验小区',
+        几栋: '8',
+        几单元: '8',
+        房号: '808D',
+        户型: '一室一厅一卫',
+        押一付一: '3080',
+        房东佣金占月租比例: '60%'
+      })
+    ], [
+      {
+        name: '808D.mp4',
+        token: 'SYNTHETIC-808D-PREFLIGHT',
+        localFilePath: __filename
+      }
+    ], 'A1', { dryRun: false })
+  } finally {
+    config.feishu.uploadToOss = atomicOriginalUploadToOss
+    config.feishu.materialTransferRetryCount = atomicOriginalRetryCount
+    oss.createVideoUploadPolicy = atomicOriginalCreateVideoUploadPolicy
+    oss.putObjectBuffer = atomicOriginalPutObjectBuffer
+  }
+  assert.strictEqual(failedReactivationWithTransfer.failed, 1, '非 dry-run 非法行仍必须稳定计入失败')
+  assert.strictEqual(failedReactivationWithTransfer.updated, 0, '非 dry-run 非法行不得伪报更新')
+  assert.strictEqual(failedNewWithTransfer.failed, 1, '新增非法行也必须在素材转存前稳定失败')
+  assert.strictEqual(failedNewWithTransfer.created, 0, '新增非法行不得留下半成品房源')
+  assert.strictEqual(failedNewTransferDb.listings.length, 0, '新增非法行失败后房源集合必须保持为空')
+  assert.strictEqual(atomicOssUploads, 0, '领域预校验失败必须发生在素材下载/上传前，不能制造 OSS 孤儿对象')
+  assert.deepStrictEqual(failedReactivationDb.listings[0], failedReactivationBefore, '非 dry-run 非法行也必须保持完整下架快照')
+
   const changedIdentityDb = makeDb()
   await feishuSync.applySync(changedIdentityDb, [
     record('SYNTHETIC-SAME-RECORD', {

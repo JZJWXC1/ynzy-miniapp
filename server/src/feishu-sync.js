@@ -1796,6 +1796,37 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
   return { action: 'created', listing }
 }
 
+function prevalidateFeishuUpsertBeforeMaterialTransfer(db, adminId, existing, row, material) {
+  // 视频转存是不可自动补偿的外部写：OSS 当前没有删除接口，上传后再发现佣金/重复房源等
+  // 领域错误会永久留下孤儿对象。先在隔离副本里执行同一条完整 upsert，让所有可预见的
+  // 业务校验和字段挂载都在下载、上传之前完成；只复制会被领域层读写的热集合，避免把
+  // 90 天足迹与历史同步日志按每行整库复制。
+  const validationDb = {
+    ...db,
+    users: clone(db.users || []),
+    listings: clone(db.listings || []),
+    pointLogs: [],
+    footprints: []
+  }
+  const validationExisting = existing
+    ? validationDb.listings.find((item) => String(item.id || '') === String(existing.id || ''))
+    : null
+  if (existing && !validationExisting) {
+    const error = new Error('飞书同步预校验无法定位存量房源')
+    error.statusCode = 409
+    throw error
+  }
+  upsertFeishuListing(
+    validationDb,
+    adminId,
+    validationExisting,
+    existingByExternalId(validationDb),
+    row,
+    material,
+    { videoKey: '', videoUrl: '', materialUrl: '' }
+  )
+}
+
 async function applySync(db, rows, materials, adminId, options = {}) {
   db.listings = db.listings || []
   db.feishuSyncLogs = db.feishuSyncLogs || []
@@ -1867,6 +1898,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     }
 
     try {
+      if (material && !options.dryRun) {
+        prevalidateFeishuUpsertBeforeMaterialTransfer(db, actorId, existing, row, material)
+      }
       const video = material
         ? await ensureMaterialVideo(options.feishuToken || '', material, {
           ...options,
