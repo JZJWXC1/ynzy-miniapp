@@ -50,7 +50,11 @@ function read(rel) {
     'mislabel-video-pending-unavailable': '无可用视频',
     'mislabel-video-pending-failed': '播放失败',
     'mislabel-video-pending-temporary': '暂不可用',
-    'mislabel-video-pending-action-negative': '点击查看当前无可用视频'
+    'mislabel-video-pending-action-negative': '点击查看当前无可用视频',
+    'mislabel-video-pending-cannot-watch': '无法观看',
+    'mislabel-video-pending-cannot-open': '无法打开视频',
+    'mislabel-video-pending-cannot-open-colloquial': '视频打不开',
+    'mislabel-video-pending-preview-failed': '预览失败'
   }
   if (videoPromptMutants[mutant] && rel === 'pages/listings/listings.wxml') {
     const mutated = source.replace('点开播放', videoPromptMutants[mutant])
@@ -214,7 +218,7 @@ function assertVideoAvailablePrompt(block) {
   const text = visibleText(block)
   assert.ok(/点开|点击|播放|查看|预览|观看|打开/.test(text), '有视频但无封面分支必须提供播放或查看动作提示，不能只写“视频”')
   assert.ok(
-    !/暂无|无视频|没有视频|无可用|缺失|待补|未上传|不存在|暂不可用|不可用|不(?:能|可|支持)?播放|禁止播放|未能播放|播放(?:失败|不可用)|加载失败|无法播放/.test(text),
+    !/暂无|无视频|没有视频|无可用|缺失|待补|未上传|不存在|暂不可用|不可用|加载失败|打不开|(?:不(?:能|可|支持)?|无法|禁止|未能)(?:播放|观看|查看|打开|预览)|(?:播放|观看|查看|打开|预览)(?:失败|不可用|异常|未成功)/.test(text),
     '有视频分支不得使用无视频、待补、不可用或播放失败语义'
   )
 }
@@ -243,7 +247,7 @@ function run() {
   assert.ok(hasAttribute(videoPendingTag, 'wx:elif', /^\{\{item\.hasVideo\}\}$/), '有视频但无封面分支必须紧邻封面并绑定 hasVideo')
   assert.ok(hasAttribute(videoPendingTag, 'class', /(?:^|\s)media-empty-state(?:\s|$)/), '有视频但无封面分支必须使用可见空态容器')
   assertVideoAvailablePrompt(videoPendingBranch)
-  for (const badPrompt of ['暂无视频', '视频待补', '视频', '视频加载中', '没有视频', '不可播放', '不能播放', '禁止播放', '未能播放', '播放失败', '无可用视频', '暂不可用', '点击查看当前无可用视频']) {
+  for (const badPrompt of ['暂无视频', '视频待补', '视频', '视频加载中', '没有视频', '不可播放', '不能播放', '禁止播放', '未能播放', '播放失败', '无可用视频', '暂不可用', '点击查看当前无可用视频', '无法观看', '无法打开视频', '视频打不开', '预览失败']) {
     assert.throws(() => assertVideoAvailablePrompt(`<view>${badPrompt}</view>`), undefined, `错误提示“${badPrompt}”必须被语义门拒绝`)
   }
   for (const goodPrompt of ['点开播放', '播放视频', '点击查看视频', '预览房源视频', '观看视频', '打开视频']) {
