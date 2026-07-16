@@ -45,11 +45,17 @@ function read(rel) {
     'mislabel-video-pending-empty': '暂无视频',
     'mislabel-video-pending-missing': '视频待补',
     'mislabel-video-pending-generic': '视频',
-    'mislabel-video-pending-loading': '视频加载中'
+    'mislabel-video-pending-loading': '视频加载中',
+    'mislabel-video-pending-cannot': '不能播放',
+    'mislabel-video-pending-unavailable': '无可用视频',
+    'mislabel-video-pending-failed': '播放失败',
+    'mislabel-video-pending-temporary': '暂不可用',
+    'mislabel-video-pending-action-negative': '点击查看当前无可用视频'
   }
   if (videoPromptMutants[mutant] && rel === 'pages/listings/listings.wxml') {
-    mutationApplied = true
-    return source.replace('点开播放', videoPromptMutants[mutant])
+    const mutated = source.replace('点开播放', videoPromptMutants[mutant])
+    if (mutated !== source) mutationApplied = true
+    return mutated
   }
   const equivalent = String(process.env.YNZY_TEST_MEDIA_EQUIVALENT || '')
   if (equivalent === 'extra-data-attributes' && rel === 'pages/listings/listings.wxml') {
@@ -206,8 +212,11 @@ function visibleText(block) {
 
 function assertVideoAvailablePrompt(block) {
   const text = visibleText(block)
-  assert.ok(/点开|点击|播放|查看|预览/.test(text), '有视频但无封面分支必须提供播放或查看动作提示，不能只写“视频”')
-  assert.ok(!/暂无|无视频|没有视频|缺失|待补|未上传|不存在|不可播放|无法播放/.test(text), '有视频分支不得使用无视频、待补或不可播放语义')
+  assert.ok(/点开|点击|播放|查看|预览|观看|打开/.test(text), '有视频但无封面分支必须提供播放或查看动作提示，不能只写“视频”')
+  assert.ok(
+    !/暂无|无视频|没有视频|无可用|缺失|待补|未上传|不存在|暂不可用|不可用|不(?:能|可|支持)?播放|禁止播放|未能播放|播放(?:失败|不可用)|加载失败|无法播放/.test(text),
+    '有视频分支不得使用无视频、待补、不可用或播放失败语义'
+  )
 }
 
 function run() {
@@ -234,10 +243,10 @@ function run() {
   assert.ok(hasAttribute(videoPendingTag, 'wx:elif', /^\{\{item\.hasVideo\}\}$/), '有视频但无封面分支必须紧邻封面并绑定 hasVideo')
   assert.ok(hasAttribute(videoPendingTag, 'class', /(?:^|\s)media-empty-state(?:\s|$)/), '有视频但无封面分支必须使用可见空态容器')
   assertVideoAvailablePrompt(videoPendingBranch)
-  for (const badPrompt of ['暂无视频', '视频待补', '视频', '视频加载中', '没有视频', '不可播放']) {
+  for (const badPrompt of ['暂无视频', '视频待补', '视频', '视频加载中', '没有视频', '不可播放', '不能播放', '禁止播放', '未能播放', '播放失败', '无可用视频', '暂不可用', '点击查看当前无可用视频']) {
     assert.throws(() => assertVideoAvailablePrompt(`<view>${badPrompt}</view>`), undefined, `错误提示“${badPrompt}”必须被语义门拒绝`)
   }
-  for (const goodPrompt of ['点开播放', '播放视频', '点击查看视频', '预览房源视频']) {
+  for (const goodPrompt of ['点开播放', '播放视频', '点击查看视频', '预览房源视频', '观看视频', '打开视频']) {
     assert.doesNotThrow(() => assertVideoAvailablePrompt(`<view>${goodPrompt}</view>`), `等价可用提示“${goodPrompt}”不应被误杀`)
   }
   const afterPending = afterImage.slice(videoPendingBranch.length).trimStart()
