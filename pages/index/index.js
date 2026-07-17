@@ -8,6 +8,7 @@ const { createPendingFilterEnvelope } = require('../../utils/pending-filter-stor
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
 const snapshotCanvasPadding = 24
+const MIN_VOICE_PRESS_DURATION_MS = 600
 const tabBarPages = [
   '/pages/index/index',
   listingTabUrl,
@@ -753,6 +754,9 @@ Page({
   },
 
   cleanupVoiceInput() {
+    this.voicePressing = false;
+    this.voicePressStartedAt = 0;
+    this.voiceAutoFindEligible = false;
     const controller = this.voiceController;
     if (!controller) return;
     const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening;
@@ -776,6 +780,8 @@ Page({
   },
 
   initVoiceInput() {
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
     const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
     this._voiceControllerGeneration = voiceControllerGeneration
     const isCurrentVoiceController = () => (
@@ -787,6 +793,7 @@ Page({
     this.voiceController = voiceInput.createController({
       onStart: () => {
         if (!isCurrentVoiceController()) return
+        this.voiceAutoFindEligible = false
         this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: true,
@@ -804,7 +811,7 @@ Page({
         if (!isCurrentVoiceController()) return
         const recognizedText = String(text || '').trim();
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText;
-        // 录音中实时字幕只更新浮层；识别完成后仅填入输入框，找房仍由用户单独点击发起。
+        // 录音中实时字幕只更新浮层；仅有效长按的最终识别结果可以自动进入找房页。
         this.setData({ voiceText: text });
       },
       onTranscribing: () => {
@@ -813,17 +820,29 @@ Page({
       },
       onStop: (text) => {
         if (!isCurrentVoiceController()) return
+        const shouldAutoFind = this.voiceAutoFindEligible === true
+        this.voiceAutoFindEligible = false
+        this.voicePressStartedAt = 0
         const content = String(text || this.lastVoiceRecognizedText || '').trim();
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+        if (!shouldAutoFind) {
+          this.lastVoiceRecognizedText = '';
+          return;
+        }
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' });
           return;
         }
         this.lastVoiceRecognizedText = '';
-        this.applyVoiceText(content);
+        this.applyVoiceText(content, () => {
+          if (isCurrentVoiceController()) this.runTextMatch();
+        });
       },
       onCancel: () => {
         if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
         this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: false,
@@ -835,6 +854,9 @@ Page({
       },
       onError: (error) => {
         if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
         this.setData({
           isVoiceListening: false,
           voicePhase: '',
@@ -1053,6 +1075,8 @@ Page({
     const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
     this.voiceStartY = Number(touch.clientY || touch.pageY || 0);
     this.voicePressing = true;
+    this.voicePressStartedAt = Date.now();
+    this.voiceAutoFindEligible = false;
     this.lastVoiceRecognizedText = '';
     this.setData({ voiceCancelActive: false, voiceText: '' });
     if (wx.vibrateShort) {
@@ -1061,6 +1085,9 @@ Page({
     try {
       controller.start();
     } catch (error) {
+      this.voicePressing = false;
+      this.voicePressStartedAt = 0;
+      this.voiceAutoFindEligible = false;
       this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
       wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' });
     }
@@ -1075,26 +1102,39 @@ Page({
     if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp });
   },
 
-  // 按住说话：松开——取消态则丢弃，否则停止录音并等待识别文字回填
+  // 按住说话：松开——取消/短按态丢弃，有效长按停止录音并在识别完成后自动找房
   onVoiceTouchEnd() {
     this.voicePressing = false;
+    const pressStartedAt = Number(this.voicePressStartedAt || 0);
+    const pressDuration = pressStartedAt > 0 ? Date.now() - pressStartedAt : 0;
+    this.voicePressStartedAt = 0;
     const controller = this.voiceController;
     if (!controller) {
+      this.voiceAutoFindEligible = false;
       this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
       return;
     }
-    if (this.data.voiceCancelActive) {
+    if (this.data.voiceCancelActive || pressDuration < MIN_VOICE_PRESS_DURATION_MS) {
+      this.voiceAutoFindEligible = false;
       controller.cancel();
       return;
     }
-    // 已在录音则停止；若极快点按（start 回调还没来）由 onStart 里的 voicePressing 守卫收尾。
+    // 达到最短长按时长且仍在录音，才允许最终识别结果自动进入找房页。
     if (this.data.voicePhase === 'recording') {
-      try { controller.stop(); } catch (error) { controller.cancel(); }
+      this.voiceAutoFindEligible = true;
+      try {
+        controller.stop();
+      } catch (error) {
+        this.voiceAutoFindEligible = false;
+        controller.cancel();
+      }
     }
   },
 
   onVoiceTouchCancel() {
     this.voicePressing = false;
+    this.voicePressStartedAt = 0;
+    this.voiceAutoFindEligible = false;
     const controller = this.voiceController;
     if (controller) {
       controller.cancel();
@@ -1105,13 +1145,13 @@ Page({
 
   noop() {},
 
-  applyVoiceText(text) {
+  applyVoiceText(text, callback) {
     const nextData = {
       assistantText: text,
       voiceText: text,
       voiceTip: '已识别，可继续修改'
     };
-    this.setData(nextData);
+    this.setData(nextData, callback);
   },
 
   handleAssistantInput(event) {

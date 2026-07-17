@@ -12,6 +12,7 @@ const {
 
 const MAX_RECOMMEND_COUNT = 5
 const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
+const MIN_VOICE_PRESS_DURATION_MS = 600
 const MATCH_RESULT_FEEDBACK_REASONS = {
   helpful: [
     { code: 'price', label: '价格合适' },
@@ -460,6 +461,9 @@ Page({
   },
 
   cleanupVoiceInput() {
+    this.voicePressing = false
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
     const controller = this.voiceController
     if (!controller) return
     const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening
@@ -483,6 +487,8 @@ Page({
   },
 
   initVoiceInput() {
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
     const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
     this._voiceControllerGeneration = voiceControllerGeneration
     const isCurrentVoiceController = () => (
@@ -495,6 +501,7 @@ Page({
     this.voiceController = voiceInput.createController({
       onStart: () => {
         if (!isCurrentVoiceController()) return
+        this.voiceAutoFindEligible = false
         this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: true, voicePhase: 'recording', voiceCancelActive: false, voiceText: '' })
         // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
@@ -506,7 +513,7 @@ Page({
         if (!isCurrentVoiceController()) return
         const recognizedText = String(text || '').trim()
         if (recognizedText) this.lastVoiceRecognizedText = recognizedText
-        // 录音中实时字幕只进浮层；识别完成后填入输入框，找房仍由用户单独发送。
+        // 录音中实时字幕只进浮层；仅有效长按的最终识别结果可以自动提交找房。
         this.setData({ voiceText: text })
       },
       onTranscribing: () => {
@@ -515,22 +522,37 @@ Page({
       },
       onStop: (text) => {
         if (!isCurrentVoiceController()) return
+        const shouldAutoFind = this.voiceAutoFindEligible === true
+        this.voiceAutoFindEligible = false
+        this.voicePressStartedAt = 0
         const content = String(text || this.lastVoiceRecognizedText || '').trim()
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+        if (!shouldAutoFind) {
+          this.lastVoiceRecognizedText = ''
+          return
+        }
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
         }
         this.lastVoiceRecognizedText = ''
-        this.setData({ voiceText: content, inputText: content })
+        this.setData({ voiceText: content, inputText: content }, () => {
+          if (isCurrentVoiceController()) this.submitNeed(content, 'voice')
+        })
       },
       onCancel: () => {
         if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
         this.lastVoiceRecognizedText = ''
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false, voiceText: '' })
       },
       onError: (error) => {
         if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
         this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
         wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
@@ -561,6 +583,8 @@ Page({
     const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
     this.voiceStartY = Number(touch.clientY || touch.pageY || 0)
     this.voicePressing = true
+    this.voicePressStartedAt = Date.now()
+    this.voiceAutoFindEligible = false
     this.lastVoiceRecognizedText = ''
     this.setData({ voiceCancelActive: false, voiceText: '' })
     if (wx.vibrateShort) {
@@ -569,6 +593,9 @@ Page({
     try {
       controller.start()
     } catch (error) {
+      this.voicePressing = false
+      this.voicePressStartedAt = 0
+      this.voiceAutoFindEligible = false
       this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
       wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' })
     }
@@ -584,22 +611,35 @@ Page({
 
   onVoiceTouchEnd() {
     this.voicePressing = false
+    const pressStartedAt = Number(this.voicePressStartedAt || 0)
+    const pressDuration = pressStartedAt > 0 ? Date.now() - pressStartedAt : 0
+    this.voicePressStartedAt = 0
     const controller = this.voiceController
     if (!controller) {
+      this.voiceAutoFindEligible = false
       this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
       return
     }
-    if (this.data.voiceCancelActive) {
+    if (this.data.voiceCancelActive || pressDuration < MIN_VOICE_PRESS_DURATION_MS) {
+      this.voiceAutoFindEligible = false
       controller.cancel()
       return
     }
     if (this.data.voicePhase === 'recording') {
-      try { controller.stop() } catch (error) { controller.cancel() }
+      this.voiceAutoFindEligible = true
+      try {
+        controller.stop()
+      } catch (error) {
+        this.voiceAutoFindEligible = false
+        controller.cancel()
+      }
     }
   },
 
   onVoiceTouchCancel() {
     this.voicePressing = false
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
     const controller = this.voiceController
     if (controller) {
       controller.cancel()
