@@ -87,23 +87,42 @@ function setAtPath(target, key, value) {
   current[parts[parts.length - 1]] = value
 }
 
-function makePage(definition) {
+function makePage(definition, options = {}) {
+  const pendingSetDataCallbacks = []
   const page = Object.assign({}, definition, {
     data: JSON.parse(JSON.stringify(definition.data || {})),
+    _deferSetDataCallbacks: options.deferSetDataCallbacks === true,
+    _pendingSetDataCallbacks: pendingSetDataCallbacks,
     setData(patch, callback) {
       if (this._pageActive === false) this._writesAfterUnload = Number(this._writesAfterUnload || 0) + 1
       Object.keys(patch || {}).forEach((key) => setAtPath(this.data, key, patch[key]))
-      if (typeof callback === 'function') callback()
+      if (typeof callback !== 'function') return
+      if (this._deferSetDataCallbacks) {
+        pendingSetDataCallbacks.push(callback)
+        return
+      }
+      callback()
     }
   })
   page._pageActive = true
   return page
 }
 
-function createVoicePage(definition) {
-  const page = makePage(definition)
+function createVoicePage(definition, options) {
+  const page = makePage(definition, options)
   page.initVoiceInput()
   return { page, session: voiceSessions[voiceSessions.length - 1] }
+}
+
+function flushSetDataCallbacks(page) {
+  const callbacks = page._pendingSetDataCallbacks.splice(0)
+  page._deferSetDataCallbacks = false
+  callbacks.forEach((callback) => callback())
+  return callbacks.length
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setImmediate(resolve))
 }
 
 function touchStart(page, y = 300) {
@@ -147,6 +166,11 @@ async function main() {
   assert.strictEqual(chatPayloads.length, 1, '同一次录音的重复终态不得重复请求')
   assert.strictEqual(navigationUrls.length, 1, '同一次录音的重复终态不得重复导航')
 
+  await flushPromises()
+  assert.strictEqual(validMatch.page.data.loading, false, '首个助手请求必须已完成，才能验证完成后的迟到重复终态')
+  validMatch.session.callbacks.onStop('首次请求完成后迟到的重复终态')
+  assert.strictEqual(chatPayloads.length, 1, '首次请求完成后的迟到重复终态仍不得再次请求')
+
   const shortMatch = createVoicePage(matchDefinition)
   touchStart(shortMatch.page)
   finishShortPress(shortMatch.page, shortMatch.session, '短按误识别文字')
@@ -184,6 +208,24 @@ async function main() {
   staleIndex.session.callbacks.onStop('没有有效手势资格的首页语音')
   assert.strictEqual(chatPayloads.length, 1, '没有有效长按资格的迟到回调不得发起请求')
   assert.strictEqual(navigationUrls.length, 1, '没有有效长按资格的迟到回调不得导航')
+
+  const deferredIndex = createVoicePage(indexDefinition, { deferSetDataCallbacks: true })
+  touchStart(deferredIndex.page)
+  finishLongPress(deferredIndex.page, deferredIndex.session, '回调等待期间重建的首页语音')
+  assert.strictEqual(deferredIndex.page._pendingSetDataCallbacks.length, 1, '首页最终文字 setData 回调必须处于可控等待窗口')
+  const navigationCountBeforeIndexRebuild = navigationUrls.length
+  deferredIndex.page.initVoiceInput()
+  assert.strictEqual(flushSetDataCallbacks(deferredIndex.page), 1, '首页必须只释放一个最终文字回调')
+  assert.strictEqual(navigationUrls.length, navigationCountBeforeIndexRebuild, '首页控制器重建后旧 setData 回调不得导航')
+
+  const deferredMatch = createVoicePage(matchDefinition, { deferSetDataCallbacks: true })
+  touchStart(deferredMatch.page)
+  finishLongPress(deferredMatch.page, deferredMatch.session, '回调等待期间重建的助手语音')
+  assert.strictEqual(deferredMatch.page._pendingSetDataCallbacks.length, 1, '找房页最终文字 setData 回调必须处于可控等待窗口')
+  const requestCountBeforeMatchRebuild = chatPayloads.length
+  deferredMatch.page.initVoiceInput()
+  assert.strictEqual(flushSetDataCallbacks(deferredMatch.page), 1, '找房页必须只释放一个最终文字回调')
+  assert.strictEqual(chatPayloads.length, requestCountBeforeMatchRebuild, '找房页控制器重建后旧 setData 回调不得提交')
 
   const manualMatch = makePage(matchDefinition)
   manualMatch.data.inputText = '手动输入的找房需求'
