@@ -316,6 +316,7 @@ page {
 /* 录音浮层 */
 .voice-rec-mask {
   position: fixed;
+  pointer-events: none;
   left: 0;
   right: 0;
   top: 0;
