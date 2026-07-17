@@ -205,6 +205,14 @@
           data-cover="{{item.coverUrl}}"
           binderror="onNearbyCoverError"
         ></image>
+        <view wx:elif="{{item.hasVideo}}" class="nearby-cover nearby-media-empty nearby-media-pending">
+          <text class="nearby-media-empty-mark">影</text>
+          <text class="nearby-media-empty-label">点开播放</text>
+        </view>
+        <view wx:else class="nearby-cover nearby-media-empty">
+          <text class="nearby-media-empty-mark">—</text>
+          <text class="nearby-media-empty-label">暂无视频</text>
+        </view>
         <view class="nearby-card-body">
           <view class="nearby-card-head">
             <view class="nearby-card-copy">
