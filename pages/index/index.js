@@ -642,9 +642,34 @@ Page({
 
   onLoad() {
     this._pageActive = true
+    this.showNativeShareMenu()
     this.authSessionSnapshot = currentAuthSessionKey()
     this.bindAuthInvalidationListener()
     this.initVoiceInput();
+  },
+
+  showNativeShareMenu() {
+    if (!wx.showShareMenu) return
+    try {
+      wx.showShareMenu({
+        menus: ['shareAppMessage', 'shareTimeline']
+      })
+    } catch (error) {
+      // 分享菜单能力不应阻断首页既有加载流程。
+    }
+  },
+
+  onShareAppMessage() {
+    return {
+      title: '寓你住一起',
+      path: '/pages/index/index'
+    }
+  },
+
+  onShareTimeline() {
+    return {
+      title: '寓你住一起'
+    }
   },
 
   onShow() {
