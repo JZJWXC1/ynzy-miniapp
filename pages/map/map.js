@@ -210,6 +210,7 @@ Page({
       this.loadCommunities({ recenter: true })
       return
     }
+    this.setData({ assistantReturnAvailable: false })
     this.loadCommunities({ recenter: false })
   },
 

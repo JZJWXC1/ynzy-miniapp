@@ -1102,6 +1102,9 @@ Page({
       // 不能再作为房源自身 area/community 与 ID 叠加，否则周边房源会被全部误筛掉。
       delete filters.area
       delete filters.community
+      delete filters.budget
+      delete filters.layout
+      delete filters.rentMode
     }
     filters.returnToAssistant = true
     saveAssistantMapReturnState({
