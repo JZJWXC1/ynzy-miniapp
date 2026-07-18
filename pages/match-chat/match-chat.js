@@ -6,6 +6,10 @@ const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
 const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
 const {
+  saveAssistantMapReturnState,
+  restoreAssistantMapReturnState
+} = require('../../utils/assistant-map-return-state')
+const {
   NO_FEATURE,
   parseFeatureInput
 } = require('../../utils/listing-features')
@@ -328,6 +332,20 @@ Page({
     this.authSessionSnapshot = currentAuthSessionKey()
     this.bindAuthInvalidationListener()
     this.initVoiceInput()
+    if (options && options.returnFromMap === '1') {
+      const restored = restoreAssistantMapReturnState(this.authSessionSnapshot)
+      if (restored) {
+        const restoredData = Object.assign({}, restored.data || {}, {
+          loading: false,
+          isVoiceListening: false,
+          voiceCancelActive: false,
+          voicePhase: ''
+        })
+        this.setData(restoredData)
+        Object.assign(this, restored.context || {})
+        return
+      }
+    }
     const text = decodeOption(options.text)
     const voiceText = decodeOption(options.voiceText)
     const firstNeed = text || voiceText
@@ -1079,6 +1097,32 @@ Page({
       const id = event.currentTarget.dataset.id
       if (id) filters.listingIds = [id]
     }
+    if (filters.listingIds.length) {
+      // 推荐卡里的房源 ID 已经是最终结果；“新天地附近”等仅是检索锚点，
+      // 不能再作为房源自身 area/community 与 ID 叠加，否则周边房源会被全部误筛掉。
+      delete filters.area
+      delete filters.community
+    }
+    filters.returnToAssistant = true
+    saveAssistantMapReturnState({
+      sessionKey: currentAuthSessionKey(),
+      data: {
+        messages: this.data.messages,
+        inputText: this.data.inputText,
+        needHistory: this.data.needHistory,
+        voiceMode: this.data.voiceMode,
+        voiceText: this.data.voiceText,
+        scrollTarget: this.data.scrollTarget
+      },
+      context: {
+        currentThreadId: this.currentThreadId || '',
+        lastNeedContext: this.lastNeedContext || null,
+        lastAssistantPayload: this.lastAssistantPayload || null,
+        lastRecognizePayload: this.lastRecognizePayload || null,
+        lastRequestPayload: this.lastRequestPayload || null,
+        lastAssistantResultSource: this.lastAssistantResultSource || ''
+      }
+    })
     try {
       wx.setStorageSync('ynzy_pending_map_filters', createPendingFilterEnvelope(filters, currentAuthSessionKey()))
     } catch (error) {

@@ -180,7 +180,8 @@ Page({
     rentFilters: RENT_FILTERS,
     layoutFilters: LAYOUT_FILTERS,
     rentModeFilters: RENT_MODE_FILTERS,
-    sourceTypeFilters: SOURCE_TYPE_FILTERS
+    sourceTypeFilters: SOURCE_TYPE_FILTERS,
+    assistantReturnAvailable: false
   },
 
   onShow() {
@@ -200,7 +201,12 @@ Page({
     }
     if (Object.keys(pending).length) {
       const filters = this.mergePendingFilters(this.data.filters, pending)
-      this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
+      this.setData({
+        filters,
+        assistantReturnAvailable: pending.returnToAssistant === true,
+        selectedCommunityId: '',
+        selectedCommunity: null
+      })
       this.loadCommunities({ recenter: true })
       return
     }
@@ -364,6 +370,15 @@ Page({
 
   retryMap() {
     this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
+  },
+
+  returnToAssistant() {
+    wx.navigateTo({
+      url: '/pages/match-chat/match-chat?returnFromMap=1',
+      fail: () => {
+        wx.showToast({ title: '找房助手打开失败', icon: 'none' })
+      }
+    })
   },
 
   buildMarkers(communities) {

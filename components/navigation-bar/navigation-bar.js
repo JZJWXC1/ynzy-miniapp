@@ -42,6 +42,10 @@ Component({
       type: Boolean,
       value: true
     },
+    customBack: {
+      type: Boolean,
+      value: false
+    },
     loading: {
       type: Boolean,
       value: false
@@ -110,6 +114,10 @@ Component({
     },
     back() {
       const data = this.data
+      if (data.customBack) {
+        this.triggerEvent('back', { delta: data.delta }, {})
+        return
+      }
       const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
       const currentPage = pages[pages.length - 1]
       const currentPath = currentPage && currentPage.route ? `/${currentPage.route}` : ''
