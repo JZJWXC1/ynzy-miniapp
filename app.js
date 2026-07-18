@@ -1,6 +1,7 @@
 const { DEFAULT_API_CONFIG } = require('./utils/api-config')
 const deployConfig = require('./utils/deploy-config')
 const apiService = require('./utils/api-service')
+const { clearAssistantMapReturnState } = require('./utils/assistant-map-return-state')
 
 function authExpiryTimestamp(value) {
   if (value === undefined || value === null || value === '') return 0
@@ -97,6 +98,7 @@ App({
     const expiresAt = authExpiryTimestamp(tokenExpiresAt)
     if (!token || !expiresAt || expiresAt <= Date.now()) return false
     if (!persistAuthStorageAtomically({ token, expiresAt, userId: user.id })) return false
+    clearAssistantMapReturnState()
     this.globalData.user = profile
     this.globalData.userId = user.id
     this.globalData.authToken = token
@@ -141,6 +143,7 @@ App({
   },
 
   logout() {
+    clearAssistantMapReturnState()
     this.globalData.user = null
     this.globalData.userId = ''
     this.globalData.authToken = ''

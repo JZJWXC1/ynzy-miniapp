@@ -7,7 +7,8 @@ const listingDisplay = require('../../utils/listing-display')
 const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
 const {
   saveAssistantMapReturnState,
-  restoreAssistantMapReturnState
+  restoreAssistantMapReturnState,
+  clearAssistantMapReturnState
 } = require('../../utils/assistant-map-return-state')
 const {
   NO_FEATURE,
@@ -335,7 +336,11 @@ Page({
     if (options && options.returnFromMap === '1') {
       const restored = restoreAssistantMapReturnState(this.authSessionSnapshot)
       if (restored) {
+        const restoredMessages = Array.isArray(restored.data && restored.data.messages)
+          ? restored.data.messages.map((message) => Object.assign({}, message, { feedbackLoading: false }))
+          : initialMessages()
         const restoredData = Object.assign({}, restored.data || {}, {
+          messages: restoredMessages,
           loading: false,
           isVoiceListening: false,
           voiceCancelActive: false,
@@ -388,6 +393,7 @@ Page({
   },
 
   resetForAuthSession(nextSessionKey) {
+    clearAssistantMapReturnState()
     this.authSessionSnapshot = nextSessionKey
     this.activeRequestId = createMessageId('session-reset')
     this.activeRequestAllowsPublicFallback = false
@@ -1088,6 +1094,10 @@ Page({
   },
 
   openMapForListing(event) {
+    if (this.data.loading) {
+      wx.showToast({ title: '请等待找房结果完成', icon: 'none' })
+      return
+    }
     const messageId = event.currentTarget.dataset.messageId
     const message = this.findMessage(messageId) || {}
     const filters = Object.assign({}, message.mapFilters || {})
@@ -1107,6 +1117,11 @@ Page({
       delete filters.rentMode
     }
     filters.returnToAssistant = true
+    const returnMessages = this.data.messages || []
+    const lastMessage = returnMessages[returnMessages.length - 1]
+    const returnScrollTarget = this.data.scrollTarget === 'typing-row'
+      ? ((lastMessage && lastMessage.id) || 'bottom-anchor')
+      : this.data.scrollTarget
     saveAssistantMapReturnState({
       sessionKey: currentAuthSessionKey(),
       data: {
@@ -1115,7 +1130,7 @@ Page({
         needHistory: this.data.needHistory,
         voiceMode: this.data.voiceMode,
         voiceText: this.data.voiceText,
-        scrollTarget: this.data.scrollTarget
+        scrollTarget: returnScrollTarget
       },
       context: {
         currentThreadId: this.currentThreadId || '',

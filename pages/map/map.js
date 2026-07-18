@@ -186,6 +186,7 @@ Page({
 
   onShow() {
     this._pageActive = true
+    this._assistantReturnOpening = false
     this.bindAuthInvalidationListener()
     const sessionState = this.syncAuthSession()
     this.setTabBarSelected()
@@ -374,10 +375,15 @@ Page({
   },
 
   returnToAssistant() {
+    if (this._assistantReturnOpening) return
+    this._assistantReturnOpening = true
     wx.navigateTo({
       url: '/pages/match-chat/match-chat?returnFromMap=1',
       fail: () => {
         wx.showToast({ title: '找房助手打开失败', icon: 'none' })
+      },
+      complete: () => {
+        this._assistantReturnOpening = false
       }
     })
   },

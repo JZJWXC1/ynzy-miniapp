@@ -18,7 +18,12 @@ function restoreAssistantMapReturnState(sessionKey) {
   return cloneState(snapshot)
 }
 
+function clearAssistantMapReturnState() {
+  pendingState = null
+}
+
 module.exports = {
   saveAssistantMapReturnState,
-  restoreAssistantMapReturnState
+  restoreAssistantMapReturnState,
+  clearAssistantMapReturnState
 }
