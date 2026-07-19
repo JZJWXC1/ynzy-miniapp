@@ -201,18 +201,23 @@ Page({
       pending = {}
     }
     if (Object.keys(pending).length) {
+      this._assistantReturnActive = pending.returnToAssistant === true
       const filters = this.mergePendingFilters(this.data.filters, pending)
       this.setData({
         filters,
-        assistantReturnAvailable: pending.returnToAssistant === true,
+        assistantReturnAvailable: this._assistantReturnActive,
         selectedCommunityId: '',
         selectedCommunity: null
       })
       this.loadCommunities({ recenter: true })
       return
     }
-    this.setData({ assistantReturnAvailable: false })
+    this.setData({ assistantReturnAvailable: this._assistantReturnActive === true })
     this.loadCommunities({ recenter: false })
+  },
+
+  onHide() {
+    this._assistantReturnActive = false
   },
 
   onUnload() {

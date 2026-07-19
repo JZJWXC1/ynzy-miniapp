@@ -124,7 +124,7 @@ function makePage(definition) {
   return page
 }
 
-// 行为门禁 1：pending 助手入口置真；下一次普通 tab onShow 必须立即重置，不能残留箭头。
+// 行为门禁 1：同一次地图停留的重复 onShow 必须保留返回入口；真正离开后普通 tab 再进才清除。
 let mapStoredValue = pendingFilterStorage.createPendingFilterEnvelope({
   listingIds: ['LISTING-NEARBY-A'],
   returnToAssistant: true
@@ -149,7 +149,10 @@ mapPage.loadCommunities = () => {}
 mapPage.onShow()
 assert.strictEqual(mapPage.data.assistantReturnAvailable, true, '助手 pending 入口必须行为级显示返回箭头')
 mapPage.onShow()
-assert.strictEqual(mapPage.data.assistantReturnAvailable, false, '普通 tab 再进地图必须行为级清除返回箭头')
+assert.strictEqual(mapPage.data.assistantReturnAvailable, true, '同一次地图停留重复 onShow 不得清除助手返回箭头')
+mapPage.onHide()
+mapPage.onShow()
+assert.strictEqual(mapPage.data.assistantReturnAvailable, false, '真正离开后普通 tab 再进地图必须行为级清除返回箭头')
 
 let assistantNavigationCalls = []
 global.wx.navigateTo = (options) => { assistantNavigationCalls.push(options) }
