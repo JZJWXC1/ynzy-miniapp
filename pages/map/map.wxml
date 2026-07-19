@@ -3,7 +3,7 @@
   <view class="map-header">
     <view class="map-kicker">地图找房</view>
     <view class="map-title">可上图小区位置</view>
-    <view class="map-desc">已确认、近似定位和板块中心兜底会分级标注。</view>
+    <view class="map-desc">拖动或缩放地图后点“搜索当前区域”，已确认、近似位置和板块中心兜底会分级标注。</view>
   </view>
 
   <view class="filter-panel">
@@ -49,7 +49,6 @@
       bindcallouttap="handleMarkerTap"
     >
       <cover-view wx:if="{{showSearchCurrentArea}}" class="search-area" bindtap="searchCurrentRegion">搜索当前区域</cover-view>
-      <cover-view class="locate-me" bindtap="locateToMe">我的位置</cover-view>
       <cover-view class="reset-map" bindtap="resetCenter">重置</cover-view>
       <cover-view wx:if="{{!loading && !loadFailed && !communities.length}}" class="map-empty">
         <cover-view class="map-empty-text">{{emptyText}}</cover-view>

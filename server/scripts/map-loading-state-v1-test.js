@@ -295,7 +295,6 @@ async function run() {
   let regionSuccess = null
   let nativeRequestCalls = 0
   const originalCreateMapContext = wx.createMapContext
-  const originalGetLocation = wx.getLocation
   wx.createMapContext = () => ({
     getRegion(options) { regionSuccess = options.success }
   })
@@ -315,22 +314,7 @@ async function run() {
   })
   await flushPromises()
   assert.strictEqual(nativeRequestCalls, 0, '地图页卸载后的 getRegion 回调不得重新发请求')
-
-  let locationOptions = null
-  wx.getLocation = (options) => { locationOptions = options }
-  const locationPage = makePage(nativeDefinition)
-  locationPage._pageActive = true
-  const centerBeforeUnload = JSON.parse(JSON.stringify(locationPage.data.mapCenter))
-  const locationToastCount = toasts.length
-  locationPage.locateToMe()
-  locationPage.onUnload()
-  locationOptions.success({ latitude: 30.99, longitude: 120.99 })
-  assert.deepStrictEqual(locationPage.data.mapCenter, centerBeforeUnload, '地图页卸载后的定位成功不得写回中心点')
-  locationOptions.fail()
-  assert.deepStrictEqual(locationPage.data.mapCenter, centerBeforeUnload, '地图页卸载后的定位失败不得写回默认中心点')
-  assert.strictEqual(toasts.length, locationToastCount, '地图页卸载后的定位失败不得弹提示')
   wx.createMapContext = originalCreateMapContext
-  wx.getLocation = originalGetLocation
 
   const pendingMapKey = 'ynzy_pending_map_filters'
   authToken = 'TOKEN-PENDING-MAP-B'

@@ -164,7 +164,6 @@ page {
 }
 
 .search-area,
-.locate-me,
 .reset-map {
   position: absolute;
   z-index: 2;
@@ -187,13 +186,6 @@ page {
 
 .reset-map {
   right: 22rpx;
-  bottom: 22rpx;
-  color: #182E2A;
-  background: #ffffff;
-}
-
-.locate-me {
-  left: 22rpx;
   bottom: 22rpx;
   color: #182E2A;
   background: #ffffff;

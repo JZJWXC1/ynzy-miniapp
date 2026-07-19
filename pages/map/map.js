@@ -545,37 +545,6 @@ Page({
     })
   },
 
-  locateToMe() {
-    const operation = this.beginMapNativeOperation()
-    wx.getLocation({
-      type: 'gcj02',
-      success: (res) => {
-        if (!this.isMapNativeOperationCurrent(operation)) return
-        this.setData({
-          selectedCommunityId: '',
-          selectedCommunity: null,
-          mapCenter: {
-            latitude: Number(res.latitude),
-            longitude: Number(res.longitude)
-          },
-          mapScale: 15,
-          showSearchCurrentArea: false
-        })
-      },
-      fail: () => {
-        if (!this.isMapNativeOperationCurrent(operation)) return
-        this.setData({
-          selectedCommunityId: '',
-          selectedCommunity: null,
-          mapCenter: DEFAULT_CENTER,
-          mapScale: 13,
-          showSearchCurrentArea: false
-        })
-        wx.showToast({ title: '未获得定位权限，已停留在默认位置', icon: 'none' })
-      }
-    })
-  },
-
   beginMapNativeOperation() {
     const sequence = Number(this._mapNativeOperationSeq || 0) + 1
     this._mapNativeOperationSeq = sequence

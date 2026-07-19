@@ -1055,7 +1055,7 @@ Page({
     const operation = this.beginDetailOperation('showing')
     wx.showModal({
       title: '拍摄带看水印照片',
-      content: '请现场拍摄带时间和地点水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
+      content: '请现场拍摄带时间和房源位置参考水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
       confirmText: '开始拍照',
       success: (res) => {
         if (!res.confirm) return
@@ -1135,32 +1135,9 @@ Page({
       listing.community,
       listing.area || listing.district,
       listing.block
-    ].filter(Boolean).join(' · ') || '定位未授权，使用房源信息作为位置参考'
+    ].filter(Boolean).join(' · ') || '使用房源信息作为位置参考'
 
-    return new Promise((resolve) => {
-      if (!wx.getLocation) {
-        resolve({ locationText: fallback, latitude: '', longitude: '' })
-        return
-      }
-      wx.getLocation({
-        type: 'gcj02',
-        success: (res) => {
-          const latitude = Number(res.latitude)
-          const longitude = Number(res.longitude)
-          const text = Number.isFinite(latitude) && Number.isFinite(longitude)
-            ? `现场定位 ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-            : fallback
-          resolve({
-            locationText: text,
-            latitude: Number.isFinite(latitude) ? latitude : '',
-            longitude: Number.isFinite(longitude) ? longitude : ''
-          })
-        },
-        fail: () => {
-          resolve({ locationText: fallback, latitude: '', longitude: '' })
-        }
-      })
-    })
+    return Promise.resolve({ locationText: fallback, latitude: '', longitude: '' })
   },
 
   async buildShowingWatermark(photoPath, location) {
