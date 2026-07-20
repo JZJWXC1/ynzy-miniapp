@@ -62,6 +62,8 @@ const criticalScripts = [
   // 小程序登录接入账号密码：正确/错误/缺密/存量无密码/待审核/软删登录口径 + passwordHash 不外泄 +
   // DB 只存 scrypt 哈希；以及「待审核/无密码账号拿不到任何 token、无 token 拿不到 /mini 数据」正面固化。
   'server/scripts/mini-login-password-v1-test.js',
+  // 手机号协议合规：登录/注册默认未同意、无同意零请求、主动勾选后原参数单次提交、协议入口与完整披露。
+  'server/scripts/mini-auth-consent-v1-test.js',
   // 改密会话撤销：自助改密给当前设备换发新 token、其他旧会话立即失效；管理员重置使全部旧会话失效。
   'server/scripts/mini-token-revocation-v1-test.js',
   // M6：30 天滑动登录、全设备退出/停用/删除撤销、在途写 fresh 验签、稳定会话键与公开 FAQ。

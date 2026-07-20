@@ -5,6 +5,8 @@
     "pages/match-chat/match-chat",
     "pages/map/map",
     "pages/auth/auth",
+    "pages/user-agreement/user-agreement",
+    "pages/privacy-policy/privacy-policy",
     "pages/change-password/change-password",
     "pages/favorites/favorites",
     "pages/nearby-listings/nearby-listings",

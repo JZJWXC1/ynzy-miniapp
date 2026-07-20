@@ -31,6 +31,19 @@
         <view class="label">确认密码</view>
         <input value="{{form.confirmPassword}}" data-field="confirmPassword" bindinput="updateField" password="{{true}}" maxlength="32" placeholder="请再次输入登录密码" />
       </view>
+      <view class="consent-panel">
+        <checkbox-group class="consent-checkbox-group" bindchange="onAgreementChange">
+          <label class="consent-checkbox-label">
+            <checkbox value="accepted" checked="{{agreementsAccepted}}" color="#2E514A"></checkbox>
+            <text>我已阅读并同意</text>
+          </label>
+        </checkbox-group>
+        <view class="consent-links">
+          <button class="agreement-link" catchtap="openUserAgreement">《用户服务协议》</button>
+          <text>和</text>
+          <button class="agreement-link" catchtap="openPrivacyPolicy">《隐私政策》</button>
+        </view>
+      </view>
       <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">
         {{mode === 'register' ? '提交注册申请' : '登录'}}
       </button>

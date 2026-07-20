@@ -28,6 +28,7 @@ Page({
       password: '',
       confirmPassword: ''
     },
+    agreementsAccepted: false,
     submitting: false
   },
 
@@ -70,6 +71,19 @@ Page({
     })
   },
 
+  onAgreementChange(event) {
+    const values = event && event.detail && Array.isArray(event.detail.value) ? event.detail.value : []
+    this.setData({ agreementsAccepted: values.includes('accepted') })
+  },
+
+  openUserAgreement() {
+    wx.navigateTo({ url: '/pages/user-agreement/user-agreement' })
+  },
+
+  openPrivacyPolicy() {
+    wx.navigateTo({ url: '/pages/privacy-policy/privacy-policy' })
+  },
+
   validate() {
     const phone = String(this.data.form.phone || '').trim()
     const name = String(this.data.form.name || '').trim()
@@ -100,6 +114,10 @@ Page({
 
   submit() {
     if (this.data.submitting) return
+    if (this.data.agreementsAccepted !== true) {
+      wx.showToast({ title: '请先阅读并同意《用户服务协议》和《隐私政策》', icon: 'none' })
+      return
+    }
     const validation = this.validate()
     if (!validation.ok) {
       wx.showToast({ title: validation.message, icon: 'none' })
