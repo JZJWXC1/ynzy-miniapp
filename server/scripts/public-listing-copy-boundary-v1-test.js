@@ -6,6 +6,8 @@ const matchService = require('../src/match-service')
 const mockData = require('../../utils/mock-data')
 
 const SYNTHETIC_PHONE = '19900007777'
+const CURRENT_VERIFIED_AT = new Date().toISOString()
+const CURRENT_VERIFIED_RFC = new Date().toUTCString()
 const ENGLISH_ADDRESS_LABELS = [
   'Unit B',
   'Room 701',
@@ -184,7 +186,7 @@ function partnerListing(id, overrides) {
     lifecycleStatus: 'active',
     reviewStatus: '已通过',
     communityMatched: true,
-    lastVerifiedAt: '2026-07-14T00:00:00.000Z',
+    lastVerifiedAt: CURRENT_VERIFIED_AT,
     videoLabel: '2 rooms',
     videoKey: `house-videos/synthetic/${id}.mp4`,
     landlordCommissionPercent: 50,
@@ -279,7 +281,7 @@ function assertProductionProjection() {
     communityName: 'Date Boundary Community',
     block: 'Date Boundary',
     address: '杭州市拱墅区Date Boundary Community 1栋8单元888室',
-    lastVerifiedAt: `Tue, 14 Jul 2026 00:00:00 GMT (contact ${SYNTHETIC_PHONE})`,
+    lastVerifiedAt: `${CURRENT_VERIFIED_RFC} (contact ${SYNTHETIC_PHONE})`,
     mapLatitude: 30.3105,
     mapLongitude: 120.1805
   })
