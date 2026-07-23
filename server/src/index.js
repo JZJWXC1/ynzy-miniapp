@@ -1341,17 +1341,32 @@ function buildMissingEnvTemplate(db) {
     wxpay.requiredMissing().forEach((name) => names.push(name))
   }
   const feishuMissing = []
-  if (!config.feishu.recordsFile && !config.feishu.sheetToken) {
+  if (config.feishu.syncEnabled && config.feishu.mirrorSyncEnabled) {
     if (!config.feishu.appId) feishuMissing.push('FEISHU_APP_ID')
     if (!config.feishu.appSecret) feishuMissing.push('FEISHU_APP_SECRET')
     if (!config.feishu.bitableAppToken) feishuMissing.push('FEISHU_BITABLE_APP_TOKEN')
-    if (!config.feishu.bitableTableId) feishuMissing.push('FEISHU_BITABLE_TABLE_ID')
+    if (!config.feishu.sourceTableId) feishuMissing.push('FEISHU_SOURCE_TABLE_ID')
+    if (!config.feishu.miniTableId) feishuMissing.push('FEISHU_MINI_TABLE_ID')
+    if (!config.feishu.locationTableId) feishuMissing.push('FEISHU_LOCATION_TABLE_ID')
+    if (!Object.keys(config.feishu.sourceFieldBindings || {}).length) feishuMissing.push('FEISHU_SOURCE_FIELD_BINDINGS')
+    if (!Object.keys(config.feishu.miniFieldBindings || {}).length) feishuMissing.push('FEISHU_MINI_FIELD_BINDINGS')
+    if (!Object.keys(config.feishu.locationFieldBindings || {}).length) feishuMissing.push('FEISHU_LOCATION_FIELD_BINDINGS')
+    if (!config.feishu.folderToken && !config.feishu.materialsFile && !(config.feishu.sourceFieldBindings || {}).video) {
+      feishuMissing.push('FEISHU_MATERIAL_FOLDER_TOKEN')
+    }
+  } else if (config.feishu.syncEnabled) {
+    if (!config.feishu.recordsFile && !config.feishu.sheetToken) {
+      if (!config.feishu.appId) feishuMissing.push('FEISHU_APP_ID')
+      if (!config.feishu.appSecret) feishuMissing.push('FEISHU_APP_SECRET')
+      if (!config.feishu.bitableAppToken) feishuMissing.push('FEISHU_BITABLE_APP_TOKEN')
+      if (!config.feishu.bitableTableId) feishuMissing.push('FEISHU_BITABLE_TABLE_ID')
+    }
+    if (config.feishu.sheetToken) {
+      if (!config.feishu.appId) feishuMissing.push('FEISHU_APP_ID')
+      if (!config.feishu.appSecret) feishuMissing.push('FEISHU_APP_SECRET')
+    }
+    if (!config.feishu.folderToken && !config.feishu.materialsFile) feishuMissing.push('FEISHU_MATERIAL_FOLDER_TOKEN')
   }
-  if (config.feishu.sheetToken) {
-    if (!config.feishu.appId) feishuMissing.push('FEISHU_APP_ID')
-    if (!config.feishu.appSecret) feishuMissing.push('FEISHU_APP_SECRET')
-  }
-  if (!config.feishu.folderToken && !config.feishu.materialsFile) feishuMissing.push('FEISHU_MATERIAL_FOLDER_TOKEN')
   feishuMissing.forEach((name) => names.push(name))
 
   const uniqueNames = Array.from(new Set(names))
@@ -1803,6 +1818,11 @@ async function handleMini(req, res, pathname, searchParams) {
     if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot', 30)
     const cached = feishuSync.cachedSheetSnapshot(db)
     if (cached) return sendJson(res, cached)
+    // 镜像模式的公开 GET 只读最后一次完整发布快照。缺缓存时返回固定安全占位，绝不能让
+    // 游客请求触发员工源表→专用副本→库存的写链路，也不能回退旧普通 Sheet 制造双事实源。
+    if (config.feishu.mirrorSyncEnabled) {
+      return sendJson(res, feishuSync.unavailableSheetSnapshot())
+    }
     // 已有全量/快照同步在跑：两者都写 companySheetSnapshot，并发起第二份会互相覆盖。无缓存时
     // 返回空快照占位，等运行中的同步落库后下次请求即命中缓存，不与其争抢。
     if (feishuSyncRunning) {
@@ -2457,18 +2477,9 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/admin/feishu-sync/run') {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    if (body.dryRun) {
-      const previewDb = dbStore.clone(db)
-      const result = await feishuSync.sync(previewDb, adminAccount.userId || adminAccount.id, {
-        ...body,
-        dryRun: true
-      })
-      return sendJson(res, {
-        result,
-        status: feishuSync.status(previewDb)
-      })
-    }
-    // 与定时同步共用互斥锁：两条全量同步（定时/手动）并发会各自 clone 基线、先后落盘互相覆盖。
+    const dryRun = feishuSync.parseAdminDryRun(body)
+    const syncOptions = { ...body, dryRun }
+    // dry-run 也必须与正式/定时同步共用互斥锁；否则会读取正在分批写入、尚未回校完成的副表。
     if (feishuSyncRunning) {
       const busy = new Error('已有飞书同步任务进行中，请稍候再试')
       busy.statusCode = 409
@@ -2476,10 +2487,26 @@ async function handleAdmin(req, res, pathname, searchParams) {
     }
     feishuSyncRunning = true
     try {
+      if (dryRun) {
+        const previewDb = dbStore.clone(db)
+        const result = await feishuSync.sync(previewDb, adminAccount.userId || adminAccount.id, {
+          ...syncOptions,
+          dryRun: true
+        })
+        return sendJson(res, {
+          result,
+          status: feishuSync.status(previewDb)
+        })
+      }
       // clone 私有副本 + commitDelta 增量回写：见 runScheduledFeishuSync 注释。
       const baseSnapshot = dbStore.clone(dbStore.readDb())
       const nextDb = dbStore.clone(baseSnapshot)
-      const result = await feishuSync.sync(nextDb, adminAccount.userId || adminAccount.id, body)
+      const result = await feishuSync.sync(nextDb, adminAccount.userId || adminAccount.id, syncOptions)
+      if (!feishuSync.isCommittableSyncResult(result)) {
+        const blocked = new Error(`飞书镜像同步未完整发布：${result.status || 'failed'}`)
+        blocked.statusCode = 502
+        throw blocked
+      }
       dbStore.commitDelta(baseSnapshot, nextDb)
       return sendJson(res, {
         result,
@@ -3088,6 +3115,7 @@ let feishuSyncRunning = false
 
 async function runScheduledFeishuSync() {
   if (feishuSyncRunning) return
+  if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return
   const currentDb = dbStore.readDb()
   if (!feishuSync.status(currentDb).ready) return
   feishuSyncRunning = true
@@ -3097,9 +3125,12 @@ async function runScheduledFeishuSync() {
     // 保住 await 窗口内并发 updateDb 落盘的成交/反馈/留痕，避免整库回写把它们静默覆盖。
     const baseSnapshot = dbStore.clone(currentDb)
     const nextDb = dbStore.clone(baseSnapshot)
-    await feishuSync.sync(nextDb, 'system-feishu-sync', { scheduled: true })
+    const result = await feishuSync.sync(nextDb, 'system-feishu-sync', { scheduled: true })
+    if (!feishuSync.isCommittableSyncResult(result)) {
+      throw new Error(`镜像同步未完整发布：${result.status || 'failed'}`)
+    }
     dbStore.commitDelta(baseSnapshot, nextDb)
-    console.log('飞书房源自动同步完成')
+    console.log(result.noop ? '飞书房源自动同步完成：无变化' : '飞书房源自动同步完成')
   } catch (error) {
     console.error(`飞书房源自动同步失败：${error.message}`)
   } finally {
@@ -3108,6 +3139,7 @@ async function runScheduledFeishuSync() {
 }
 
 function startFeishuSyncTimer() {
+  if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return
   const minutes = Number(config.feishu.syncIntervalMinutes || 0)
   if (!Number.isFinite(minutes) || minutes <= 0) return
   const interval = minutes * 60 * 1000

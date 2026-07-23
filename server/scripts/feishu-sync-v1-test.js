@@ -67,7 +67,420 @@ function record(recordId, fields) {
   return { record_id: recordId, fields: { 联系电话: '13900001111', ...fields } }
 }
 
+const MIRROR_FIELD_NAMES = Object.freeze({
+  sourceRecordId: '员工源记录ID（当前列名）',
+  locationId: '位置ID（当前列名）',
+  locationRecordId: '位置记录ID（当前列名）',
+  city: '城市（当前列名）',
+  district: '行政区（当前列名）',
+  block: '板块商圈（当前列名）',
+  community: '小区（当前列名）',
+  latitude: '纬度（当前列名）',
+  longitude: '经度（当前列名）',
+  rentMode: '出租方式（当前列名）',
+  roomLabel: '小区房号（当前列名）',
+  building: '楼栋（当前列名）',
+  unit: '单元（当前列名）',
+  roomNumber: '房号（当前列名）',
+  layoutDescription: '户型描述（当前列名）',
+  layoutCategory: '户型分类（当前列名）',
+  monthlyRent: '月租金（当前列名）',
+  viewingMethod: '看房方式（当前列名）',
+  remark: '备注（当前列名）',
+  listingStatus: '房源状态（当前列名）',
+  contact: '联系电话（当前列名）',
+  viewingPassword: '看房密码（当前列名）',
+  landlordCommissionPercent: '房东佣金比例（当前列名）',
+  tags: '标签（当前列名）',
+  video: '视频附件（当前列名）',
+  published: '允许发布（当前列名）',
+  canonical: '契约已校验（当前列名）',
+  enabled: '镜像启用（当前列名）'
+})
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function completeSnapshot(records, fieldNames = {}) {
+  return {
+    complete: true,
+    records: cloneJson(records),
+    recordCount: records.length,
+    digest: `test-digest-${records.length}`,
+    schemaFingerprint: 'test-schema',
+    fieldNames: { ...fieldNames }
+  }
+}
+
+function canonicalSourceRecord(recordId = 'src-xingqiao-301') {
+  return {
+    recordId,
+    fields: {
+      community: '星桥花苑一期',
+      roomLabel: '星桥花苑一期 2幢1单元301',
+      layoutDescription: '2室1厅',
+      layoutCategory: '两室',
+      monthlyRent: 3200,
+      rentMode: '合租',
+      viewingMethod: '提前预约',
+      remark: '',
+      listingStatus: '可租',
+      contact: '13900001111',
+      landlordCommissionPercent: '50%',
+      tags: '免押金,带阳台',
+      video: [{ file_token: 'test-video-token', name: '301.mp4', type: 'video/mp4' }]
+    }
+  }
+}
+
+function canonicalLocationRecord() {
+  return {
+    recordId: 'loc-record-xingqiao',
+    fields: {
+      locationId: 'LOC-XINGQIAO',
+      city: '杭州市',
+      district: '临平区',
+      block: '星桥',
+      community: '星桥花苑',
+      aliases: ['星桥花苑一期'],
+      latitude: 30.386321,
+      longitude: 120.279654,
+      enabled: true
+    }
+  }
+}
+
+function createMirrorClient(options = {}) {
+  const sourceRecords = cloneJson(options.sourceRecords || [canonicalSourceRecord()])
+  const locationRecords = cloneJson(options.locationRecords || [canonicalLocationRecord()])
+  let mirrorRecords = cloneJson(options.mirrorRecords || [])
+  const inverseFieldNames = Object.fromEntries(Object.entries(MIRROR_FIELD_NAMES).map(([semantic, displayName]) => [displayName, semantic]))
+  const calls = []
+  let created = 0
+
+  const decodeFields = (fields) => Object.keys(fields || {}).reduce((result, displayName) => {
+    const semantic = inverseFieldNames[displayName]
+    assert.ok(semantic, `镜像写入不得使用未绑定的显示名：${displayName}`)
+    result[semantic] = cloneJson(fields[displayName])
+    return result
+  }, {})
+
+  const client = {
+    calls,
+    mirrorRecords: () => cloneJson(mirrorRecords),
+    async readValidatedTableSnapshot(request) {
+      calls.push({ operation: 'read', tableId: request.tableId, allowEmpty: request.allowEmpty })
+      if (request.tableId === 'tbl-employee-source') return completeSnapshot(sourceRecords)
+      if (request.tableId === 'tbl-location-dictionary') return completeSnapshot(locationRecords)
+      if (request.tableId === 'tbl-mini-source') return completeSnapshot(mirrorRecords, MIRROR_FIELD_NAMES)
+      throw new Error(`测试触达未知表：${request.tableId}`)
+    },
+    async batchCreateRecords(tableId, records, writeOptions = {}) {
+      calls.push({ operation: 'create', tableId, records: cloneJson(records), clientToken: writeOptions.clientToken })
+      assert.strictEqual(tableId, 'tbl-mini-source', '批量新增只允许写小程序专用源表')
+      const output = records.map((item) => {
+        created += 1
+        const recordId = `mir-created-${created}`
+        mirrorRecords.push({ recordId, fields: decodeFields(item.fields) })
+        return { record_id: recordId, fields: cloneJson(item.fields) }
+      })
+      return output
+    },
+    async batchUpdateRecords(tableId, records) {
+      calls.push({ operation: 'update', tableId, records: cloneJson(records) })
+      assert.strictEqual(tableId, 'tbl-mini-source', '批量更新只允许写小程序专用源表')
+      return records.map((item) => {
+        const existing = mirrorRecords.find((record) => record.recordId === item.record_id)
+        assert.ok(existing, `测试镜像缺少待更新记录：${item.record_id}`)
+        Object.assign(existing.fields, decodeFields(item.fields))
+        return { record_id: item.record_id, fields: cloneJson(item.fields) }
+      })
+    }
+  }
+  return client
+}
+
+async function testMirrorWiringAndInventoryProjection() {
+  const client = createMirrorClient()
+  const result = await feishuSync._internal.executeMirrorTableSync({
+    client,
+    sourceTableId: 'tbl-employee-source',
+    miniTableId: 'tbl-mini-source',
+    locationTableId: 'tbl-location-dictionary',
+    sourceBindings: {},
+    miniBindings: {},
+    locationBindings: {},
+    maxDeactivateCount: 10,
+    maxDeactivateRatio: 0.35,
+    materials: []
+  })
+
+  assert.strictEqual(result.complete, true, '员工源表、位置字典和镜像回读全部成功后才允许 complete=true')
+  assert.strictEqual(result.published, true, '写后回读为 no-op 后才允许发布镜像')
+  assert.deepStrictEqual(
+    client.calls.filter((call) => call.operation === 'read').map((call) => call.tableId),
+    ['tbl-employee-source', 'tbl-location-dictionary', 'tbl-mini-source', 'tbl-mini-source'],
+    '真实接线必须按员工源表→位置字典→专用表→专用表回读执行'
+  )
+  assert.strictEqual(client.calls.filter((call) => call.operation === 'create').length, 1, '首次同步必须写一次专用表')
+  assert.strictEqual(client.calls.filter((call) => call.operation === 'update').length, 0, '首次同步不得误发更新')
+  const createCall = client.calls.find((call) => call.operation === 'create')
+  assert.strictEqual(createCall.tableId, 'tbl-mini-source', '唯一写目标必须是小程序专用源表')
+  assert.match(createCall.clientToken, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, '新增批次必须使用 UUIDv4 幂等 token')
+  assert.strictEqual(createCall.records[0].fields['员工源记录ID（当前列名）'], 'src-xingqiao-301', '写字段名必须来自本轮 field_id→当前显示名映射')
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(createCall.records[0].fields, 'sourceRecordId'), false, '不得把 semantic 名直接当飞书显示名写入')
+  assert.deepStrictEqual(createCall.records[0].fields['视频附件（当前列名）'], [{ file_token: 'test-video-token' }], '附件写入只能保留稳定 file_token')
+
+  const canonical = result.records[0]
+  assert.strictEqual(canonical.fields.sourceRecordId, 'src-xingqiao-301', '镜像回读必须保留员工源 record_id')
+  assert.strictEqual(canonical.fields.district, '临平区', '行政区必须来自位置字典')
+  assert.strictEqual(canonical.fields.block, '星桥', '板块必须来自位置字典')
+  assert.strictEqual(canonical.fields.rentMode, '合租', '整合租必须进入 canonical 镜像')
+  assert.strictEqual(canonical.fields.layoutCategory, '两室', '户型分类必须由户型描述唯一派生')
+  assert.strictEqual(canonical.fields.landlordCommissionPercent, 50, '文本百分比必须规范成数字再写数字列')
+  assert.deepStrictEqual(canonical.fields.tags, ['免押金', '带阳台'], '文本标签必须规范成多选数组')
+
+  const inventoryRow = feishuSync._internal.canonicalMirrorRecordToSyncRow(canonical, 0)
+  const normalized = feishuSync.normalizeRecord(inventoryRow, 0, { trustedCanonicalCoordinates: true })
+  assert.strictEqual(normalized.externalId, 'src-xingqiao-301', '库存稳定键必须是员工源 record_id，不能使用专用表 recordId')
+  assert.strictEqual(normalized.area, '临平区', 'canonical 行政区进入库存时不得再被硬编码位置表覆盖')
+  assert.strictEqual(normalized.block, '星桥', 'canonical 板块进入库存时不得再被旧区域列覆盖')
+  assert.strictEqual(normalized.rentMode, '合租', '合租进入库存时不得被默认成整租')
+  assert.strictEqual(normalized.video.file_token, 'test-video-token', '飞书附件数组必须经唯一性校验后进入真实库存适配器')
+  assert.ok(normalized.community && normalized.building && normalized.roomNumber && normalized.rent && normalized.layout,
+    `canonical 库存适配不得丢关键字段：${JSON.stringify(normalized)}`)
+
+  const inventoryDb = makeDb()
+  const inventoryResult = await feishuSync.applySync(inventoryDb, [inventoryRow], [], 'A1', {
+    dryRun: true,
+    trustedCanonicalCoordinates: true
+  })
+  assert.strictEqual(inventoryResult.created, 1, `canonical 记录必须实际进入库存同步：${JSON.stringify(inventoryResult)}`)
+  assert.strictEqual(inventoryResult.skippedNoMaterial, 0, 'token-only 镜像附件必须被识别为视频，不能静默丢素材')
+  assert.strictEqual(inventoryDb.listings[0].feishuRecordId, 'src-xingqiao-301', '库存必须持久化员工源 record_id')
+  assert.strictEqual(inventoryDb.listings[0].district, '临平区', '库存必须持久化位置字典行政区')
+  assert.strictEqual(inventoryDb.listings[0].block, '星桥', '库存必须持久化位置字典板块')
+  assert.strictEqual(inventoryDb.listings[0].rentMode, '合租', '库存必须持久化明确合租')
+  assert.strictEqual(inventoryDb.listings[0].coordinateVerified, true, '位置字典坐标必须作为已核坐标进入地图库存')
+
+  const legacyCoordinate = feishuSync.normalizeRecord(record('legacy-coordinate-injection', {
+    区域: '星桥',
+    小区: '星桥花苑',
+    几栋: '1',
+    房号: '101',
+    户型: '一室一厅',
+    月租金: 3000,
+    mapLatitude: 30.123,
+    mapLongitude: 120.456
+  }), 0)
+  assert.strictEqual(legacyCoordinate.latitude, '', '旧模式员工列不得自行注入已核纬度')
+  assert.strictEqual(legacyCoordinate.longitude, '', '旧模式员工列不得自行注入已核经度')
+}
+
+async function testMirrorDryRunAndMassDeactivateGuard() {
+  const dryRunClient = createMirrorClient()
+  const dryRun = await feishuSync._internal.executeMirrorTableSync({
+    client: dryRunClient,
+    sourceTableId: 'tbl-employee-source',
+    miniTableId: 'tbl-mini-source',
+    locationTableId: 'tbl-location-dictionary',
+    sourceBindings: {},
+    miniBindings: {},
+    locationBindings: {},
+    dryRun: true,
+    maxDeactivateCount: 10,
+    maxDeactivateRatio: 0.35
+  })
+  assert.strictEqual(dryRun.status, 'success-dry-run', 'dry-run 必须完整校验计划但不得伪装发布')
+  assert.strictEqual(dryRun.published, false, 'dry-run 不得声明专用表已发布')
+  assert.strictEqual(dryRunClient.calls.filter((call) => call.operation === 'create' || call.operation === 'update').length, 0, 'dry-run 对三张飞书表的写请求必须为 0')
+
+  const planned = dryRun.records[0]
+  const mirrorRecords = [{ recordId: 'mir-live', fields: cloneJson(planned.fields) }]
+  for (let index = 1; index <= 11; index += 1) {
+    mirrorRecords.push({
+      recordId: `mir-old-${index}`,
+      fields: { ...cloneJson(planned.fields), sourceRecordId: `src-old-${index}` }
+    })
+  }
+  const guardedClient = createMirrorClient({ mirrorRecords })
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync({
+      client: guardedClient,
+      sourceTableId: 'tbl-employee-source',
+      miniTableId: 'tbl-mini-source',
+      locationTableId: 'tbl-location-dictionary',
+      sourceBindings: {},
+      miniBindings: {},
+      locationBindings: {},
+      maxDeactivateCount: 10,
+      maxDeactivateRatio: 0.35
+    }),
+    /停用|安全阈值|阻断/i,
+    '源快照异常缩水时必须在任何专用表写入前触发批量停用熔断'
+  )
+  assert.strictEqual(guardedClient.calls.filter((call) => call.operation === 'create' || call.operation === 'update').length, 0, '批量停用熔断后专用表写请求必须为 0')
+
+  const emptyMirrorClient = createMirrorClient({ mirrorRecords: [] })
+  const dbBaselineIds = ['src-xingqiao-301']
+  for (let index = 1; index <= 34; index += 1) dbBaselineIds.push(`src-db-live-${index}`)
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync({
+      client: emptyMirrorClient,
+      sourceTableId: 'tbl-employee-source',
+      miniTableId: 'tbl-mini-source',
+      locationTableId: 'tbl-location-dictionary',
+      sourceBindings: {},
+      miniBindings: {},
+      locationBindings: {},
+      baselinePublishedSourceIds: dbBaselineIds,
+      maxDeactivateCount: 10,
+      maxDeactivateRatio: 0.35
+    }),
+    /撤下|停用|安全阈值|阻断/i,
+    '专用表为空或被重建时，仍必须用线上活跃库存作为第二撤下基线'
+  )
+  assert.strictEqual(emptyMirrorClient.calls.filter((call) => call.operation === 'create' || call.operation === 'update').length, 0, '专用表空但库存异常缩水时必须在首个 POST 前阻断')
+
+  const inactiveSource = canonicalSourceRecord()
+  inactiveSource.fields.listingStatus = '已租'
+  const ninePublished = []
+  for (let index = 0; index < 9; index += 1) {
+    ninePublished.push({
+      recordId: `mir-nine-${index}`,
+      fields: {
+        ...cloneJson(planned.fields),
+        sourceRecordId: index === 0 ? 'src-xingqiao-301' : `src-nine-${index}`
+      }
+    })
+  }
+  const nineWithdrawClient = createMirrorClient({
+    sourceRecords: [inactiveSource],
+    mirrorRecords: ninePublished
+  })
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync({
+      client: nineWithdrawClient,
+      sourceTableId: 'tbl-employee-source',
+      miniTableId: 'tbl-mini-source',
+      locationTableId: 'tbl-location-dictionary',
+      sourceBindings: {},
+      miniBindings: {},
+      locationBindings: {},
+      dryRun: true,
+      maxDeactivateCount: 10,
+      maxDeactivateRatio: 0.35
+    }),
+    /撤下|停用|安全阈值|阻断/i,
+    '9/9 公开房源撤下也必须触发比例熔断，不能用 activeBefore<10 绕过'
+  )
+}
+
+async function testAuthoritativeBindingContracts() {
+  const sourceBindings = {
+    community: { fieldId: 'src-community' },
+    roomLabel: { fieldId: 'src-room' },
+    layoutDescription: { fieldId: 'src-layout' },
+    monthlyRent: { fieldId: 'src-rent' },
+    rentMode: { fieldId: 'src-rent-mode' },
+    listingStatus: { fieldId: 'src-status' },
+    viewingMethod: { fieldId: 'src-viewing' },
+    remark: { fieldId: 'src-remark' },
+    video: { fieldId: 'src-video' }
+  }
+  const miniBindings = {
+    sourceRecordId: { fieldId: 'mini-source-id' }, locationId: { fieldId: 'mini-location-id' },
+    locationRecordId: { fieldId: 'mini-location-record-id' }, city: { fieldId: 'mini-city' },
+    district: { fieldId: 'mini-district' }, block: { fieldId: 'mini-block' }, community: { fieldId: 'mini-community' },
+    latitude: { fieldId: 'mini-latitude' }, longitude: { fieldId: 'mini-longitude' }, roomLabel: { fieldId: 'mini-room' },
+    building: { fieldId: 'mini-building' }, unit: { fieldId: 'mini-unit' }, roomNumber: { fieldId: 'mini-room-number' },
+    layoutDescription: { fieldId: 'mini-layout' }, layoutCategory: { fieldId: 'mini-layout-category' },
+    monthlyRent: { fieldId: 'mini-rent' }, rentMode: { fieldId: 'mini-rent-mode' },
+    viewingMethod: { fieldId: 'mini-viewing' }, remark: { fieldId: 'mini-remark' },
+    listingStatus: { fieldId: 'mini-status' }, published: { fieldId: 'mini-published' },
+    canonical: { fieldId: 'mini-canonical' }, enabled: { fieldId: 'mini-enabled' }, video: { fieldId: 'mini-video' }
+  }
+  const resolvedMini = feishuSync._internal.resolvedContractBindings('mini', miniBindings)
+  assert.strictEqual(resolvedMini.monthlyRent.type, 2, '专用表月租金类型必须由代码固定为数字，不能由环境自报')
+  assert.strictEqual(resolvedMini.published.type, 7, 'published 类型必须由代码固定为复选框')
+  assert.strictEqual(resolvedMini.published.required, true, 'published 每行必须由代码固定为必填')
+  assert.strictEqual(resolvedMini.unit.required, false, '单元列的单元格允许为空')
+  assert.strictEqual(resolvedMini.unit.schemaRequired, true, '单元列即使允许空值也必须在专用表中存在')
+  assert.strictEqual(resolvedMini.viewingMethod.schemaRequired, true, '看房方式列必须存在但允许单元格为空')
+  assert.strictEqual(resolvedMini.remark.schemaRequired, true, '备注列必须存在但允许单元格为空')
+  assert.strictEqual(feishuSync._internal.bindingContractStatus('mini', {
+    ...miniBindings,
+    monthlyRent: { fieldId: 'mini-rent', type: 1 }
+  }).ready, false, '环境把专用表租金自报成文本时必须 not-ready')
+  assert.strictEqual(feishuSync._internal.bindingContractStatus('mini', {
+    ...miniBindings,
+    published: { fieldId: 'mini-published', type: 1 }
+  }).ready, false, '环境把发布态自报成文本时必须 not-ready')
+  assert.strictEqual(feishuSync._internal.bindingContractStatus('source', {
+    ...sourceBindings,
+    community: { fieldId: 'src-community', required: false }
+  }).ready, false, '员工源必填字段不得由环境降级成可空')
+  assert.strictEqual(feishuSync._internal.pairedMirrorBindingsReady(sourceBindings, miniBindings), true, '源附件有专用表附件配对时才允许 ready')
+  const miniWithoutVideo = { ...miniBindings }
+  delete miniWithoutVideo.video
+  assert.strictEqual(feishuSync._internal.pairedMirrorBindingsReady(sourceBindings, miniWithoutVideo), false, '源表已绑定附件但专用表漏绑附件时必须 not-ready')
+
+  const originalMaterialsFile = config.feishu.materialsFile
+  const originalFolderToken = config.feishu.folderToken
+  try {
+    config.feishu.materialsFile = ''
+    config.feishu.folderToken = ''
+    assert.deepStrictEqual(
+      await feishuSync._internal.loadConfiguredMirrorMaterials('test-token-not-used'),
+      [],
+      '源表附件模式不得强行读取空素材目录，附件本身即可作为素材来源'
+    )
+  } finally {
+    config.feishu.materialsFile = originalMaterialsFile
+    config.feishu.folderToken = originalFolderToken
+  }
+}
+
+async function testMaterialAmbiguityIsFailLoudAndOrderIndependent() {
+  const materialRow = feishuSync.normalizeRecord(record('src-ambiguous-video', {
+    canonicalDistrict: '余杭区',
+    canonicalBlock: '城北万象城',
+    小区: '风雅乐府',
+    几栋: '1',
+    几单元: '1',
+    房号: '101A',
+    户型: '1室1厅',
+    出租方式: '整租',
+    月租金: 3000,
+    房源状态: '可租'
+  }), 0)
+  const materials = [
+    { name: '风雅乐府1幢1单元101A-客厅.mp4', sourcePath: '风雅乐府/1幢/1单元/101A-客厅.mp4', type: 'video/mp4', videoUrl: 'https://example.test/a.mp4' },
+    { name: '风雅乐府1幢1单元101A-卧室.mp4', sourcePath: '风雅乐府/1幢/1单元/101A-卧室.mp4', type: 'video/mp4', videoUrl: 'https://example.test/b.mp4' }
+  ]
+  const first = feishuSync._internal.createMaterialMatcher(materials)(materialRow)
+  const reversed = feishuSync._internal.createMaterialMatcher(materials.slice().reverse())(materialRow)
+  assert.strictEqual(first.ambiguous, true, '两个完整房源标识素材命中时必须返回歧义，不得选第一个')
+  assert.strictEqual(reversed.ambiguous, true, '颠倒素材顺序后仍必须返回歧义')
+  assert.strictEqual(first.candidateCount, reversed.candidateCount, '素材歧义结果不得依赖素材顺序')
+
+  const db = makeDb()
+  const result = await feishuSync.applySync(db, [record('src-ambiguous-video', {
+    canonicalDistrict: '余杭区', canonicalBlock: '城北万象城', 小区: '风雅乐府', 几栋: '1', 几单元: '1',
+    房号: '101A', 户型: '1室1厅', 出租方式: '整租', 月租金: 3000, 房源状态: '可租'
+  })], materials, 'A1', { dryRun: true })
+  assert.strictEqual(result.ambiguousVideoMaterial, 1, '素材歧义必须独立计数，不能静默混入普通缺素材')
+  assert.ok(result.messages.some((message) => /歧义/.test(message)), '素材歧义必须在同步摘要中 fail-loud')
+  assert.strictEqual(result.created, 1, '素材歧义仍按公司房源无视频口径创建库存，不得误绑视频')
+  assert.strictEqual(db.listings[0].videoUrl || '', '', '素材歧义时不得先到先得写入任一视频')
+}
+
 async function main() {
+  await testAuthoritativeBindingContracts()
+  await testMirrorWiringAndInventoryProjection()
+  await testMirrorDryRunAndMassDeactivateGuard()
+  await testMaterialAmbiguityIsFailLoudAndOrderIndependent()
   const db = makeDb()
   const first = await feishuSync.applySync(db, [
     row({

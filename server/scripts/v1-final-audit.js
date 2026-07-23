@@ -110,6 +110,11 @@ const criticalScripts = [
   'server/scripts/company-default-features-test.js',
   // 飞书公司房源同步是线上库存口径来源：无素材/素材失败必须降级上架并保留对账信息。
   'server/scripts/feishu-sync-v1-test.js',
+  // 员工源表只读→专用源表→位置字典→库存/固定待租表的新 canonical 链路及失败门禁。
+  'server/scripts/feishu-source-contract-v1-test.js',
+  'server/scripts/feishu-source-mirror-v1-test.js',
+  'server/scripts/company-source-snapshot-v1-test.js',
+  'server/scripts/feishu-sync-job-v1-test.js',
   // 登录态真 LLM 链路挂起时必须在供应商级超时后回本地真实匹配，不能让前端报网络失败。
   'server/scripts/llm-provider-timeout-fallback-test.js',
   // 把静态上线差距审计纳入最终门禁，避免旧 need/purpose、主动签单入口或足迹旁路再次漂移。

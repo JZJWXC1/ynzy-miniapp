@@ -1,0 +1,655 @@
+'use strict'
+
+const COMPANY_SHEET_TITLE = '寓你住一起房源表'
+const COMPANY_SHEET_HEADERS = Object.freeze([
+  '行政区',
+  '板块/商圈',
+  '小区',
+  '小区+房号',
+  '户型描述',
+  '户型分类',
+  '月租金',
+  '看房方式',
+  '备注',
+  '房源状态'
+])
+
+const MIRROR_SOURCE_FIELDS = Object.freeze([
+  'rentMode',
+  'layoutDescription',
+  'layoutCategory',
+  'monthlyRent',
+  'viewingMethod',
+  'remark',
+  'listingStatus',
+  'contact',
+  'viewingPassword',
+  'landlordCommissionPercent',
+  'tags'
+])
+
+const MANAGED_MIRROR_FIELDS = Object.freeze([
+  'sourceRecordId',
+  'locationId',
+  'locationRecordId',
+  'city',
+  'district',
+  'block',
+  'community',
+  'latitude',
+  'longitude',
+  'roomLabel',
+  'building',
+  'unit',
+  'roomNumber',
+  ...MIRROR_SOURCE_FIELDS,
+  'video',
+  'published',
+  'canonical',
+  'enabled'
+])
+const ACTIVE_LISTING_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|开放|可看|可出租|up|on|active)$/i
+const INACTIVE_LISTING_STATUS_PATTERN = /^(?:下架|已下架|已租|已出租|已成交|成交|关闭|已关闭|无效|删除|已删除|暂停|暂缓|维修中|不可租|停租|未上架|不上架|未在租|不在租|down|off|inactive|rented|closed)$/i
+
+function normalizeText(value) {
+  if (value === undefined || value === null) return ''
+  return String(value).normalize('NFKC').trim().replace(/\s+/g, ' ')
+}
+
+function identityKey(value) {
+  return normalizeText(value).toLocaleLowerCase('zh-CN')
+}
+
+function clonePlain(value) {
+  if (Array.isArray(value)) return value.map(clonePlain)
+  if (value && typeof value === 'object') {
+    const output = {}
+    Object.keys(value).forEach((key) => {
+      if (value[key] !== undefined) output[key] = clonePlain(value[key])
+    })
+    return output
+  }
+  return value
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    const output = {}
+    Object.keys(value).sort().forEach((key) => {
+      if (value[key] !== undefined) output[key] = stableValue(value[key])
+    })
+    return output
+  }
+  return value
+}
+
+function equalPlain(left, right) {
+  return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right))
+}
+
+function aliasesOf(location) {
+  if (Array.isArray(location.aliases)) return location.aliases
+  if (typeof location.aliases === 'string') return location.aliases.split(/[\n,，;；]+/)
+  return []
+}
+
+function normalizeRoomPart(value, type) {
+  let text = normalizeText(value).replace(/\s+/g, '').replace(/[，,。；;:：]/g, '')
+  if (!text) return ''
+  if (type === 'building') return text.replace(/^第/, '').replace(/(?:号楼|楼|幢|栋|号)$/g, '')
+  if (type === 'unit') return text.replace(/^第/, '').replace(/单元$/g, '')
+  return text.replace(/^第/, '').replace(/(?:房间|房|室)$/g, '')
+}
+
+function validRoomPart(value) {
+  return /^[0-9A-Za-z一二三四五六七八九十百]+$/.test(value)
+}
+
+function parseRoomIdentity(value) {
+  const text = normalizeText(value).replace(/\s+/g, '')
+  if (!text) return null
+  let parts = null
+  const dashed = text.split(/[-－—_/]/).map((item) => item.trim()).filter(Boolean)
+  if (dashed.length === 3) {
+    parts = { building: dashed[0], unit: dashed[1], roomNumber: dashed[2] }
+  } else if (dashed.length === 2) {
+    parts = { building: dashed[0], unit: '', roomNumber: dashed[1] }
+  } else {
+    const withUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
+    const withoutUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)[-－—_/]*(.+?)(?:房间|房|室)?$/)
+    if (withUnit) parts = { building: withUnit[1], unit: withUnit[2], roomNumber: withUnit[3] }
+    else if (withoutUnit) parts = { building: withoutUnit[1], unit: '', roomNumber: withoutUnit[2] }
+  }
+  if (!parts) return null
+  const normalized = {
+    building: normalizeRoomPart(parts.building, 'building'),
+    unit: normalizeRoomPart(parts.unit, 'unit'),
+    roomNumber: normalizeRoomPart(parts.roomNumber, 'room')
+  }
+  if (!normalized.building || !normalized.roomNumber || !validRoomPart(normalized.building) ||
+      (normalized.unit && !validRoomPart(normalized.unit)) || !validRoomPart(normalized.roomNumber)) return null
+  return normalized
+}
+
+function canonicalRoomIdentity(sourceFields, location, sourceRecordId) {
+  const rawRoomLabel = normalizeText(sourceFields.roomLabel)
+  const prefixCandidates = [sourceFields.community, location.community, ...aliasesOf(location)]
+    .map(normalizeText)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+  const matchedPrefix = prefixCandidates.find((prefix) => identityKey(rawRoomLabel).startsWith(identityKey(prefix)))
+  if (!matchedPrefix) throw new Error(`源记录 ${sourceRecordId} 的小区+房号不属于位置字典小区`)
+  const roomText = rawRoomLabel.slice(matchedPrefix.length).replace(/^[\s·,，。；;:：/\\_\-－—（）()【】\[\]]+/, '')
+  const parsed = parseRoomIdentity(roomText)
+  if (!parsed) throw new Error(`源记录 ${sourceRecordId} 的小区+房号格式无法确定解析`)
+
+  const explicit = {
+    building: normalizeRoomPart(sourceFields.building, 'building'),
+    unit: normalizeRoomPart(sourceFields.unit, 'unit'),
+    roomNumber: normalizeRoomPart(sourceFields.roomNumber, 'room')
+  }
+  const explicitValues = [explicit.building, explicit.unit, explicit.roomNumber].filter(Boolean)
+  if (explicitValues.length && (explicit.building !== parsed.building || explicit.unit !== parsed.unit ||
+      explicit.roomNumber !== parsed.roomNumber)) {
+    throw new Error(`源记录 ${sourceRecordId} 的显式楼栋/单元/房号与小区+房号不一致`)
+  }
+  return {
+    ...parsed,
+    roomLabel: `${location.community} ${parsed.building}幢${parsed.unit ? `${parsed.unit}单元` : ''}${parsed.roomNumber}`
+  }
+}
+
+function optionalCoordinate(value, label) {
+  if (value === undefined || value === null || value === '') return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) throw new Error(`位置字典${label}不是有效数字`)
+  return numeric
+}
+
+function buildLocationCatalog(locationRecords) {
+  if (!Array.isArray(locationRecords)) throw new Error('位置字典必须是记录数组')
+
+  const byName = new Map()
+  const locationIds = new Set()
+  const recordIds = new Set()
+  const locations = []
+
+  locationRecords.forEach((rawLocation, index) => {
+    if (!rawLocation || rawLocation.enabled !== true) return
+
+    const location = {
+      recordId: normalizeText(rawLocation.recordId || rawLocation.record_id),
+      locationId: normalizeText(rawLocation.locationId),
+      city: normalizeText(rawLocation.city),
+      district: normalizeText(rawLocation.district),
+      block: normalizeText(rawLocation.block),
+      community: normalizeText(rawLocation.community),
+      aliases: aliasesOf(rawLocation).map(normalizeText).filter(Boolean),
+      latitude: optionalCoordinate(rawLocation.latitude, '纬度'),
+      longitude: optionalCoordinate(rawLocation.longitude, '经度'),
+      enabled: true
+    }
+
+    if (!location.recordId || !location.locationId || !location.city || !location.district || !location.block || !location.community) {
+      throw new Error(`位置字典第 ${index + 1} 行缺少 recordId、locationId、城市、行政区、板块或小区`)
+    }
+    if (location.latitude === null || location.longitude === null) {
+      throw new Error(`位置字典第 ${index + 1} 行缺少经纬度，新增小区将无法上图`)
+    }
+    if (location.latitude !== null && (location.latitude < -90 || location.latitude > 90)) {
+      throw new Error(`位置字典第 ${index + 1} 行纬度超出范围`)
+    }
+    if (location.longitude !== null && (location.longitude < -180 || location.longitude > 180)) {
+      throw new Error(`位置字典第 ${index + 1} 行经度超出范围`)
+    }
+    if (recordIds.has(location.recordId)) throw new Error(`位置字典 recordId 重复：${location.recordId}`)
+    if (locationIds.has(location.locationId)) throw new Error(`位置字典 locationId 重复：${location.locationId}`)
+    recordIds.add(location.recordId)
+    locationIds.add(location.locationId)
+
+    const names = [location.community, ...location.aliases]
+    const localNames = new Set()
+    names.forEach((name) => {
+      const key = identityKey(name)
+      if (!key || localNames.has(key)) return
+      localNames.add(key)
+      const occupied = byName.get(key)
+      if (occupied && occupied.locationId !== location.locationId) {
+        throw new Error(`位置字典标准名或别名冲突：${name}`)
+      }
+      byName.set(key, location)
+    })
+    locations.push(location)
+  })
+
+  if (!locations.length) throw new Error('位置字典没有启用的有效记录')
+  return { locations, byName }
+}
+
+function assertSnapshot(snapshot, label, options = {}) {
+  if (!snapshot || typeof snapshot !== 'object') throw new Error(`${label}不存在`)
+  if (snapshot.complete !== true) throw new Error(`${label}不完整，禁止生成写入计划`)
+  if (!Array.isArray(snapshot.records)) throw new Error(`${label} records 不是数组`)
+  if (snapshot.recordCount !== undefined && snapshot.recordCount !== snapshot.records.length) {
+    throw new Error(`${label}记录数不一致，禁止生成写入计划`)
+  }
+  if (options.nonEmpty && snapshot.records.length === 0) throw new Error(`${label}为空，禁止覆盖现有数据`)
+}
+
+function sourceRecordIdOf(record) {
+  return normalizeText(record && (record.recordId || record.record_id))
+}
+
+function mirrorFieldsOf(record) {
+  return record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+}
+
+function assertUniqueSourceRecords(records) {
+  const seen = new Set()
+  records.forEach((record, index) => {
+    const recordId = sourceRecordIdOf(record)
+    if (!recordId) throw new Error(`源记录第 ${index + 1} 行缺少 recordId`)
+    if (seen.has(recordId)) throw new Error(`源 recordId 重复：${recordId}`)
+    seen.add(recordId)
+  })
+}
+
+function indexMirrorRecords(records) {
+  const bySourceRecordId = new Map()
+  const mirrorRecordIds = new Set()
+  records.forEach((record, index) => {
+    const recordId = sourceRecordIdOf(record)
+    const sourceRecordId = normalizeText(mirrorFieldsOf(record).sourceRecordId)
+    if (!recordId) throw new Error(`镜像记录第 ${index + 1} 行缺少 recordId`)
+    if (!sourceRecordId) throw new Error(`镜像记录 ${recordId} 缺少 sourceRecordId`)
+    if (mirrorRecordIds.has(recordId)) throw new Error(`镜像 recordId 重复：${recordId}`)
+    if (bySourceRecordId.has(sourceRecordId)) throw new Error(`镜像 sourceRecordId 重复：${sourceRecordId}`)
+    mirrorRecordIds.add(recordId)
+    bySourceRecordId.set(sourceRecordId, record)
+  })
+  return bySourceRecordId
+}
+
+function resolveLocation(locationCatalog, sourceRecord) {
+  if (!locationCatalog || !(locationCatalog.byName instanceof Map)) throw new Error('位置字典尚未构建')
+  const fields = mirrorFieldsOf(sourceRecord)
+  const sourceCommunity = normalizeText(fields.community)
+  const location = locationCatalog.byName.get(identityKey(sourceCommunity))
+  if (!location) {
+    throw new Error(`位置字典未匹配小区：${sourceCommunity || '空值'}`)
+  }
+  return location
+}
+
+function layoutCategoryFromDescription(value) {
+  const text = normalizeText(value)
+  if (/六室|六房|6室|6房/.test(text)) return '六室'
+  if (/五室|五房|5室|5房/.test(text)) return '五室'
+  if (/四室|四房|4室|4房/.test(text)) return '四室'
+  if (/三室|三房|3室|3房/.test(text)) return '三室'
+  if (/两室|二室|两房|二房|2室|2房/.test(text)) return '两室'
+  if (/一室|一房|1室|1房|单间/.test(text)) return '一室'
+  return ''
+}
+
+function stableVideoAttachments(value) {
+  if (value === undefined || value === null || value === '') return []
+  const attachments = Array.isArray(value) ? value : [value]
+  const tokens = attachments.map((attachment) => {
+    if (!attachment || typeof attachment !== 'object') throw new Error('视频附件结构无效')
+    const token = normalizeText(attachment.file_token || attachment.token || attachment.obj_token)
+    const name = normalizeText(attachment.name || attachment.file_name || attachment.filename)
+    const type = normalizeText(attachment.type || attachment.file_type || attachment.mime_type)
+    if (!token) throw new Error('视频附件缺少 file_token')
+    if ((name || type) && !/\.(mp4|mov|m4v|avi|webm)$/i.test(name) && !/^video\//i.test(type)) {
+      throw new Error('视频附件字段包含非视频文件')
+    }
+    return token
+  })
+  if (new Set(tokens).size !== tokens.length) throw new Error('视频附件 file_token 重复')
+  if (tokens.length > 1) throw new Error('同一房源存在多个视频附件，禁止先到先得')
+  return tokens.sort().map((fileToken) => ({ file_token: fileToken }))
+}
+
+function canonicalTags(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]+/)
+  const seen = new Set()
+  return values.map(normalizeText).filter(Boolean).filter((item) => {
+    const key = identityKey(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function canonicalMirrorFields(sourceRecord, location) {
+  const sourceRecordId = sourceRecordIdOf(sourceRecord)
+  const sourceFields = mirrorFieldsOf(sourceRecord)
+  const roomIdentity = canonicalRoomIdentity(sourceFields, location, sourceRecordId)
+  const fields = {
+    sourceRecordId,
+    locationId: location.locationId,
+    locationRecordId: location.recordId,
+    city: location.city,
+    district: location.district,
+    block: location.block,
+    community: location.community,
+    roomLabel: roomIdentity.roomLabel,
+    building: roomIdentity.building,
+    unit: roomIdentity.unit,
+    roomNumber: roomIdentity.roomNumber
+  }
+  if (location.latitude !== null) fields.latitude = location.latitude
+  if (location.longitude !== null) fields.longitude = location.longitude
+
+  MIRROR_SOURCE_FIELDS.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(sourceFields, field) && sourceFields[field] !== undefined) {
+      fields[field] = clonePlain(sourceFields[field])
+    }
+  })
+  if (Object.prototype.hasOwnProperty.call(sourceFields, 'video')) {
+    fields.video = stableVideoAttachments(sourceFields.video)
+  }
+  fields.layoutDescription = clonePlain(
+    sourceFields.layoutDescription !== undefined ? sourceFields.layoutDescription : sourceFields.layout
+  )
+  fields.layoutDescription = normalizeText(fields.layoutDescription)
+  fields.rentMode = normalizeText(sourceFields.rentMode)
+  ;['viewingMethod', 'remark', 'contact', 'viewingPassword'].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(sourceFields, field)) fields[field] = normalizeText(sourceFields[field])
+  })
+  if (Object.prototype.hasOwnProperty.call(sourceFields, 'landlordCommissionPercent')) {
+    const commissionText = normalizeText(sourceFields.landlordCommissionPercent)
+    const commission = commissionText ? Number(commissionText.replace(/%$/, '')) : 50
+    if (!Number.isFinite(commission) || commission < 0 || commission > 100) {
+      throw new Error(`源记录 ${sourceRecordId} 的房东佣金比例无效`)
+    }
+    fields.landlordCommissionPercent = commission
+  }
+  if (Object.prototype.hasOwnProperty.call(sourceFields, 'tags')) fields.tags = canonicalTags(sourceFields.tags)
+  const sourceLayoutCategory = normalizeText(sourceFields.layoutCategory)
+  const derivedLayoutCategory = layoutCategoryFromDescription(fields.layoutDescription)
+  if (!derivedLayoutCategory) throw new Error(`源记录 ${sourceRecordId} 无法从户型描述派生户型分类`)
+  if (sourceLayoutCategory && sourceLayoutCategory !== derivedLayoutCategory) {
+    throw new Error(`源记录 ${sourceRecordId} 的户型描述与户型分类不一致`)
+  }
+  fields.layoutCategory = derivedLayoutCategory
+  const monthlyRent = Number(sourceFields.monthlyRent !== undefined ? sourceFields.monthlyRent : sourceFields.rent)
+  fields.monthlyRent = monthlyRent
+  fields.listingStatus = normalizeText(
+    sourceFields.listingStatus !== undefined ? sourceFields.listingStatus : sourceFields.status
+  )
+  if (!fields.roomLabel || !fields.layoutDescription || !fields.listingStatus || !Number.isFinite(monthlyRent) || monthlyRent <= 0) {
+    throw new Error(`源记录 ${sourceRecordId} 缺少小区+房号、户型、状态或有效月租金`)
+  }
+  if (!/^(?:整租|合租)$/.test(fields.rentMode)) {
+    throw new Error(`源记录 ${sourceRecordId} 的出租方式必须明确为整租或合租`)
+  }
+  const statusText = normalizeText(fields.listingStatus)
+  if (!ACTIVE_LISTING_STATUS_PATTERN.test(statusText) && !INACTIVE_LISTING_STATUS_PATTERN.test(statusText)) {
+    throw new Error(`源记录 ${sourceRecordId} 的房源状态未配置：${statusText}`)
+  }
+  fields.published = ACTIVE_LISTING_STATUS_PATTERN.test(statusText)
+  fields.canonical = true
+  fields.enabled = true
+  return fields
+}
+
+function managedFieldsOf(fields) {
+  const managed = {}
+  MANAGED_MIRROR_FIELDS.forEach((field) => {
+    // 飞书清空单元格后通常回读为 null；语义上与源字段未提供等价，忽略它可避免每轮
+    // 重复更新，同时已有非空旧值仍会与缺失目标不同并被本轮写 null 清除。
+    if (Object.prototype.hasOwnProperty.call(fields, field) && fields[field] !== undefined && fields[field] !== null) {
+      managed[field] = field === 'video' ? stableVideoAttachments(fields[field]) : clonePlain(fields[field])
+    }
+  })
+  return managed
+}
+
+function planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId } = {}) {
+  assertSnapshot(sourceSnapshot, '源快照', { nonEmpty: true })
+  assertSnapshot(mirrorSnapshot, '镜像快照')
+  assertUniqueSourceRecords(sourceSnapshot.records)
+  const mirrorBySourceRecordId = indexMirrorRecords(mirrorSnapshot.records)
+
+  // 先完成整批位置归一和校验，再生成任何动作，避免半批计划被误执行。
+  const canonicalRows = sourceSnapshot.records.map((sourceRecord) => {
+    const location = resolveLocation(locationCatalog, sourceRecord)
+    return {
+      sourceRecordId: sourceRecordIdOf(sourceRecord),
+      fields: canonicalMirrorFields(sourceRecord, location)
+    }
+  })
+
+  canonicalRows.sort((left, right) => left.sourceRecordId < right.sourceRecordId ? -1 : left.sourceRecordId > right.sourceRecordId ? 1 : 0)
+  const operations = []
+  const activeSourceRecordIds = new Set()
+  const counts = { create: 0, update: 0, deactivate: 0, restore: 0, noop: 0 }
+
+  canonicalRows.forEach(({ sourceRecordId, fields }) => {
+    activeSourceRecordIds.add(sourceRecordId)
+    const existing = mirrorBySourceRecordId.get(sourceRecordId)
+    if (!existing) {
+      operations.push({ type: 'create', sourceRecordId, fields: clonePlain(fields) })
+      counts.create += 1
+      return
+    }
+
+    const existingFields = mirrorFieldsOf(existing)
+    const recordId = sourceRecordIdOf(existing)
+    if (existingFields.enabled !== true) {
+      operations.push({ type: 'restore', recordId, sourceRecordId, fields: clonePlain(fields) })
+      counts.restore += 1
+      return
+    }
+
+    if (!equalPlain(managedFieldsOf(existingFields), managedFieldsOf(fields))) {
+      operations.push({ type: 'update', recordId, sourceRecordId, fields: clonePlain(fields) })
+      counts.update += 1
+      return
+    }
+    counts.noop += 1
+  })
+
+  Array.from(mirrorBySourceRecordId.entries())
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .forEach(([sourceRecordId, record]) => {
+      if (activeSourceRecordIds.has(sourceRecordId)) return
+      const fields = mirrorFieldsOf(record)
+      if (fields.enabled !== true) {
+        counts.noop += 1
+        return
+      }
+      operations.push({
+        type: 'deactivate',
+        recordId: sourceRecordIdOf(record),
+        sourceRecordId,
+        fields: { enabled: false }
+      })
+      counts.deactivate += 1
+    })
+
+  return {
+    complete: true,
+    runId: normalizeText(runId),
+    operations,
+    counts,
+    noop: operations.length === 0
+  }
+}
+
+function publicCell(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'number') return Number.isFinite(value) ? value : ''
+  if (typeof value === 'string') return value.trim()
+  return ''
+}
+
+function sheetFieldsOf(record) {
+  return record && record.fields && typeof record.fields === 'object' ? record.fields : (record || {})
+}
+
+function snapshotRow(fields) {
+  return [
+    publicCell(fields.district),
+    publicCell(fields.block),
+    publicCell(fields.community),
+    publicCell(fields.roomLabel),
+    publicCell(fields.layoutDescription !== undefined ? fields.layoutDescription : fields.layout),
+    publicCell(fields.layoutCategory),
+    publicCell(fields.monthlyRent !== undefined ? fields.monthlyRent : fields.rent),
+    publicCell(fields.viewingMethod),
+    publicCell(fields.remark),
+    publicCell(fields.listingStatus !== undefined ? fields.listingStatus : fields.status)
+  ]
+}
+
+function compareRows(left, right) {
+  const leftKey = left.map((value) => String(value)).join('\u0000')
+  const rightKey = right.map((value) => String(value)).join('\u0000')
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+}
+
+function buildCompanySheetSnapshot(records) {
+  if (!Array.isArray(records)) throw new Error('公司房源快照输入必须是记录数组')
+  const rows = records
+    .map(sheetFieldsOf)
+    .filter((fields) => fields.enabled === true && fields.published === true && fields.canonical === true)
+    .map(snapshotRow)
+    .sort(compareRows)
+
+  return {
+    title: COMPANY_SHEET_TITLE,
+    rows: [COMPANY_SHEET_HEADERS.slice(), ...rows]
+  }
+}
+
+function publishCompanySnapshot(db, records, options = {}) {
+  if (!db || typeof db !== 'object') throw new Error('数据库对象不存在')
+  if (options.complete !== true) throw new Error('本轮公司房源同步不完整，拒绝发布快照')
+  if (!Array.isArray(records) || records.length === 0) throw new Error('公司房源记录为空，拒绝覆盖上一份快照')
+
+  const snapshot = buildCompanySheetSnapshot(records, options)
+  if (snapshot.rows.length <= 1 && options.allowEmptyPublic !== true) {
+    throw new Error('公司房源公开记录为空，拒绝覆盖上一份快照')
+  }
+  db.companySheetSnapshot = snapshot
+  return snapshot
+}
+
+function classifyMirrorRunResult(result) {
+  const input = result && typeof result === 'object' ? result : {}
+  const dryRunValidated = input.dryRun === true && input.validated === true && input.planned === true
+  const success = input.complete === true &&
+    (input.published === true || dryRunValidated) &&
+    input.failed === 0 &&
+    input.schemaInvalid === false &&
+    input.mirrorIncomplete === false
+
+  let status = 'failed'
+  if (success) status = dryRunValidated ? 'success-dry-run' : (input.noop === true ? 'success-noop' : 'success')
+  else if (typeof input.status === 'string' && !/^success(?:-|$)/i.test(input.status)) status = input.status
+
+  return {
+    complete: success,
+    success,
+    status,
+    noop: success && input.noop === true,
+    dryRun: success && dryRunValidated
+  }
+}
+
+function stageSucceeded(result, options = {}) {
+  if (!result || typeof result !== 'object' || result.complete !== true) return false
+  if (options.requireFailed === true && result.failed !== 0) return false
+  if (result.failed !== undefined && result.failed !== 0) return false
+  if (options.published && result.published !== true) return false
+  return true
+}
+
+function failedRun(stage, result) {
+  return {
+    complete: false,
+    success: false,
+    status: `failed-${stage}`,
+    failedStage: stage,
+    noop: false,
+    failed: result && typeof result.failed === 'number' ? result.failed : 1
+  }
+}
+
+function publicStageSummary(result = {}) {
+  return {
+    complete: result.complete === true,
+    published: result.published === true,
+    failed: typeof result.failed === 'number' && Number.isFinite(result.failed) ? result.failed : null,
+    noop: result.noop === true,
+    dryRun: result.dryRun === true,
+    validated: result.validated === true,
+    planned: result.planned === true,
+    status: typeof result.status === 'string' ? result.status : ''
+  }
+}
+
+async function runCompanySourceSync({ db, mirrorSync, applyInventory, publishSnapshot, commit } = {}) {
+  if (typeof mirrorSync !== 'function' || typeof applyInventory !== 'function' ||
+      typeof publishSnapshot !== 'function' || typeof commit !== 'function') {
+    throw new Error('公司房源同步缺少必要阶段函数')
+  }
+
+  const mirrorResult = await mirrorSync(db)
+  const mirrorClassification = classifyMirrorRunResult(mirrorResult)
+  if (!mirrorClassification.success) return failedRun('mirror', mirrorResult)
+
+  const records = Array.isArray(mirrorResult.records) ? mirrorResult.records : []
+  const inventoryResult = await applyInventory(db, records, mirrorResult)
+  if (!stageSucceeded(inventoryResult, { published: true, requireFailed: true })) return failedRun('inventory', inventoryResult)
+
+  const snapshotResult = await publishSnapshot(db, records, {
+    complete: true,
+    mirrorResult,
+    inventoryResult
+  })
+  if (!stageSucceeded(snapshotResult, { published: true, requireFailed: true })) return failedRun('snapshot', snapshotResult)
+
+  const commitResult = await commit(db, {
+    mirrorResult,
+    inventoryResult,
+    snapshotResult
+  })
+  if (!stageSucceeded(commitResult)) return failedRun('commit', commitResult)
+
+  const noop = mirrorResult.noop === true &&
+    inventoryResult.noop === true &&
+    snapshotResult.noop === true &&
+    commitResult.noop === true
+  const dryRun = mirrorResult.dryRun === true
+  return {
+    complete: true,
+    published: !dryRun,
+    validated: dryRun ? mirrorResult.validated === true : true,
+    planned: dryRun ? mirrorResult.planned === true : true,
+    failed: 0,
+    schemaInvalid: false,
+    mirrorIncomplete: false,
+    success: true,
+    status: dryRun ? 'success-dry-run' : (noop ? 'success-noop' : 'success'),
+    noop,
+    dryRun,
+    mirror: publicStageSummary(mirrorResult),
+    inventory: clonePlain(inventoryResult),
+    snapshot: publicStageSummary(snapshotResult),
+    commit: publicStageSummary(commitResult)
+  }
+}
+
+module.exports = {
+  buildLocationCatalog,
+  planMirrorSync,
+  buildCompanySheetSnapshot,
+  publishCompanySnapshot,
+  classifyMirrorRunResult,
+  runCompanySourceSync
+}

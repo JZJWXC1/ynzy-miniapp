@@ -440,6 +440,48 @@ POST /admin/feishu-sync/run
 FEISHU_SYNC_INTERVAL_MINUTES=60
 ```
 
+### 小程序专用源表模式（默认关闭，完成飞书建表后再启用）
+
+新模式使用三张同一 Base 内的多维表，员工现有源表保持日常编辑入口且服务端只读：
+
+1. **员工源表**：员工继续维护，不由同步程序改名、补列或反向写入；稳定 `record_id` 是房源唯一源键。
+2. **小程序位置字典**：每个标准小区一行，维护 `locationId / 城市 / 行政区 / 板块或商圈 / 标准小区 / 别名 / 经纬度 / 启用`。新增行政区、板块或小区只改字典，不再改服务端硬编码。
+3. **小程序专用房源源表**：只允许服务端写。它保存已按字典归一并完整回读校验的 canonical 房源，库存、地图和固定十列待租表只消费这一批结果。
+
+员工源表最低字段语义为 `community`（小区）、`roomLabel`（小区+房号）、`layoutDescription`（户型描述）、`monthlyRent`（月租金）、`rentMode`（整租/合租）、`listingStatus`（房源状态），这些字段每行必须非空；`viewingMethod`（看房方式）和 `remark`（备注）列必须存在但单元格可空。`roomLabel` 的小区前缀必须等于源小区、字典标准小区或该字典行别名，服务端随后统一重建为“标准小区 + 楼栋 + 可选单元 + 房号”；错小区、含糊格式或与显式楼栋/单元/房号冲突会整批阻断。支持 `1幢1单元101`、`1幢101室`、`1幢-101` 等确定格式。
+
+出租方式只接受明确的“整租”或“合租”。房态采用白名单：`上架/已上架/在租/待租/空置/可租/有效/开放/可看/可出租` 公开；`下架/已下架/已租/已出租/已成交/成交/关闭/已关闭/无效/删除/已删除/暂停/暂缓/维修中/不可租/停租/未上架/不上架/未在租/不在租` 不公开；其他值整批阻断，不能默认上架。户型描述是唯一权威，户型分类由服务端派生；源表若也绑定分类列，非空值必须与派生结果一致。
+
+建议专用表字段类型如下（飞书类型码：文本 `1`、数字 `2`、单选 `3`、多选 `4`、复选框 `7`、手机号 `13`、附件 `17`）：
+
+- 小程序位置字典：ID/城市/行政区/板块/标准小区用文本，别名用多选，经纬度用数字，启用用复选框。
+- 小程序专用源表：ID、位置、标准房号、户型、出租方式、房态、看房方式、备注等用文本；租金、佣金、经纬度用数字；标签用多选；视频用附件；`published/canonical/enabled` 用复选框。
+- `sourceRecordId/locationId/locationRecordId/city/district/block/community/latitude/longitude/roomLabel/building/roomNumber/layoutDescription/layoutCategory/monthlyRent/rentMode/listingStatus/published/canonical/enabled` 为专用表逐行必填；`unit/viewingMethod/remark` 列必建但值可空。源表若额外绑定楼栋、单元、房号、分类、电话、密码、佣金、标签或视频，专用表必须存在同语义配对列。
+
+环境绑定只负责提供稳定 `field_id`，字段类型与必填规则由代码固定并在每轮读取前对照飞书元数据；员工改显示列名不会影响同步，同名诱饵列也不会被读取。模板中的占位符必须替换成飞书真实 `field_id`，不得把真实值写进仓库：
+
+每个已经配置的 `field_id` 都必须真实存在；“单元格可空”不等于“列可以删除”。例如员工源表的看房方式、备注，以及专用表的单元、看房方式、备注，允许某一行留空，但整列被删除、重建成新 `field_id` 或改成错误类型时，本轮会在首个 POST 前失败。新增或重建列后必须更新服务器上的 `field_id` 绑定并先跑 dry-run，不能靠显示列名自动猜回。
+
+```env
+FEISHU_SYNC_ENABLED=true
+FEISHU_AUTO_SYNC_ENABLED=false
+FEISHU_MIRROR_SYNC_ENABLED=true
+FEISHU_SOURCE_TABLE_ID=tbl_employee_source
+FEISHU_MINI_TABLE_ID=tbl_mini_source
+FEISHU_LOCATION_TABLE_ID=tbl_location_dictionary
+FEISHU_SOURCE_FIELD_BINDINGS={"community":"fld_source_community","roomLabel":"fld_source_room","layoutDescription":"fld_source_layout","monthlyRent":"fld_source_rent","rentMode":"fld_source_rent_mode","listingStatus":"fld_source_status","viewingMethod":"fld_source_viewing","remark":"fld_source_remark","video":"fld_source_video"}
+FEISHU_MINI_FIELD_BINDINGS={"sourceRecordId":"fld_mini_source_id","locationId":"fld_mini_location_id","locationRecordId":"fld_mini_location_record_id","city":"fld_mini_city","district":"fld_mini_district","block":"fld_mini_block","community":"fld_mini_community","latitude":"fld_mini_latitude","longitude":"fld_mini_longitude","roomLabel":"fld_mini_room_label","building":"fld_mini_building","unit":"fld_mini_unit","roomNumber":"fld_mini_room_number","layoutDescription":"fld_mini_layout","layoutCategory":"fld_mini_layout_category","monthlyRent":"fld_mini_rent","rentMode":"fld_mini_rent_mode","viewingMethod":"fld_mini_viewing","remark":"fld_mini_remark","listingStatus":"fld_mini_status","video":"fld_mini_video","published":"fld_mini_published","canonical":"fld_mini_canonical","enabled":"fld_mini_enabled"}
+FEISHU_LOCATION_FIELD_BINDINGS={"locationId":"fld_location_id","city":"fld_location_city","district":"fld_location_district","block":"fld_location_block","community":"fld_location_community","aliases":"fld_location_aliases","latitude":"fld_location_latitude","longitude":"fld_location_longitude","enabled":"fld_location_enabled"}
+FEISHU_REQUEST_TIMEOUT_MS=30000
+FEISHU_REQUEST_MAX_RETRIES=2
+FEISHU_REQUEST_RETRY_DELAY_MS=200
+FEISHU_MIRROR_MAX_DEACTIVATE_COUNT=10
+FEISHU_MIRROR_MAX_DEACTIVATE_RATIO=0.35
+FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
+```
+
+启用顺序必须是：同 Base 内复制/新建两张专用表并核对字段类型 → 配置三个不同 table ID 与 `field_id` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。紧急止写应设置 `FEISHU_SYNC_ENABLED=false`；不要在未对账时直接切回旧 Sheet，避免重新形成双事实源。
+
 同步规则：
 
 - 房源表和视频素材库按房号/楼栋单元房号等 Key 对齐。
@@ -454,8 +496,9 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 - 管理后台房源列表支持 `missingVideoMaterial=missing|ready` 查询，页面里可直接筛“缺视频素材”。
 - `server/scripts/feishu-sync-audit.js` 可只读 dry-run 输出逐行对账表：房号、表内状态、匹配素材、同步结果、失败原因。
 - 定时同步使用系统任务名触发时，服务端会自动落到库里的真实管理员身份执行新增/更新，避免新增公司房源因 `system-feishu-sync` 不是用户账号而失败。
-- `户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，并去掉前缀保存净户型；否则按合租处理。
-- 板块到行政区映射由服务端配置决定：闸弄口、新塘、元宝塘、东站归上城区，其余现有板块归拱墅区；命中 `communityLocationOverrides` 的小区（如小洋坝家园、大华海派风景、风雅乐府、瑷颐湾等）优先固定为余杭区/城北万象城。
+- 旧模式兼容规则：`户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，否则按合租处理；镜像模式不再猜测，必须使用明确出租方式列。
+- 旧模式兼容规则：板块到行政区仍使用服务端既有映射；镜像模式的行政区、板块、小区与坐标只来自小程序位置字典。
+- 旧模式即使出现 `mapLatitude/mapLongitude` 同名列也不会把它们标成已核坐标；只有经过位置字典完整校验的 canonical 镜像适配器可以写入逐套地图坐标。公开待租快照会二次清除电话、微信、密码以及 HTTP(S)、FTP、文件、飞书、Lark、data、javascript、mailto、tel 和 `www` 形式的链接。
 
 常用飞书环境变量：
 
@@ -469,6 +512,9 @@ FEISHU_SHEET_ID=
 FEISHU_SHEET_RANGE=A1:ZZ1000
 FEISHU_BITABLE_APP_TOKEN=
 FEISHU_BITABLE_TABLE_ID=
+FEISHU_SYNC_ENABLED=true
+FEISHU_AUTO_SYNC_ENABLED=true
+FEISHU_MIRROR_SYNC_ENABLED=false
 FEISHU_MATERIAL_FOLDER_TOKEN=
 FEISHU_UPLOAD_TO_OSS=true
 FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000

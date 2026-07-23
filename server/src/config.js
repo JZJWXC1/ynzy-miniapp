@@ -48,6 +48,46 @@ function listFromEnv(name, fallback = []) {
     .filter(Boolean)
 }
 
+function fieldBindingsFromEnv(name) {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return {}
+
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error(`${name} 必须是合法 JSON 对象`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${name} 必须是字段语义到 field_id 的 JSON 对象`)
+  }
+
+  return Object.keys(parsed).reduce((bindings, semantic) => {
+    const rawBinding = parsed[semantic]
+    const binding = typeof rawBinding === 'string' ? { fieldId: rawBinding } : rawBinding
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+      throw new Error(`${name} 的 ${semantic || '空语义名'} 绑定必须是 field_id 字符串或对象`)
+    }
+    const fieldId = String(binding.fieldId || binding.field_id || '').trim()
+    const hasType = Object.prototype.hasOwnProperty.call(binding, 'type')
+    const types = hasType ? (Array.isArray(binding.type) ? binding.type : [binding.type]) : []
+    const normalizedTypes = types
+      .map((type) => (typeof type === 'number' && Number.isFinite(type)) ? type : String(type || '').trim())
+      .filter((type) => type !== '')
+    if (!semantic.trim() || !fieldId || (hasType && normalizedTypes.length === 0)) {
+      throw new Error(`${name} 的 ${semantic || '空语义名'} 绑定缺少 fieldId 或 type 无效`)
+    }
+    const hasRequired = Object.prototype.hasOwnProperty.call(binding, 'required')
+    if (hasRequired && typeof binding.required !== 'boolean') {
+      throw new Error(`${name} 的 ${semantic} required 必须是 JSON 布尔值`)
+    }
+    bindings[semantic.trim()] = { fieldId }
+    if (normalizedTypes.length) bindings[semantic.trim()].type = normalizedTypes.length === 1 ? normalizedTypes[0] : normalizedTypes
+    if (hasRequired) bindings[semantic.trim()].required = binding.required
+    return bindings
+  }, {})
+}
+
 function jsonValue(filePath, key) {
   if (!fs.existsSync(filePath)) return ''
   try {
@@ -189,12 +229,29 @@ module.exports = {
     appSecret: process.env.FEISHU_APP_SECRET || '',
     bitableAppToken: process.env.FEISHU_BITABLE_APP_TOKEN || '',
     bitableTableId: process.env.FEISHU_BITABLE_TABLE_ID || '',
+    // 镜像模式显式开启后，员工源表只读；源 record_id 是专用副本唯一幂等键。
+    // 旧 FEISHU_BITABLE_TABLE_ID 保留原义，并作为新源表配置的兼容回退。
+    sourceTableId: process.env.FEISHU_SOURCE_TABLE_ID || process.env.FEISHU_BITABLE_TABLE_ID || '',
+    miniTableId: process.env.FEISHU_MINI_TABLE_ID || '',
+    locationTableId: process.env.FEISHU_LOCATION_TABLE_ID || '',
+    sourceFieldBindings: fieldBindingsFromEnv('FEISHU_SOURCE_FIELD_BINDINGS'),
+    miniFieldBindings: fieldBindingsFromEnv('FEISHU_MINI_FIELD_BINDINGS'),
+    locationFieldBindings: fieldBindingsFromEnv('FEISHU_LOCATION_FIELD_BINDINGS'),
+    mirrorSyncEnabled: boolFromEnv('FEISHU_MIRROR_SYNC_ENABLED', false),
+    syncEnabled: boolFromEnv('FEISHU_SYNC_ENABLED', true),
+    autoSyncEnabled: boolFromEnv('FEISHU_AUTO_SYNC_ENABLED', true),
     sheetUrl: configuredSheetUrl,
     sheetToken: extractSheetToken(configuredSheetToken),
     sheetId: process.env.FEISHU_SHEET_ID || jsonValue(feishuSheetTokenFile, 'sheet_id'),
     sheetRange: process.env.FEISHU_SHEET_RANGE || jsonValue(feishuSheetTokenFile, 'range') || 'A1:ZZ1000',
     folderToken: process.env.FEISHU_MATERIAL_FOLDER_TOKEN || jsonValue(feishuFolderTokenFile, 'folder_token'),
     pageSize: numberFromEnv('FEISHU_PAGE_SIZE', 50),
+    requestTimeoutMs: numberFromEnv('FEISHU_REQUEST_TIMEOUT_MS', 30000),
+    requestMaxRetries: numberFromEnv('FEISHU_REQUEST_MAX_RETRIES', 2),
+    requestRetryDelayMs: numberFromEnv('FEISHU_REQUEST_RETRY_DELAY_MS', 200),
+    mirrorMaxDeactivateCount: numberFromEnv('FEISHU_MIRROR_MAX_DEACTIVATE_COUNT', 10),
+    mirrorMaxDeactivateRatio: numberFromEnv('FEISHU_MIRROR_MAX_DEACTIVATE_RATIO', 0.35),
+    mirrorAllowMassDeactivate: boolFromEnv('FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE', false),
     maxFolderDepth: numberFromEnv('FEISHU_MAX_FOLDER_DEPTH', 8),
     recordsFile: process.env.FEISHU_RECORDS_FILE || '',
     materialsFile: process.env.FEISHU_MATERIALS_FILE || '',

@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 const config = require('./config')
 const domain = require('./domain')
 const locationMap = require('./location-map')
@@ -7,6 +8,15 @@ const oss = require('./oss')
 const { refreshRecommendationProfile } = require('./listing-recommendation-profile')
 const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
+const { createBitableClient } = require('./feishu-bitable-client')
+const {
+  buildLocationCatalog,
+  planMirrorSync,
+  buildCompanySheetSnapshot,
+  publishCompanySnapshot,
+  classifyMirrorRunResult,
+  runCompanySourceSync
+} = require('./feishu-source-mirror')
 
 const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
@@ -18,6 +28,47 @@ const UP_STATUS_PATTERN = /上架|在租|待租|空置|可租|有效|up|on|activ
 const NOT_UP_PATTERN = /未上架|不上架|否|false|no|0/i
 const RETAINABLE_ACTIVE_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|up|on|active)$/i
 const SENSITIVE_FEISHU_FIELD_PATTERN = /(看房方式密码|看房方式|看房密码|门锁密码|密码|联系方式|联系电话|房东联系方式|房东电话|联系人电话|手机号|手机|电话|微信|身份证|证件)/i
+const MIRROR_REQUIRED_BINDINGS = Object.freeze({
+  source: ['community', 'roomLabel', 'layoutDescription', 'monthlyRent', 'rentMode', 'listingStatus'],
+  mini: [
+    'sourceRecordId', 'locationId', 'locationRecordId', 'city', 'district', 'block', 'community',
+    'latitude', 'longitude', 'roomLabel', 'building', 'roomNumber', 'layoutDescription', 'layoutCategory',
+    'monthlyRent', 'rentMode', 'listingStatus',
+    'published', 'canonical', 'enabled'
+  ],
+  location: ['locationId', 'city', 'district', 'block', 'community', 'latitude', 'longitude', 'enabled']
+})
+const MIRROR_REQUIRED_OPTIONAL_VALUE_BINDINGS = Object.freeze({
+  source: ['viewingMethod', 'remark'],
+  mini: ['unit', 'viewingMethod', 'remark'],
+  location: []
+})
+const MIRROR_PAIRED_SOURCE_FIELDS = Object.freeze([
+  'rentMode', 'roomLabel', 'building', 'unit', 'roomNumber', 'layoutDescription', 'layoutCategory',
+  'monthlyRent', 'viewingMethod', 'remark', 'listingStatus', 'contact', 'viewingPassword',
+  'landlordCommissionPercent', 'tags', 'video'
+])
+const MIRROR_FIELD_TYPE_CONTRACTS = Object.freeze({
+  source: Object.freeze({
+    community: [1, 3], roomLabel: [1], building: [1, 2], unit: [1, 2], roomNumber: [1, 2],
+    layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [1, 2], rentMode: [1, 3],
+    viewingMethod: [1, 3], remark: [1], listingStatus: [1, 3], contact: [1, 13],
+    viewingPassword: [1], landlordCommissionPercent: [1, 2], tags: [1, 4], video: [17]
+  }),
+  mini: Object.freeze({
+    sourceRecordId: [1], locationId: [1], locationRecordId: [1], city: [1], district: [1, 3],
+    block: [1, 3], community: [1], latitude: [2], longitude: [2], roomLabel: [1], building: [1],
+    unit: [1], roomNumber: [1], layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [2],
+    rentMode: [1, 3], viewingMethod: [1, 3], remark: [1], listingStatus: [1, 3], contact: [1, 13],
+    viewingPassword: [1], landlordCommissionPercent: [2], tags: [4], video: [17],
+    published: [7], canonical: [7], enabled: [7]
+  }),
+  location: Object.freeze({
+    locationId: [1], city: [1], district: [1, 3], block: [1, 3], community: [1], aliases: [1, 4],
+    latitude: [2], longitude: [2], enabled: [7]
+  })
+})
+const MIRROR_WRITE_BATCH_SIZE = 500
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -190,6 +241,13 @@ function numberFrom(value) {
   return matched ? Number(matched[1]) : 0
 }
 
+function optionalNumberFrom(value) {
+  const text = normalizeText(value)
+  if (!text) return ''
+  const numeric = Number(text)
+  return Number.isFinite(numeric) ? numeric : ''
+}
+
 function unique(values) {
   const seen = new Set()
   return (values || []).map(normalizeText).filter(Boolean).filter((item) => {
@@ -200,6 +258,11 @@ function unique(values) {
 }
 
 function normalizeLocationFields(fields = {}, community = '') {
+  const canonicalDistrict = firstField(fields, ['canonicalDistrict'])
+  const canonicalBlock = firstField(fields, ['canonicalBlock'])
+  if (canonicalDistrict && canonicalBlock) {
+    return { area: canonicalDistrict, block: canonicalBlock }
+  }
   const explicitDistrict = firstField(fields, ['行政区', '城区', '城市区域', 'districtName'])
   const rawBlock = firstField(fields, ['板块', '商圈', '区域', '区', 'district', 'area']) || '待板块'
   const block = locationMap.blockForLocation({
@@ -257,12 +320,27 @@ function parseRoomText(value) {
       roomNumber: normalizeRoomPart(dashed.slice(2).join('-'), 'room')
     }
   }
-  const matched = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
-  if (!matched) return null
+  if (dashed.length === 2) {
+    return {
+      building: normalizeRoomPart(dashed[0], 'building'),
+      unit: '',
+      roomNumber: normalizeRoomPart(dashed[1], 'room')
+    }
+  }
+  const withUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
+  if (withUnit) {
+    return {
+      building: normalizeRoomPart(withUnit[1], 'building'),
+      unit: normalizeRoomPart(withUnit[2], 'unit'),
+      roomNumber: normalizeRoomPart(withUnit[3], 'room')
+    }
+  }
+  const withoutUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)(?:房间|房|室)?$/)
+  if (!withoutUnit) return null
   return {
-    building: normalizeRoomPart(matched[1], 'building'),
-    unit: normalizeRoomPart(matched[2], 'unit'),
-    roomNumber: normalizeRoomPart(matched[3], 'room')
+    building: normalizeRoomPart(withoutUnit[1], 'building'),
+    unit: '',
+    roomNumber: normalizeRoomPart(withoutUnit[2], 'room')
   }
 }
 
@@ -375,7 +453,7 @@ function roomIdentityKey(parts = {}) {
   return [community, building, unit, roomNumber].filter(Boolean).join('|')
 }
 
-function normalizeRecord(rawRecord, index) {
+function normalizeRecord(rawRecord, index, options = {}) {
   const fields = rawRecord.fields || rawRecord
   const community = firstField(fields, ['小区名称', '小区', '楼盘', 'community', 'sourceCommunity'])
   const location = normalizeLocationFields(fields, community)
@@ -404,6 +482,14 @@ function normalizeRecord(rawRecord, index) {
     matchKey: externalId || fallbackKey,
     roomIdentityKey: fallbackKey,
     city: firstField(fields, ['城市', 'city']) || '杭州',
+    // 经纬度只接受已完成位置字典校验的内部 canonical 适配器；旧员工表即使出现同名列也
+    // 不能自行把任意坐标升级成 admin-verified-coordinate。
+    latitude: options.trustedCanonicalCoordinates === true
+      ? optionalNumberFrom(firstField(fields, ['mapLatitude', 'latitude']))
+      : '',
+    longitude: options.trustedCanonicalCoordinates === true
+      ? optionalNumberFrom(firstField(fields, ['mapLongitude', 'longitude']))
+      : '',
     area: location.area,
     block: location.block,
     community,
@@ -416,7 +502,7 @@ function normalizeRecord(rawRecord, index) {
     showingPassword: viewingPassword,
     remark,
     landlordCommissionPercent: landlordCommissionPercent === '' ? 50 : landlordCommissionPercent,
-    rent: numberFrom(firstField(fields, ['租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
+    rent: numberFrom(firstField(fields, ['租金', '月租金', '月租', '价格', '押一付一', '押二付一', '月付价', '押一', '押二', 'rent', 'price'])),
     layout: layoutText || [room, hall, bath].filter(Boolean).join(''),
     rentMode,
     room,
@@ -465,16 +551,20 @@ function findLocalVideoByToken(token) {
 
 function materialCandidatesFromRecord(row) {
   if (!row.video) return []
-  const direct = materialFromRaw(row.video)
-  const localFilePath = direct.localFilePath || findLocalVideoByToken(direct.token)
-  return [{ ...direct, localFilePath }]
+  const candidates = Array.isArray(row.video) ? row.video : [row.video]
+  return candidates.map((raw) => {
+    const direct = materialFromRaw(raw)
+    const localFilePath = direct.localFilePath || findLocalVideoByToken(direct.token)
+    return { ...direct, localFilePath }
+  })
 }
 
 function createMaterialMatcher(materials) {
   const normalized = (materials || []).map((item) => (
     item && item.key && item.sourcePath ? item : materialFromRaw(item)
   ))
-  const isVideoMaterial = (item) => VIDEO_EXT_PATTERN.test(item.name || '') || /^video\//.test(item.type || '')
+  const isVideoMaterial = (item) => VIDEO_EXT_PATTERN.test(item.name || '') || /^video\//.test(item.type || '') ||
+    Boolean(item.token && !item.name && !item.type)
   const searchableKey = (item) => normalizedKey([
     item.sourcePath,
     item.name,
@@ -484,9 +574,21 @@ function createMaterialMatcher(materials) {
   ].filter(Boolean).join(' '))
   const fileNameKey = (item) => normalizedKey(item.name || path.basename(item.sourcePath || ''))
   const includesAny = (text, keys) => keys.some((key) => text.indexOf(key) !== -1)
+  const uniqueMatch = (items, predicate, reason) => {
+    const matches = items.filter(predicate)
+    if (matches.length === 1) return matches[0]
+    if (matches.length > 1) return { ambiguous: true, reason, candidateCount: matches.length }
+    return null
+  }
   return (row) => {
-    const direct = materialCandidatesFromRecord(row).find((item) => item.videoUrl || item.url || item.localFilePath || item.token)
-    if (direct) return direct
+    const directCandidates = materialCandidatesFromRecord(row).filter((item) => (
+      isVideoMaterial(item) && (item.videoUrl || item.url || item.localFilePath || item.token)
+    ))
+    if (directCandidates.length) {
+      return directCandidates.length === 1
+        ? directCandidates[0]
+        : { ambiguous: true, reason: '附件字段包含多个视频', candidateCount: directCandidates.length }
+    }
     const communityKey = normalizedKey(row.community)
     const strongKeys = unique([
       [row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join(''),
@@ -500,18 +602,18 @@ function createMaterialMatcher(materials) {
       allowRoomOnlyFallback ? row.roomNumber : ''
     ]).map(normalizedKey).filter((key) => key.length >= 3)
 
-    const strongMatch = normalized.find((item) => {
+    const strongMatch = uniqueMatch(normalized, (item) => {
       if (!isVideoMaterial(item)) return false
       return includesAny(searchableKey(item), strongKeys)
-    })
+    }, '完整房源标识命中多个素材')
     if (strongMatch) return strongMatch
 
     if (communityKey && communityRoomKeys.length) {
-      const communityRoomMatch = normalized.find((item) => {
+      const communityRoomMatch = uniqueMatch(normalized, (item) => {
         if (!isVideoMaterial(item)) return false
         const text = searchableKey(item)
         return text.indexOf(communityKey) !== -1 && includesAny(text, communityRoomKeys)
-      })
+      }, '小区房号命中多个素材')
       if (communityRoomMatch) return communityRoomMatch
     }
 
@@ -522,8 +624,16 @@ function createMaterialMatcher(materials) {
         return text.indexOf(roomNumberKey) !== -1
       })
       : []
-    return roomOnlyMatches.length === 1 ? roomOnlyMatches[0] : null
+    if (roomOnlyMatches.length === 1) return roomOnlyMatches[0]
+    if (roomOnlyMatches.length > 1) {
+      return { ambiguous: true, reason: '房号命中多个素材', candidateCount: roomOnlyMatches.length }
+    }
+    return null
   }
+}
+
+function isAmbiguousMaterialMatch(value) {
+  return Boolean(value && value.ambiguous === true)
 }
 
 async function feishuJson(pathname, token, options = {}) {
@@ -621,7 +731,7 @@ async function loadSheetValues(token) {
 
 function isSheetHeaderRow(row = []) {
   const text = row.map((item) => normalizeText(item)).join('|')
-  return /区域/.test(text) && /小区/.test(text) && /房号|房间号/.test(text)
+  return /区域|行政区/.test(text) && /小区/.test(text) && /房号|房间号/.test(text)
 }
 
 const defaultSheetHeaders = ['区域', '小区', '房号', '户型描述', '户型分类', '押一付一', '押二付一', '看房方式密码', '备注']
@@ -1319,17 +1429,35 @@ function sanitizeSheetSnapshot(snapshot = {}, options = {}) {
   const contactText = contactPhones.join(' / ')
   const allowedPhones = new Set(contactPhones)
   let headerIndex = rows.findIndex(isSheetHeaderRow)
-  if (headerIndex < 0) headerIndex = rows.findIndex((row) => snapshotContactColumnIndexes(row).size > 0)
+  if (headerIndex < 0) {
+    headerIndex = rows.findIndex((row) => (
+      snapshotContactColumnIndexes(row).size > 0 || snapshotAccessColumnIndexes(row).size > 0
+    ))
+  }
   const contactColumns = snapshotContactColumnIndexes(headerIndex >= 0 ? rows[headerIndex] : [])
   const accessColumns = snapshotAccessColumnIndexes(headerIndex >= 0 ? rows[headerIndex] : [])
   const sanitizedRows = rows.map((row, rowIndex) => row.map((value, columnIndex) => {
     if (headerIndex >= 0 && rowIndex > headerIndex && contactColumns.has(columnIndex)) return contactText
-    return replaceUnconfiguredContactValues(value, contactText, allowedPhones, {
+    const sanitized = replaceUnconfiguredContactValues(value, contactText, allowedPhones, {
       kind: headerIndex >= 0 && rowIndex > headerIndex && accessColumns.has(columnIndex) ? 'access' : 'generic'
     })
+    return typeof sanitized === 'string'
+      ? sanitized
+        .replace(/\b(?:https?|ftp|file|feishu|lark):\/\/[^\s，。；;]+/gi, '')
+        .replace(/\b(?:data|javascript|mailto|tel):[^\s，。；;]+/gi, '')
+        .replace(/\bwww\.[^\s，。；;]+/gi, '')
+        .trim()
+      : sanitized
   }))
+  const sanitizedTitle = replaceUnconfiguredContactValues(normalizeText(snapshot.title), contactText, allowedPhones)
   const result = {
-    title: replaceUnconfiguredContactValues(normalizeText(snapshot.title), contactText, allowedPhones),
+    title: typeof sanitizedTitle === 'string'
+      ? sanitizedTitle
+        .replace(/\b(?:https?|ftp|file|feishu|lark):\/\/[^\s，。；;]+/gi, '')
+        .replace(/\b(?:data|javascript|mailto|tel):[^\s，。；;]+/gi, '')
+        .replace(/\bwww\.[^\s，。；;]+/gi, '')
+        .trim()
+      : sanitizedTitle,
     updatedAt: publicSnapshotDateTime(snapshot.updatedAt),
     rows: sanitizedRows,
     rowCount: sanitizedRows.length,
@@ -1337,6 +1465,8 @@ function sanitizeSheetSnapshot(snapshot = {}, options = {}) {
     sensitiveStripped: true
   }
   if (snapshot.unavailable === true) result.unavailable = true
+  if (snapshot.sourceMode === 'feishu-mini-mirror-v1') result.sourceMode = snapshot.sourceMode
+  if (snapshot.schemaVersion === 1) result.schemaVersion = 1
   return result
 }
 
@@ -1355,7 +1485,19 @@ async function sheetSnapshot(options = {}) {
 
 function cachedSheetSnapshot(db = {}) {
   const snapshot = db.companySheetSnapshot
+  if (config.feishu.mirrorSyncEnabled && snapshot && snapshot.sourceMode !== 'feishu-mini-mirror-v1') return null
   return snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length ? sanitizeSheetSnapshot(snapshot) : null
+}
+
+function unavailableSheetSnapshot() {
+  const snapshot = buildCompanySheetSnapshot([])
+  return sanitizeSheetSnapshot({
+    ...snapshot,
+    sourceMode: 'feishu-mini-mirror-v1',
+    schemaVersion: 1,
+    unavailable: true,
+    updatedAt: ''
+  })
 }
 
 async function refreshSheetSnapshot(db = {}, options = {}) {
@@ -1547,6 +1689,8 @@ function syncActorId(db = {}, adminId = '') {
 
 function buildListingPayload(row, video) {
   const normalizedTags = normalizeListingFeatures(row.tags)
+  const hasCoordinate = row.latitude !== '' && row.longitude !== '' &&
+    Number.isFinite(Number(row.latitude)) && Number.isFinite(Number(row.longitude))
   return {
     city: row.city || '杭州',
     district: row.area || '待分区',
@@ -1577,7 +1721,11 @@ function buildListingPayload(row, video) {
     viewingPassword: row.viewingPassword || '',
     showingPassword: row.showingPassword || row.viewingPassword || '',
     remark: row.remark || '',
-    note: row.remark || ''
+    note: row.remark || '',
+    mapLatitude: hasCoordinate ? Number(row.latitude) : '',
+    mapLongitude: hasCoordinate ? Number(row.longitude) : '',
+    coordinateVerified: hasCoordinate,
+    coordinateSource: hasCoordinate ? 'admin-verified-coordinate' : ''
   }
 }
 
@@ -1845,6 +1993,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     down: 0,
     skippedNoMaterial: 0,
     missingVideoMaterial: 0,
+    ambiguousVideoMaterial: 0,
     materialTransferFailed: 0,
     missingLandlordPhone: 0,
     skippedInvalid: 0,
@@ -1854,7 +2003,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
   }
 
   for (const [rowIndex, rawRow] of rows.entries()) {
-    const row = normalizeRecord(rawRow, rowIndex)
+    const row = normalizeRecord(rawRow, rowIndex, {
+      trustedCanonicalCoordinates: options.trustedCanonicalCoordinates === true
+    })
     if (!row.externalId) {
       result.skippedInvalid += 1
       result.messages.push(`第 ${row.rowNumber} 行缺少房源编号或小区房号，已跳过`)
@@ -1888,12 +2039,17 @@ async function applySync(db, rows, materials, adminId, options = {}) {
         result.messages.push(`第 ${row.rowNumber} 行联系电话待补充；公开库存字段继续同步`)
       }
     }
-    const material = matcher(row)
+    const matchedMaterial = matcher(row)
+    const materialAmbiguous = isAmbiguousMaterialMatch(matchedMaterial)
+    const material = materialAmbiguous ? null : matchedMaterial
     if (!material) {
       result.skippedNoMaterial += 1
       result.missingVideoMaterial += 1
+      if (materialAmbiguous) result.ambiguousVideoMaterial += 1
       if (result.messages.length < 20) {
-        result.messages.push(`第 ${row.rowNumber} 行未匹配素材，已标记缺视频素材：${[row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey}`)
+        result.messages.push(materialAmbiguous
+          ? `第 ${row.rowNumber} 行素材匹配存在歧义，已阻断先到先得并标记缺视频素材`
+          : `第 ${row.rowNumber} 行未匹配素材，已标记缺视频素材：${[row.community, row.building, row.unit, row.roomNumber].filter(Boolean).join('-') || row.matchKey}`)
       }
     }
 
@@ -1922,7 +2078,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
         material
           ? '上架-已配视频'
           : (isRetainingManagedVideo(upsert.listing) ? '上架-沿用上次视频·素材待核' : '上架-缺视频素材'),
-        combineFailureReasons(material ? '' : '未匹配素材', missingContactReason)
+        combineFailureReasons(material ? '' : (materialAmbiguous ? '素材匹配歧义' : '未匹配素材'), missingContactReason)
       ))
     } catch (error) {
       if (material) {
@@ -1979,6 +2135,565 @@ async function applySync(db, rows, materials, adminId, options = {}) {
   return result
 }
 
+function bindingTypes(binding) {
+  if (!binding || !Object.prototype.hasOwnProperty.call(binding, 'type')) return []
+  const values = Array.isArray(binding.type) ? binding.type : [binding.type]
+  return values.map((value) => String(value).trim()).filter(Boolean)
+}
+
+function bindingContractStatus(role, bindings) {
+  const contracts = MIRROR_FIELD_TYPE_CONTRACTS[role] || {}
+  const source = bindings && typeof bindings === 'object' && !Array.isArray(bindings) ? bindings : {}
+  const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
+  const requiredSchema = new Set([
+    ...(MIRROR_REQUIRED_BINDINGS[role] || []),
+    ...(MIRROR_REQUIRED_OPTIONAL_VALUE_BINDINGS[role] || [])
+  ])
+  const issues = []
+
+  requiredSchema.forEach((semantic) => {
+    const binding = source[semantic]
+    if (!binding || !String(binding.fieldId || binding.field_id || '').trim()) issues.push(`${semantic}:missing`)
+  })
+  Object.keys(source).forEach((semantic) => {
+    const binding = source[semantic]
+    const allowedTypes = (contracts[semantic] || []).map((value) => String(value))
+    const fieldId = String(binding && (binding.fieldId || binding.field_id) || '').trim()
+    if (!allowedTypes.length) {
+      issues.push(`${semantic}:unsupported`)
+      return
+    }
+    if (!fieldId) issues.push(`${semantic}:field_id`)
+    const declaredTypes = bindingTypes(binding)
+    if (declaredTypes.some((type) => !allowedTypes.includes(type))) issues.push(`${semantic}:type`)
+    if (binding && Object.prototype.hasOwnProperty.call(binding, 'required') &&
+        binding.required !== requiredValues.has(semantic)) {
+      issues.push(`${semantic}:required`)
+    }
+  })
+  return { ready: issues.length === 0, issues }
+}
+
+function resolvedContractBindings(role, bindings) {
+  const state = bindingContractStatus(role, bindings)
+  if (!state.ready) throw new Error(`飞书 ${role} 字段契约无效：${state.issues.join('、')}`)
+  const contracts = MIRROR_FIELD_TYPE_CONTRACTS[role]
+  const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
+  return Object.keys(bindings || {}).sort().reduce((result, semantic) => {
+    const configured = bindings[semantic]
+    const allowedTypes = contracts[semantic]
+    result[semantic] = {
+      fieldId: String(configured.fieldId || configured.field_id).trim(),
+      type: allowedTypes.length === 1 ? allowedTypes[0] : allowedTypes.slice(),
+      required: requiredValues.has(semantic),
+      // 是否必须建列与单元格是否必填分离；所有已配置 field_id 都必须真实存在。
+      schemaRequired: true
+    }
+    return result
+  }, {})
+}
+
+function pairedMirrorBindingsReady(sourceBindings, miniBindings) {
+  const source = sourceBindings && typeof sourceBindings === 'object' ? sourceBindings : {}
+  const mini = miniBindings && typeof miniBindings === 'object' ? miniBindings : {}
+  return MIRROR_PAIRED_SOURCE_FIELDS.every((semantic) => (
+    !source[semantic] || Boolean(mini[semantic] && String(mini[semantic].fieldId || mini[semantic].field_id || '').trim())
+  ))
+}
+
+function mirrorConfigurationStatus() {
+  const hasAuth = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.bitableAppToken)
+  const sourceTableReady = Boolean(config.feishu.sourceTableId)
+  const miniTableReady = Boolean(config.feishu.miniTableId)
+  const locationTableReady = Boolean(config.feishu.locationTableId)
+  const configuredTableIds = [config.feishu.sourceTableId, config.feishu.miniTableId, config.feishu.locationTableId].filter(Boolean)
+  const tableIdsDistinct = new Set(configuredTableIds).size === configuredTableIds.length
+  const sourceContract = bindingContractStatus('source', config.feishu.sourceFieldBindings)
+  const miniContract = bindingContractStatus('mini', config.feishu.miniFieldBindings)
+  const locationContract = bindingContractStatus('location', config.feishu.locationFieldBindings)
+  const sourceBindingsReady = sourceContract.ready
+  const miniBindingsReady = miniContract.ready
+  const locationBindingsReady = locationContract.ready
+  const pairedBindingsReady = pairedMirrorBindingsReady(config.feishu.sourceFieldBindings, config.feishu.miniFieldBindings)
+  const materialsReady = Boolean(config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video)
+  return {
+    ready: hasAuth && sourceTableReady && miniTableReady && locationTableReady && tableIdsDistinct &&
+      sourceBindingsReady && miniBindingsReady && locationBindingsReady && pairedBindingsReady && materialsReady,
+    hasAuth,
+    sourceTableReady,
+    miniTableReady,
+    locationTableReady,
+    tableIdsDistinct,
+    sourceBindingsReady,
+    miniBindingsReady,
+    locationBindingsReady,
+    pairedBindingsReady,
+    materialsReady
+  }
+}
+
+function assertMirrorConfiguration() {
+  const state = mirrorConfigurationStatus()
+  if (state.ready) return state
+  const missing = []
+  if (!state.hasAuth) missing.push('飞书应用凭据或多维表 app token')
+  if (!state.sourceTableReady) missing.push('员工源表 ID')
+  if (!state.miniTableReady) missing.push('小程序专用源表 ID')
+  if (!state.locationTableReady) missing.push('小程序位置字典 ID')
+  if (!state.tableIdsDistinct) missing.push('三个表 ID 必须互不相同')
+  if (!state.sourceBindingsReady) missing.push('员工源表 field_id 绑定')
+  if (!state.miniBindingsReady) missing.push('专用源表 field_id 绑定')
+  if (!state.locationBindingsReady) missing.push('位置字典 field_id 绑定')
+  if (!state.pairedBindingsReady) missing.push('员工源表与专用源表字段配对')
+  if (!state.materialsReady) missing.push('附件字段或素材目录')
+  const error = new Error(`飞书镜像同步配置不完整：${missing.join('、')}`)
+  error.statusCode = 503
+  throw error
+}
+
+function semanticFieldsForWrite(fieldNames, fields, options = {}) {
+  const names = fieldNames && typeof fieldNames === 'object' ? fieldNames : {}
+  const source = fields && typeof fields === 'object' ? fields : {}
+  const output = {}
+  Object.keys(names).sort().forEach((semantic) => {
+    if (Object.prototype.hasOwnProperty.call(source, semantic)) {
+      output[names[semantic]] = clone(source[semantic])
+    } else if (options.full === true) {
+      output[names[semantic]] = null
+    }
+  })
+  return output
+}
+
+function chunksOf(items, size = MIRROR_WRITE_BATCH_SIZE) {
+  const chunks = []
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size))
+  }
+  return chunks
+}
+
+function flattenLocationSnapshot(snapshot) {
+  return (snapshot.records || []).map((record) => ({
+    recordId: record.recordId,
+    ...(record.fields || {})
+  }))
+}
+
+function plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan) {
+  const existingBySourceId = new Map((mirrorSnapshot.records || []).map((record) => [
+    normalizeText(record && record.fields && record.fields.sourceRecordId),
+    record
+  ]))
+  const operationBySourceId = new Map((plan.operations || [])
+    .filter((operation) => operation.type !== 'deactivate')
+    .map((operation) => [operation.sourceRecordId, operation]))
+
+  return (sourceSnapshot.records || []).map((sourceRecord) => {
+    const sourceRecordId = normalizeText(sourceRecord.recordId)
+    const operation = operationBySourceId.get(sourceRecordId)
+    if (operation) {
+      return {
+        recordId: operation.recordId || `dry-run-${sourceRecordId}`,
+        fields: clone(operation.fields)
+      }
+    }
+    const existing = existingBySourceId.get(sourceRecordId)
+    if (!existing) throw new Error(`镜像计划缺少源记录投影：${sourceRecordId}`)
+    return clone(existing)
+  })
+}
+
+function assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, options = {}) {
+  const publishedBefore = new Set((mirrorSnapshot.records || []).filter((record) => (
+    record && record.fields && record.fields.enabled === true && record.fields.published === true
+  )).map((record) => normalizeText(record.fields.sourceRecordId)).filter(Boolean))
+  ;(Array.isArray(options.baselinePublishedSourceIds) ? options.baselinePublishedSourceIds : [])
+    .map(normalizeText)
+    .filter(Boolean)
+    .forEach((sourceRecordId) => publishedBefore.add(sourceRecordId))
+  const publishedAfter = new Set((plannedRecords || []).filter((record) => (
+    record && record.fields && record.fields.enabled === true && record.fields.published === true
+  )).map((record) => normalizeText(record.fields.sourceRecordId)).filter(Boolean))
+  const withdrawCount = Array.from(publishedBefore).filter((sourceRecordId) => !publishedAfter.has(sourceRecordId)).length
+  if (withdrawCount === 0 || options.allowMassDeactivate === true) return
+
+  const maxCount = options.maxDeactivateCount == null ? 10 : Number(options.maxDeactivateCount)
+  const maxRatio = options.maxDeactivateRatio == null ? 0.35 : Number(options.maxDeactivateRatio)
+  if (!Number.isInteger(maxCount) || maxCount < 1 || !Number.isFinite(maxRatio) || maxRatio <= 0 || maxRatio > 1) {
+    throw new Error('飞书镜像批量停用熔断配置无效')
+  }
+  const activeBefore = publishedBefore.size
+  const ratio = activeBefore > 0 ? withdrawCount / activeBefore : 0
+  const countExceeded = withdrawCount > maxCount
+  const ratioExceeded = ratio > maxRatio
+  if (countExceeded || ratioExceeded) {
+    const error = new Error(
+      `飞书源表拟撤下 ${withdrawCount}/${activeBefore} 条公开房源，超过安全阈值，已阻断专用源表、库存与待租表发布`
+    )
+    error.statusCode = 409
+    throw error
+  }
+}
+
+function activeFeishuSourceRecordIds(db = {}) {
+  return Array.from(new Set((db.listings || []).filter((listing) => (
+    listing && listing.externalSource === 'feishu' &&
+    listing.lifecycleStatus !== 'expired' && listing.status !== '已下架'
+  )).map((listing) => normalizeText(listing.feishuRecordId)).filter(Boolean))).sort()
+}
+
+function activeMirrorRecords(snapshot) {
+  return (snapshot.records || []).filter((record) => record && record.fields && record.fields.enabled === true)
+}
+
+function canonicalRoomParts(fields = {}) {
+  const explicit = {
+    building: normalizeRoomPart(fields.building, 'building'),
+    unit: normalizeRoomPart(fields.unit, 'unit'),
+    roomNumber: normalizeRoomPart(fields.roomNumber, 'room')
+  }
+  const community = normalizeText(fields.community)
+  let roomLabel = normalizeText(fields.roomLabel)
+  if (community && roomLabel.indexOf(community) === 0) {
+    roomLabel = roomLabel.slice(community.length).replace(/^[\s·,，。；;:：/\\_\-（）()【】\[\]]+/, '')
+  }
+  const parsed = parseRoomText(roomLabel)
+  if (!parsed || !parsed.building || !parsed.roomNumber) {
+    throw new Error('专用源表小区+房号格式无法确定解析')
+  }
+  if (explicit.building || explicit.unit || explicit.roomNumber) {
+    if (!explicit.building || !explicit.roomNumber) throw new Error('专用源表显式楼栋/单元/房号不完整')
+    const sameRoom = explicit.building === parsed.building && explicit.unit === parsed.unit &&
+      explicit.roomNumber === parsed.roomNumber
+    if (!sameRoom) throw new Error('专用源表显式楼栋/单元/房号与小区+房号不一致')
+  }
+  if (explicit.building && explicit.roomNumber) return explicit
+  return parsed || explicit
+}
+
+function canonicalVideoAttachment(value) {
+  if (value === undefined || value === null || value === '') return null
+  const attachments = Array.isArray(value) ? value : [value]
+  if (attachments.length === 0) return null
+  const candidates = attachments.filter((attachment) => {
+    if (!attachment || typeof attachment !== 'object') return false
+    const name = normalizeText(attachment.name || attachment.file_name || attachment.filename)
+    const type = normalizeText(attachment.type || attachment.file_type || attachment.mime_type)
+    const token = normalizeText(attachment.file_token || attachment.token || attachment.obj_token)
+    return VIDEO_EXT_PATTERN.test(name) || /^video\//i.test(type) || Boolean(token && !name && !type)
+  })
+  if (candidates.length !== 1) {
+    throw new Error(candidates.length > 1
+      ? '同一房源附件字段存在多个视频，已阻断先到先得匹配'
+      : '房源附件字段非空但没有可识别的视频')
+  }
+  return candidates[0]
+}
+
+function validateCanonicalMirrorRecords(records) {
+  const seen = new Set()
+  records.forEach((record, index) => {
+    const fields = record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+    const sourceRecordId = normalizeText(fields.sourceRecordId)
+    if (!sourceRecordId || seen.has(sourceRecordId)) {
+      throw new Error(`专用源表第 ${index + 1} 行 sourceRecordId 缺失或重复`)
+    }
+    seen.add(sourceRecordId)
+    if (fields.canonical !== true) throw new Error(`专用源表 ${sourceRecordId} 未通过 canonical 校验`)
+    if (!normalizeText(fields.district) || !normalizeText(fields.block) || !normalizeText(fields.community) ||
+        !normalizeText(fields.roomLabel) || !normalizeText(fields.layoutDescription) ||
+        !Number.isFinite(Number(fields.monthlyRent)) || Number(fields.monthlyRent) <= 0) {
+      throw new Error(`专用源表 ${sourceRecordId} 缺少位置、房号、户型或有效租金`)
+    }
+    if (!/^(?:整租|合租)$/.test(normalizeText(fields.rentMode))) {
+      throw new Error(`专用源表 ${sourceRecordId} 的出租方式必须明确为整租或合租`)
+    }
+    const roomParts = canonicalRoomParts(fields)
+    if (!roomParts.building || !roomParts.roomNumber) {
+      throw new Error(`专用源表 ${sourceRecordId} 无法从房号字段解析楼栋与房间号`)
+    }
+    canonicalVideoAttachment(fields.video)
+    const hasLatitude = fields.latitude !== undefined && fields.latitude !== null && fields.latitude !== ''
+    const hasLongitude = fields.longitude !== undefined && fields.longitude !== null && fields.longitude !== ''
+    if (hasLatitude !== hasLongitude) throw new Error(`专用源表 ${sourceRecordId} 经纬度必须成对出现`)
+  })
+  return records
+}
+
+function canonicalMirrorRecordToSyncRow(record, index) {
+  const fields = record && record.fields && typeof record.fields === 'object' ? record.fields : (record || {})
+  const sourceRecordId = normalizeText(fields.sourceRecordId)
+  const roomParts = canonicalRoomParts(fields)
+  return {
+    record_id: sourceRecordId,
+    rowNumber: index + 1,
+    video: canonicalVideoAttachment(fields.video),
+    fields: {
+      房源编号: sourceRecordId,
+      importKey: sourceRecordId,
+      城市: fields.city,
+      canonicalDistrict: fields.district,
+      canonicalBlock: fields.block,
+      行政区: fields.district,
+      板块: fields.block,
+      小区: fields.community,
+      几栋: roomParts.building,
+      几单元: roomParts.unit,
+      房间号: roomParts.roomNumber,
+      户型: fields.layoutDescription !== undefined ? fields.layoutDescription : fields.layout,
+      户型分类: fields.layoutCategory,
+      月租金: fields.monthlyRent !== undefined ? fields.monthlyRent : fields.rent,
+      出租方式: fields.rentMode,
+      看房方式: fields.viewingMethod,
+      备注: fields.remark,
+      房源状态: fields.published === true
+        ? (fields.listingStatus !== undefined ? fields.listingStatus : (fields.status || '在租'))
+        : '下架',
+      联系电话: fields.contact,
+      看房方式密码: fields.viewingPassword,
+      房东佣金占月租比例: fields.landlordCommissionPercent,
+      标签: fields.tags,
+      mapLatitude: fields.latitude,
+      mapLongitude: fields.longitude
+    }
+  }
+}
+
+async function executeMirrorTableSync(options = {}) {
+  const client = options.client
+  if (!client || typeof client.readValidatedTableSnapshot !== 'function') {
+    throw new Error('飞书镜像同步缺少受校验的多维表客户端')
+  }
+  const sourceSnapshot = await client.readValidatedTableSnapshot({
+    tableId: options.sourceTableId,
+    bindings: options.sourceBindings,
+    allowEmpty: false
+  })
+  const locationSnapshot = await client.readValidatedTableSnapshot({
+    tableId: options.locationTableId,
+    bindings: options.locationBindings,
+    allowEmpty: false
+  })
+  const mirrorSnapshot = await client.readValidatedTableSnapshot({
+    tableId: options.miniTableId,
+    bindings: options.miniBindings,
+    allowEmpty: true
+  })
+  const locationCatalog = buildLocationCatalog(flattenLocationSnapshot(locationSnapshot))
+  const runId = normalizeText(options.runId) || `mirror-${Date.now()}-${Math.floor(Math.random() * 100000)}`
+  const plan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
+  const plannedRecords = activeMirrorRecords({
+    records: plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan)
+  })
+  validateCanonicalMirrorRecords(plannedRecords)
+  assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, {
+    baselinePublishedSourceIds: options.baselinePublishedSourceIds,
+    maxDeactivateCount: options.maxDeactivateCount,
+    maxDeactivateRatio: options.maxDeactivateRatio,
+    allowMassDeactivate: options.allowMassDeactivate === true
+  })
+
+  if (options.dryRun === true) {
+    return {
+      complete: true,
+      published: false,
+      validated: true,
+      planned: true,
+      failed: 0,
+      schemaInvalid: false,
+      mirrorIncomplete: false,
+      dryRun: true,
+      noop: plan.noop,
+      status: 'success-dry-run',
+      counts: clone(plan.counts),
+      records: plannedRecords,
+      materials: options.materials || []
+    }
+  }
+
+  const creates = plan.operations.filter((operation) => operation.type === 'create')
+  const updates = plan.operations.filter((operation) => operation.type !== 'create')
+  for (const batch of chunksOf(creates)) {
+    await client.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
+      fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, { full: true })
+    })), {
+      clientToken: crypto.randomUUID()
+    })
+  }
+  for (const batch of chunksOf(updates)) {
+    await client.batchUpdateRecords(options.miniTableId, batch.map((operation) => ({
+      record_id: operation.recordId,
+      fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, {
+        full: operation.type !== 'deactivate'
+      })
+    })))
+  }
+
+  const readback = await client.readValidatedTableSnapshot({
+    tableId: options.miniTableId,
+    bindings: options.miniBindings,
+    allowEmpty: false
+  })
+  const remainingPlan = planMirrorSync({
+    sourceSnapshot,
+    mirrorSnapshot: readback,
+    locationCatalog,
+    runId: `${runId}-readback`
+  })
+  if (!remainingPlan.noop) {
+    const error = new Error('飞书专用源表写后回读不一致，已阻断库存与待租表发布')
+    error.statusCode = 502
+    throw error
+  }
+
+  return {
+    complete: true,
+    published: true,
+    validated: true,
+    planned: true,
+    failed: 0,
+    schemaInvalid: false,
+    mirrorIncomplete: false,
+    dryRun: false,
+    noop: plan.noop,
+    status: plan.noop ? 'success-noop' : 'success',
+    counts: clone(plan.counts),
+    records: activeMirrorRecords(readback),
+    materials: options.materials || []
+  }
+}
+
+async function loadConfiguredMirrorMaterials(token, options = {}) {
+  if (Array.isArray(options.materials)) return options.materials
+  if (config.feishu.materialsFile) return readJson(config.feishu.materialsFile)
+  if (config.feishu.folderToken) return loadFolderMaterials(token, config.feishu.folderToken)
+  return []
+}
+
+async function configuredMirrorTableSync(options = {}) {
+  assertMirrorConfiguration()
+  const token = options.feishuToken || await tenantAccessToken()
+  const client = options.client || createBitableClient({
+    baseUrl: config.feishu.baseUrl,
+    appToken: config.feishu.bitableAppToken,
+    accessToken: token,
+    pageSize: config.feishu.pageSize,
+    requestTimeoutMs: config.feishu.requestTimeoutMs,
+    maxRetries: config.feishu.requestMaxRetries,
+    retryDelayMs: config.feishu.requestRetryDelayMs,
+    fetchImpl: fetch
+  })
+  const materials = await loadConfiguredMirrorMaterials(token, options)
+  const sourceBindings = resolvedContractBindings('source', config.feishu.sourceFieldBindings)
+  const miniBindings = resolvedContractBindings('mini', config.feishu.miniFieldBindings)
+  const locationBindings = resolvedContractBindings('location', config.feishu.locationFieldBindings)
+  const result = await executeMirrorTableSync({
+    client,
+    sourceTableId: config.feishu.sourceTableId,
+    miniTableId: config.feishu.miniTableId,
+    locationTableId: config.feishu.locationTableId,
+    sourceBindings,
+    miniBindings,
+    locationBindings,
+    maxDeactivateCount: config.feishu.mirrorMaxDeactivateCount,
+    maxDeactivateRatio: config.feishu.mirrorMaxDeactivateRatio,
+    allowMassDeactivate: config.feishu.mirrorAllowMassDeactivate,
+    baselinePublishedSourceIds: options.baselinePublishedSourceIds,
+    dryRun: options.dryRun === true,
+    runId: options.runId,
+    materials
+  })
+  return { ...result, feishuToken: token }
+}
+
+async function syncViaMirror(db, adminId, options = {}) {
+  const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
+  const run = await runCompanySourceSync({
+    db,
+    mirrorSync: () => configuredMirrorTableSync({ ...options, baselinePublishedSourceIds }),
+    applyInventory: async (workingDb, records, mirrorResult) => {
+      const rows = validateCanonicalMirrorRecords(records).map(canonicalMirrorRecordToSyncRow)
+      const inventory = await applySync(workingDb, rows, mirrorResult.materials || [], adminId, {
+        ...options,
+        dryRun: options.dryRun === true,
+        skipSheetSnapshot: true,
+        feishuToken: mirrorResult.feishuToken || options.feishuToken || '',
+        trustedCanonicalCoordinates: true
+      })
+      const complete = inventory.failed === 0 && inventory.skippedInvalid === 0
+      return {
+        ...inventory,
+        complete,
+        published: complete,
+        noop: inventory.created === 0 && inventory.updated === 0 && inventory.down === 0
+      }
+    },
+    publishSnapshot: async (workingDb, records) => {
+      const before = JSON.stringify(workingDb.companySheetSnapshot || null)
+      // 镜像阶段已按“此前公开 ID → 本轮公开 ID”执行批量撤下熔断；小批明确房态变更后
+      // 允许合法发布仅含表头的零房源快照，不能因旧的非空保护让已租房源继续公开。
+      const snapshot = publishCompanySnapshot(workingDb, records, { complete: true, allowEmptyPublic: true })
+      const sanitized = sanitizeSheetSnapshot({
+        ...snapshot,
+        sourceMode: 'feishu-mini-mirror-v1',
+        schemaVersion: 1,
+        updatedAt: nowText()
+      })
+      workingDb.companySheetSnapshot = sanitized
+      return {
+        complete: true,
+        published: true,
+        failed: 0,
+        noop: before === JSON.stringify(sanitized),
+        rowCount: sanitized.rowCount,
+        columnCount: sanitized.columnCount,
+        updatedAt: sanitized.updatedAt
+      }
+    },
+    // DB 原子提交仍由 index.js 在最终分类成功后执行；dry-run 同样调用此阶段但不落盘。
+    commit: async () => ({ complete: true, noop: true, dryRun: options.dryRun === true })
+  })
+
+  const inventory = run.inventory && typeof run.inventory === 'object' ? run.inventory : {}
+  return {
+    ...inventory,
+    complete: run.complete,
+    published: run.published,
+    validated: run.validated,
+    planned: run.planned,
+    failed: run.failed,
+    schemaInvalid: run.schemaInvalid,
+    mirrorIncomplete: run.mirrorIncomplete,
+    success: run.success,
+    status: run.status,
+    noop: run.noop,
+    dryRun: run.dryRun,
+    mirror: run.mirror,
+    sheetSnapshot: run.snapshot
+  }
+}
+
+function isCommittableSyncResult(result) {
+  if (!config.feishu.mirrorSyncEnabled) return true
+  const classified = classifyMirrorRunResult(result)
+  return classified.success && classified.dryRun !== true
+}
+
+function parseAdminDryRun(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    const error = new Error('飞书同步请求体必须是 JSON 对象')
+    error.statusCode = 400
+    throw error
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'dryRun') && typeof body.dryRun !== 'boolean') {
+    const error = new Error('dryRun 必须是 JSON 布尔值')
+    error.statusCode = 400
+    throw error
+  }
+  return body.dryRun === true
+}
+
 async function loadRowsAndMaterials(options = {}) {
   if (options.rows && options.materials) {
     return { rows: options.rows, materials: options.materials, feishuToken: '' }
@@ -1999,10 +2714,18 @@ async function loadRowsAndMaterials(options = {}) {
 }
 
 async function sync(db, adminId, options = {}) {
+  if (!config.feishu.syncEnabled) {
+    const error = new Error('飞书房源同步已由服务端配置停用')
+    error.statusCode = 503
+    throw error
+  }
+  if (config.feishu.mirrorSyncEnabled) return syncViaMirror(db, adminId, options)
+
   const loaded = await loadRowsAndMaterials(options)
   const result = await applySync(db, loaded.rows, loaded.materials, adminId, {
     ...options,
-    feishuToken: loaded.feishuToken
+    feishuToken: loaded.feishuToken,
+    trustedCanonicalCoordinates: false
   })
   if (config.feishu.sheetToken && !options.skipSheetSnapshot && !options.dryRun) {
     try {
@@ -2032,13 +2755,30 @@ function status(db = {}) {
   const hasBitable = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.bitableAppToken && config.feishu.bitableTableId)
   const hasSheet = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.sheetToken)
   const hasFolder = Boolean(config.feishu.folderToken || config.feishu.materialsFile)
-  const sourceReady = (hasLocalFiles || hasBitable || hasSheet) && hasFolder
+  const legacyReady = (hasLocalFiles || hasBitable || hasSheet) && hasFolder
+  const mirrorState = mirrorConfigurationStatus()
+  const sourceReady = config.feishu.syncEnabled && (config.feishu.mirrorSyncEnabled ? mirrorState.ready : legacyReady)
   return {
     ready: sourceReady,
-    mode: hasLocalFiles ? '本地文件导入' : (hasBitable ? '飞书多维表' : '飞书表格'),
-    recordsReady: hasLocalFiles || hasBitable || hasSheet,
+    mode: config.feishu.mirrorSyncEnabled
+      ? '飞书专用源表镜像'
+      : (hasLocalFiles ? '本地文件导入' : (hasBitable ? '飞书多维表' : '飞书表格')),
+    syncEnabled: config.feishu.syncEnabled,
+    autoSyncEnabled: config.feishu.autoSyncEnabled,
+    mirrorSyncEnabled: config.feishu.mirrorSyncEnabled,
+    recordsReady: config.feishu.mirrorSyncEnabled
+      ? mirrorState.sourceTableReady && mirrorState.miniTableReady && mirrorState.locationTableReady
+      : (hasLocalFiles || hasBitable || hasSheet),
     sheetReady: hasSheet,
-    materialsReady: hasFolder,
+    materialsReady: config.feishu.mirrorSyncEnabled ? mirrorState.materialsReady : hasFolder,
+    sourceTableReady: mirrorState.sourceTableReady,
+    miniTableReady: mirrorState.miniTableReady,
+    locationTableReady: mirrorState.locationTableReady,
+    tableIdsDistinct: mirrorState.tableIdsDistinct,
+    sourceBindingsReady: mirrorState.sourceBindingsReady,
+    miniBindingsReady: mirrorState.miniBindingsReady,
+    locationBindingsReady: mirrorState.locationBindingsReady,
+    pairedBindingsReady: mirrorState.pairedBindingsReady,
     uploadToOss: config.feishu.uploadToOss,
     syncIntervalMinutes: config.feishu.syncIntervalMinutes,
     folderToken: config.feishu.folderToken ? `${config.feishu.folderToken.slice(0, 6)}...` : '',
@@ -2066,12 +2806,25 @@ module.exports = {
   status,
   sheetSnapshot,
   cachedSheetSnapshot,
+  unavailableSheetSnapshot,
   refreshSheetSnapshot,
   normalizeRecord,
   applySync,
+  isCommittableSyncResult,
+  parseAdminDryRun,
   sanitizeSheetSnapshot,
   _internal: {
     roomIdentityKey,
-    existingByExternalId
+    existingByExternalId,
+    createMaterialMatcher,
+    canonicalMirrorRecordToSyncRow,
+    executeMirrorTableSync,
+    mirrorConfigurationStatus,
+    bindingContractStatus,
+    resolvedContractBindings,
+    pairedMirrorBindingsReady,
+    loadConfiguredMirrorMaterials,
+    semanticFieldsForWrite,
+    activeFeishuSourceRecordIds
   }
 }
