@@ -115,6 +115,10 @@ const criticalScripts = [
   'server/scripts/feishu-source-mirror-v1-test.js',
   'server/scripts/company-source-snapshot-v1-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
+  // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。
+  'server/scripts/feishu-cross-base-source-v1-test.js',
+  // 素材迁移默认只读预演，三根目录隔离，真实复制必须绑定同一份计划摘要且不提供移动/删除能力。
+  'server/scripts/feishu-material-copy-v1-test.js',
   // 登录态真 LLM 链路挂起时必须在供应商级超时后回本地真实匹配，不能让前端报网络失败。
   'server/scripts/llm-provider-timeout-fallback-test.js',
   // 把静态上线差距审计纳入最终门禁，避免旧 need/purpose、主动签单入口或足迹旁路再次漂移。

@@ -442,35 +442,57 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 
 ### 小程序专用源表模式（默认关闭，完成飞书建表后再启用）
 
-新模式使用三张同一 Base 内的多维表，员工现有源表保持日常编辑入口且服务端只读：
+新模式使用“员工源 Base + 小程序专用 Base”两套多维表，员工现有源表保持日常编辑入口且服务端只读：
 
-1. **员工源表**：员工继续维护，不由同步程序改名、补列或反向写入；稳定 `record_id` 是房源唯一源键。
-2. **小程序位置字典**：每个标准小区一行，维护 `locationId / 城市 / 行政区 / 板块或商圈 / 标准小区 / 别名 / 经纬度 / 启用`。新增行政区、板块或小区只改字典，不再改服务端硬编码。
-3. **小程序专用房源源表**：只允许服务端写。它保存已按字典归一并完整回读校验的 canonical 房源，库存、地图和固定十列待租表只消费这一批结果。
+1. **员工源表（员工源 Base）**：员工继续维护，不由同步程序改名、补列或反向写入；稳定 `record_id` 是房源唯一源键。
+2. **小程序位置字典（小程序专用 Base）**：每个标准小区一行，维护 `locationId / 城市 / 行政区 / 板块或商圈 / 标准小区 / 别名 / 经纬度 / 启用`。新增行政区、板块或小区只改字典，不再改服务端硬编码。
+3. **小程序专用房源源表（小程序专用 Base）**：只允许服务端写。它保存已按字典归一并完整回读校验的 canonical 房源，库存、地图和固定十列待租表只消费这一批结果。
+
+两套 Base 使用两个资源 token 定位。`FEISHU_SOURCE_BITABLE_APP_TOKEN` 与 `FEISHU_TARGET_BITABLE_APP_TOKEN` 必须成对配置：前者只读取员工源 Base，后者读取位置字典并且只写小程序专用房源源表；只配置其中一个会 fail-closed，绝不偷偷回退到旧 `FEISHU_BITABLE_APP_TOKEN`。两项都未配置时才保留旧单 Base 配置兼容，便于尚未启用镜像的环境安全回滚。Base token 和三个 table ID 在配置解析、资源重叠比较与真实请求前统一去除前后空白，不能用空格把同一资源伪装成两份配置。
 
 员工源表最低字段语义为 `community`（小区）、`roomLabel`（小区+房号）、`layoutDescription`（户型描述）、`monthlyRent`（月租金）、`rentMode`（整租/合租）、`listingStatus`（房源状态），这些字段每行必须非空；`viewingMethod`（看房方式）和 `remark`（备注）列必须存在但单元格可空。`roomLabel` 的小区前缀必须等于源小区、字典标准小区或该字典行别名，服务端随后统一重建为“标准小区 + 楼栋 + 可选单元 + 房号”；错小区、含糊格式或与显式楼栋/单元/房号冲突会整批阻断。支持 `1幢1单元101`、`1幢101室`、`1幢-101` 等确定格式。
 
 出租方式只接受明确的“整租”或“合租”。房态采用白名单：`上架/已上架/在租/待租/空置/可租/有效/开放/可看/可出租` 公开；`下架/已下架/已租/已出租/已成交/成交/关闭/已关闭/无效/删除/已删除/暂停/暂缓/维修中/不可租/停租/未上架/不上架/未在租/不在租` 不公开；其他值整批阻断，不能默认上架。户型描述是唯一权威，户型分类由服务端派生；源表若也绑定分类列，非空值必须与派生结果一致。
 
+当前员工源 Base 的真实 17 列没有“出租方式”和“房源状态”，且必须继续作为员工只读外部事实源。只有显式设置
+`FEISHU_SOURCE_COMPATIBILITY_PROFILE=employee-current-stock-v1` 时，源字段绑定才允许省略 `rentMode/listingStatus`；配置为空时仍执行上面的严格契约，任何其他 profile 名称会在服务启动加载配置时直接失败。该 profile 只兼容这一张“表内即当前在架集合”的现表，不是通用默认值：
+
+- `rentMode` 绑定整体缺失时，依次按确定规则派生：户型描述含“整租”或`（整）/(整)`为整租；否则户型分类含“单间”或房号以英文字母结尾为合租；否则房号以数字结尾且户型分类含一至六室为整租；其余整批阻断。员工现表的“单间”会在专用表中统一为“一室”分类。
+- 员工现表把“单间/一室一厅/两室一厅/三室一厅”等完整描述保存在户型分类列。profile 只在分类列和户型描述能够各自独立推导且室数一致时，把分类统一为“一室/两室/三室”等标准粒度；只接受边界明确的一至六室，十以上中文室数、多位阿拉伯室数、多个冲突室数、真实室数冲突、未知分类或严格模式均整批阻断。
+- 员工现表少量“小区+房号”末尾带运营用的“月佣”或“数字%月佣”。profile 只剥离这两种精确末尾注记后再解析房号和出租方式，注记不会进入备注、佣金或任何客户端可控字段；未知尾注、非末尾“月佣”文本及严格模式仍整批阻断。
+- 员工现表的小区列为空时，profile 只能使用本轮已经完整校验的位置字典，对“小区+房号”执行标准小区名和别名的最长且唯一前缀反解；缺字典、无匹配或歧义都整批阻断。该规则使新增小区继续只需维护位置字典，不在代码里新增小区特判。
+- `listingStatus` 绑定整体缺失时，本轮有效源行写为“在租”。源记录从完整快照消失时，专用表同一行原子写入 `listingStatus=已下架 / published=false / enabled=false`；重新出现时按本轮 canonical 结果恢复“在租/true/true”。
+- 只要显式配置了 `rentMode` 或 `listingStatus` 绑定，就完全以该列为准；单元格为空或值非法时仍由严格 canonical 层整批阻断，绝不回退上述派生规则。
+- 员工现表的“看房方式”混存门锁码、腾房日期和联系说明。profile 对这张已核员工表只接受两种高置信旧门锁码：排除 `19xx/20xx` 年份后的 4 位纯数字，或恰好 7 位且仅含数字与 `#`、同时至少各含一个数字和 `#`；其余文本默认收敛为 `viewingMethod=联系房东`。手机号、座机、400/800、国家码/分机、微信/QQ/VX 等社交标识、日期年份、腾房/空置/退租/到期/搬离/可看/联系说明均不得进入 `viewingPassword`，原说明和号码也不得转存到备注；电话号码数字之间即使插入任意非数字字符（包括空格、括号、点、横线、斜杠、间隔号、逗号、分号、竖线或字母伪装）仍按敏感号码阻断。含“钥匙/取钥匙”写成 `viewingMethod=钥匙`。若另行显式绑定独立 `viewingPassword` 列，该列保持权威，兼容推导不得覆盖或回填，但仍必须通过同一敏感内容拒绝门：门锁码行的显式密码必须非空且不得是电话、社交账号、日期或联系说明；钥匙或联系房东行的显式密码必须为空，任一矛盾都会整批阻断。
+- profile 只忽略“所有已绑定业务字段均为空”的单个模板记录；任一业务字段已有内容但缺少“小区+房号”的半填行仍整批阻断。为了识别这一模板，读取层允许先取回空单元格，但所有已绑定列仍须真实存在且类型正确。
+- 月租金只绑定现有“押一付一月租金”。员工源里的“押一付一月租金”和“押二付一 月租金”两列都原样完整保留，后者不参与本 profile 的 canonical 月租金，避免两列自动猜选。
+
+无论是否启用 profile，员工源客户端都只有 GET；同步程序不会向员工 Base 发出 POST/PATCH/DELETE，唯一飞书写目标仍是目标 Base 的 `FEISHU_MINI_TABLE_ID`。启用本 profile 时 source/target Base token 还必须互不相同，避免把只读员工 Base 复用成写目标；管理状态中的 `sourceBaseReadOnlyBoundaryReady` 可直接诊断这道边界。
+
 建议专用表字段类型如下（飞书类型码：文本 `1`、数字 `2`、单选 `3`、多选 `4`、复选框 `7`、手机号 `13`、附件 `17`）：
 
 - 小程序位置字典：ID/城市/行政区/板块/标准小区用文本，别名用多选，经纬度用数字，启用用复选框。
 - 小程序专用源表：ID、位置、标准房号、户型、出租方式、房态、看房方式、备注等用文本；租金、佣金、经纬度用数字；标签用多选；视频用附件；`published/canonical/enabled` 用复选框。
-- `sourceRecordId/locationId/locationRecordId/city/district/block/community/latitude/longitude/roomLabel/building/roomNumber/layoutDescription/layoutCategory/monthlyRent/rentMode/listingStatus/published/canonical/enabled` 为专用表逐行必填；`unit/viewingMethod/remark` 列必建但值可空。源表若额外绑定楼栋、单元、房号、分类、电话、密码、佣金、标签或视频，专用表必须存在同语义配对列。
+- `sourceRecordId/locationId/locationRecordId/city/district/block/community/latitude/longitude/roomLabel/building/roomNumber/layoutDescription/layoutCategory/monthlyRent/rentMode/listingStatus/published/canonical/enabled` 为专用表逐行必填；`unit/viewingMethod/remark` 列必建但值可空。启用 `employee-current-stock-v1` 时 `viewingPassword` 也必须建成文本列，即使源表没有独立密码列，因为兼容层需要把纯门锁码从“看房方式”安全拆入该列；漏配或类型错误会在任何飞书读取/写入前阻断。源表若额外绑定楼栋、单元、房号、分类、电话、密码、佣金、标签或视频，专用表必须存在同语义配对列。
 
 环境绑定只负责提供稳定 `field_id`，字段类型与必填规则由代码固定并在每轮读取前对照飞书元数据；员工改显示列名不会影响同步，同名诱饵列也不会被读取。模板中的占位符必须替换成飞书真实 `field_id`，不得把真实值写进仓库：
 
 每个已经配置的 `field_id` 都必须真实存在；“单元格可空”不等于“列可以删除”。例如员工源表的看房方式、备注，以及专用表的单元、看房方式、备注，允许某一行留空，但整列被删除、重建成新 `field_id` 或改成错误类型时，本轮会在首个 POST 前失败。新增或重建列后必须更新服务器上的 `field_id` 绑定并先跑 dry-run，不能靠显示列名自动猜回。
 
+飞书数字列可能把已写入数字回读成数字字符串；读取层只把有限、标准十进制数字字符串归一为数字，十六/二进制文本、首尾空白、非法数字和非标量值继续失败。专用表可选字段回读时，字段省略、`null`、空字符串或空数组只在“双方都为空”的语义下等价，任何非空旧值或新值差异仍会生成更新。首次读取真正空表时，飞书可能返回 `has_more=false,total=0` 并省略 `items`；只接受首个分页的这一种精确空表响应，非零总数、继续分页或后续页缺 `items` 一律 fail-closed。
+
 ```env
 FEISHU_SYNC_ENABLED=true
 FEISHU_AUTO_SYNC_ENABLED=false
 FEISHU_MIRROR_SYNC_ENABLED=true
+FEISHU_SOURCE_COMPATIBILITY_PROFILE=employee-current-stock-v1
+FEISHU_SOURCE_BITABLE_APP_TOKEN=app_employee_source_placeholder
+FEISHU_TARGET_BITABLE_APP_TOKEN=app_mini_target_placeholder
 FEISHU_SOURCE_TABLE_ID=tbl_employee_source
 FEISHU_MINI_TABLE_ID=tbl_mini_source
 FEISHU_LOCATION_TABLE_ID=tbl_location_dictionary
-FEISHU_SOURCE_FIELD_BINDINGS={"community":"fld_source_community","roomLabel":"fld_source_room","layoutDescription":"fld_source_layout","monthlyRent":"fld_source_rent","rentMode":"fld_source_rent_mode","listingStatus":"fld_source_status","viewingMethod":"fld_source_viewing","remark":"fld_source_remark","video":"fld_source_video"}
-FEISHU_MINI_FIELD_BINDINGS={"sourceRecordId":"fld_mini_source_id","locationId":"fld_mini_location_id","locationRecordId":"fld_mini_location_record_id","city":"fld_mini_city","district":"fld_mini_district","block":"fld_mini_block","community":"fld_mini_community","latitude":"fld_mini_latitude","longitude":"fld_mini_longitude","roomLabel":"fld_mini_room_label","building":"fld_mini_building","unit":"fld_mini_unit","roomNumber":"fld_mini_room_number","layoutDescription":"fld_mini_layout","layoutCategory":"fld_mini_layout_category","monthlyRent":"fld_mini_rent","rentMode":"fld_mini_rent_mode","viewingMethod":"fld_mini_viewing","remark":"fld_mini_remark","listingStatus":"fld_mini_status","video":"fld_mini_video","published":"fld_mini_published","canonical":"fld_mini_canonical","enabled":"fld_mini_enabled"}
+FEISHU_SOURCE_FIELD_BINDINGS={"community":"fld_source_community","roomLabel":"fld_source_room","layoutDescription":"fld_source_layout","layoutCategory":"fld_source_layout_category","monthlyRent":"fld_source_deposit_one_monthly_rent","viewingMethod":"fld_source_viewing","remark":"fld_source_remark","video":"fld_source_video"}
+FEISHU_MINI_FIELD_BINDINGS={"sourceRecordId":"fld_mini_source_id","locationId":"fld_mini_location_id","locationRecordId":"fld_mini_location_record_id","city":"fld_mini_city","district":"fld_mini_district","block":"fld_mini_block","community":"fld_mini_community","latitude":"fld_mini_latitude","longitude":"fld_mini_longitude","roomLabel":"fld_mini_room_label","building":"fld_mini_building","unit":"fld_mini_unit","roomNumber":"fld_mini_room_number","layoutDescription":"fld_mini_layout","layoutCategory":"fld_mini_layout_category","monthlyRent":"fld_mini_rent","rentMode":"fld_mini_rent_mode","viewingMethod":"fld_mini_viewing","viewingPassword":"fld_mini_viewing_password","remark":"fld_mini_remark","listingStatus":"fld_mini_status","video":"fld_mini_video","published":"fld_mini_published","canonical":"fld_mini_canonical","enabled":"fld_mini_enabled"}
 FEISHU_LOCATION_FIELD_BINDINGS={"locationId":"fld_location_id","city":"fld_location_city","district":"fld_location_district","block":"fld_location_block","community":"fld_location_community","aliases":"fld_location_aliases","latitude":"fld_location_latitude","longitude":"fld_location_longitude","enabled":"fld_location_enabled"}
 FEISHU_REQUEST_TIMEOUT_MS=30000
 FEISHU_REQUEST_MAX_RETRIES=2
@@ -480,7 +502,82 @@ FEISHU_MIRROR_MAX_DEACTIVATE_RATIO=0.35
 FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 ```
 
-启用顺序必须是：同 Base 内复制/新建两张专用表并核对字段类型 → 配置三个不同 table ID 与 `field_id` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。紧急止写应设置 `FEISHU_SYNC_ENABLED=false`；不要在未对账时直接切回旧 Sheet，避免重新形成双事实源。
+启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
+
+管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。
+
+紧急止写应设置 `FEISHU_SYNC_ENABLED=false`。需要回滚到旧模式时，先关闭自动同步和镜像开关，确认没有在途任务，再同时清空 source/target 两项新 token 并恢复旧 Base/Sheet 配置，重启后先 dry-run 和计数对账；不得只清一个新 token，也不要在未对账时直接切回旧 Sheet，避免半配置或重新形成双事实源。
+
+#### 小程序专用素材库复制
+
+`server/scripts/feishu-material-copy.js` 用于把员工旧素材库中的视频复制到小程序专用素材库。它默认只做只读预演；实现只允许列目录、创建子目录和复制文件，不提供移动或删除操作，因此员工原素材目录保持原样，“历史归档”目录也不参与本工具的读取、计划或写入。
+
+计划输入和续传状态都必须保存在仓库外的私有 JSON 文件中；工具会对逻辑路径、真实路径和现存父目录逐层校验，路径位于仓库内或经 junction/符号链接绕回仓库时均在创建 Drive 客户端前阻断。不得把目录 token、真实房源或其他生产数据写进仓库。三项根目录含义固定如下：
+
+- `sourceRootToken`：员工当前“房源素材”根目录，只读。
+- `activeRootToken`：新素材库的“在架素材”根目录；必须传“在架素材”本身，不能传它下面的“杭州”子目录。
+- `pendingRootToken`：新素材库的“待确认”根目录，用于承接重复、未知别名、房源键异常、目录名与文件名身份冲突或未匹配素材。
+
+三个根目录必须各不相同，且任意两者不得互为父子目录。示例仅包含占位值：
+
+```json
+{
+  "sourceRootToken": "source_root_placeholder",
+  "activeRootToken": "active_root_placeholder",
+  "pendingRootToken": "pending_root_placeholder",
+  "maxDepth": 12,
+  "locations": [
+    {
+      "locationId": "location_placeholder",
+      "city": "城市占位",
+      "district": "行政区占位",
+      "block": "板块占位",
+      "community": "小区占位",
+      "aliases": ["别名占位"],
+      "enabled": true
+    }
+  ],
+  "listings": [
+    {
+      "sourceRecordId": "source_record_placeholder",
+      "locationId": "location_placeholder",
+      "building": "1",
+      "unit": "1",
+      "roomNumber": "101",
+      "published": true,
+      "canonical": true,
+      "enabled": true
+    }
+  ]
+}
+```
+
+位置字典只有原生 JSON 布尔值 `enabled: true` 才参与计划；房源也必须同时满足 `published/canonical/enabled` 三项原生布尔值为 `true`。工具会同时解析视频所在叶子目录和文件名：只有一方可解析，或双方都解析到同一物理房源时，才可继续匹配；双方分别指向不同房源时固定进入“待确认/身份冲突”，禁止按先到候选静默归档。唯一精确匹配的素材复制到 `在架素材/城市/行政区/板块/位置ID__标准小区/楼栋__单元__房号/`，歧义或未匹配素材复制到“待确认”的原因分组。支持的视频扩展名固定为 `.mp4/.mov/.m4v/.avi/.webm`。
+
+先执行只读预演并保存输出中的计数、阻断项和计划 SHA-256：
+
+```powershell
+node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-plan.json
+```
+
+只有预演 `blockers=0`、人工核对计数与目录去向无误，并且输入文件及三处目录内容未变化时，才可用同一输入文件和该次输出的完整 SHA-256 二次确认真实复制。`--resume-state` 必须指向仓库目录之外的私有 JSON 文件；它包含目录 token、素材身份与回读 token，不得提交、外发或写入普通日志：
+
+```powershell
+node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-plan.json --resume-state D:\private\feishu-material-resume.json --apply --confirm-plan-sha256 <64位计划摘要>
+```
+
+`--apply` 会重新读取三处目录并重算摘要；任何清单、修改时间、映射或目标冲突变化都会拒绝使用旧摘要。Drive 目录分页必须同时提供数组清单和严格布尔 `has_more`，继续分页必须提供新的非空、非重复字符串 token，缺项、错型、循环或超过安全页数都会 fail-closed。首次执行会用最终状态路径独占创建空回执；回执 v3 为每个 `inFlight` 增加阶段。每项操作在创建目标子目录或复制文件之前先原子落盘 `phase=preparing`；只有内部 Drive 客户端证明复制 HTTP 请求已经进入，并收到 500、`1061001`、超时、网络中断或畸形成功响应这类结果不确定错误，才会再原子落盘 `phase=request-uncertain`。`preparing` 的安全含义是“缺少可自动晋升的可信请求结果证明”，不承诺 POST 一定为 0；建目录失败、复制前同名冲突、确定性 4xx、进程在 POST 前中断，以及正常复制响应后严格回读冲突/超时都会保持该阶段并硬阻断，即使之后出现唯一同名文件也不得自动晋升或重发。目录创建、正常复制和不确定复制的回读都先统计全部同名项目，只有总数恰为 1、类型正确，且正常响应路径 token 与接口返回一致时才接受；同名 `file + folder/shortcut` 必须阻断，不能靠先筛预期类型制造“唯一”假象。只有正常复制响应和该严格回读一致后才把该项转入完成前缀并清空 `inFlight`。回执包含原计划证明、源/目标指纹和回读 token；临时文件使用不可预测名称和独占创建，再原子替换状态文件。
+
+复制接口发生 500/超时这类结果不确定错误时，工具只轮询目标目录；仅 `request-uncertain` 阶段允许在唯一同名文件出现后按回读结果收敛，绝不盲目重发复制请求制造重复文件。若回读仍无结果则保留 `inFlight` 并停止；后续回读仍不可见时继续硬阻断，迟到且唯一的目标文件出现后才可零重发收敛。`preparing` 阶段无论目标是否出现都硬阻断，必须人工查明来源，不得把外来同名文件认作复制结果。恢复时必须先重新 dry-run；工具会重读源与两个目标，校验状态结构与 SHA-256 一致性、源计划未变、已完成项是原动作的严格连续前缀、`inFlight` 恰为下一动作、每个目标 token 唯一匹配且没有额外冲突，然后只生成剩余动作的新 SHA-256。v2 及更早回执不含可信阶段证明，v3 工具一律拒绝自动迁移、晋升或重发；必须原样保留旧回执和外部请求证据，另行完成一次性只读审计后才能制定人工迁移方案。`stateSha256` 是无密钥的一致性校验，不是抵抗持有文件写权限者的认证；状态文件必须放在可信、仅运维账号可写的私有路径，未来若需跨账号托管应另配 HMAC：
+
+```powershell
+node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-plan.json --resume --resume-state D:\private\feishu-material-resume.json
+node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-plan.json --resume --resume-state D:\private\feishu-material-resume.json --apply --confirm-plan-sha256 <新的64位续传摘要>
+```
+
+状态文件缺失、落在仓库内、原计划或源清单变化、完成项不是严格前缀、目标 token 不一致、存在额外目标冲突时均拒绝续传且写入为 0。普通 `--apply` 发现状态文件已存在会拒绝覆盖；初次执行和续传的整个 build/重验/Drive 写生命周期还会独占 `${resumeState}.lock`，并发任务只有一个可以进入。不得改用移动、删除、覆盖或直接重跑原计划来“修复”。
+
+若进程被强杀或机器断电，锁文件可能保留。只允许在确认没有任何素材复制进程后处理：先备份并保留原状态文件，核对同路径 `.lock` 确属这次中断，再只删除该 `.lock`；随后必须使用 `--resume` 重新 dry-run 和续传，禁止普通 `--apply`。不要按文件年龄自动清理锁，也不要删除或改写状态文件。
 
 同步规则：
 
@@ -496,7 +593,7 @@ FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 - 管理后台房源列表支持 `missingVideoMaterial=missing|ready` 查询，页面里可直接筛“缺视频素材”。
 - `server/scripts/feishu-sync-audit.js` 可只读 dry-run 输出逐行对账表：房号、表内状态、匹配素材、同步结果、失败原因。
 - 定时同步使用系统任务名触发时，服务端会自动落到库里的真实管理员身份执行新增/更新，避免新增公司房源因 `system-feishu-sync` 不是用户账号而失败。
-- 旧模式兼容规则：`户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，否则按合租处理；镜像模式不再猜测，必须使用明确出租方式列。
+- 旧模式兼容规则：`户型描述` 以 `（整）` 或 `(整)` 开头时解析为整租，否则按合租处理；镜像模式默认必须使用明确出租方式列，只有显式 `employee-current-stock-v1` profile 会按本节列出的封闭规则兼容真实 17 列员工现表。
 - 旧模式兼容规则：板块到行政区仍使用服务端既有映射；镜像模式的行政区、板块、小区与坐标只来自小程序位置字典。
 - 旧模式即使出现 `mapLatitude/mapLongitude` 同名列也不会把它们标成已核坐标；只有经过位置字典完整校验的 canonical 镜像适配器可以写入逐套地图坐标。公开待租快照会二次清除电话、微信、密码以及 HTTP(S)、FTP、文件、飞书、Lark、data、javascript、mailto、tel 和 `www` 形式的链接。
 

@@ -1306,7 +1306,7 @@ function buildLaunchCheck(db) {
         : '缺少飞书应用、房源表或素材库配置，暂不能自动同步公司房源',
       feishuStatus.ready
         ? '后台可在“飞书同步”里手动执行；服务启动后会按配置周期自动刷新房态'
-        : '补齐 FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_BITABLE_APP_TOKEN、FEISHU_BITABLE_TABLE_ID 和素材库 Folder Token'
+        : '镜像模式补齐 FEISHU_SOURCE_BITABLE_APP_TOKEN、FEISHU_TARGET_BITABLE_APP_TOKEN、三张表与素材库配置；旧单 Base 模式仍可使用 FEISHU_BITABLE_APP_TOKEN'
     )
   ]
 
@@ -1344,7 +1344,8 @@ function buildMissingEnvTemplate(db) {
   if (config.feishu.syncEnabled && config.feishu.mirrorSyncEnabled) {
     if (!config.feishu.appId) feishuMissing.push('FEISHU_APP_ID')
     if (!config.feishu.appSecret) feishuMissing.push('FEISHU_APP_SECRET')
-    if (!config.feishu.bitableAppToken) feishuMissing.push('FEISHU_BITABLE_APP_TOKEN')
+    if (!config.feishu.sourceBitableAppToken) feishuMissing.push('FEISHU_SOURCE_BITABLE_APP_TOKEN')
+    if (!config.feishu.targetBitableAppToken) feishuMissing.push('FEISHU_TARGET_BITABLE_APP_TOKEN')
     if (!config.feishu.sourceTableId) feishuMissing.push('FEISHU_SOURCE_TABLE_ID')
     if (!config.feishu.miniTableId) feishuMissing.push('FEISHU_MINI_TABLE_ID')
     if (!config.feishu.locationTableId) feishuMissing.push('FEISHU_LOCATION_TABLE_ID')

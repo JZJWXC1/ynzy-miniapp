@@ -38,6 +38,13 @@ function boolFromEnv(name, fallback = false) {
   return /^(1|true|yes|on|是)$/i.test(String(value).trim())
 }
 
+function enumFromEnv(name, allowedValues, fallback = '') {
+  const value = process.env[name]
+  const normalized = value === undefined || value === '' ? fallback : String(value).trim()
+  if (allowedValues.includes(normalized)) return normalized
+  throw new Error(`${name} 只允许为空或 ${allowedValues.filter(Boolean).join('、')}`)
+}
+
 function listFromEnv(name, fallback = []) {
   const value = process.env[name]
   const source = value === undefined || value === ''
@@ -114,6 +121,16 @@ const feishuFolderTokenFile = path.resolve(rootDir, '..', 'lark-folder-params.js
 const feishuSheetTokenFile = path.resolve(rootDir, '..', 'lark-sheet-params.json')
 const configuredSheetUrl = process.env.FEISHU_SHEET_URL || jsonValue(feishuSheetTokenFile, 'sheet_url')
 const configuredSheetToken = process.env.FEISHU_SHEET_TOKEN || jsonValue(feishuSheetTokenFile, 'spreadsheet_token') || extractSheetToken(configuredSheetUrl)
+const legacyBitableAppToken = String(process.env.FEISHU_BITABLE_APP_TOKEN || '').trim()
+const explicitSourceBitableAppToken = String(process.env.FEISHU_SOURCE_BITABLE_APP_TOKEN || '').trim()
+const explicitTargetBitableAppToken = String(process.env.FEISHU_TARGET_BITABLE_APP_TOKEN || '').trim()
+const crossBaseTokenPartial = Boolean(explicitSourceBitableAppToken) !== Boolean(explicitTargetBitableAppToken)
+const sourceBitableAppToken = crossBaseTokenPartial
+  ? explicitSourceBitableAppToken
+  : (explicitSourceBitableAppToken || legacyBitableAppToken)
+const targetBitableAppToken = crossBaseTokenPartial
+  ? explicitTargetBitableAppToken
+  : (explicitTargetBitableAppToken || legacyBitableAppToken)
 const districtBlocks = {
   '拱墅区': ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'],
   '上城区': ['闸弄口', '新塘', '元宝塘', '东站'],
@@ -227,16 +244,24 @@ module.exports = {
     baseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn/open-apis',
     appId: process.env.FEISHU_APP_ID || '',
     appSecret: process.env.FEISHU_APP_SECRET || '',
-    bitableAppToken: process.env.FEISHU_BITABLE_APP_TOKEN || '',
-    bitableTableId: process.env.FEISHU_BITABLE_TABLE_ID || '',
+    bitableAppToken: legacyBitableAppToken,
+    // 两个新变量必须成对配置；只配一个时缺失侧不回退旧 token，避免半迁移误写旧 Base。
+    sourceBitableAppToken,
+    targetBitableAppToken,
+    crossBaseTokenPartial,
+    bitableTableId: String(process.env.FEISHU_BITABLE_TABLE_ID || '').trim(),
     // 镜像模式显式开启后，员工源表只读；源 record_id 是专用副本唯一幂等键。
     // 旧 FEISHU_BITABLE_TABLE_ID 保留原义，并作为新源表配置的兼容回退。
-    sourceTableId: process.env.FEISHU_SOURCE_TABLE_ID || process.env.FEISHU_BITABLE_TABLE_ID || '',
-    miniTableId: process.env.FEISHU_MINI_TABLE_ID || '',
-    locationTableId: process.env.FEISHU_LOCATION_TABLE_ID || '',
+    sourceTableId: String(process.env.FEISHU_SOURCE_TABLE_ID || process.env.FEISHU_BITABLE_TABLE_ID || '').trim(),
+    miniTableId: String(process.env.FEISHU_MINI_TABLE_ID || '').trim(),
+    locationTableId: String(process.env.FEISHU_LOCATION_TABLE_ID || '').trim(),
     sourceFieldBindings: fieldBindingsFromEnv('FEISHU_SOURCE_FIELD_BINDINGS'),
     miniFieldBindings: fieldBindingsFromEnv('FEISHU_MINI_FIELD_BINDINGS'),
     locationFieldBindings: fieldBindingsFromEnv('FEISHU_LOCATION_FIELD_BINDINGS'),
+    sourceCompatibilityProfile: enumFromEnv(
+      'FEISHU_SOURCE_COMPATIBILITY_PROFILE',
+      ['', 'employee-current-stock-v1']
+    ),
     mirrorSyncEnabled: boolFromEnv('FEISHU_MIRROR_SYNC_ENABLED', false),
     syncEnabled: boolFromEnv('FEISHU_SYNC_ENABLED', true),
     autoSyncEnabled: boolFromEnv('FEISHU_AUTO_SYNC_ENABLED', true),

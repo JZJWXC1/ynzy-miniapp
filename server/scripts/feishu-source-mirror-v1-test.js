@@ -4,8 +4,11 @@ const assert = require('assert')
 
 const {
   buildLocationCatalog,
-  planMirrorSync
+  planMirrorSync,
+  prepareSourceSnapshotForCompatibility
 } = require('../src/feishu-source-mirror')
+
+const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
 
 function location(overrides = {}) {
   return {
@@ -162,14 +165,872 @@ function testLifecyclePlanUsesStableSourceRecordId() {
 
   const deactivate = assertOperation(plan, 'src-deactivate', 'deactivate', '完整源快照中已消失的记录')
   assert.strictEqual(deactivate.recordId, 'mir-deactivate', '软停用必须指向原镜像 recordId')
+  assert.strictEqual(deactivate.fields.listingStatus, '已下架', '源记录消失必须原子写入已下架房态')
+  assert.strictEqual(deactivate.fields.published, false, '源记录消失必须原子关闭公开状态')
   assert.strictEqual(deactivate.fields.enabled, false, '源记录消失只能软停用，不得删除镜像记录')
 
   const restore = assertOperation(plan, 'src-restore', 'restore', '重新出现在源表的软停用记录')
   assert.strictEqual(restore.recordId, 'mir-restore', '恢复必须复用原镜像 recordId')
+  assert.strictEqual(restore.fields.listingStatus, '可租', '恢复必须写回源记录的有效房态')
+  assert.strictEqual(restore.fields.published, true, '恢复必须原子恢复公开状态')
   assert.strictEqual(restore.fields.enabled, true, '恢复动作必须重新启用原镜像记录')
 
   assert.strictEqual(operationFor(plan, 'src-already-disabled'), undefined, '源表仍不存在且镜像已停用时必须 no-op')
   assert.strictEqual(operations(plan).length, 4, '新建、更新、软停用、恢复各一次之外不得有额外写入')
+}
+
+function profileBindings(overrides = {}) {
+  return {
+    community: { fieldId: 'src-community' },
+    roomLabel: { fieldId: 'src-room-label' },
+    layoutDescription: { fieldId: 'src-layout-description' },
+    layoutCategory: { fieldId: 'src-layout-category' },
+    monthlyRent: { fieldId: 'src-monthly-rent' },
+    viewingMethod: { fieldId: 'src-viewing-method' },
+    remark: { fieldId: 'src-remark' },
+    ...overrides
+  }
+}
+
+function prepareEmployeeSnapshot(records, sourceBindings = profileBindings(), locationCatalog) {
+  return prepareSourceSnapshotForCompatibility(snapshot(records), {
+    profile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+    sourceBindings,
+    locationCatalog
+  })
+}
+
+function testEmployeeProfileClassifiesAllThirtyFourVerifiedShapes() {
+  const records = []
+  for (let index = 0; index < 5; index += 1) {
+    records.push(source(`whole-word-${index}`, {
+      roomLabel: `风雅乐府 1幢1单元10${index}`,
+      roomNumber: `10${index}`,
+      layoutDescription: '两室一厅整租',
+      layoutCategory: '两室',
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+  }
+  for (let index = 0; index < 5; index += 1) {
+    records.push(source(`whole-parentheses-${index}`, {
+      roomLabel: `风雅乐府 2幢1单元20${index}`,
+      roomNumber: `20${index}`,
+      layoutDescription: index % 2 === 0 ? '两室一厅（整）' : '两室一厅(整)',
+      layoutCategory: '两室',
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+  }
+  ;['一室', '两室', '三室', '四室', '五室', '六室'].forEach((layoutCategory, index) => {
+    records.push(source(`whole-numeric-${index}`, {
+      roomLabel: `风雅乐府 3幢1单元30${index}`,
+      roomNumber: `30${index}`,
+      layoutDescription: `${index + 1}室1厅`,
+      layoutCategory,
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+  })
+  for (let index = 0; index < 9; index += 1) {
+    records.push(source(`shared-single-${index}`, {
+      roomLabel: `风雅乐府 4幢1单元40${index}`,
+      roomNumber: `40${index}`,
+      layoutDescription: '单间',
+      layoutCategory: '单间',
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+  }
+  for (let index = 0; index < 9; index += 1) {
+    const suffix = String.fromCharCode(65 + index)
+    records.push(source(`shared-letter-${index}`, {
+      roomLabel: index === 0
+        ? `风雅乐府 5幢1单元50${index}${suffix}室`
+        : `风雅乐府 5幢1单元50${index}${suffix}`,
+      roomNumber: index === 0 ? `50${index}${suffix}室` : `50${index}${suffix}`,
+      layoutDescription: '一室',
+      layoutCategory: '一室',
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+  }
+
+  assert.strictEqual(records.length, 34, '分类合成样本必须与真实有效员工源记录数一致')
+  const prepared = prepareEmployeeSnapshot(records)
+  assert.strictEqual(prepared.records.length, 34, '34 条有效记录不得被兼容层误忽略')
+  const counts = prepared.records.reduce((result, record) => {
+    const expectedRentMode = record.recordId.startsWith('whole-') ? '整租' : '合租'
+    assert.strictEqual(
+      record.fields.rentMode,
+      expectedRentMode,
+      `记录 ${record.recordId} 必须按所属规则分组逐条得到 ${expectedRentMode}，不能只靠汇总数量过关`
+    )
+    result[record.fields.rentMode] = (result[record.fields.rentMode] || 0) + 1
+    assert.strictEqual(record.fields.listingStatus, '在租', '缺失房态必须按当前在架快照派生为在租')
+    return result
+  }, {})
+  assert.deepStrictEqual(counts, { 整租: 16, 合租: 18 }, '34 条规则样本必须稳定分类为 16 整租、18 合租')
+}
+
+function testEmployeeProfileNormalizesLegacyLayoutGranularitySafely() {
+  const cases = [
+    { sourceRecordId: 'legacy-layout-one', roomLabel: '风雅乐府 9幢901', description: '一室一厅', category: '一室一厅', expected: '一室' },
+    { sourceRecordId: 'legacy-layout-two', roomLabel: '风雅乐府 9幢902', description: '两室一厅', category: '两室一厅', expected: '两室' },
+    { sourceRecordId: 'legacy-layout-three', roomLabel: '风雅乐府 9幢903', description: '三室一厅', category: '三室一厅', expected: '三室' },
+    { sourceRecordId: 'legacy-layout-single', roomLabel: '风雅乐府 9幢904A', description: '单间', category: '单间', expected: '一室' }
+  ]
+  const prepared = prepareEmployeeSnapshot(cases.map((item) => source(item.sourceRecordId, {
+    roomLabel: item.roomLabel,
+    building: '9',
+    unit: '',
+    roomNumber: item.roomLabel.replace(/^.*幢/, ''),
+    layoutDescription: item.description,
+    layoutCategory: item.category,
+    rentMode: undefined,
+    listingStatus: undefined
+  })))
+
+  cases.forEach((item, index) => {
+    assert.strictEqual(
+      prepared.records[index].fields.layoutCategory,
+      item.expected,
+      `员工旧表 ${item.category} 必须仅在与户型描述室数一致时归一为 ${item.expected}`
+    )
+  })
+
+  const plan = planMirrorSync({
+    sourceSnapshot: prepared,
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: buildLocationCatalog([location()]),
+    runId: 'legacy-layout-granularity'
+  })
+  cases.forEach((item) => {
+    assert.strictEqual(
+      assertOperation(plan, item.sourceRecordId, 'create', item.category).fields.layoutCategory,
+      item.expected,
+      '规范后的专用表户型分类必须只保留一至六室标准值'
+    )
+  })
+
+  const conflict = prepareEmployeeSnapshot([
+    source('legacy-layout-real-conflict', {
+      roomLabel: '风雅乐府 9幢905',
+      building: '9',
+      unit: '',
+      roomNumber: '905',
+      layoutDescription: '三室一厅',
+      layoutCategory: '两室一厅',
+      rentMode: undefined,
+      listingStatus: undefined
+    })
+  ])
+  assert.throws(
+    () => planMirrorSync({
+      sourceSnapshot: conflict,
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: buildLocationCatalog([location()]),
+      runId: 'legacy-layout-real-conflict'
+    }),
+    /户型描述|户型分类|不一致/i,
+    '员工旧表户型分类与描述的真实室数冲突不得被兼容层静默改写'
+  )
+
+  ;['十一室一厅', '十二室一厅', '十六室', '22室1厅'].forEach((unsupported, index) => {
+    assert.throws(
+      () => {
+        const highRoomPrepared = prepareEmployeeSnapshot([
+          source(`legacy-layout-unsupported-${index}`, {
+            roomLabel: `风雅乐府 10幢${1001 + index}`,
+            building: '10',
+            unit: '',
+            roomNumber: String(1001 + index),
+            layoutDescription: unsupported,
+            layoutCategory: unsupported,
+            rentMode: undefined,
+            listingStatus: undefined
+          })
+        ])
+        return planMirrorSync({
+          sourceSnapshot: highRoomPrepared,
+          mirrorSnapshot: snapshot([]),
+          locationCatalog: buildLocationCatalog([location()]),
+          runId: `legacy-layout-unsupported-${index}`
+        })
+      },
+      /户型|分类|描述|派生/i,
+      `员工兼容 profile 不得把未知高室数“${unsupported}”静默降级为一至六室`
+    )
+  })
+
+  assert.throws(
+    () => planMirrorSync({
+      sourceSnapshot: snapshot([
+        source('strict-layout-unsupported', {
+          roomLabel: '风雅乐府 11幢1101',
+          building: '11',
+          unit: '',
+          roomNumber: '1101',
+          layoutDescription: '十一室一厅',
+          layoutCategory: '十一室'
+        })
+      ]),
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: buildLocationCatalog([location()]),
+      runId: 'strict-layout-unsupported'
+    }),
+    /户型|分类|描述|派生/i,
+    '严格链路也不得用子串把十一室识别成一室'
+  )
+}
+
+function testEmployeeProfileStripsOnlyLegacyCommissionRoomSuffix() {
+  const prepared = prepareEmployeeSnapshot([
+    source('legacy-room-monthly-commission', {
+      roomLabel: '风雅乐府 1-101 月佣',
+      building: undefined,
+      unit: undefined,
+      roomNumber: undefined,
+      layoutDescription: '两室一厅',
+      layoutCategory: '两室一厅',
+      rentMode: undefined,
+      listingStatus: undefined
+    }),
+    source('legacy-room-percent-commission', {
+      roomLabel: '风雅乐府 2-202 100%月佣',
+      building: undefined,
+      unit: undefined,
+      roomNumber: undefined,
+      layoutDescription: '两室一厅',
+      layoutCategory: '两室一厅',
+      rentMode: undefined,
+      listingStatus: undefined
+    })
+  ])
+  assert.deepStrictEqual(
+    prepared.records.map((record) => record.fields.roomLabel),
+    ['风雅乐府 1-101', '风雅乐府 2-202'],
+    '员工旧表只允许从房号末尾剥离精确月佣运营尾注'
+  )
+  prepared.records.forEach((record) => {
+    assert.strictEqual(record.fields.rentMode, '整租', '剥离月佣尾注后必须继续按纯房号派生出租方式')
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(record.fields, 'landlordCommissionPercent'),
+      false,
+      '房号尾注不得转换为客户端可控分佣字段'
+    )
+    assert.ok(!/月佣/.test(String(record.fields.remark || '')), '房号尾注不得泄漏到专用表备注')
+  })
+
+  const plan = planMirrorSync({
+    sourceSnapshot: prepared,
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: buildLocationCatalog([location()]),
+    runId: 'legacy-room-commission-suffix'
+  })
+  assert.strictEqual(
+    assertOperation(plan, 'legacy-room-monthly-commission', 'create', '月佣尾注').fields.roomLabel,
+    '风雅乐府 1幢101',
+    '去除尾注后必须重建规范房号'
+  )
+  assert.strictEqual(
+    assertOperation(plan, 'legacy-room-percent-commission', 'create', '百分比月佣尾注').fields.roomLabel,
+    '风雅乐府 2幢202',
+    '百分比月佣尾注不得改变规范房号'
+  )
+
+  assert.throws(
+    () => prepareEmployeeSnapshot([
+      source('legacy-room-unknown-suffix', {
+        roomLabel: '风雅乐府 3-303 其他尾注',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined,
+        layoutDescription: '两室一厅',
+        layoutCategory: '两室一厅',
+        rentMode: undefined,
+        listingStatus: undefined
+      })
+    ]),
+    /出租方式|房号|员工现表规则/i,
+    '员工兼容层不得把未知房号尾注当作月佣静默剥离'
+  )
+
+  assert.throws(
+    () => prepareEmployeeSnapshot([
+      source('legacy-room-commission-not-at-end', {
+        roomLabel: '风雅乐府 3-月佣303',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined,
+        layoutDescription: '两室一厅',
+        layoutCategory: '两室一厅',
+        rentMode: undefined,
+        listingStatus: undefined
+      })
+    ]),
+    /出租方式|房号|员工现表规则/i,
+    '“月佣”只有位于整个房号末尾时才允许剥离，嵌在房号中间必须阻断'
+  )
+
+  assert.throws(
+    () => planMirrorSync({
+      sourceSnapshot: snapshot([
+        source('strict-room-commission-suffix', {
+          roomLabel: '风雅乐府 4-404 月佣',
+          building: undefined,
+          unit: undefined,
+          roomNumber: undefined
+        })
+      ]),
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: buildLocationCatalog([location()]),
+      runId: 'strict-room-commission-suffix'
+    }),
+    /房号|格式|解析/i,
+    '未启用员工兼容 profile 时不得放宽带运营尾注的房号'
+  )
+}
+
+function testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog() {
+  const catalog = buildLocationCatalog([location()])
+  const prepared = prepareEmployeeSnapshot([
+    source('legacy-blank-community', {
+      community: '',
+      roomLabel: '风雅乐府小区 8幢1单元801',
+      building: '8',
+      unit: '1',
+      roomNumber: '801',
+      layoutDescription: '两室一厅',
+      layoutCategory: '两室一厅',
+      rentMode: undefined,
+      listingStatus: undefined
+    })
+  ], profileBindings(), catalog)
+  assert.strictEqual(
+    prepared.records[0].fields.community,
+    '风雅乐府',
+    '员工旧表独立小区列为空时，只能由完整位置字典的唯一别名前缀恢复标准小区'
+  )
+  const plan = planMirrorSync({
+    sourceSnapshot: prepared,
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: catalog,
+    runId: 'legacy-blank-community'
+  })
+  assert.strictEqual(
+    assertOperation(plan, 'legacy-blank-community', 'create', '空小区列').fields.roomLabel,
+    '风雅乐府 8幢1单元801',
+    '别名前缀恢复后必须重建标准小区房号'
+  )
+
+  assert.throws(
+    () => prepareEmployeeSnapshot([
+      source('legacy-blank-community-without-catalog', {
+        community: '',
+        roomLabel: '风雅乐府小区 8幢1单元802',
+        building: '8',
+        unit: '1',
+        roomNumber: '802',
+        rentMode: undefined,
+        listingStatus: undefined
+      })
+    ]),
+    /位置字典|小区|前缀/i,
+    '员工旧表空小区列缺少本轮位置字典时必须阻断'
+  )
+  assert.throws(
+    () => prepareEmployeeSnapshot([
+      source('legacy-blank-community-unknown-prefix', {
+        community: '',
+        roomLabel: '未入字典小区 8幢1单元803',
+        building: '8',
+        unit: '1',
+        roomNumber: '803',
+        rentMode: undefined,
+        listingStatus: undefined
+      })
+    ], profileBindings(), catalog),
+    /位置字典|小区|前缀|匹配/i,
+    '员工旧表空小区列的房号前缀未入字典时不得猜测'
+  )
+
+  const longestCatalog = buildLocationCatalog([
+    location({
+      recordId: 'loc-record-short-prefix',
+      locationId: 'LOC-SHORT-PREFIX',
+      community: '风雅',
+      aliases: []
+    }),
+    location({
+      recordId: 'loc-record-long-prefix',
+      locationId: 'LOC-LONG-PREFIX',
+      community: '风雅乐府',
+      aliases: ['风雅乐府小区']
+    })
+  ])
+  const longestPrepared = prepareEmployeeSnapshot([
+    source('legacy-blank-community-longest-prefix', {
+      community: '',
+      roomLabel: '风雅乐府小区 9幢901',
+      building: '9',
+      unit: '',
+      roomNumber: '901',
+      layoutDescription: '两室一厅',
+      layoutCategory: '两室一厅',
+      rentMode: undefined,
+      listingStatus: undefined
+    })
+  ], profileBindings(), longestCatalog)
+  assert.strictEqual(
+    longestPrepared.records[0].fields.community,
+    '风雅乐府',
+    '短前缀和长前缀同时命中时必须选择唯一最长位置，不能取字典遍历到的首项'
+  )
+}
+
+function testEmployeeProfileExplicitBindingsTakePriorityAndNeverFallback() {
+  const explicitBindings = profileBindings({
+    rentMode: { fieldId: 'src-rent-mode' },
+    listingStatus: { fieldId: 'src-listing-status' }
+  })
+  const explicit = prepareEmployeeSnapshot([
+    source('explicit-valid', {
+      roomLabel: '风雅乐府 6幢1单元601',
+      roomNumber: '601',
+      layoutDescription: '两室一厅（整）',
+      layoutCategory: '两室',
+      rentMode: '合租',
+      listingStatus: '暂停'
+    })
+  ], explicitBindings)
+  assert.strictEqual(explicit.records[0].fields.rentMode, '合租', '显式合法出租方式必须优先于派生规则')
+  assert.strictEqual(explicit.records[0].fields.listingStatus, '暂停', '显式合法房态必须优先于当前集合派生值')
+
+  ;[
+    { field: 'rentMode', value: '', pattern: /出租方式|整租|合租/i },
+    { field: 'rentMode', value: '整合租', pattern: /出租方式|整租|合租/i },
+    { field: 'listingStatus', value: '', pattern: /状态|房态|缺少/i },
+    { field: 'listingStatus', value: '待核验', pattern: /状态未配置|状态/i }
+  ].forEach(({ field, value, pattern }, index) => {
+    const prepared = prepareEmployeeSnapshot([
+      source(`explicit-invalid-${index}`, {
+        roomLabel: `风雅乐府 7幢1单元70${index}`,
+        building: '7',
+        roomNumber: `70${index}`,
+        layoutDescription: '两室一厅（整）',
+        layoutCategory: '两室',
+        rentMode: field === 'rentMode' ? value : '整租',
+        listingStatus: field === 'listingStatus' ? value : '在租'
+      })
+    ], explicitBindings)
+    assert.throws(
+      () => planMirrorSync({
+        sourceSnapshot: prepared,
+        mirrorSnapshot: snapshot([]),
+        locationCatalog: buildLocationCatalog([location()]),
+        runId: `explicit-invalid-${index}`
+      }),
+      pattern,
+      `显式 ${field} 为空或非法时必须由严格 canonical 层整批阻断，不能回退派生`
+    )
+  })
+}
+
+function testEmployeeProfileNormalizesViewingAccessWithoutLeakingSourceNotes() {
+  const codeCases = ['2468', '135790#']
+  const sensitiveCases = [
+    { value: '钥匙在管家处', expectedMethod: '钥匙' },
+    { value: '联系房东取钥匙', expectedMethod: '钥匙' },
+    { value: '7月30日空出可看', expectedMethod: '联系房东' },
+    { value: '本周空置', expectedMethod: '联系房东' },
+    { value: '8月1日退租到期', expectedMethod: '联系房东' },
+    { value: '月底退租，搬离后可看', expectedMethod: '联系房东' },
+    { value: '请电话联系', expectedMethod: '联系房东' },
+    { value: '手机联系确认', expectedMethod: '联系房东' },
+    { value: '加微信确认', expectedMethod: '联系房东' },
+    { value: 'wxid_abcd1234', expectedMethod: '联系房东' },
+    { value: 'wechat12345', expectedMethod: '联系房东' },
+    { value: 'VX123456', expectedMethod: '联系房东' },
+    { value: 'qq123456', expectedMethod: '联系房东' },
+    { value: '2026-07-31', expectedMethod: '联系房东' },
+    { value: '13800138000', expectedMethod: '联系房东' },
+    { value: '138-0013-8000', expectedMethod: '联系房东' },
+    { value: '13800138000-1', expectedMethod: '联系房东' },
+    { value: '13800138000x', expectedMethod: '联系房东' },
+    { value: '13800138000#1', expectedMethod: '联系房东' },
+    { value: '13800138000*1', expectedMethod: '联系房东' },
+    { value: 'abc13800138000', expectedMethod: '联系房东' },
+    { value: '0571-87654321', expectedMethod: '联系房东' },
+    { value: '86057112345678', expectedMethod: '联系房东' },
+    { value: '0086057112345678', expectedMethod: '联系房东' },
+    { value: '0571-12345678-123', expectedMethod: '联系房东' },
+    { value: '0571-12345678#123', expectedMethod: '联系房东' },
+    { value: '400-800-1234', expectedMethod: '联系房东' },
+    { value: '864001234567', expectedMethod: '联系房东' },
+    { value: '400-123-4567-1', expectedMethod: '联系房东' },
+    { value: '400-123-4567#1', expectedMethod: '联系房东' },
+    { value: '特殊情况待确认', expectedMethod: '联系房东' },
+    { value: '123', expectedMethod: '联系房东' },
+    { value: 'A9#*._-', expectedMethod: '联系房东' },
+    { value: '12345678901234567890', expectedMethod: '联系房东' },
+    { value: '12', expectedMethod: '联系房东' },
+    { value: '123456789012345678901', expectedMethod: '联系房东' }
+  ]
+  const records = [
+    ...codeCases.map((value, index) => source(`viewing-code-${index}`, {
+      viewingMethod: value,
+      layoutCategory: '两室',
+      remark: '员工公开备注'
+    })),
+    ...sensitiveCases.map(({ value }, index) => source(`viewing-note-${index}`, {
+      viewingMethod: value,
+      layoutCategory: '两室',
+      remark: '员工公开备注'
+    }))
+  ]
+  const prepared = prepareEmployeeSnapshot(records)
+
+  codeCases.forEach((value, index) => {
+    const fields = prepared.records.find((record) => record.recordId === `viewing-code-${index}`).fields
+    assert.strictEqual(fields.viewingMethod, '密码', '纯门锁码样式必须转换为统一看房方式“密码”')
+    assert.strictEqual(fields.viewingPassword, value, '未单独绑定密码列时，纯门锁码必须进入专用密码字段')
+    assert.strictEqual(fields.remark, '员工公开备注', '门锁码不得拼接或覆盖公开备注')
+  })
+
+  sensitiveCases.forEach(({ value, expectedMethod }, index) => {
+    const fields = prepared.records.find((record) => record.recordId === `viewing-note-${index}`).fields
+    assert.strictEqual(fields.viewingMethod, expectedMethod, `“${value}”必须收敛为安全的标准看房方式`)
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(fields, 'viewingPassword'),
+      false,
+      '钥匙、腾房日期、联系说明及无法确认文本不得写入密码字段'
+    )
+    assert.strictEqual(fields.remark, '员工公开备注', '腾房或联系说明不得拼接或覆盖公开备注')
+    assert.strictEqual(JSON.stringify(fields).includes(value), false, '员工看房说明原文不得残留在专用表其他字段')
+  })
+
+  const strictSnapshot = snapshot([source('viewing-no-profile', { viewingMethod: 'A9#*' })])
+  const unprepared = prepareSourceSnapshotForCompatibility(strictSnapshot)
+  assert.strictEqual(unprepared.records[0].fields.viewingMethod, 'A9#*', '未启用员工兼容 profile 时不得改写严格源字段')
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(unprepared.records[0].fields, 'viewingPassword'),
+    false,
+    '未启用员工兼容 profile 时不得派生密码字段'
+  )
+}
+
+function testEmployeeProfileNeverOverridesExplicitViewingPasswordBinding() {
+  const explicitBindings = profileBindings({
+    viewingPassword: { fieldId: 'src-viewing-password' }
+  })
+  const prepared = prepareEmployeeSnapshot([
+    source('viewing-explicit-password', {
+      viewingMethod: 'A9#*',
+      layoutCategory: '两室',
+      viewingPassword: 'EXPLICIT_987'
+    })
+  ], explicitBindings)
+
+  const explicit = prepared.records.find((record) => record.recordId === 'viewing-explicit-password').fields
+  assert.strictEqual(explicit.viewingMethod, '密码', '显式密码列不影响看房方式标准化')
+  assert.strictEqual(explicit.viewingPassword, 'EXPLICIT_987', '显式密码列必须优先，兼容推导不得覆盖')
+
+  ;[
+    {
+      recordId: 'viewing-explicit-blank',
+      viewingMethod: 'B8#*',
+      viewingPassword: '',
+      pattern: /密码|为空|缺少|不一致/i,
+      message: '显式密码列为空时不得从看房方式静默回填'
+    },
+    {
+      recordId: 'viewing-key-with-password',
+      viewingMethod: '联系管家取钥匙',
+      viewingPassword: 'STALE_KEY_123',
+      pattern: /钥匙|密码|冲突|不一致/i,
+      message: '钥匙方式不得夹带显式密码列残留'
+    },
+    {
+      recordId: 'viewing-contact-with-password',
+      viewingMethod: '请电话联系',
+      viewingPassword: 'STALE_CONTACT_123',
+      pattern: /联系房东|密码|冲突|不一致/i,
+      message: '联系房东方式不得夹带显式密码列残留'
+    }
+  ].forEach(({ recordId, viewingMethod, viewingPassword, pattern, message }) => {
+    assert.throws(
+      () => prepareEmployeeSnapshot([
+        source(recordId, {
+          viewingMethod,
+          viewingPassword,
+          layoutCategory: '两室'
+        })
+      ], explicitBindings),
+      pattern,
+      message
+    )
+  })
+
+  const nonPassword = prepareEmployeeSnapshot([
+    source('viewing-key-blank-password', {
+      viewingMethod: '取钥匙',
+      viewingPassword: '',
+      layoutCategory: '两室'
+    }),
+    source('viewing-contact-blank-password', {
+      viewingMethod: '月底空出可看',
+      viewingPassword: '',
+      layoutCategory: '两室'
+    })
+  ], explicitBindings)
+  assert.deepStrictEqual(
+    nonPassword.records.map((record) => record.fields.viewingMethod),
+    ['钥匙', '联系房东'],
+    '钥匙或联系说明配空显式密码列时必须允许安全标准化'
+  )
+  assert.ok(
+    nonPassword.records.every((record) => !record.fields.viewingPassword),
+    '钥匙或联系房东方式不得在规范结果中保留空密码字段'
+  )
+
+  const catalog = buildLocationCatalog([location()])
+  ;[
+    {
+      runId: 'viewing-explicit-phone-password',
+      sourceSnapshot: prepareEmployeeSnapshot([
+        source('viewing-explicit-phone-password', {
+          viewingMethod: '1234',
+          viewingPassword: '13800138000',
+          layoutCategory: '两室'
+        })
+      ], explicitBindings)
+    },
+    {
+      runId: 'viewing-strict-phone-password',
+      sourceSnapshot: snapshot([
+        source('viewing-strict-phone-password', {
+          viewingMethod: '密码',
+          viewingPassword: '0571-12345678'
+        })
+      ])
+    }
+  ].forEach(({ runId, sourceSnapshot }) => {
+    assert.throws(
+      () => planMirrorSync({
+        sourceSnapshot,
+        mirrorSnapshot: snapshot([]),
+        locationCatalog: catalog,
+        runId
+      }),
+      /密码.*(?:电话|联系)|联系电话/,
+      '显式密码字段无论来自兼容源还是标准源，都不得包含联系电话主体'
+    )
+  })
+}
+
+function testExplicitViewingPasswordRejectsSeparatedContactNumbersBeforeAnyWrite() {
+  const explicitBindings = profileBindings({
+    viewingPassword: { fieldId: 'src-viewing-password' }
+  })
+  const catalog = buildLocationCatalog([location()])
+  const separators = [
+    { label: '空格', value: ' ' },
+    { label: '圆点', value: '.' },
+    { label: '下划线', value: '_' },
+    { label: '半角短横线', value: '-' },
+    { label: '全角短横线', value: '－' },
+    { label: '长横线', value: '—' },
+    { label: '短横线', value: '–' },
+    { label: '斜杠', value: '/' },
+    { label: '间隔号', value: '·' },
+    { label: '半角逗号', value: ',' },
+    { label: '全角逗号', value: '，' },
+    { label: '顿号', value: '、' },
+    { label: '半角分号', value: ';' },
+    { label: '全角分号', value: '；' },
+    { label: '半角冒号', value: ':' },
+    { label: '全角冒号', value: '：' },
+    { label: '反斜杠', value: '\\' },
+    { label: '竖线', value: '|' },
+    { label: '圆点符号', value: '•' },
+    { label: '字母伪装', value: 'abc' }
+  ]
+  const contactShapes = [
+    { label: '手机号', groups: ['138', '0013', '8000'] },
+    { label: '座机号', groups: ['0571', '8765', '4321'] },
+    { label: '400 号码', groups: ['400', '800', '1234'] },
+    { label: '800 号码', groups: ['800', '123', '4567'] }
+  ]
+  const separatedContacts = []
+  separators.forEach((separator) => {
+    contactShapes.forEach((shape) => {
+      separatedContacts.push({
+        label: `${shape.label}-${separator.label}`,
+        value: shape.groups.join(separator.value)
+      })
+    })
+  })
+  ;[
+    { label: '手机号-括号', value: '(138) 0013 8000' },
+    { label: '座机号-括号', value: '(0571) 87654321' },
+    { label: '400 号码-括号', value: '(400) 800 1234' },
+    { label: '800 号码-括号', value: '(800) 123 4567' }
+  ].forEach((item) => separatedContacts.push(item))
+
+  separatedContacts.forEach(({ label, value }, index) => {
+    let targetWrites = 0
+    assert.throws(
+      () => {
+        const sourceSnapshot = prepareEmployeeSnapshot([
+          source(`safe-before-sensitive-${index}`, {
+            roomLabel: `风雅乐府 8幢1单元${100 + index}`,
+            building: '8',
+            roomNumber: String(100 + index),
+            viewingMethod: '2468',
+            viewingPassword: '2468',
+            layoutCategory: '两室'
+          }),
+          source(`sensitive-separated-${index}`, {
+            roomLabel: `风雅乐府 9幢1单元${100 + index}`,
+            building: '9',
+            roomNumber: String(100 + index),
+            viewingMethod: '2468',
+            viewingPassword: value,
+            layoutCategory: '两室'
+          })
+        ], explicitBindings)
+        const plan = planMirrorSync({
+          sourceSnapshot,
+          mirrorSnapshot: snapshot([]),
+          locationCatalog: catalog,
+          runId: `separated-contact-${index}`
+        })
+        plan.operations.forEach(() => {
+          targetWrites += 1
+        })
+      },
+      /密码.*(?:电话|联系)|联系电话/,
+      `显式密码列中的${label}必须在整批计划返回前阻断`
+    )
+    assert.strictEqual(targetWrites, 0, `显式密码列中的${label}不得让同批任一目标写动作开始`)
+  })
+
+  const allowed = prepareEmployeeSnapshot([
+    source('explicit-four-digit-code', {
+      viewingMethod: '2468',
+      viewingPassword: '2468',
+      layoutCategory: '两室'
+    }),
+    source('explicit-seven-char-code', {
+      roomLabel: '风雅乐府 2幢1单元202',
+      building: '2',
+      roomNumber: '202',
+      viewingMethod: '135790#',
+      viewingPassword: '135790#',
+      layoutCategory: '两室'
+    })
+  ], explicitBindings)
+  const allowedPlan = planMirrorSync({
+    sourceSnapshot: allowed,
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: catalog,
+    runId: 'explicit-safe-door-codes'
+  })
+  assert.strictEqual(allowedPlan.counts.create, 2, '正常 4 位和 7 字符数字+#密码必须继续允许')
+
+  ;['2026', '2026/07/31'].forEach((value, index) => {
+    assert.throws(
+      () => planMirrorSync({
+        sourceSnapshot: prepareEmployeeSnapshot([
+          source(`explicit-date-password-${index}`, {
+            viewingMethod: '2468',
+            viewingPassword: value,
+            layoutCategory: '两室'
+          })
+        ], explicitBindings),
+        mirrorSnapshot: snapshot([]),
+        locationCatalog: catalog,
+        runId: `explicit-date-password-${index}`
+      }),
+      /密码.*日期|日期说明/,
+      '年份或日期不得因号码分隔符修复而被放行'
+    )
+  })
+}
+
+function testEmployeeProfileIgnoresOnlyFullyEmptyTemplate() {
+  const emptyTemplate = {
+    recordId: 'empty-template',
+    fields: {}
+  }
+  const valid = source('valid-after-template', {
+    rentMode: undefined,
+    listingStatus: undefined,
+    layoutDescription: '2室1厅（整）',
+    layoutCategory: '两室'
+  })
+  const prepared = prepareEmployeeSnapshot([emptyTemplate, valid])
+  assert.deepStrictEqual(
+    prepared.records.map((record) => record.recordId),
+    ['valid-after-template'],
+    '只有全部已绑定业务字段为空的模板记录可以忽略'
+  )
+  assert.strictEqual(prepared.recordCount, 1, '忽略模板后快照记录数必须同步重算')
+
+  assert.throws(
+    () => prepareEmployeeSnapshot([{
+      recordId: 'half-filled-template',
+      fields: {
+        layoutDescription: '2室1厅'
+      }
+    }]),
+    /roomLabel|小区\+房号|房号|半填/i,
+    '任一业务字段有值但缺少房号的半填行必须整批阻断'
+  )
+}
+
+function testEmployeeProfileRestoreWritesActiveTriplet() {
+  const prepared = prepareEmployeeSnapshot([
+    source('profile-restore', {
+      rentMode: undefined,
+      listingStatus: undefined,
+      layoutDescription: '2室1厅（整）',
+      layoutCategory: '两室'
+    })
+  ])
+  const plan = planMirrorSync({
+    sourceSnapshot: prepared,
+    mirrorSnapshot: snapshot([
+      mirror('mirror-profile-restore', 'profile-restore', {
+        listingStatus: '已下架',
+        published: false,
+        enabled: false
+      })
+    ]),
+    locationCatalog: buildLocationCatalog([location()]),
+    runId: 'profile-restore'
+  })
+  const restore = assertOperation(plan, 'profile-restore', 'restore', '员工现表兼容记录恢复')
+  assert.strictEqual(restore.fields.listingStatus, '在租', '兼容记录恢复必须写回当前集合房态在租')
+  assert.strictEqual(restore.fields.published, true, '兼容记录恢复必须重新公开')
+  assert.strictEqual(restore.fields.enabled, true, '兼容记录恢复必须重新启用')
+}
+
+function testCanonicalLayerRemainsStrictWithoutProfilePreparation() {
+  assert.throws(
+    () => planMirrorSync({
+      sourceSnapshot: snapshot([source('strict-no-defaults', {
+        rentMode: undefined,
+        listingStatus: undefined
+      })]),
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: buildLocationCatalog([location()]),
+      runId: 'strict-no-defaults'
+    }),
+    /状态|出租方式|整租|合租|缺少/i,
+    '直接调用 canonical 规划层时不得无条件默认出租方式或房态'
+  )
 }
 
 function testDynamicLocationCatalogNeedsNoCodeConfiguration() {
@@ -501,8 +1362,76 @@ function testRoomLabelCommunityAndUnitNormalization() {
   })
 }
 
+function testReadbackMayOmitOptionalEmptyUnitWithoutRepeatUpdate() {
+  const catalog = buildLocationCatalog([location()])
+  const sourceRecord = source('src-readback-empty-unit', {
+    roomLabel: '风雅乐府1幢101室',
+    building: '1',
+    unit: '',
+    roomNumber: '101'
+  })
+  const initialPlan = planMirrorSync({
+    sourceSnapshot: snapshot([sourceRecord]),
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: catalog,
+    runId: 'readback-empty-unit-create'
+  })
+  const expected = assertOperation(initialPlan, 'src-readback-empty-unit', 'create', '无单元房号').fields
+  ;[
+    { label: '省略', apply: (fields) => delete fields.unit },
+    { label: 'null', apply: (fields) => { fields.unit = null } },
+    { label: '空字符串', apply: (fields) => { fields.unit = '' } },
+    { label: '空数组', apply: (fields) => { fields.unit = [] } }
+  ].forEach(({ label, apply }, index) => {
+    const readbackFields = JSON.parse(JSON.stringify(expected))
+    apply(readbackFields)
+    const repeatPlan = planMirrorSync({
+      sourceSnapshot: snapshot([sourceRecord]),
+      mirrorSnapshot: snapshot([{
+        recordId: `mirror-readback-empty-unit-${index}`,
+        fields: readbackFields
+      }]),
+      locationCatalog: catalog,
+      runId: `readback-empty-unit-noop-${index}`
+    })
+    assert.strictEqual(
+      repeatPlan.noop,
+      true,
+      `飞书把可选空单元回读为${label}时必须与源端空值等价，不能每轮重复更新`
+    )
+  })
+
+  const staleFields = JSON.parse(JSON.stringify(expected))
+  staleFields.unit = '1'
+  const stalePlan = planMirrorSync({
+    sourceSnapshot: snapshot([sourceRecord]),
+    mirrorSnapshot: snapshot([{
+      recordId: 'mirror-readback-stale-unit',
+      fields: staleFields
+    }]),
+    locationCatalog: catalog,
+    runId: 'readback-stale-unit-update'
+  })
+  assert.strictEqual(
+    assertOperation(stalePlan, 'src-readback-empty-unit', 'update', '旧单元非空').fields.unit,
+    '',
+    '目标可选字段已有非空旧值时必须生成清空更新，不能把所有形态都当成空'
+  )
+}
+
 function main() {
   testLifecyclePlanUsesStableSourceRecordId()
+  testEmployeeProfileClassifiesAllThirtyFourVerifiedShapes()
+  testEmployeeProfileNormalizesLegacyLayoutGranularitySafely()
+  testEmployeeProfileStripsOnlyLegacyCommissionRoomSuffix()
+  testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog()
+  testEmployeeProfileExplicitBindingsTakePriorityAndNeverFallback()
+  testEmployeeProfileNormalizesViewingAccessWithoutLeakingSourceNotes()
+  testEmployeeProfileNeverOverridesExplicitViewingPasswordBinding()
+  testExplicitViewingPasswordRejectsSeparatedContactNumbersBeforeAnyWrite()
+  testEmployeeProfileIgnoresOnlyFullyEmptyTemplate()
+  testEmployeeProfileRestoreWritesActiveTriplet()
+  testCanonicalLayerRemainsStrictWithoutProfilePreparation()
   testDynamicLocationCatalogNeedsNoCodeConfiguration()
   testDuplicateIdentityAndAliasConflictsFailClosed()
   testIncompleteOrEmptySourceCannotProduceWrites()
@@ -510,6 +1439,7 @@ function main() {
   testCanonicalDerivationAndAttachmentProjection()
   testLocationCoordinatesAreMandatory()
   testRoomLabelCommunityAndUnitNormalization()
+  testReadbackMayOmitOptionalEmptyUnitWithoutRepeatUpdate()
   console.log('feishu-source-mirror-v1-test passed')
 }
 

@@ -69,7 +69,7 @@ function makeClient(fetchImpl, pageSize = 2, overrides = {}) {
   })
 }
 
-function makeRenameSafeFetch({ canonicalName, communityValue, videoValue }) {
+function makeRenameSafeFetch({ canonicalName, communityValue, videoValue, rentValue = 3200 }) {
   const calls = []
   const fetchImpl = async (url, options = {}) => {
     const parsed = new URL(String(url))
@@ -94,7 +94,7 @@ function makeRenameSafeFetch({ canonicalName, communityValue, videoValue }) {
           fields: {
             [canonicalName]: communityValue,
             小区: '显示名诱饵小区',
-            押一付一月租金: 3200,
+            押一付一月租金: rentValue,
             视频链接: videoValue || [{ file_token: 'mock-file-token', name: 'room.mp4' }]
           }
         }],
@@ -164,6 +164,48 @@ async function testAttachmentDigestIgnoresTemporaryMetadata() {
   })).readValidatedTableSnapshot({ tableId: 'tbl-source', bindings: BINDINGS, allowEmpty: false })
   assert.notDeepStrictEqual(first.records[0].fields.video, second.records[0].fields.video, '测试前置必须真的改变附件临时元数据')
   assert.strictEqual(first.digest, second.digest, '完整快照摘要只能依赖稳定 file_token，不能被 tmp_url、文件名或大小制造假变化')
+}
+
+async function testNumberFieldStringReadbackNormalizesAtContractBoundary() {
+  const numericStringFetch = makeRenameSafeFetch({
+    canonicalName: '小区（数字回读）',
+    communityValue: '风雅乐府',
+    rentValue: '3200'
+  })
+  const snapshot = await makeClient(numericStringFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false
+  })
+  assert.strictEqual(
+    snapshot.records[0].fields.rent,
+    3200,
+    '飞书数值字段以数字字符串回读时必须在字段契约边界归一为有限数字'
+  )
+
+  for (const [invalidValue, label] of [
+    ['not-a-number', '非数字文本'],
+    ['0x10', '十六进制文本'],
+    ['0b10', '二进制文本'],
+    [' 3200 ', '带首尾空白的数字文本'],
+    ['   ', '纯空白文本']
+  ]) {
+    const invalidNumericFetch = makeRenameSafeFetch({
+      canonicalName: `小区（非法数字回读-${label}）`,
+      communityValue: '风雅乐府',
+      rentValue: invalidValue
+    })
+    await expectReject(
+      () => makeClient(invalidNumericFetch).readValidatedTableSnapshot({
+        tableId: 'tbl-source',
+        bindings: BINDINGS,
+        allowEmpty: false
+      }),
+      /数字|数值|number|rent|必填|为空/i,
+      `飞书数值字段回读为${label}时必须整批阻断`
+    )
+    assertOnlyGets(invalidNumericFetch.calls, `非法数字回读-${label}`)
+  }
 }
 
 function testSchemaValidationFailsClosed() {
@@ -465,6 +507,59 @@ async function testEmptyTablePolicy() {
   assert.deepStrictEqual(allowed.records, [], '显式允许空表时 records 必须为空数组')
   assert.strictEqual(allowed.recordCount, 0, '显式允许空表时 recordCount 必须为 0')
   assertOnlyGets(allowedFetch.calls, '允许空源表读取')
+
+  const omittedItemsFetch = makePagedFetch(() => success({ has_more: false, total: 0 }))
+  const omittedItemsAllowed = await makeClient(omittedItemsFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: true
+  })
+  assert.strictEqual(omittedItemsAllowed.complete, true, '飞书首次空表省略 items 时仍必须形成完整快照')
+  assert.deepStrictEqual(omittedItemsAllowed.records, [], '仅 total=0 的首个终止页可把省略 items 解释为空数组')
+  assert.strictEqual(omittedItemsAllowed.recordCount, 0, '省略 items 的合法首次空表计数必须为 0')
+  assertOnlyGets(omittedItemsFetch.calls, '飞书首次空表省略 items')
+
+  const laterPageOmittedItemsFetch = makePagedFetch(({ callNumber, pageToken }) => {
+    if (callNumber === 1) {
+      assert.strictEqual(pageToken, '', '后续页缺 items 用例的第一页不得携带 page_token')
+      return success({
+        items: [{ record_id: 'rec-first-page', fields: { 小区: '甲小区', 月租金: 3000, 视频: [] } }],
+        has_more: true,
+        page_token: 'second-page'
+      })
+    }
+    assert.strictEqual(pageToken, 'second-page', '后续页缺 items 用例必须真实进入第二页')
+    return success({ has_more: false, total: 0 })
+  })
+  await expectReject(
+    () => makeClient(laterPageOmittedItemsFetch, 1).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: true
+    }),
+    /items|分页|响应/i,
+    '只有首个空表终止页可以省略 items，已有数据后的第二页即使 total=0 也必须阻断'
+  )
+  assert.strictEqual(laterPageOmittedItemsFetch.recordCalls(), 2, '后续页缺 items 用例必须真实触达第二页')
+  assertOnlyGets(laterPageOmittedItemsFetch.calls, '后续页缺 items')
+
+  for (const [payload, message] of [
+    [{ has_more: false, total: 1 }, 'total 非零'],
+    [{ has_more: false }, 'total 缺失'],
+    [{ has_more: true, total: 0, page_token: 'unexpected-next' }, '仍声明继续分页']
+  ]) {
+    const malformedFetch = makePagedFetch(() => success(payload))
+    await expectReject(
+      () => makeClient(malformedFetch).readValidatedTableSnapshot({
+        tableId: 'tbl-source',
+        bindings: BINDINGS,
+        allowEmpty: true
+      }),
+      /items|分页|响应/i,
+      `缺少 items 且${message}时必须阻断`
+    )
+    assertOnlyGets(malformedFetch.calls, `缺少 items 且${message}`)
+  }
 }
 
 async function testResponseBodyTimeoutCoversWholeRequest() {
@@ -524,6 +619,7 @@ async function main() {
   testSchemaValidationFailsClosed()
   await testFieldIdSurvivesDisplayRename()
   await testAttachmentDigestIgnoresTemporaryMetadata()
+  await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()

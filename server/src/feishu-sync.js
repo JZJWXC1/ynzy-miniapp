@@ -11,6 +11,7 @@ const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 const { createBitableClient } = require('./feishu-bitable-client')
 const {
   buildLocationCatalog,
+  prepareSourceSnapshotForCompatibility,
   planMirrorSync,
   buildCompanySheetSnapshot,
   publishCompanySnapshot,
@@ -69,6 +70,7 @@ const MIRROR_FIELD_TYPE_CONTRACTS = Object.freeze({
   })
 })
 const MIRROR_WRITE_BATCH_SIZE = 500
+const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -239,6 +241,10 @@ function numberFrom(value) {
   if (Number.isFinite(direct)) return direct
   const matched = normalizeText(value).match(/(\d+(?:\.\d+)?)/)
   return matched ? Number(matched[1]) : 0
+}
+
+function normalizeResourceIdentifier(value) {
+  return String(value === undefined || value === null ? '' : value).trim()
 }
 
 function optionalNumberFrom(value) {
@@ -2141,15 +2147,29 @@ function bindingTypes(binding) {
   return values.map((value) => String(value).trim()).filter(Boolean)
 }
 
-function bindingContractStatus(role, bindings) {
+function bindingContractStatus(role, bindings, options = {}) {
   const contracts = MIRROR_FIELD_TYPE_CONTRACTS[role] || {}
   const source = bindings && typeof bindings === 'object' && !Array.isArray(bindings) ? bindings : {}
+  const sourceCompatibilityProfile = normalizeText(options.sourceCompatibilityProfile)
+  const employeeCompatibilityEnabled =
+    sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+  const compatibilityEnabled = role === 'source' && employeeCompatibilityEnabled
   const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
   const requiredSchema = new Set([
     ...(MIRROR_REQUIRED_BINDINGS[role] || []),
     ...(MIRROR_REQUIRED_OPTIONAL_VALUE_BINDINGS[role] || [])
   ])
+  if (compatibilityEnabled) {
+    requiredSchema.delete('rentMode')
+    requiredSchema.delete('listingStatus')
+  }
+  if (role === 'mini' && employeeCompatibilityEnabled) {
+    requiredSchema.add('viewingPassword')
+  }
   const issues = []
+  if (role === 'source' && sourceCompatibilityProfile && !compatibilityEnabled) {
+    issues.push(`compatibilityProfile:${sourceCompatibilityProfile}:unsupported`)
+  }
 
   requiredSchema.forEach((semantic) => {
     const binding = source[semantic]
@@ -2174,18 +2194,22 @@ function bindingContractStatus(role, bindings) {
   return { ready: issues.length === 0, issues }
 }
 
-function resolvedContractBindings(role, bindings) {
-  const state = bindingContractStatus(role, bindings)
+function resolvedContractBindings(role, bindings, options = {}) {
+  const state = bindingContractStatus(role, bindings, options)
   if (!state.ready) throw new Error(`飞书 ${role} 字段契约无效：${state.issues.join('、')}`)
   const contracts = MIRROR_FIELD_TYPE_CONTRACTS[role]
   const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
+  const compatibilityEnabled = role === 'source' &&
+    normalizeText(options.sourceCompatibilityProfile) === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
   return Object.keys(bindings || {}).sort().reduce((result, semantic) => {
     const configured = bindings[semantic]
     const allowedTypes = contracts[semantic]
     result[semantic] = {
       fieldId: String(configured.fieldId || configured.field_id).trim(),
       type: allowedTypes.length === 1 ? allowedTypes[0] : allowedTypes.slice(),
-      required: requiredValues.has(semantic),
+      // 员工现表兼容模式需要先读取全空模板行，再由规范化层精确忽略；
+      // 非空/半填记录仍由 canonical 层整批阻断，显式房态/出租方式也绝不回退。
+      required: compatibilityEnabled ? false : requiredValues.has(semantic),
       // 是否必须建列与单元格是否必填分离；所有已配置 field_id 都必须真实存在。
       schemaRequired: true
     }
@@ -2202,14 +2226,38 @@ function pairedMirrorBindingsReady(sourceBindings, miniBindings) {
 }
 
 function mirrorConfigurationStatus() {
-  const hasAuth = Boolean(config.feishu.appId && config.feishu.appSecret && config.feishu.bitableAppToken)
-  const sourceTableReady = Boolean(config.feishu.sourceTableId)
-  const miniTableReady = Boolean(config.feishu.miniTableId)
-  const locationTableReady = Boolean(config.feishu.locationTableId)
-  const configuredTableIds = [config.feishu.sourceTableId, config.feishu.miniTableId, config.feishu.locationTableId].filter(Boolean)
-  const tableIdsDistinct = new Set(configuredTableIds).size === configuredTableIds.length
-  const sourceContract = bindingContractStatus('source', config.feishu.sourceFieldBindings)
-  const miniContract = bindingContractStatus('mini', config.feishu.miniFieldBindings)
+  const hasApplicationCredentials = Boolean(config.feishu.appId && config.feishu.appSecret)
+  const sourceBaseToken = normalizeResourceIdentifier(config.feishu.sourceBitableAppToken)
+  const targetBaseToken = normalizeResourceIdentifier(config.feishu.targetBitableAppToken)
+  const sourceTableId = normalizeResourceIdentifier(config.feishu.sourceTableId)
+  const miniTableId = normalizeResourceIdentifier(config.feishu.miniTableId)
+  const locationTableId = normalizeResourceIdentifier(config.feishu.locationTableId)
+  const sourceBaseReady = Boolean(sourceBaseToken)
+  const targetBaseReady = Boolean(targetBaseToken)
+  const crossBaseTokensReady = sourceBaseReady && targetBaseReady && config.feishu.crossBaseTokenPartial !== true
+  const employeeCompatibilityEnabled =
+    config.feishu.sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+  const sourceBaseReadOnlyBoundaryReady = !employeeCompatibilityEnabled ||
+    sourceBaseToken !== targetBaseToken
+  const hasAuth = hasApplicationCredentials && crossBaseTokensReady
+  const sourceTableReady = Boolean(sourceTableId)
+  const miniTableReady = Boolean(miniTableId)
+  const locationTableReady = Boolean(locationTableId)
+  const configuredResources = [
+    [sourceBaseToken, sourceTableId],
+    [targetBaseToken, miniTableId],
+    [targetBaseToken, locationTableId]
+  ].filter(([appToken, tableId]) => appToken && tableId)
+  const resourceKeys = configuredResources.map(([appToken, tableId]) => `${appToken}\u0000${tableId}`)
+  const tableResourcesDistinct = new Set(resourceKeys).size === resourceKeys.length
+  // 保留旧状态字段名称，判定已升级为“Base token + table ID”的真实资源唯一性。
+  const tableIdsDistinct = tableResourcesDistinct
+  const sourceContract = bindingContractStatus('source', config.feishu.sourceFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
+  const miniContract = bindingContractStatus('mini', config.feishu.miniFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
   const locationContract = bindingContractStatus('location', config.feishu.locationFieldBindings)
   const sourceBindingsReady = sourceContract.ready
   const miniBindingsReady = miniContract.ready
@@ -2217,13 +2265,20 @@ function mirrorConfigurationStatus() {
   const pairedBindingsReady = pairedMirrorBindingsReady(config.feishu.sourceFieldBindings, config.feishu.miniFieldBindings)
   const materialsReady = Boolean(config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video)
   return {
-    ready: hasAuth && sourceTableReady && miniTableReady && locationTableReady && tableIdsDistinct &&
+    ready: hasAuth && sourceBaseReadOnlyBoundaryReady &&
+      sourceTableReady && miniTableReady && locationTableReady && tableResourcesDistinct &&
       sourceBindingsReady && miniBindingsReady && locationBindingsReady && pairedBindingsReady && materialsReady,
     hasAuth,
+    hasApplicationCredentials,
+    sourceBaseReady,
+    targetBaseReady,
+    crossBaseTokensReady,
+    sourceBaseReadOnlyBoundaryReady,
     sourceTableReady,
     miniTableReady,
     locationTableReady,
     tableIdsDistinct,
+    tableResourcesDistinct,
     sourceBindingsReady,
     miniBindingsReady,
     locationBindingsReady,
@@ -2236,11 +2291,17 @@ function assertMirrorConfiguration() {
   const state = mirrorConfigurationStatus()
   if (state.ready) return state
   const missing = []
-  if (!state.hasAuth) missing.push('飞书应用凭据或多维表 app token')
+  if (!state.hasApplicationCredentials) missing.push('飞书应用凭据')
+  if (!state.sourceBaseReady) missing.push('员工源 Base app token')
+  if (!state.targetBaseReady) missing.push('小程序目标 Base app token')
+  if (!state.crossBaseTokensReady && state.sourceBaseReady && state.targetBaseReady) {
+    missing.push('源 Base 与目标 Base token 必须成对配置')
+  }
+  if (!state.sourceBaseReadOnlyBoundaryReady) missing.push('员工现表兼容模式要求源 Base 与目标 Base 分离')
   if (!state.sourceTableReady) missing.push('员工源表 ID')
   if (!state.miniTableReady) missing.push('小程序专用源表 ID')
   if (!state.locationTableReady) missing.push('小程序位置字典 ID')
-  if (!state.tableIdsDistinct) missing.push('三个表 ID 必须互不相同')
+  if (!state.tableResourcesDistinct) missing.push('员工源表、专用源表和位置字典不得指向同一 Base 表资源')
   if (!state.sourceBindingsReady) missing.push('员工源表 field_id 绑定')
   if (!state.miniBindingsReady) missing.push('专用源表 field_id 绑定')
   if (!state.locationBindingsReady) missing.push('位置字典 field_id 绑定')
@@ -2461,26 +2522,35 @@ function canonicalMirrorRecordToSyncRow(record, index) {
 }
 
 async function executeMirrorTableSync(options = {}) {
-  const client = options.client
-  if (!client || typeof client.readValidatedTableSnapshot !== 'function') {
-    throw new Error('飞书镜像同步缺少受校验的多维表客户端')
+  const sourceClient = options.sourceClient || options.client
+  const targetClient = options.targetClient || options.client
+  if (!sourceClient || typeof sourceClient.readValidatedTableSnapshot !== 'function') {
+    throw new Error('飞书镜像同步缺少员工源 Base 只读客户端')
   }
-  const sourceSnapshot = await client.readValidatedTableSnapshot({
+  if (!targetClient || typeof targetClient.readValidatedTableSnapshot !== 'function') {
+    throw new Error('飞书镜像同步缺少小程序目标 Base 只读客户端')
+  }
+  const rawSourceSnapshot = await sourceClient.readValidatedTableSnapshot({
     tableId: options.sourceTableId,
     bindings: options.sourceBindings,
     allowEmpty: false
   })
-  const locationSnapshot = await client.readValidatedTableSnapshot({
+  const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
     bindings: options.locationBindings,
     allowEmpty: false
   })
-  const mirrorSnapshot = await client.readValidatedTableSnapshot({
+  const locationCatalog = buildLocationCatalog(flattenLocationSnapshot(locationSnapshot))
+  const sourceSnapshot = prepareSourceSnapshotForCompatibility(rawSourceSnapshot, {
+    profile: options.sourceCompatibilityProfile,
+    sourceBindings: options.sourceBindings,
+    locationCatalog
+  })
+  const mirrorSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
     allowEmpty: true
   })
-  const locationCatalog = buildLocationCatalog(flattenLocationSnapshot(locationSnapshot))
   const runId = normalizeText(options.runId) || `mirror-${Date.now()}-${Math.floor(Math.random() * 100000)}`
   const plan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
   const plannedRecords = activeMirrorRecords({
@@ -2512,17 +2582,22 @@ async function executeMirrorTableSync(options = {}) {
     }
   }
 
+  if (typeof targetClient.batchCreateRecords !== 'function' ||
+      typeof targetClient.batchUpdateRecords !== 'function') {
+    throw new Error('飞书镜像同步缺少小程序目标 Base 写客户端')
+  }
+
   const creates = plan.operations.filter((operation) => operation.type === 'create')
   const updates = plan.operations.filter((operation) => operation.type !== 'create')
   for (const batch of chunksOf(creates)) {
-    await client.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
+    await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
       fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, { full: true })
     })), {
       clientToken: crypto.randomUUID()
     })
   }
   for (const batch of chunksOf(updates)) {
-    await client.batchUpdateRecords(options.miniTableId, batch.map((operation) => ({
+    await targetClient.batchUpdateRecords(options.miniTableId, batch.map((operation) => ({
       record_id: operation.recordId,
       fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, {
         full: operation.type !== 'deactivate'
@@ -2530,7 +2605,7 @@ async function executeMirrorTableSync(options = {}) {
     })))
   }
 
-  const readback = await client.readValidatedTableSnapshot({
+  const readback = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
     allowEmpty: false
@@ -2574,26 +2649,49 @@ async function loadConfiguredMirrorMaterials(token, options = {}) {
 async function configuredMirrorTableSync(options = {}) {
   assertMirrorConfiguration()
   const token = options.feishuToken || await tenantAccessToken()
-  const client = options.client || createBitableClient({
+  const clientFactory = options.clientFactory || createBitableClient
+  const sourceBaseToken = normalizeResourceIdentifier(config.feishu.sourceBitableAppToken)
+  const targetBaseToken = normalizeResourceIdentifier(config.feishu.targetBitableAppToken)
+  const sourceTableId = normalizeResourceIdentifier(config.feishu.sourceTableId)
+  const miniTableId = normalizeResourceIdentifier(config.feishu.miniTableId)
+  const locationTableId = normalizeResourceIdentifier(config.feishu.locationTableId)
+  const commonClientOptions = {
     baseUrl: config.feishu.baseUrl,
-    appToken: config.feishu.bitableAppToken,
     accessToken: token,
     pageSize: config.feishu.pageSize,
     requestTimeoutMs: config.feishu.requestTimeoutMs,
     maxRetries: config.feishu.requestMaxRetries,
     retryDelayMs: config.feishu.requestRetryDelayMs,
     fetchImpl: fetch
+  }
+  const sourceClient = options.sourceClient || options.client || clientFactory({
+    ...commonClientOptions,
+    appToken: sourceBaseToken
   })
+  const targetClient = options.targetClient || options.client || (
+    sourceBaseToken === targetBaseToken && !options.sourceClient
+      ? sourceClient
+      : clientFactory({
+          ...commonClientOptions,
+          appToken: targetBaseToken
+        })
+  )
   const materials = await loadConfiguredMirrorMaterials(token, options)
-  const sourceBindings = resolvedContractBindings('source', config.feishu.sourceFieldBindings)
-  const miniBindings = resolvedContractBindings('mini', config.feishu.miniFieldBindings)
+  const sourceBindings = resolvedContractBindings('source', config.feishu.sourceFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
+  const miniBindings = resolvedContractBindings('mini', config.feishu.miniFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
   const locationBindings = resolvedContractBindings('location', config.feishu.locationFieldBindings)
   const result = await executeMirrorTableSync({
-    client,
-    sourceTableId: config.feishu.sourceTableId,
-    miniTableId: config.feishu.miniTableId,
-    locationTableId: config.feishu.locationTableId,
+    sourceClient,
+    targetClient,
+    sourceTableId,
+    miniTableId,
+    locationTableId,
     sourceBindings,
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     miniBindings,
     locationBindings,
     maxDeactivateCount: config.feishu.mirrorMaxDeactivateCount,
@@ -2775,6 +2873,11 @@ function status(db = {}) {
     miniTableReady: mirrorState.miniTableReady,
     locationTableReady: mirrorState.locationTableReady,
     tableIdsDistinct: mirrorState.tableIdsDistinct,
+    tableResourcesDistinct: mirrorState.tableResourcesDistinct,
+    sourceBaseReady: mirrorState.sourceBaseReady,
+    targetBaseReady: mirrorState.targetBaseReady,
+    crossBaseTokensReady: mirrorState.crossBaseTokensReady,
+    sourceBaseReadOnlyBoundaryReady: mirrorState.sourceBaseReadOnlyBoundaryReady,
     sourceBindingsReady: mirrorState.sourceBindingsReady,
     miniBindingsReady: mirrorState.miniBindingsReady,
     locationBindingsReady: mirrorState.locationBindingsReady,
@@ -2783,6 +2886,8 @@ function status(db = {}) {
     syncIntervalMinutes: config.feishu.syncIntervalMinutes,
     folderToken: config.feishu.folderToken ? `${config.feishu.folderToken.slice(0, 6)}...` : '',
     bitableAppToken: config.feishu.bitableAppToken ? `${config.feishu.bitableAppToken.slice(0, 6)}...` : '',
+    sourceBitableAppToken: config.feishu.sourceBitableAppToken ? `${config.feishu.sourceBitableAppToken.slice(0, 6)}...` : '',
+    targetBitableAppToken: config.feishu.targetBitableAppToken ? `${config.feishu.targetBitableAppToken.slice(0, 6)}...` : '',
     bitableTableId: config.feishu.bitableTableId || '',
     sheetToken: config.feishu.sheetToken ? `${config.feishu.sheetToken.slice(0, 6)}...` : '',
     sheetRange: config.feishu.sheetRange,
@@ -2820,6 +2925,7 @@ module.exports = {
     canonicalMirrorRecordToSyncRow,
     executeMirrorTableSync,
     mirrorConfigurationStatus,
+    configuredMirrorTableSync,
     bindingContractStatus,
     resolvedContractBindings,
     pairedMirrorBindingsReady,

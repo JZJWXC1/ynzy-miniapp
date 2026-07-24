@@ -134,6 +134,22 @@ function stableDigestValue(value, fieldType) {
   }).sort((left, right) => left.file_token.localeCompare(right.file_token))
 }
 
+function normalizeCellValue(value, fieldType, semantic, recordId) {
+  if (String(fieldType) !== '2' || value === undefined || value === null || value === '') return value
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    throw new Error(`飞书记录 ${recordId} 的数值字段 ${semantic} 类型无效`)
+  }
+  if (typeof value === 'string' &&
+      (value !== value.trim() || !/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(value))) {
+    throw new Error(`飞书记录 ${recordId} 的数值字段 ${semantic} 不是标准十进制数字`)
+  }
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    throw new Error(`飞书记录 ${recordId} 的数值字段 ${semantic} 不是有效数字`)
+  }
+  return numeric
+}
+
 function validateClientOptions(options) {
   const opts = options && typeof options === 'object' ? options : {}
   if (typeof opts.fetchImpl !== 'function') throw new Error('飞书客户端缺少 fetchImpl')
@@ -283,9 +299,17 @@ function createBitableClient(options) {
         method: 'GET',
         headers: authHeaders()
       }, '读取')
-      if (!Array.isArray(data.items)) throw new Error('飞书分页响应缺少 items')
       if (typeof data.has_more !== 'boolean') throw new Error('飞书分页响应 has_more 缺失或类型错误')
-      data.items.forEach((item) => items.push(item))
+      const isFirstEmptyPageWithoutItems =
+        data.items === undefined &&
+        pageCount === 1 &&
+        data.has_more === false &&
+        data.total === 0
+      const pageItems = Array.isArray(data.items)
+        ? data.items
+        : (isFirstEmptyPageWithoutItems ? [] : null)
+      if (!pageItems) throw new Error('飞书分页响应缺少 items')
+      pageItems.forEach((item) => items.push(item))
       if (data.has_more !== true) break
 
       const returnedToken = typeof (data.page_token || data.next_page_token) === 'string'
@@ -322,7 +346,7 @@ function createBitableClient(options) {
         if (contractField.required && isEmptyRequiredValue(value)) {
           throw new Error(`飞书记录 ${recordId} 的必填字段 ${semantic} 为空`)
         }
-        semanticFields[semantic] = value
+        semanticFields[semantic] = normalizeCellValue(value, contractField.type, semantic, recordId)
       })
       return { recordId, fields: semanticFields }
     })

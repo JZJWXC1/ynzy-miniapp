@@ -50,6 +50,7 @@ const MANAGED_MIRROR_FIELDS = Object.freeze([
 ])
 const ACTIVE_LISTING_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|开放|可看|可出租|up|on|active)$/i
 const INACTIVE_LISTING_STATUS_PATTERN = /^(?:下架|已下架|已租|已出租|已成交|成交|关闭|已关闭|无效|删除|已删除|暂停|暂缓|维修中|不可租|停租|未上架|不上架|未在租|不在租|down|off|inactive|rented|closed)$/i
+const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
 
 function normalizeText(value) {
   if (value === undefined || value === null) return ''
@@ -284,13 +285,28 @@ function resolveLocation(locationCatalog, sourceRecord) {
 
 function layoutCategoryFromDescription(value) {
   const text = normalizeText(value)
-  if (/六室|六房|6室|6房/.test(text)) return '六室'
-  if (/五室|五房|5室|5房/.test(text)) return '五室'
-  if (/四室|四房|4室|4房/.test(text)) return '四室'
-  if (/三室|三房|3室|3房/.test(text)) return '三室'
-  if (/两室|二室|两房|二房|2室|2房/.test(text)) return '两室'
-  if (/一室|一房|1室|1房|单间/.test(text)) return '一室'
-  return ''
+  const categories = {
+    '1': '一室',
+    一: '一室',
+    '2': '两室',
+    二: '两室',
+    两: '两室',
+    '3': '三室',
+    三: '三室',
+    '4': '四室',
+    四: '四室',
+    '5': '五室',
+    五: '五室',
+    '6': '六室',
+    六: '六室'
+  }
+  const tokens = [...text.matchAll(/([0-9]+|[零〇一二两三四五六七八九十百]+)(?:室|房)/g)]
+    .map((match) => match[1])
+  if (tokens.some((token) => !categories[token])) return ''
+  const derived = new Set(tokens.map((token) => categories[token]))
+  if (derived.size > 1) return ''
+  if (derived.size === 1) return [...derived][0]
+  return /单间/.test(text) ? '一室' : ''
 }
 
 function stableVideoAttachments(value) {
@@ -321,6 +337,182 @@ function canonicalTags(value) {
     seen.add(key)
     return true
   })
+}
+
+function hasBusinessValue(value) {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return normalizeText(value) !== ''
+  if (Array.isArray(value)) return value.some(hasBusinessValue)
+  if (typeof value === 'object') return Object.values(value).some(hasBusinessValue)
+  return true
+}
+
+function deriveEmployeeCurrentStockRentMode(fields, sourceRecordId) {
+  const layoutDescription = normalizeText(fields.layoutDescription)
+  const layoutCategory = normalizeText(fields.layoutCategory)
+  const roomTail = normalizeText(fields.roomNumber || fields.roomLabel)
+    .replace(/\s+/g, '')
+    .replace(/(?:房间|房|室)$/g, '')
+  if (/整租|\(整\)/.test(layoutDescription)) return '整租'
+  if (/单间/.test(layoutCategory) || /[A-Za-z]$/.test(roomTail)) return '合租'
+  if (/\d$/.test(roomTail) && /(?:一|二|两|三|四|五|六)室/.test(layoutCategory)) return '整租'
+  throw new Error(`源记录 ${sourceRecordId} 无法按员工现表规则派生出租方式`)
+}
+
+function normalizeEmployeeCurrentStockRoomLabel(fields) {
+  const roomLabel = normalizeText(fields.roomLabel)
+  const normalizedRoomLabel = roomLabel
+    .replace(/\s*(?:\d+(?:\.\d+)?%\s*)?月佣\s*$/u, '')
+    .trim()
+  if (/月佣/u.test(normalizedRoomLabel)) {
+    throw new Error('员工现表房号中的月佣注记只能位于末尾')
+  }
+  fields.roomLabel = normalizedRoomLabel
+}
+
+function normalizeEmployeeCurrentStockCommunity(fields, locationCatalog, sourceRecordId) {
+  if (normalizeText(fields.community)) return
+  if (!locationCatalog || !(locationCatalog.byName instanceof Map)) {
+    throw new Error(`源记录 ${sourceRecordId} 的小区列为空且缺少已校验位置字典`)
+  }
+  const roomLabelKey = identityKey(fields.roomLabel)
+  const prefixMatches = []
+  locationCatalog.byName.forEach((location, nameKey) => {
+    if (nameKey && roomLabelKey.startsWith(nameKey)) {
+      prefixMatches.push({ nameKey, location })
+    }
+  })
+  if (!prefixMatches.length) {
+    throw new Error(`源记录 ${sourceRecordId} 的小区列为空且房号前缀未匹配位置字典`)
+  }
+  const longestLength = Math.max(...prefixMatches.map((item) => item.nameKey.length))
+  const longestLocations = new Map()
+  prefixMatches.filter((item) => item.nameKey.length === longestLength).forEach((item) => {
+    longestLocations.set(item.location.locationId, item.location)
+  })
+  if (longestLocations.size !== 1) {
+    throw new Error(`源记录 ${sourceRecordId} 的房号前缀在位置字典中不唯一`)
+  }
+  fields.community = Array.from(longestLocations.values())[0].community
+}
+
+function looksLikeEmployeeContactNumber(value) {
+  const text = normalizeText(value).toLowerCase()
+  return /(?<!\d)(?:(?:\+?86|0086)\D*)?1[3-9](?:\D*\d){9}(?!\d)/.test(text) ||
+    /(?<!\d)(?:(?:\+?86|0086)\D*)?0(?:\D*\d){9,11}(?!\d)/.test(text) ||
+    /(?<!\d)(?:(?:\+?86|0086)\D*)?(?:400|800)(?:\D*\d){7}(?!\d)/.test(text)
+}
+
+function looksLikeSensitiveViewingCredential(value) {
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return false
+  return looksLikeEmployeeContactNumber(text) ||
+    /(?:wxid|wechat|weixin|微信|加微|vx|qq)/i.test(text) ||
+    /(?:联系|电话|手机|房东|管家|空出|退租|到期|搬离|可看|钥匙)/.test(text) ||
+    /^(?:19|20)\d{2}$/.test(text) ||
+    /(?:19|20)\d{2}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?/.test(text) ||
+    /(?:19|20)\d{6}/.test(text) ||
+    /\d{1,2}月\d{1,2}日/.test(text)
+}
+
+function isVerifiedEmployeeLegacyDoorCode(value) {
+  const text = normalizeText(value)
+  if (/^\d{4}$/.test(text)) return !/^(?:19|20)\d{2}$/.test(text)
+  return /^(?=[0-9#]{7}$)(?=.*\d)(?=.*#)[0-9#]{7}$/.test(text)
+}
+
+function normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sourceRecordId) {
+  const sourceViewingMethod = normalizeText(fields.viewingMethod)
+  const hasExplicitViewingPassword = Object.prototype.hasOwnProperty.call(sourceBindings, 'viewingPassword')
+  const explicitViewingPassword = normalizeText(fields.viewingPassword)
+  const explicitPasswordSemantics = (
+    hasExplicitViewingPassword &&
+    !looksLikeSensitiveViewingCredential(sourceViewingMethod) &&
+    /^[0-9#*A-Za-z._-]{3,20}$/.test(sourceViewingMethod)
+  )
+
+  if (/钥匙/.test(sourceViewingMethod)) {
+    if (hasExplicitViewingPassword && explicitViewingPassword) {
+      throw new Error(`源记录 ${sourceRecordId} 的看房方式为钥匙但显式密码列非空`)
+    }
+    fields.viewingMethod = '钥匙'
+    delete fields.viewingPassword
+    return
+  }
+  if (isVerifiedEmployeeLegacyDoorCode(sourceViewingMethod) || explicitPasswordSemantics) {
+    fields.viewingMethod = '密码'
+    if (hasExplicitViewingPassword) {
+      if (!explicitViewingPassword) {
+        throw new Error(`源记录 ${sourceRecordId} 的看房方式为密码但显式密码列为空`)
+      }
+      fields.viewingPassword = explicitViewingPassword
+    } else {
+      fields.viewingPassword = sourceViewingMethod
+    }
+    return
+  }
+  if (hasExplicitViewingPassword && explicitViewingPassword) {
+    throw new Error(`源记录 ${sourceRecordId} 的看房方式为联系房东但显式密码列非空`)
+  }
+  fields.viewingMethod = '联系房东'
+  delete fields.viewingPassword
+}
+
+function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {
+  const profile = normalizeText(options.profile)
+  if (!profile) return sourceSnapshot
+  if (profile !== EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE) {
+    throw new Error(`未知员工源兼容配置：${profile}`)
+  }
+  const sourceBindings = options.sourceBindings && typeof options.sourceBindings === 'object' &&
+    !Array.isArray(options.sourceBindings)
+    ? options.sourceBindings
+    : {}
+  const boundFields = Object.keys(sourceBindings)
+  if (!boundFields.length) throw new Error('员工源兼容配置缺少字段绑定')
+
+  const records = (sourceSnapshot && Array.isArray(sourceSnapshot.records) ? sourceSnapshot.records : [])
+    .reduce((prepared, record) => {
+      const sourceRecordId = sourceRecordIdOf(record)
+      const sourceFields = mirrorFieldsOf(record)
+      const isEmptyTemplate = boundFields.every((field) => !hasBusinessValue(sourceFields[field]))
+      if (isEmptyTemplate) return prepared
+      if (!hasBusinessValue(sourceFields.roomLabel)) {
+        throw new Error(`源记录 ${sourceRecordId || '未知'} 为半填行，缺少小区+房号`)
+      }
+
+      const fields = clonePlain(sourceFields)
+      normalizeEmployeeCurrentStockCommunity(fields, options.locationCatalog, sourceRecordId)
+      normalizeEmployeeCurrentStockRoomLabel(fields)
+      if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'rentMode')) {
+        fields.rentMode = deriveEmployeeCurrentStockRentMode(fields, sourceRecordId)
+      }
+      if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'listingStatus')) {
+        fields.listingStatus = '在租'
+      }
+      normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sourceRecordId)
+      // 员工现表分类保存“一室一厅 / 两室一厅 / 单间”等完整粒度，专用表只保存
+      // 一至六室。只有分类与描述可独立派生且室数一致时才归一，真实冲突留给严格层阻断。
+      const sourceLayoutCategory = normalizeText(fields.layoutCategory)
+      const normalizedSourceLayoutCategory = layoutCategoryFromDescription(sourceLayoutCategory)
+      const descriptionLayoutCategory = layoutCategoryFromDescription(fields.layoutDescription)
+      if (sourceLayoutCategory &&
+          normalizedSourceLayoutCategory &&
+          normalizedSourceLayoutCategory === descriptionLayoutCategory) {
+        fields.layoutCategory = descriptionLayoutCategory
+      }
+      prepared.push({
+        ...clonePlain(record),
+        fields
+      })
+      return prepared
+    }, [])
+
+  return {
+    ...clonePlain(sourceSnapshot),
+    records,
+    recordCount: records.length
+  }
 }
 
 function canonicalMirrorFields(sourceRecord, location) {
@@ -359,6 +551,9 @@ function canonicalMirrorFields(sourceRecord, location) {
   ;['viewingMethod', 'remark', 'contact', 'viewingPassword'].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(sourceFields, field)) fields[field] = normalizeText(sourceFields[field])
   })
+  if (fields.viewingPassword && looksLikeSensitiveViewingCredential(fields.viewingPassword)) {
+    throw new Error(`源记录 ${sourceRecordId} 的看房密码包含联系电话、社交账号或日期说明`)
+  }
   if (Object.prototype.hasOwnProperty.call(sourceFields, 'landlordCommissionPercent')) {
     const commissionText = normalizeText(sourceFields.landlordCommissionPercent)
     const commission = commissionText ? Number(commissionText.replace(/%$/, '')) : 50
@@ -399,9 +594,14 @@ function canonicalMirrorFields(sourceRecord, location) {
 function managedFieldsOf(fields) {
   const managed = {}
   MANAGED_MIRROR_FIELDS.forEach((field) => {
-    // 飞书清空单元格后通常回读为 null；语义上与源字段未提供等价，忽略它可避免每轮
-    // 重复更新，同时已有非空旧值仍会与缺失目标不同并被本轮写 null 清除。
-    if (Object.prototype.hasOwnProperty.call(fields, field) && fields[field] !== undefined && fields[field] !== null) {
+    // 飞书清空单元格后会按字段类型回读为 null、省略、空字符串或空数组；这些形态
+    // 与源字段未提供等价。已有非空旧值仍会保留在 managed 中并由本轮写空清除。
+    const value = fields[field]
+    const hasValue = value !== undefined &&
+      value !== null &&
+      !(typeof value === 'string' && value.trim() === '') &&
+      !(Array.isArray(value) && value.length === 0)
+    if (Object.prototype.hasOwnProperty.call(fields, field) && hasValue) {
       managed[field] = field === 'video' ? stableVideoAttachments(fields[field]) : clonePlain(fields[field])
     }
   })
@@ -466,7 +666,11 @@ function planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId
         type: 'deactivate',
         recordId: sourceRecordIdOf(record),
         sourceRecordId,
-        fields: { enabled: false }
+        fields: {
+          listingStatus: '已下架',
+          published: false,
+          enabled: false
+        }
       })
       counts.deactivate += 1
     })
@@ -647,6 +851,7 @@ async function runCompanySourceSync({ db, mirrorSync, applyInventory, publishSna
 
 module.exports = {
   buildLocationCatalog,
+  prepareSourceSnapshotForCompatibility,
   planMirrorSync,
   buildCompanySheetSnapshot,
   publishCompanySnapshot,
