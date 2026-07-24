@@ -21,11 +21,32 @@ const MIRROR_SOURCE_FIELDS = Object.freeze([
   'monthlyRent',
   'viewingMethod',
   'remark',
+  'vacancyNote',
   'listingStatus',
   'contact',
   'viewingPassword',
   'landlordCommissionPercent',
   'tags'
+])
+
+const FOUNDATION_MIRROR_FIELDS = Object.freeze([
+  'foundationListingId',
+  'temporaryListingId',
+  'yuxiaoerListingId',
+  'yuxiaoerRoomId',
+  'identityType',
+  'physicalUnitKey',
+  'lifecycleStatusText',
+  'sourceCreatedAt',
+  'availabilityCycleNo',
+  'availabilityCycleId',
+  'metricKind',
+  'lifecycleDays',
+  'listingOwner',
+  'ownerDepartment',
+  'sourcePresent',
+  'identityAliases',
+  'lifecycleVersion'
 ])
 
 const MANAGED_MIRROR_FIELDS = Object.freeze([
@@ -48,9 +69,10 @@ const MANAGED_MIRROR_FIELDS = Object.freeze([
   'canonical',
   'enabled'
 ])
-const ACTIVE_LISTING_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|开放|可看|可出租|up|on|active)$/i
+const ACTIVE_LISTING_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|待出租|即将空出|空置|可租|有效|开放|可看|可出租|up|on|active)$/i
 const INACTIVE_LISTING_STATUS_PATTERN = /^(?:下架|已下架|已租|已出租|已成交|成交|关闭|已关闭|无效|删除|已删除|暂停|暂缓|维修中|不可租|停租|未上架|不上架|未在租|不在租|down|off|inactive|rented|closed)$/i
 const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
+const EMPLOYEE_AI_FOUNDATION_PROFILE = 'employee-ai-foundation-v1'
 
 function normalizeText(value) {
   if (value === undefined || value === null) return ''
@@ -461,7 +483,9 @@ function normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sour
 function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {
   const profile = normalizeText(options.profile)
   if (!profile) return sourceSnapshot
-  if (profile !== EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE) {
+  const isCurrentStockProfile = profile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+  const isAiFoundationProfile = profile === EMPLOYEE_AI_FOUNDATION_PROFILE
+  if (!isCurrentStockProfile && !isAiFoundationProfile) {
     throw new Error(`未知员工源兼容配置：${profile}`)
   }
   const sourceBindings = options.sourceBindings && typeof options.sourceBindings === 'object' &&
@@ -487,7 +511,13 @@ function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {
       if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'rentMode')) {
         fields.rentMode = deriveEmployeeCurrentStockRentMode(fields, sourceRecordId)
       }
-      if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'listingStatus')) {
+      if (isAiFoundationProfile) {
+        if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'vacancyNote')) {
+          throw new Error('AI 数据底座兼容配置缺少“备注多久空出”字段绑定')
+        }
+        fields.vacancyNote = normalizeText(fields.vacancyNote)
+        fields.listingStatus = fields.vacancyNote ? '即将空出' : '待出租'
+      } else if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'listingStatus')) {
         fields.listingStatus = '在租'
       }
       normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sourceRecordId)
@@ -548,7 +578,7 @@ function canonicalMirrorFields(sourceRecord, location) {
   )
   fields.layoutDescription = normalizeText(fields.layoutDescription)
   fields.rentMode = normalizeText(sourceFields.rentMode)
-  ;['viewingMethod', 'remark', 'contact', 'viewingPassword'].forEach((field) => {
+  ;['viewingMethod', 'remark', 'vacancyNote', 'contact', 'viewingPassword'].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(sourceFields, field)) fields[field] = normalizeText(sourceFields[field])
   })
   if (fields.viewingPassword && looksLikeSensitiveViewingCredential(fields.viewingPassword)) {
@@ -591,9 +621,12 @@ function canonicalMirrorFields(sourceRecord, location) {
   return fields
 }
 
-function managedFieldsOf(fields) {
+function managedFieldsOf(fields, options = {}) {
   const managed = {}
-  MANAGED_MIRROR_FIELDS.forEach((field) => {
+  const managedFields = options.includeFoundation === true
+    ? Array.from(new Set([...MANAGED_MIRROR_FIELDS, ...FOUNDATION_MIRROR_FIELDS]))
+    : MANAGED_MIRROR_FIELDS.filter((field) => !FOUNDATION_MIRROR_FIELDS.includes(field))
+  managedFields.forEach((field) => {
     // 飞书清空单元格后会按字段类型回读为 null、省略、空字符串或空数组；这些形态
     // 与源字段未提供等价。已有非空旧值仍会保留在 managed 中并由本轮写空清除。
     const value = fields[field]
@@ -856,5 +889,8 @@ module.exports = {
   buildCompanySheetSnapshot,
   publishCompanySnapshot,
   classifyMirrorRunResult,
-  runCompanySourceSync
+  runCompanySourceSync,
+  _internal: {
+    managedFieldsOf
+  }
 }

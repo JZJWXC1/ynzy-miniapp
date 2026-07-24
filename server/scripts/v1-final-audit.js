@@ -113,6 +113,9 @@ const criticalScripts = [
   // 员工源表只读→专用源表→位置字典→库存/固定待租表的新 canonical 链路及失败门禁。
   'server/scripts/feishu-source-contract-v1-test.js',
   'server/scripts/feishu-source-mirror-v1-test.js',
+  'server/scripts/feishu-listing-lifecycle-v1-test.js',
+  'server/scripts/feishu-ai-data-foundation-v1-test.js',
+  'server/scripts/feishu-foundation-enrichment-v1-test.js',
   'server/scripts/company-source-snapshot-v1-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。

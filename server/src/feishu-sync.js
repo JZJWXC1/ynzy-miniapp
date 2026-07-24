@@ -9,6 +9,7 @@ const { refreshRecommendationProfile } = require('./listing-recommendation-profi
 const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 const { createBitableClient } = require('./feishu-bitable-client')
+const sourceMirror = require('./feishu-source-mirror')
 const {
   buildLocationCatalog,
   prepareSourceSnapshotForCompatibility,
@@ -17,7 +18,15 @@ const {
   publishCompanySnapshot,
   classifyMirrorRunResult,
   runCompanySourceSync
-} = require('./feishu-source-mirror')
+} = sourceMirror
+const { managedFieldsOf } = sourceMirror._internal
+const {
+  planListingLifecycle,
+  yuxiaoerIdentityKey
+} = require('./feishu-listing-lifecycle')
+const {
+  planFoundationEnrichment
+} = require('./feishu-foundation-enrichment')
 
 const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
@@ -25,9 +34,9 @@ const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
 const RETAINED_VIDEO_MATERIAL_STATUS = '沿用上次视频·素材待核'
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
 const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
-const UP_STATUS_PATTERN = /上架|在租|待租|空置|可租|有效|up|on|active/i
+const UP_STATUS_PATTERN = /上架|在租|待租|待出租|即将空出|空置|可租|有效|up|on|active/i
 const NOT_UP_PATTERN = /未上架|不上架|否|false|no|0/i
-const RETAINABLE_ACTIVE_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|空置|可租|有效|up|on|active)$/i
+const RETAINABLE_ACTIVE_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|待出租|即将空出|空置|可租|有效|up|on|active)$/i
 const SENSITIVE_FEISHU_FIELD_PATTERN = /(看房方式密码|看房方式|看房密码|门锁密码|密码|联系方式|联系电话|房东联系方式|房东电话|联系人电话|手机号|手机|电话|微信|身份证|证件)/i
 const MIRROR_REQUIRED_BINDINGS = Object.freeze({
   source: ['community', 'roomLabel', 'layoutDescription', 'monthlyRent', 'rentMode', 'listingStatus'],
@@ -37,40 +46,125 @@ const MIRROR_REQUIRED_BINDINGS = Object.freeze({
     'monthlyRent', 'rentMode', 'listingStatus',
     'published', 'canonical', 'enabled'
   ],
-  location: ['locationId', 'city', 'district', 'block', 'community', 'latitude', 'longitude', 'enabled']
+  location: ['locationId', 'city', 'district', 'block', 'community', 'latitude', 'longitude', 'enabled'],
+  rented: ['archiveKey', 'foundationListingId', 'availabilityCycleId', 'lifecycleStatusText', 'archivedAt'],
+  history: ['historyEventId', 'foundationListingId', 'availabilityCycleId', 'eventType', 'toLifecycleStatusText', 'eventAt']
 })
 const MIRROR_REQUIRED_OPTIONAL_VALUE_BINDINGS = Object.freeze({
   source: ['viewingMethod', 'remark'],
   mini: ['unit', 'viewingMethod', 'remark'],
-  location: []
+  location: [],
+  rented: [
+    'temporaryListingId', 'yuxiaoerListingId', 'yuxiaoerRoomId', 'identityType',
+    'physicalUnitKey', 'sourceRecordId', 'availabilityCycleNo', 'vacancyNote',
+    'sourceCreatedAt', 'metricKind', 'lifecycleDays', 'listingOwner', 'ownerDepartment',
+    'identityAliases', 'lifecycleVersion', 'previousLifecycleStatusText',
+    'locationId', 'locationRecordId', 'city', 'district', 'block', 'community',
+    'latitude', 'longitude', 'roomLabel', 'building', 'unit', 'roomNumber',
+    'layoutDescription', 'layoutCategory', 'monthlyRent', 'rentMode',
+    'viewingMethod', 'remark', 'listingStatus', 'tags', 'video',
+    'published', 'enabled', 'sourcePresent'
+  ],
+  history: [
+    'sourceRecordId', 'availabilityCycleNo', 'fromLifecycleStatusText',
+    'runId', 'listingOwner', 'ownerDepartment', 'lifecycleVersion'
+  ]
 })
+const FOUNDATION_MINI_FIELDS = Object.freeze([
+  'foundationListingId', 'temporaryListingId', 'yuxiaoerListingId', 'yuxiaoerRoomId',
+  'identityType', 'physicalUnitKey', 'lifecycleStatusText', 'vacancyNote',
+  'sourceCreatedAt', 'availabilityCycleNo', 'availabilityCycleId', 'metricKind',
+  'lifecycleDays', 'listingOwner', 'ownerDepartment', 'sourcePresent',
+  'identityAliases', 'lifecycleVersion'
+])
+const LEGACY_PROTECTED_FOUNDATION_FIELD_SET = new Set(
+  FOUNDATION_MINI_FIELDS.filter((semantic) => semantic !== 'vacancyNote')
+)
 const MIRROR_PAIRED_SOURCE_FIELDS = Object.freeze([
   'rentMode', 'roomLabel', 'building', 'unit', 'roomNumber', 'layoutDescription', 'layoutCategory',
-  'monthlyRent', 'viewingMethod', 'remark', 'listingStatus', 'contact', 'viewingPassword',
+  'monthlyRent', 'viewingMethod', 'remark', 'vacancyNote', 'listingStatus', 'contact', 'viewingPassword',
   'landlordCommissionPercent', 'tags', 'video'
 ])
 const MIRROR_FIELD_TYPE_CONTRACTS = Object.freeze({
   source: Object.freeze({
     community: [1, 3], roomLabel: [1], building: [1, 2], unit: [1, 2], roomNumber: [1, 2],
     layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [1, 2], rentMode: [1, 3],
-    viewingMethod: [1, 3], remark: [1], listingStatus: [1, 3], contact: [1, 13],
+    viewingMethod: [1, 3], remark: [1], vacancyNote: [1], listingStatus: [1, 3], contact: [1, 13],
     viewingPassword: [1], landlordCommissionPercent: [1, 2], tags: [1, 4], video: [17]
   }),
   mini: Object.freeze({
     sourceRecordId: [1], locationId: [1], locationRecordId: [1], city: [1], district: [1, 3],
     block: [1, 3], community: [1], latitude: [2], longitude: [2], roomLabel: [1], building: [1],
     unit: [1], roomNumber: [1], layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [2],
-    rentMode: [1, 3], viewingMethod: [1, 3], remark: [1], listingStatus: [1, 3], contact: [1, 13],
+    rentMode: [1, 3], viewingMethod: [1, 3], remark: [1], vacancyNote: [1], listingStatus: [1, 3], contact: [1, 13],
     viewingPassword: [1], landlordCommissionPercent: [2], tags: [4], video: [17],
+    foundationListingId: [1], temporaryListingId: [1], yuxiaoerListingId: [1],
+    yuxiaoerRoomId: [1], identityType: [1, 3], physicalUnitKey: [1],
+    lifecycleStatusText: [1, 3], sourceCreatedAt: [5], availabilityCycleNo: [2],
+    availabilityCycleId: [1], metricKind: [1, 3], lifecycleDays: [2],
+    listingOwner: [1], ownerDepartment: [1], sourcePresent: [7],
+    identityAliases: [1], lifecycleVersion: [2],
     published: [7], canonical: [7], enabled: [7]
   }),
   location: Object.freeze({
     locationId: [1], city: [1], district: [1, 3], block: [1, 3], community: [1], aliases: [1, 4],
     latitude: [2], longitude: [2], enabled: [7]
+  }),
+  rented: Object.freeze({
+    archiveKey: [1], foundationListingId: [1], temporaryListingId: [1],
+    yuxiaoerListingId: [1], yuxiaoerRoomId: [1], identityType: [1, 3],
+    physicalUnitKey: [1], sourceRecordId: [1], availabilityCycleNo: [2],
+    availabilityCycleId: [1], lifecycleStatusText: [1, 3], vacancyNote: [1],
+    sourceCreatedAt: [5], metricKind: [1, 3], lifecycleDays: [2],
+    listingOwner: [1], ownerDepartment: [1], archivedAt: [5],
+    identityAliases: [1], lifecycleVersion: [2], previousLifecycleStatusText: [1, 3],
+    locationId: [1], locationRecordId: [1], city: [1], district: [1, 3],
+    block: [1, 3], community: [1], latitude: [2], longitude: [2],
+    roomLabel: [1], building: [1], unit: [1], roomNumber: [1],
+    layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [2],
+    rentMode: [1, 3], viewingMethod: [1, 3], remark: [1],
+    listingStatus: [1, 3], tags: [4], video: [17],
+    published: [7], enabled: [7], sourcePresent: [7]
+  }),
+  history: Object.freeze({
+    historyEventId: [1], foundationListingId: [1], sourceRecordId: [1],
+    availabilityCycleNo: [2], availabilityCycleId: [1], eventType: [1, 3],
+    fromLifecycleStatusText: [1, 3], toLifecycleStatusText: [1, 3],
+    eventAt: [5], runId: [1], listingOwner: [1], ownerDepartment: [1],
+    lifecycleVersion: [2]
   })
 })
 const MIRROR_WRITE_BATCH_SIZE = 500
 const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
+const EMPLOYEE_AI_FOUNDATION_PROFILE = 'employee-ai-foundation-v1'
+const FOUNDATION_BASELINE_EVENT_ID = 'HIST-FOUNDATION-BASELINE-V1'
+const FOUNDATION_BASELINE_ENTITY_ID = 'SYSTEM:FOUNDATION-BASELINE'
+const RENTED_BUSINESS_SNAPSHOT_FIELDS = Object.freeze([
+  'locationId',
+  'locationRecordId',
+  'city',
+  'district',
+  'block',
+  'community',
+  'latitude',
+  'longitude',
+  'roomLabel',
+  'building',
+  'unit',
+  'roomNumber',
+  'layoutDescription',
+  'layoutCategory',
+  'monthlyRent',
+  'rentMode',
+  'viewingMethod',
+  'remark',
+  'listingStatus',
+  'tags',
+  'video',
+  'published',
+  'enabled',
+  'sourcePresent'
+])
 
 function nowText() {
   return new Date().toLocaleString('zh-CN', { hour12: false })
@@ -2152,7 +2246,9 @@ function bindingContractStatus(role, bindings, options = {}) {
   const source = bindings && typeof bindings === 'object' && !Array.isArray(bindings) ? bindings : {}
   const sourceCompatibilityProfile = normalizeText(options.sourceCompatibilityProfile)
   const employeeCompatibilityEnabled =
-    sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+    sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE ||
+    sourceCompatibilityProfile === EMPLOYEE_AI_FOUNDATION_PROFILE
+  const aiFoundationEnabled = sourceCompatibilityProfile === EMPLOYEE_AI_FOUNDATION_PROFILE
   const compatibilityEnabled = role === 'source' && employeeCompatibilityEnabled
   const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
   const requiredSchema = new Set([
@@ -2163,11 +2259,15 @@ function bindingContractStatus(role, bindings, options = {}) {
     requiredSchema.delete('rentMode')
     requiredSchema.delete('listingStatus')
   }
+  if (role === 'source' && aiFoundationEnabled) requiredSchema.add('vacancyNote')
+  if (role === 'mini' && aiFoundationEnabled) {
+    FOUNDATION_MINI_FIELDS.forEach((semantic) => requiredSchema.add(semantic))
+  }
   if (role === 'mini' && employeeCompatibilityEnabled) {
     requiredSchema.add('viewingPassword')
   }
   const issues = []
-  if (role === 'source' && sourceCompatibilityProfile && !compatibilityEnabled) {
+  if (role === 'source' && sourceCompatibilityProfile && !employeeCompatibilityEnabled) {
     issues.push(`compatibilityProfile:${sourceCompatibilityProfile}:unsupported`)
   }
 
@@ -2200,7 +2300,10 @@ function resolvedContractBindings(role, bindings, options = {}) {
   const contracts = MIRROR_FIELD_TYPE_CONTRACTS[role]
   const requiredValues = new Set(MIRROR_REQUIRED_BINDINGS[role] || [])
   const compatibilityEnabled = role === 'source' &&
-    normalizeText(options.sourceCompatibilityProfile) === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+    [
+      EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+      EMPLOYEE_AI_FOUNDATION_PROFILE
+    ].includes(normalizeText(options.sourceCompatibilityProfile))
   return Object.keys(bindings || {}).sort().reduce((result, semantic) => {
     const configured = bindings[semantic]
     const allowedTypes = contracts[semantic]
@@ -2232,21 +2335,30 @@ function mirrorConfigurationStatus() {
   const sourceTableId = normalizeResourceIdentifier(config.feishu.sourceTableId)
   const miniTableId = normalizeResourceIdentifier(config.feishu.miniTableId)
   const locationTableId = normalizeResourceIdentifier(config.feishu.locationTableId)
+  const rentedTableId = normalizeResourceIdentifier(config.feishu.rentedTableId)
+  const historyTableId = normalizeResourceIdentifier(config.feishu.historyTableId)
   const sourceBaseReady = Boolean(sourceBaseToken)
   const targetBaseReady = Boolean(targetBaseToken)
   const crossBaseTokensReady = sourceBaseReady && targetBaseReady && config.feishu.crossBaseTokenPartial !== true
   const employeeCompatibilityEnabled =
-    config.feishu.sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE
+    config.feishu.sourceCompatibilityProfile === EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE ||
+    config.feishu.sourceCompatibilityProfile === EMPLOYEE_AI_FOUNDATION_PROFILE
+  const aiFoundationEnabled =
+    config.feishu.sourceCompatibilityProfile === EMPLOYEE_AI_FOUNDATION_PROFILE
   const sourceBaseReadOnlyBoundaryReady = !employeeCompatibilityEnabled ||
     sourceBaseToken !== targetBaseToken
   const hasAuth = hasApplicationCredentials && crossBaseTokensReady
   const sourceTableReady = Boolean(sourceTableId)
   const miniTableReady = Boolean(miniTableId)
   const locationTableReady = Boolean(locationTableId)
+  const rentedTableReady = !aiFoundationEnabled || Boolean(rentedTableId)
+  const historyTableReady = !aiFoundationEnabled || Boolean(historyTableId)
   const configuredResources = [
     [sourceBaseToken, sourceTableId],
     [targetBaseToken, miniTableId],
-    [targetBaseToken, locationTableId]
+    [targetBaseToken, locationTableId],
+    [targetBaseToken, rentedTableId],
+    [targetBaseToken, historyTableId]
   ].filter(([appToken, tableId]) => appToken && tableId)
   const resourceKeys = configuredResources.map(([appToken, tableId]) => `${appToken}\u0000${tableId}`)
   const tableResourcesDistinct = new Set(resourceKeys).size === resourceKeys.length
@@ -2259,15 +2371,29 @@ function mirrorConfigurationStatus() {
     sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
   })
   const locationContract = bindingContractStatus('location', config.feishu.locationFieldBindings)
+  const rentedContract = aiFoundationEnabled
+    ? bindingContractStatus('rented', config.feishu.rentedFieldBindings, {
+      sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+    })
+    : { ready: true, issues: [] }
+  const historyContract = aiFoundationEnabled
+    ? bindingContractStatus('history', config.feishu.historyFieldBindings, {
+      sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+    })
+    : { ready: true, issues: [] }
   const sourceBindingsReady = sourceContract.ready
   const miniBindingsReady = miniContract.ready
   const locationBindingsReady = locationContract.ready
+  const rentedBindingsReady = rentedContract.ready
+  const historyBindingsReady = historyContract.ready
   const pairedBindingsReady = pairedMirrorBindingsReady(config.feishu.sourceFieldBindings, config.feishu.miniFieldBindings)
   const materialsReady = Boolean(config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video)
   return {
     ready: hasAuth && sourceBaseReadOnlyBoundaryReady &&
       sourceTableReady && miniTableReady && locationTableReady && tableResourcesDistinct &&
-      sourceBindingsReady && miniBindingsReady && locationBindingsReady && pairedBindingsReady && materialsReady,
+      rentedTableReady && historyTableReady &&
+      sourceBindingsReady && miniBindingsReady && locationBindingsReady &&
+      rentedBindingsReady && historyBindingsReady && pairedBindingsReady && materialsReady,
     hasAuth,
     hasApplicationCredentials,
     sourceBaseReady,
@@ -2277,11 +2403,16 @@ function mirrorConfigurationStatus() {
     sourceTableReady,
     miniTableReady,
     locationTableReady,
+    rentedTableReady,
+    historyTableReady,
     tableIdsDistinct,
     tableResourcesDistinct,
     sourceBindingsReady,
     miniBindingsReady,
     locationBindingsReady,
+    rentedBindingsReady,
+    historyBindingsReady,
+    aiFoundationEnabled,
     pairedBindingsReady,
     materialsReady
   }
@@ -2301,13 +2432,64 @@ function assertMirrorConfiguration() {
   if (!state.sourceTableReady) missing.push('员工源表 ID')
   if (!state.miniTableReady) missing.push('小程序专用源表 ID')
   if (!state.locationTableReady) missing.push('小程序位置字典 ID')
-  if (!state.tableResourcesDistinct) missing.push('员工源表、专用源表和位置字典不得指向同一 Base 表资源')
+  if (!state.rentedTableReady) missing.push('已出租房源表 ID')
+  if (!state.historyTableReady) missing.push('房源状态流水表 ID')
+  if (!state.tableResourcesDistinct) missing.push('员工源表、专用源表、位置字典、已出租表和流水表不得指向同一 Base 表资源')
   if (!state.sourceBindingsReady) missing.push('员工源表 field_id 绑定')
   if (!state.miniBindingsReady) missing.push('专用源表 field_id 绑定')
   if (!state.locationBindingsReady) missing.push('位置字典 field_id 绑定')
+  if (!state.rentedBindingsReady) missing.push('已出租房源表 field_id 绑定')
+  if (!state.historyBindingsReady) missing.push('房源状态流水表 field_id 绑定')
   if (!state.pairedBindingsReady) missing.push('员工源表与专用源表字段配对')
   if (!state.materialsReady) missing.push('附件字段或素材目录')
   const error = new Error(`飞书镜像同步配置不完整：${missing.join('、')}`)
+  error.statusCode = 503
+  throw error
+}
+
+function assertFoundationEnrichmentConfiguration() {
+  const state = mirrorConfigurationStatus()
+  const sourceBaseToken = normalizeResourceIdentifier(config.feishu.sourceBitableAppToken)
+  const targetBaseToken = normalizeResourceIdentifier(config.feishu.targetBitableAppToken)
+  const sourceTableId = normalizeResourceIdentifier(config.feishu.sourceTableId)
+  const miniTableId = normalizeResourceIdentifier(config.feishu.miniTableId)
+  const historyTableId = normalizeResourceIdentifier(config.feishu.historyTableId)
+  const resources = [
+    `${sourceBaseToken}\u0000${sourceTableId}`,
+    `${targetBaseToken}\u0000${miniTableId}`,
+    `${targetBaseToken}\u0000${historyTableId}`
+  ]
+  const resourcesReady = resources.every((value) => !value.startsWith('\u0000') && !value.endsWith('\u0000'))
+  const resourcesDistinct = resourcesReady && new Set(resources).size === resources.length
+  const ready = state.aiFoundationEnabled &&
+    state.hasApplicationCredentials &&
+    state.crossBaseTokensReady &&
+    state.sourceBaseReadOnlyBoundaryReady &&
+    state.sourceTableReady &&
+    state.miniTableReady &&
+    state.historyTableReady &&
+    state.miniBindingsReady &&
+    state.historyBindingsReady &&
+    resourcesDistinct
+  if (ready) return {
+    sourceBaseToken,
+    targetBaseToken,
+    sourceTableId,
+    miniTableId,
+    historyTableId
+  }
+  const reasons = []
+  if (!state.aiFoundationEnabled) reasons.push('仅允许 AI 数据底座配置')
+  if (!state.hasApplicationCredentials) reasons.push('飞书应用凭据不完整')
+  if (!state.crossBaseTokensReady) reasons.push('源 Base 与目标 Base token 必须成对配置')
+  if (!state.sourceBaseReadOnlyBoundaryReady) reasons.push('员工源 Base 与目标 Base 必须分离以保持只读边界')
+  if (!state.sourceTableReady) reasons.push('员工源表资源缺失')
+  if (!state.miniTableReady) reasons.push('目标当前主档资源缺失')
+  if (!state.historyTableReady) reasons.push('目标状态流水资源缺失')
+  if (!state.miniBindingsReady) reasons.push('目标当前主档字段契约无效')
+  if (!state.historyBindingsReady) reasons.push('目标状态流水字段契约无效')
+  if (!resourcesDistinct) reasons.push('员工源、当前主档与状态流水资源必须独立')
+  const error = new Error(`飞书身份责任补全资源边界不安全：${reasons.join('、')}`)
   error.statusCode = 503
   throw error
 }
@@ -2326,12 +2508,51 @@ function semanticFieldsForWrite(fieldNames, fields, options = {}) {
   return output
 }
 
+function legacyMirrorFieldNames(fieldNames) {
+  const source = fieldNames && typeof fieldNames === 'object' ? fieldNames : {}
+  return Object.keys(source).sort().reduce((result, semantic) => {
+    if (!LEGACY_PROTECTED_FOUNDATION_FIELD_SET.has(semantic)) result[semantic] = source[semantic]
+    return result
+  }, {})
+}
+
 function chunksOf(items, size = MIRROR_WRITE_BATCH_SIZE) {
   const chunks = []
   for (let index = 0; index < items.length; index += size) {
     chunks.push(items.slice(index, index + size))
   }
   return chunks
+}
+
+function stableUuidV4(value) {
+  const bytes = crypto.createHash('sha256').update(String(value)).digest().subarray(0, 16)
+  // 飞书要求 client_token 为 UUIDv4 形状。这里固定 version/variant 位，
+  // 其余位由业务幂等键派生，使跨进程重试仍使用同一个 token。
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+function semanticCreateOperationKey(operation = {}) {
+  const candidates = [
+    operation.archiveKey,
+    operation.historyEventId,
+    operation.foundationListingId,
+    operation.sourceRecordId,
+    operation.fields && operation.fields.archiveKey,
+    operation.fields && operation.fields.historyEventId,
+    operation.fields && operation.fields.foundationListingId
+  ]
+  const key = candidates.map(normalizeText).find(Boolean)
+  if (!key) throw new Error('飞书新增记录缺少稳定业务幂等键')
+  return key
+}
+
+function stableCreateClientToken(tableId, operation) {
+  const normalizedTableId = normalizeResourceIdentifier(tableId)
+  if (!normalizedTableId) throw new Error('飞书新增记录缺少目标表 ID')
+  return stableUuidV4(`ynzy-feishu-create-v1\u0000${normalizedTableId}\u0000${semanticCreateOperationKey(operation)}`)
 }
 
 function flattenLocationSnapshot(snapshot) {
@@ -2406,6 +2627,648 @@ function activeFeishuSourceRecordIds(db = {}) {
 
 function activeMirrorRecords(snapshot) {
   return (snapshot.records || []).filter((record) => record && record.fields && record.fields.enabled === true)
+}
+
+function aiFoundationProfileEnabled(profile) {
+  return normalizeText(profile) === EMPLOYEE_AI_FOUNDATION_PROFILE
+}
+
+function assertLifecycleTableResourcesDistinct(options = {}) {
+  if (!aiFoundationProfileEnabled(options.sourceCompatibilityProfile)) return
+  const resources = [
+    ['位置字典', options.locationTableId],
+    ['当前状态表', options.miniTableId],
+    ['已出租表', options.rentedTableId],
+    ['状态流水表', options.historyTableId]
+  ].map(([label, tableId]) => [label, normalizeResourceIdentifier(tableId)])
+  const missing = resources.filter(([, tableId]) => !tableId).map(([label]) => label)
+  if (missing.length) throw new Error(`AI 数据底座缺少${missing.join('、')}资源`)
+  const occupied = new Map()
+  resources.forEach(([label, tableId]) => {
+    if (occupied.has(tableId)) {
+      throw new Error(`AI 数据底座表资源必须独立：${occupied.get(tableId)}与${label}不得指向同一表`)
+    }
+    occupied.set(tableId, label)
+  })
+}
+
+function foundationPhysicalUnitKey(fields = {}) {
+  const parts = [
+    fields.city,
+    fields.district,
+    fields.block,
+    fields.community,
+    fields.building,
+    fields.unit,
+    fields.roomNumber,
+    fields.rentMode
+  ].map((value) => normalizeText(value).toLocaleLowerCase('zh-CN'))
+  if (!parts[3] || !parts[4] || !parts[6] || !/^(?:整租|合租)$/.test(normalizeText(fields.rentMode))) {
+    throw new Error('AI 数据底座无法生成唯一物理房源键')
+  }
+  return `UNIT-${crypto.createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 24).toUpperCase()}`
+}
+
+function deterministicTemporaryListingId({ physicalUnitKey, sourceRecordId } = {}) {
+  const physical = normalizeText(physicalUnitKey)
+  const source = normalizeText(sourceRecordId)
+  if (!physical && !source) throw new Error('临时房源 ID 缺少稳定输入')
+  return `TMP-${crypto.createHash('sha256').update(`${physical}\u0000${source}`).digest('hex').slice(0, 24).toUpperCase()}`
+}
+
+function normalizedFoundationCurrentSnapshot(snapshot, nowMs) {
+  const records = (snapshot.records || []).map((record) => {
+    const fields = clone(record && record.fields && typeof record.fields === 'object' ? record.fields : {})
+    const physicalUnitKey = normalizeText(fields.physicalUnitKey) || foundationPhysicalUnitKey(fields)
+    const realIdentity = yuxiaoerIdentityKey({
+      rentMode: fields.rentMode,
+      yuxiaoerListingId: fields.yuxiaoerListingId,
+      yuxiaoerRoomId: fields.yuxiaoerRoomId
+    })
+    const generatedTemporaryId = deterministicTemporaryListingId({
+      physicalUnitKey,
+      sourceRecordId: fields.sourceRecordId
+    })
+    const foundationListingId = normalizeText(fields.foundationListingId) ||
+      realIdentity ||
+      normalizeText(fields.temporaryListingId) ||
+      generatedTemporaryId
+    const temporaryListingId = normalizeText(fields.temporaryListingId) ||
+      (/^TMP-/i.test(foundationListingId) || !realIdentity ? foundationListingId : '')
+    const active = fields.enabled === true
+    const lifecycleStatusText = normalizeText(fields.lifecycleStatusText) ||
+      (active
+        ? (normalizeText(fields.listingStatus) === '即将空出' ? '即将空出' : '待出租')
+        : '')
+    const sourceCreatedAt = Number(fields.sourceCreatedAt)
+    const hasSourceCreatedAt = Number.isSafeInteger(sourceCreatedAt) && sourceCreatedAt > 0 &&
+      sourceCreatedAt <= nowMs
+    const availabilityCycleNo = Number.isInteger(Number(fields.availabilityCycleNo)) &&
+      Number(fields.availabilityCycleNo) > 0
+      ? Number(fields.availabilityCycleNo)
+      : 1
+    const normalizedFields = {
+      ...fields,
+      foundationListingId,
+      temporaryListingId,
+      identityType: realIdentity ? 'yuxiaoer' : 'temporary',
+      physicalUnitKey,
+      lifecycleStatusText,
+      vacancyNote: normalizeText(fields.vacancyNote),
+      availabilityCycleNo,
+      availabilityCycleId: normalizeText(fields.availabilityCycleId) ||
+        `${foundationListingId}:available:${availabilityCycleNo}`,
+      metricKind: normalizeText(fields.metricKind) ||
+        (lifecycleStatusText === '即将空出' ? '提前挂出天数' : '待租天数'),
+      listingOwner: normalizeText(fields.listingOwner),
+      ownerDepartment: normalizeText(fields.ownerDepartment),
+      sourcePresent: typeof fields.sourcePresent === 'boolean' ? fields.sourcePresent : active,
+      identityAliases: normalizeText(fields.identityAliases),
+      lifecycleVersion: Number.isInteger(Number(fields.lifecycleVersion)) &&
+        Number(fields.lifecycleVersion) >= 0
+        ? Number(fields.lifecycleVersion)
+        : 0
+    }
+    if (hasSourceCreatedAt) normalizedFields.sourceCreatedAt = sourceCreatedAt
+    else delete normalizedFields.sourceCreatedAt
+    if (!Number.isFinite(Number(normalizedFields.lifecycleDays)) && hasSourceCreatedAt) {
+      normalizedFields.lifecycleDays = Math.floor((nowMs - sourceCreatedAt) / (24 * 60 * 60 * 1000))
+    }
+    return {
+      ...clone(record),
+      fields: normalizedFields
+    }
+  })
+  return {
+    ...clone(snapshot),
+    complete: true,
+    records,
+    recordCount: records.length
+  }
+}
+
+function synthesizedAliasSnapshot(currentStateSnapshot) {
+  const records = []
+  const seen = new Map()
+  function add(aliasType, aliasValue, foundationListingId) {
+    const value = normalizeText(aliasValue)
+    const foundationId = normalizeText(foundationListingId)
+    if (!value || !foundationId) return
+    const aliasKey = `${aliasType}:${value.toLocaleLowerCase('zh-CN')}`
+    const occupied = seen.get(aliasKey)
+    if (occupied && occupied !== foundationId) {
+      throw new Error(`AI 数据底座身份别名冲突：${aliasType}/${value}`)
+    }
+    if (occupied) return
+    seen.set(aliasKey, foundationId)
+    records.push({
+      recordId: `alias-${records.length + 1}`,
+      fields: { aliasType, aliasValue: value, foundationListingId: foundationId }
+    })
+  }
+  ;(currentStateSnapshot.records || []).forEach((record) => {
+    const fields = record.fields || {}
+    const foundationListingId = fields.foundationListingId
+    const serializedAliases = normalizeText(fields.identityAliases)
+    if (serializedAliases) {
+      let parsed
+      try {
+        parsed = JSON.parse(serializedAliases)
+      } catch (_) {
+        throw new Error(`AI 数据底座身份别名不是合法 JSON：${foundationListingId || '未知房源'}`)
+      }
+      if (!Array.isArray(parsed) || parsed.some((item) => (
+        !item || typeof item !== 'object' || Array.isArray(item) ||
+        !normalizeText(item.aliasType) || !normalizeText(item.aliasValue)
+      ))) {
+        throw new Error(`AI 数据底座身份别名结构无效：${foundationListingId || '未知房源'}`)
+      }
+      parsed.forEach((item) => add(
+        normalizeText(item.aliasType),
+        normalizeText(item.aliasValue),
+        foundationListingId
+      ))
+    }
+    add('sourceRecord', fields.sourceRecordId, foundationListingId)
+    add('temporary', fields.temporaryListingId, foundationListingId)
+    add('yuxiaoer', yuxiaoerIdentityKey({
+      rentMode: fields.rentMode,
+      yuxiaoerListingId: fields.yuxiaoerListingId,
+      yuxiaoerRoomId: fields.yuxiaoerRoomId
+    }), foundationListingId)
+  })
+  return { complete: true, records, recordCount: records.length }
+}
+
+function rentedSnapshotForLifecycle(snapshot) {
+  const records = (snapshot.records || []).map((record) => ({
+    ...clone(record),
+    fields: {
+      ...clone(record.fields || {}),
+      rentalEventId: normalizeText(record.fields && (
+        record.fields.archiveKey || record.fields.rentalEventId
+      ))
+    }
+  }))
+  return { ...clone(snapshot), complete: true, records, recordCount: records.length }
+}
+
+function foundationBaselineCompleted(historySnapshot) {
+  const matches = (historySnapshot.records || []).filter((record) => (
+    normalizeText(record.fields && record.fields.historyEventId) === FOUNDATION_BASELINE_EVENT_ID
+  ))
+  if (matches.length > 1) throw new Error('AI 数据底座初始化基线标记重复')
+  if (matches.length === 0) return false
+  const fields = matches[0].fields || {}
+  const valid = normalizeText(fields.foundationListingId) === FOUNDATION_BASELINE_ENTITY_ID &&
+    Number(fields.availabilityCycleNo) === 1 &&
+    normalizeText(fields.availabilityCycleId) === 'FOUNDATION-BASELINE-V1' &&
+    normalizeText(fields.eventType) === '初始化基线' &&
+    normalizeText(fields.toLifecycleStatusText) === '基线完成' &&
+    Number.isSafeInteger(Number(fields.eventAt)) &&
+    Number(fields.eventAt) >= 1_000_000_000_000 &&
+    Boolean(normalizeText(fields.runId)) &&
+    Number(fields.lifecycleVersion) === 0
+  if (!valid) throw new Error('AI 数据底座初始化基线标记内容无效')
+  return true
+}
+
+function foundationBaselineMarkerOperation(runId, nowMs) {
+  return {
+    type: 'create',
+    historyEventId: FOUNDATION_BASELINE_EVENT_ID,
+    foundationListingId: FOUNDATION_BASELINE_ENTITY_ID,
+    fields: {
+      historyEventId: FOUNDATION_BASELINE_EVENT_ID,
+      foundationListingId: FOUNDATION_BASELINE_ENTITY_ID,
+      sourceRecordId: '',
+      availabilityCycleNo: 1,
+      availabilityCycleId: 'FOUNDATION-BASELINE-V1',
+      eventType: '初始化基线',
+      fromLifecycleStatusText: '',
+      toLifecycleStatusText: '基线完成',
+      eventAt: nowMs,
+      runId: normalizeText(runId),
+      listingOwner: '',
+      ownerDepartment: '',
+      lifecycleVersion: 0
+    }
+  }
+}
+
+function canonicalLifecycleSourceSnapshot(sourceSnapshot, plannedCanonicalRecords) {
+  const sourceById = new Map((sourceSnapshot.records || []).map((record) => [
+    normalizeText(record.recordId),
+    record
+  ]))
+  const records = (plannedCanonicalRecords || []).map((record) => {
+    const fields = clone(record.fields || {})
+    const sourceRecordId = normalizeText(fields.sourceRecordId)
+    const sourceRecord = sourceById.get(sourceRecordId)
+    if (!sourceRecord) throw new Error(`AI 数据底座缺少源记录创建时间：${sourceRecordId}`)
+    fields.physicalUnitKey = foundationPhysicalUnitKey(fields)
+    return {
+      recordId: sourceRecordId,
+      createdTimeMs: sourceRecord.createdTimeMs,
+      fields
+    }
+  })
+  return { complete: true, records, recordCount: records.length }
+}
+
+function equalManagedMirrorFields(left, right) {
+  return JSON.stringify(managedFieldsOf(left || {}, { includeFoundation: true })) ===
+    JSON.stringify(managedFieldsOf(right || {}, { includeFoundation: true }))
+}
+
+function foundationArchiveFields(operation, currentFields, nowMs) {
+  const current = currentFields && typeof currentFields === 'object' ? currentFields : {}
+  const eventFields = operation && operation.fields && typeof operation.fields === 'object'
+    ? operation.fields
+    : {}
+  function eventFieldOrCurrent(semantic) {
+    return Object.prototype.hasOwnProperty.call(eventFields, semantic)
+      ? eventFields[semantic]
+      : current[semantic]
+  }
+  const archiveFields = {
+    archiveKey: normalizeText(operation && (operation.rentalEventId || operation.archiveKey)),
+    foundationListingId: normalizeText(operation && operation.foundationListingId),
+    temporaryListingId: normalizeText(eventFieldOrCurrent('temporaryListingId')),
+    yuxiaoerListingId: normalizeText(eventFieldOrCurrent('yuxiaoerListingId')),
+    yuxiaoerRoomId: normalizeText(eventFieldOrCurrent('yuxiaoerRoomId')),
+    identityType: normalizeText(eventFieldOrCurrent('identityType')),
+    physicalUnitKey: normalizeText(eventFieldOrCurrent('physicalUnitKey')),
+    sourceRecordId: normalizeText(eventFieldOrCurrent('sourceRecordId')),
+    availabilityCycleNo: Number(eventFieldOrCurrent('availabilityCycleNo') || 1),
+    availabilityCycleId: normalizeText(eventFieldOrCurrent('availabilityCycleId')),
+    lifecycleStatusText: '已出租',
+    previousLifecycleStatusText: Object.prototype.hasOwnProperty.call(
+      eventFields,
+      'previousLifecycleStatusText'
+    )
+      ? normalizeText(eventFields.previousLifecycleStatusText)
+      : normalizeText(current.lifecycleStatusText),
+    vacancyNote: normalizeText(eventFieldOrCurrent('vacancyNote')),
+    sourceCreatedAt: eventFieldOrCurrent('sourceCreatedAt'),
+    metricKind: normalizeText(eventFieldOrCurrent('metricKind')),
+    lifecycleDays: Object.prototype.hasOwnProperty.call(eventFields, 'elapsedDaysAtExit')
+      ? eventFields.elapsedDaysAtExit
+      : current.lifecycleDays,
+    listingOwner: normalizeText(eventFieldOrCurrent('listingOwner')),
+    ownerDepartment: normalizeText(eventFieldOrCurrent('ownerDepartment')),
+    identityAliases: normalizeText(eventFieldOrCurrent('identityAliases')),
+    lifecycleVersion: Number(eventFieldOrCurrent('lifecycleVersion') || 1),
+    archivedAt: nowMs
+  }
+  RENTED_BUSINESS_SNAPSHOT_FIELDS.forEach((semantic) => {
+    if (Object.prototype.hasOwnProperty.call(current, semantic)) {
+      archiveFields[semantic] = clone(current[semantic])
+    }
+  })
+  archiveFields.listingStatus = '已出租'
+  archiveFields.published = false
+  archiveFields.enabled = false
+  archiveFields.sourcePresent = false
+  return archiveFields
+}
+
+function buildFoundationMirrorPlan({
+  sourceSnapshot,
+  mirrorSnapshot,
+  rentedSnapshot,
+  locationCatalog,
+  runId,
+  nowMs,
+  baseline = false
+}) {
+  const preliminaryPlan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
+  const preliminaryRecords = plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, preliminaryPlan)
+  const normalizedCurrent = normalizedFoundationCurrentSnapshot(mirrorSnapshot, nowMs)
+  const lifecycleSource = canonicalLifecycleSourceSnapshot(sourceSnapshot, preliminaryRecords)
+  const lifecyclePlan = planListingLifecycle({
+    sourceSnapshot: lifecycleSource,
+    currentStateSnapshot: normalizedCurrent,
+    rentedEventSnapshot: rentedSnapshotForLifecycle(rentedSnapshot),
+    aliasSnapshot: synthesizedAliasSnapshot(normalizedCurrent),
+    runId,
+    observedAt: nowMs,
+    baseline: baseline === true,
+    allocateTemporaryId: deterministicTemporaryListingId
+  })
+  const currentByFoundationId = new Map((normalizedCurrent.records || []).map((record) => [
+    normalizeText(record.fields && record.fields.foundationListingId),
+    record
+  ]))
+  const canonicalBySourceId = new Map((preliminaryRecords || []).map((record) => [
+    normalizeText(record.fields && record.fields.sourceRecordId),
+    record.fields || {}
+  ]))
+  const operations = []
+  const plannedRecords = []
+  const counts = { create: 0, update: 0, deactivate: 0, restore: 0, noop: 0 }
+
+  lifecyclePlan.desiredStates.forEach((state) => {
+    const existing = currentByFoundationId.get(normalizeText(state.foundationListingId))
+    const canonicalFields = canonicalBySourceId.get(normalizeText(state.sourceRecordId))
+    if (!canonicalFields) throw new Error(`AI 数据底座缺少 canonical 房源：${state.sourceRecordId}`)
+    const fields = {
+      ...clone(canonicalFields),
+      ...clone(state),
+      listingStatus: state.lifecycleStatusText,
+      published: true,
+      canonical: true,
+      enabled: true
+    }
+    const plannedRecord = {
+      recordId: existing ? existing.recordId : `dry-run-${state.foundationListingId}`,
+      fields
+    }
+    plannedRecords.push(plannedRecord)
+    if (!existing) {
+      operations.push({
+        type: 'create',
+        sourceRecordId: state.sourceRecordId,
+        foundationListingId: state.foundationListingId,
+        fields
+      })
+      counts.create += 1
+    } else if (existing.fields.enabled !== true) {
+      operations.push({
+        type: 'restore',
+        recordId: existing.recordId,
+        sourceRecordId: state.sourceRecordId,
+        foundationListingId: state.foundationListingId,
+        fields
+      })
+      counts.restore += 1
+    } else if (!equalManagedMirrorFields(existing.fields, fields)) {
+      operations.push({
+        type: 'update',
+        recordId: existing.recordId,
+        sourceRecordId: state.sourceRecordId,
+        foundationListingId: state.foundationListingId,
+        fields
+      })
+      counts.update += 1
+    } else {
+      counts.noop += 1
+    }
+  })
+
+  lifecyclePlan.currentStateOperations
+    .filter((operation) => operation.type === 'markRented')
+    .forEach((operation) => {
+      const existing = currentByFoundationId.get(normalizeText(operation.foundationListingId))
+      if (!existing) throw new Error(`AI 数据底座找不到待归档当前记录：${operation.foundationListingId}`)
+      const fields = {
+        ...clone(existing.fields),
+        ...clone(operation.fields),
+        listingStatus: '已出租',
+        lifecycleStatusText: '已出租',
+        sourcePresent: false,
+        published: false,
+        enabled: false
+      }
+      if (!equalManagedMirrorFields(existing.fields, fields)) {
+        operations.push({
+          type: 'deactivate',
+          recordId: existing.recordId,
+          sourceRecordId: normalizeText(fields.sourceRecordId),
+          foundationListingId: operation.foundationListingId,
+          fields
+        })
+        counts.deactivate += 1
+      } else {
+        counts.noop += 1
+      }
+  })
+
+  if (baseline === true) {
+    const desiredFoundationIds = new Set(lifecyclePlan.desiredStates.map((state) => (
+      normalizeText(state.foundationListingId)
+    )))
+    ;(normalizedCurrent.records || []).forEach((record) => {
+      const fields = record.fields || {}
+      const foundationListingId = normalizeText(fields.foundationListingId)
+      if (!foundationListingId || desiredFoundationIds.has(foundationListingId)) return
+      if (fields.enabled !== true && fields.published !== true && fields.sourcePresent !== true) return
+      operations.push({
+        type: 'baselineDeactivate',
+        recordId: record.recordId,
+        sourceRecordId: normalizeText(fields.sourceRecordId),
+        foundationListingId,
+        fields: {
+          ...clone(fields),
+          listingStatus: '已下架',
+          lifecycleStatusText: '基线外',
+          sourcePresent: false,
+          published: false,
+          enabled: false
+        }
+      })
+      counts.deactivate += 1
+    })
+  }
+
+  const fullCurrentByFoundationId = new Map((normalizedCurrent.records || []).map((record) => [
+    normalizeText(record.fields && record.fields.foundationListingId),
+    record.fields || {}
+  ]))
+  const archiveOperations = lifecyclePlan.rentalEventOperations.map((operation) => {
+    const currentFields = fullCurrentByFoundationId.get(normalizeText(operation.foundationListingId)) || {}
+    return {
+      type: 'create',
+      archiveKey: operation.rentalEventId,
+      foundationListingId: operation.foundationListingId,
+      fields: foundationArchiveFields(operation, currentFields, nowMs)
+    }
+  })
+
+  return {
+    complete: true,
+    operations,
+    plannedRecords,
+    archiveOperations,
+    lifecyclePlan,
+    counts,
+    noop: operations.length === 0 && archiveOperations.length === 0
+  }
+}
+
+function lifecycleHistoryOperations(
+  currentSnapshot,
+  currentOperations,
+  historySnapshot,
+  runId,
+  nowMs,
+  options = {}
+) {
+  const existingIds = new Set()
+  ;(historySnapshot.records || []).forEach((record, index) => {
+    const historyEventId = normalizeText(record.fields && record.fields.historyEventId)
+    if (!historyEventId) throw new Error(`AI 数据底座状态流水第 ${index + 1} 行缺少 historyEventId`)
+    const historyEventKey = historyEventId.toLocaleLowerCase('zh-CN')
+    if (existingIds.has(historyEventKey)) {
+      throw new Error(`AI 数据底座状态流水 historyEventId 重复：${historyEventId}`)
+    }
+    existingIds.add(historyEventKey)
+  })
+  if (options.suppressEvents === true) return []
+  const currentByFoundationId = new Map((currentSnapshot.records || []).map((record) => [
+    normalizeText(record.fields && record.fields.foundationListingId),
+    record.fields || {}
+  ]))
+  const operations = []
+  let logicalEventSequence = 0
+
+  function appendHistory(fields, seedParts) {
+    const seed = seedParts.map(normalizeText).join('\u0000')
+    const historyEventId = `HIST-${crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32).toUpperCase()}`
+    const eventAt = Number(nowMs) + logicalEventSequence
+    logicalEventSequence += 1
+    const historyEventKey = historyEventId.toLocaleLowerCase('zh-CN')
+    if (existingIds.has(historyEventKey)) return
+    existingIds.add(historyEventKey)
+    operations.push({
+      type: 'create',
+      historyEventId,
+      fields: {
+        historyEventId,
+        ...fields,
+        eventAt
+      }
+    })
+  }
+
+  const archiveHistoryCandidates = new Map()
+  ;(options.archiveOperations || []).forEach((operation) => {
+    const fields = operation.fields || {}
+    const archiveKey = normalizeText(operation.archiveKey || fields.archiveKey)
+    if (!archiveKey) throw new Error('AI 数据底座归档流水候选缺少 archiveKey')
+    archiveHistoryCandidates.set(archiveKey, operation)
+  })
+  const persistedArchives = new Map()
+  ;((options.rentedSnapshot && options.rentedSnapshot.records) || []).forEach((record) => {
+    const fields = record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+    const archiveKey = normalizeText(fields.archiveKey || fields.rentalEventId)
+    if (!archiveKey) return
+    if (persistedArchives.has(archiveKey)) {
+      throw new Error(`AI 数据底座已出租归档键重复：${archiveKey}`)
+    }
+    persistedArchives.set(archiveKey, {
+      type: 'create',
+      archiveKey,
+      foundationListingId: normalizeText(fields.foundationListingId),
+      fields
+    })
+  })
+  ;(currentOperations || []).forEach((operation) => {
+    const foundationListingId = normalizeText(operation.foundationListingId)
+    const before = currentByFoundationId.get(foundationListingId) || {}
+    const after = operation.fields || {}
+    const beforeCycleNo = Number(before.availabilityCycleNo || 0)
+    const afterCycleNo = Number(after.availabilityCycleNo || 0)
+    if (!foundationListingId ||
+        !Number.isInteger(beforeCycleNo) ||
+        beforeCycleNo < 1 ||
+        afterCycleNo !== beforeCycleNo + 1) {
+      return
+    }
+    const archiveKey = `${foundationListingId}:rented:${beforeCycleNo}`
+    if (archiveHistoryCandidates.has(archiveKey)) return
+    const persisted = persistedArchives.get(archiveKey)
+    if (!persisted) return
+    const fields = persisted.fields || {}
+    if (normalizeText(fields.foundationListingId) !== foundationListingId ||
+        Number(fields.availabilityCycleNo || 0) !== beforeCycleNo) {
+      throw new Error('AI 数据底座已出租归档与待租周期不一致')
+    }
+    archiveHistoryCandidates.set(archiveKey, persisted)
+  })
+
+  const currentOperationTypes = new Map((currentOperations || []).map((operation) => [
+    normalizeText(operation.foundationListingId),
+    operation.type
+  ]))
+  ;Array.from(archiveHistoryCandidates.values()).sort((left, right) => {
+    const leftKey = normalizeText(left.archiveKey || (left.fields && left.fields.archiveKey))
+    const rightKey = normalizeText(right.archiveKey || (right.fields && right.fields.archiveKey))
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+  }).forEach((operation) => {
+    const fields = operation.fields || {}
+    const foundationListingId = normalizeText(operation.foundationListingId || fields.foundationListingId)
+    if (['deactivate', 'markRented'].includes(currentOperationTypes.get(foundationListingId))) return
+    const lifecycleVersion = Number(fields.lifecycleVersion || 0)
+    appendHistory({
+      foundationListingId,
+      sourceRecordId: normalizeText(fields.sourceRecordId),
+      availabilityCycleNo: Number(fields.availabilityCycleNo || 1),
+      availabilityCycleId: normalizeText(fields.availabilityCycleId),
+      eventType: '检测已出租',
+      fromLifecycleStatusText: normalizeText(fields.previousLifecycleStatusText),
+      toLifecycleStatusText: '已出租',
+      runId: normalizeText(runId),
+      listingOwner: normalizeText(fields.listingOwner),
+      ownerDepartment: normalizeText(fields.ownerDepartment),
+      lifecycleVersion
+    }, [
+      operation.archiveKey,
+      lifecycleVersion,
+      '检测已出租'
+    ])
+  })
+
+  ;(currentOperations || []).forEach((operation) => {
+    const before = currentByFoundationId.get(normalizeText(operation.foundationListingId)) || {}
+    const after = operation.fields || {}
+    const fromStatus = normalizeText(before.lifecycleStatusText)
+    const toStatus = normalizeText(after.lifecycleStatusText)
+    const ownerChanged = normalizeText(before.listingOwner) !== normalizeText(after.listingOwner) ||
+      normalizeText(before.ownerDepartment) !== normalizeText(after.ownerDepartment)
+    const cycleChanged = Number(before.availabilityCycleNo || 0) !== Number(after.availabilityCycleNo || 0)
+    let eventType = ''
+    if (operation.type === 'create') eventType = '进入待租'
+    else if (operation.type === 'deactivate') eventType = '检测已出租'
+    else if (operation.type === 'restore' || cycleChanged) eventType = '重新进入待租'
+    else if (fromStatus !== toStatus) eventType = '房态变化'
+    else if (ownerChanged) eventType = '责任归属变化'
+    if (!eventType) return
+    const lifecycleVersion = Number(after.lifecycleVersion || 0)
+    const seedParts = eventType === '检测已出租'
+      ? [
+          `${operation.foundationListingId}:rented:${Number(after.availabilityCycleNo || 1)}`,
+          lifecycleVersion,
+          '检测已出租'
+        ]
+      : [
+          operation.foundationListingId,
+          after.availabilityCycleId,
+          lifecycleVersion,
+          eventType,
+          fromStatus,
+          toStatus,
+          after.sourceRecordId,
+          before.listingOwner,
+          before.ownerDepartment,
+          after.listingOwner,
+          after.ownerDepartment
+        ]
+    appendHistory({
+      foundationListingId: normalizeText(operation.foundationListingId),
+      sourceRecordId: normalizeText(after.sourceRecordId),
+      availabilityCycleNo: Number(after.availabilityCycleNo || 1),
+      availabilityCycleId: normalizeText(after.availabilityCycleId),
+      eventType,
+      fromLifecycleStatusText: fromStatus,
+      toLifecycleStatusText: toStatus,
+      runId: normalizeText(runId),
+      listingOwner: normalizeText(after.listingOwner),
+      ownerDepartment: normalizeText(after.ownerDepartment),
+      lifecycleVersion
+    }, seedParts)
+  })
+  return operations
 }
 
 function canonicalRoomParts(fields = {}) {
@@ -2521,7 +3384,497 @@ function canonicalMirrorRecordToSyncRow(record, index) {
   }
 }
 
+async function createSemanticRecords(targetClient, tableId, snapshot, operations) {
+  // batch_create 只有一个 client_token。若把多条业务记录合在同一个随机批次，
+  // “服务端已落盘但响应丢失”后下一进程无法稳定重建同一批次，可能重复建行。
+  // 因此创建阶段按业务幂等键逐条提交；吞吐让位于跨进程确定性。
+  for (const operation of operations) {
+    await targetClient.batchCreateRecords(tableId, [{
+      fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
+    }], {
+      clientToken: stableCreateClientToken(tableId, operation)
+    })
+  }
+}
+
+async function writeFoundationCurrentRecords(targetClient, tableId, snapshot, operations) {
+  const creates = operations.filter((operation) => operation.type === 'create')
+  const updates = operations.filter((operation) => operation.type !== 'create')
+  await createSemanticRecords(targetClient, tableId, snapshot, creates)
+  for (const batch of chunksOf(updates)) {
+    await targetClient.batchUpdateRecords(tableId, batch.map((operation) => ({
+      record_id: operation.recordId,
+      fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
+    })))
+  }
+}
+
+function stablePlanValue(value) {
+  if (Array.isArray(value)) return value.map(stablePlanValue)
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((result, key) => {
+      if (value[key] !== undefined) result[key] = stablePlanValue(value[key])
+      return result
+    }, {})
+  }
+  return value
+}
+
+function snapshotForPlanDigest(snapshot = {}) {
+  const records = (snapshot.records || []).map((record) => ({
+    recordId: normalizeText(record && (record.recordId || record.record_id)),
+    fields: stablePlanValue(record && record.fields && typeof record.fields === 'object'
+      ? record.fields
+      : {})
+  }))
+  records.sort((left, right) => {
+    if (left.recordId < right.recordId) return -1
+    if (left.recordId > right.recordId) return 1
+    const leftFields = JSON.stringify(left.fields)
+    const rightFields = JSON.stringify(right.fields)
+    return leftFields < rightFields ? -1 : leftFields > rightFields ? 1 : 0
+  })
+  return {
+    complete: snapshot.complete === true,
+    recordCount: records.length,
+    schemaFingerprint: normalizeText(snapshot.schemaFingerprint),
+    fieldNames: stablePlanValue(snapshot.fieldNames || {}),
+    records
+  }
+}
+
+function operationsForPlanDigest(operations = [], options = {}) {
+  return operations.map((operation) => {
+    const normalized = clone(operation)
+    if (options.history === true && normalized.fields) {
+      normalized.fields.eventAt = 0
+      normalized.fields.runId = ''
+    }
+    return stablePlanValue(normalized)
+  }).sort((left, right) => {
+    const leftText = JSON.stringify(left)
+    const rightText = JSON.stringify(right)
+    return leftText < rightText ? -1 : leftText > rightText ? 1 : 0
+  })
+}
+
+function foundationEnrichmentPlanSha256({
+  targetBaseToken,
+  miniTableId,
+  historyTableId,
+  mappingSha256,
+  currentSnapshot,
+  historySnapshot,
+  updateOperations,
+  historyOperations
+}) {
+  const normalizedMappingSha = normalizeText(mappingSha256).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(normalizedMappingSha)) {
+    throw new Error('身份责任补全缺少合法的私有映射字节摘要')
+  }
+  const targetToken = normalizeResourceIdentifier(targetBaseToken)
+  const currentTable = normalizeResourceIdentifier(miniTableId)
+  const historyTable = normalizeResourceIdentifier(historyTableId)
+  if (!targetToken || !currentTable || !historyTable || currentTable === historyTable) {
+    throw new Error('身份责任补全目标 Base、当前主档与状态流水资源无效')
+  }
+  const digestInput = stablePlanValue({
+    version: 'foundation-enrichment-plan-v1',
+    targetBaseTokenSha256: crypto.createHash('sha256').update(targetToken).digest('hex'),
+    miniTableId: currentTable,
+    historyTableId: historyTable,
+    mappingSha256: normalizedMappingSha,
+    currentSnapshot: snapshotForPlanDigest(currentSnapshot),
+    historySnapshot: snapshotForPlanDigest(historySnapshot),
+    updateOperations: operationsForPlanDigest(updateOperations),
+    historyOperations: operationsForPlanDigest(historyOperations, { history: true })
+  })
+  return crypto.createHash('sha256').update(JSON.stringify(digestInput)).digest('hex')
+}
+
+function secureDigestEqual(left, right) {
+  const leftText = normalizeText(left).toLowerCase()
+  const rightText = normalizeText(right).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(leftText) || !/^[0-9a-f]{64}$/.test(rightText)) return false
+  return crypto.timingSafeEqual(Buffer.from(leftText, 'hex'), Buffer.from(rightText, 'hex'))
+}
+
+function enrichmentCurrentOperations(currentSnapshot, plan) {
+  const byRecordId = new Map((currentSnapshot.records || []).map((record) => [
+    normalizeText(record && (record.recordId || record.record_id)),
+    record
+  ]))
+  return (plan.updateOperations || []).map((operation) => {
+    const current = byRecordId.get(normalizeText(operation.recordId))
+    if (!current) throw new Error('身份责任补全计划未命中当前主档记录')
+    const fields = {
+      ...clone(current.fields || {}),
+      ...clone(operation.fields || {})
+    }
+    const foundationListingId = normalizeText(fields.foundationListingId)
+    if (!foundationListingId) throw new Error('身份责任补全当前主档缺少底座房源 ID')
+    return {
+      type: 'update',
+      target: 'currentState',
+      recordId: operation.recordId,
+      sourceRecordId: operation.sourceRecordId,
+      foundationListingId,
+      fields
+    }
+  })
+}
+
+async function executeFoundationEnrichment({
+  targetClient,
+  targetBaseToken,
+  miniTableId,
+  miniBindings,
+  historyTableId,
+  historyBindings,
+  privateMappings,
+  mappingSha256,
+  confirmPlanSha256,
+  runId,
+  nowMs,
+  dryRun = true
+} = {}) {
+  if (typeof dryRun !== 'boolean') {
+    throw new Error('飞书身份责任补全 dryRun 必须是布尔值')
+  }
+  const normalizedMiniTableId = normalizeResourceIdentifier(miniTableId)
+  const normalizedHistoryTableId = normalizeResourceIdentifier(historyTableId)
+  if (!normalizeResourceIdentifier(targetBaseToken) ||
+      !normalizedMiniTableId ||
+      !normalizedHistoryTableId ||
+      normalizedMiniTableId === normalizedHistoryTableId) {
+    throw new Error('飞书身份责任补全目标资源必须完整且相互独立')
+  }
+  if (dryRun === false && !/^[0-9a-f]{64}$/.test(normalizeText(confirmPlanSha256).toLowerCase())) {
+    throw new Error('正式身份责任补全必须确认 dry-run 输出的计划摘要')
+  }
+  if (!targetClient || typeof targetClient.readValidatedTableSnapshot !== 'function') {
+    throw new Error('飞书身份责任补全缺少目标 Base 客户端')
+  }
+  const currentSnapshot = await targetClient.readValidatedTableSnapshot({
+    tableId: normalizedMiniTableId,
+    bindings: miniBindings,
+    allowEmpty: false
+  })
+  const historySnapshot = await targetClient.readValidatedTableSnapshot({
+    tableId: normalizedHistoryTableId,
+    bindings: historyBindings,
+    allowEmpty: true
+  })
+  const plan = planFoundationEnrichment({
+    privateMappings,
+    currentStateSnapshot: currentSnapshot
+  })
+  const effectiveNowMs = nowMs == null ? Date.now() : Number(nowMs)
+  if (!Number.isSafeInteger(effectiveNowMs) || effectiveNowMs <= 0) {
+    throw new Error('飞书身份责任补全 nowMs 必须是正整数毫秒时间戳')
+  }
+  const effectiveRunId = normalizeText(runId) || `foundation-enrichment-${effectiveNowMs}`
+  const fullCurrentOperations = enrichmentCurrentOperations(currentSnapshot, plan)
+  const historyOperations = lifecycleHistoryOperations(
+    currentSnapshot,
+    fullCurrentOperations,
+    historySnapshot,
+    effectiveRunId,
+    effectiveNowMs
+  )
+  const planSha256 = foundationEnrichmentPlanSha256({
+    targetBaseToken,
+    miniTableId: normalizedMiniTableId,
+    historyTableId: normalizedHistoryTableId,
+    mappingSha256,
+    currentSnapshot,
+    historySnapshot,
+    updateOperations: plan.updateOperations,
+    historyOperations
+  })
+  if (dryRun === true) {
+    return {
+      complete: true,
+      dryRun: true,
+      published: false,
+      ...clone(plan),
+      historyAppendCount: historyOperations.length,
+      planSha256
+    }
+  }
+  if (!secureDigestEqual(confirmPlanSha256, planSha256)) {
+    throw new Error('身份责任补全目标快照或计划已变化，计划摘要不匹配')
+  }
+  if (typeof targetClient.batchCreateRecords !== 'function' ||
+      typeof targetClient.batchUpdateRecords !== 'function') {
+    throw new Error('飞书身份责任补全缺少目标 Base 写客户端')
+  }
+
+  await createSemanticRecords(
+    targetClient,
+    normalizedHistoryTableId,
+    historySnapshot,
+    historyOperations
+  )
+  const historyReadback = await targetClient.readValidatedTableSnapshot({
+    tableId: normalizedHistoryTableId,
+    bindings: historyBindings,
+    allowEmpty: true
+  })
+  const remainingHistoryOperations = lifecycleHistoryOperations(
+    currentSnapshot,
+    fullCurrentOperations,
+    historyReadback,
+    effectiveRunId,
+    effectiveNowMs
+  )
+  if (remainingHistoryOperations.length) {
+    const error = new Error('飞书身份责任补全状态流水写后回读不一致')
+    error.statusCode = 502
+    throw error
+  }
+
+  for (const batch of chunksOf(plan.updateOperations)) {
+    await targetClient.batchUpdateRecords(normalizedMiniTableId, batch.map((operation) => ({
+      record_id: operation.recordId,
+      fields: semanticFieldsForWrite(currentSnapshot.fieldNames, operation.fields)
+    })))
+  }
+  const readback = await targetClient.readValidatedTableSnapshot({
+    tableId: normalizedMiniTableId,
+    bindings: miniBindings,
+    allowEmpty: false
+  })
+  const remaining = planFoundationEnrichment({
+    privateMappings,
+    currentStateSnapshot: readback
+  })
+  if (!remaining.noop) {
+    const error = new Error('飞书身份责任补全写后回读不一致')
+    error.statusCode = 502
+    throw error
+  }
+  return {
+    complete: true,
+    dryRun: false,
+    published: true,
+    ...clone(plan),
+    historyAppendCount: historyOperations.length,
+    remainingUpdateCount: 0,
+    planSha256
+  }
+}
+
+async function executeAiFoundationSync({
+  targetClient,
+  sourceSnapshot,
+  mirrorSnapshot,
+  rentedSnapshot,
+  historySnapshot,
+  locationCatalog,
+  options,
+  runId,
+  nowMs
+}) {
+  const baseline = !foundationBaselineCompleted(historySnapshot)
+  const plan = buildFoundationMirrorPlan({
+    sourceSnapshot,
+    mirrorSnapshot,
+    rentedSnapshot,
+    locationCatalog,
+    runId,
+    nowMs,
+    baseline
+  })
+  const normalizedCurrent = normalizedFoundationCurrentSnapshot(mirrorSnapshot, nowMs)
+  const historyOperations = lifecycleHistoryOperations(
+    normalizedCurrent,
+    plan.operations,
+    historySnapshot,
+    runId,
+    nowMs,
+    {
+      archiveOperations: plan.archiveOperations,
+      rentedSnapshot,
+      suppressEvents: baseline
+    }
+  )
+  validateCanonicalMirrorRecords(plan.plannedRecords)
+  assertMirrorDeactivateSafety(mirrorSnapshot, plan.plannedRecords, {
+    baselinePublishedSourceIds: options.baselinePublishedSourceIds,
+    maxDeactivateCount: options.maxDeactivateCount,
+    maxDeactivateRatio: options.maxDeactivateRatio,
+    allowMassDeactivate: options.allowMassDeactivate === true
+  })
+
+  const lifecycleCounts = {
+    rentedArchived: plan.archiveOperations.length,
+    historyAppended: historyOperations.length,
+    baselineInitialized: baseline ? 1 : 0
+  }
+  const noop = plan.operations.length === 0 &&
+    plan.archiveOperations.length === 0 &&
+    historyOperations.length === 0 &&
+    baseline === false
+  if (options.dryRun === true) {
+    return {
+      complete: true,
+      published: false,
+      validated: true,
+      planned: true,
+      failed: 0,
+      schemaInvalid: false,
+      mirrorIncomplete: false,
+      dryRun: true,
+      noop,
+      status: 'success-dry-run',
+      counts: clone(plan.counts),
+      lifecycleCounts,
+      baseline,
+      records: clone(plan.plannedRecords),
+      materials: options.materials || []
+    }
+  }
+
+  if (typeof targetClient.batchCreateRecords !== 'function' ||
+      typeof targetClient.batchUpdateRecords !== 'function') {
+    throw new Error('飞书 AI 数据底座同步缺少目标 Base 写客户端')
+  }
+
+  // 飞书多表没有事务。先确保不可变的出租周期和流水事件已落盘并回读，
+  // 再改变当前状态；中途失败时下一轮按稳定事件 ID 只补缺口。
+  await createSemanticRecords(
+    targetClient,
+    options.rentedTableId,
+    rentedSnapshot,
+    plan.archiveOperations
+  )
+  await createSemanticRecords(
+    targetClient,
+    options.historyTableId,
+    historySnapshot,
+    historyOperations
+  )
+
+  const rentedReadback = await targetClient.readValidatedTableSnapshot({
+    tableId: options.rentedTableId,
+    bindings: options.rentedBindings,
+    allowEmpty: true
+  })
+  const historyReadback = await targetClient.readValidatedTableSnapshot({
+    tableId: options.historyTableId,
+    bindings: options.historyBindings,
+    allowEmpty: true
+  })
+  const afterEventPlan = buildFoundationMirrorPlan({
+    sourceSnapshot,
+    mirrorSnapshot,
+    rentedSnapshot: rentedReadback,
+    locationCatalog,
+    runId,
+    nowMs,
+    baseline
+  })
+  const afterEventHistory = lifecycleHistoryOperations(
+    normalizedCurrent,
+    afterEventPlan.operations,
+    historyReadback,
+    runId,
+    nowMs,
+    {
+      archiveOperations: afterEventPlan.archiveOperations,
+      rentedSnapshot: rentedReadback,
+      suppressEvents: baseline
+    }
+  )
+  if (afterEventPlan.archiveOperations.length || afterEventHistory.length) {
+    const error = new Error('飞书出租周期或状态流水写后回读不一致，当前状态保持不变')
+    error.statusCode = 502
+    throw error
+  }
+
+  await writeFoundationCurrentRecords(
+    targetClient,
+    options.miniTableId,
+    mirrorSnapshot,
+    plan.operations
+  )
+  const mirrorReadback = await targetClient.readValidatedTableSnapshot({
+    tableId: options.miniTableId,
+    bindings: options.miniBindings,
+    allowEmpty: false
+  })
+  const remainingPlan = buildFoundationMirrorPlan({
+    sourceSnapshot,
+    mirrorSnapshot: mirrorReadback,
+    rentedSnapshot: rentedReadback,
+    locationCatalog,
+    runId,
+    nowMs,
+    baseline
+  })
+  const remainingHistory = lifecycleHistoryOperations(
+    normalizedFoundationCurrentSnapshot(mirrorReadback, nowMs),
+    remainingPlan.operations,
+    historyReadback,
+    runId,
+    nowMs,
+    {
+      archiveOperations: remainingPlan.archiveOperations,
+      rentedSnapshot: rentedReadback,
+      suppressEvents: baseline
+    }
+  )
+  if (remainingPlan.operations.length ||
+      remainingPlan.archiveOperations.length ||
+      remainingHistory.length) {
+    const error = new Error('飞书 AI 数据底座当前状态写后回读不一致，已阻断库存与待租表发布')
+    error.statusCode = 502
+    throw error
+  }
+
+  let finalHistorySnapshot = historyReadback
+  if (baseline) {
+    const markerOperation = foundationBaselineMarkerOperation(runId, nowMs)
+    await createSemanticRecords(
+      targetClient,
+      options.historyTableId,
+      historyReadback,
+      [markerOperation]
+    )
+    finalHistorySnapshot = await targetClient.readValidatedTableSnapshot({
+      tableId: options.historyTableId,
+      bindings: options.historyBindings,
+      allowEmpty: false
+    })
+    if (!foundationBaselineCompleted(finalHistorySnapshot)) {
+      const error = new Error('飞书 AI 数据底座初始化基线标记写后回读不一致')
+      error.statusCode = 502
+      throw error
+    }
+  }
+
+  return {
+    complete: true,
+    published: true,
+    validated: true,
+    planned: true,
+    failed: 0,
+    schemaInvalid: false,
+    mirrorIncomplete: false,
+    dryRun: false,
+    noop,
+    status: baseline ? 'success-baseline' : (noop ? 'success-noop' : 'success'),
+    counts: clone(plan.counts),
+    lifecycleCounts,
+    baseline,
+    records: clone(remainingPlan.plannedRecords),
+    materials: options.materials || []
+  }
+}
+
 async function executeMirrorTableSync(options = {}) {
+  assertLifecycleTableResourcesDistinct(options)
   const sourceClient = options.sourceClient || options.client
   const targetClient = options.targetClient || options.client
   if (!sourceClient || typeof sourceClient.readValidatedTableSnapshot !== 'function') {
@@ -2533,7 +3886,9 @@ async function executeMirrorTableSync(options = {}) {
   const rawSourceSnapshot = await sourceClient.readValidatedTableSnapshot({
     tableId: options.sourceTableId,
     bindings: options.sourceBindings,
-    allowEmpty: false
+    allowEmpty: false,
+    requireCreatedTime: aiFoundationProfileEnabled(options.sourceCompatibilityProfile),
+    nowMs: options.nowMs
   })
   const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
@@ -2551,7 +3906,32 @@ async function executeMirrorTableSync(options = {}) {
     bindings: options.miniBindings,
     allowEmpty: true
   })
-  const runId = normalizeText(options.runId) || `mirror-${Date.now()}-${Math.floor(Math.random() * 100000)}`
+  const nowMs = options.nowMs == null ? Date.now() : Number(options.nowMs)
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('飞书同步 nowMs 必须是正整数毫秒时间戳')
+  const runId = normalizeText(options.runId) || `mirror-${nowMs}-${Math.floor(Math.random() * 100000)}`
+  if (aiFoundationProfileEnabled(options.sourceCompatibilityProfile)) {
+    const rentedSnapshot = await targetClient.readValidatedTableSnapshot({
+      tableId: options.rentedTableId,
+      bindings: options.rentedBindings,
+      allowEmpty: true
+    })
+    const historySnapshot = await targetClient.readValidatedTableSnapshot({
+      tableId: options.historyTableId,
+      bindings: options.historyBindings,
+      allowEmpty: true
+    })
+    return executeAiFoundationSync({
+      targetClient,
+      sourceSnapshot,
+      mirrorSnapshot,
+      rentedSnapshot,
+      historySnapshot,
+      locationCatalog,
+      options,
+      runId,
+      nowMs
+    })
+  }
   const plan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
   const plannedRecords = activeMirrorRecords({
     records: plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan)
@@ -2589,9 +3969,12 @@ async function executeMirrorTableSync(options = {}) {
 
   const creates = plan.operations.filter((operation) => operation.type === 'create')
   const updates = plan.operations.filter((operation) => operation.type !== 'create')
+  // AI 数据底座启用后若误切回旧 profile，环境中可能仍保留 18 个内部字段绑定。
+  // 旧镜像只能管理原业务列；即便本轮有普通业务更新，也不得以 full write 把底座列清空。
+  const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames)
   for (const batch of chunksOf(creates)) {
     await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
-      fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, { full: true })
+      fields: semanticFieldsForWrite(writableFieldNames, operation.fields, { full: true })
     })), {
       clientToken: crypto.randomUUID()
     })
@@ -2599,7 +3982,7 @@ async function executeMirrorTableSync(options = {}) {
   for (const batch of chunksOf(updates)) {
     await targetClient.batchUpdateRecords(options.miniTableId, batch.map((operation) => ({
       record_id: operation.recordId,
-      fields: semanticFieldsForWrite(mirrorSnapshot.fieldNames, operation.fields, {
+      fields: semanticFieldsForWrite(writableFieldNames, operation.fields, {
         full: operation.type !== 'deactivate'
       })
     })))
@@ -2655,6 +4038,8 @@ async function configuredMirrorTableSync(options = {}) {
   const sourceTableId = normalizeResourceIdentifier(config.feishu.sourceTableId)
   const miniTableId = normalizeResourceIdentifier(config.feishu.miniTableId)
   const locationTableId = normalizeResourceIdentifier(config.feishu.locationTableId)
+  const rentedTableId = normalizeResourceIdentifier(config.feishu.rentedTableId)
+  const historyTableId = normalizeResourceIdentifier(config.feishu.historyTableId)
   const commonClientOptions = {
     baseUrl: config.feishu.baseUrl,
     accessToken: token,
@@ -2684,25 +4069,80 @@ async function configuredMirrorTableSync(options = {}) {
     sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
   })
   const locationBindings = resolvedContractBindings('location', config.feishu.locationFieldBindings)
+  const aiFoundationEnabled = aiFoundationProfileEnabled(config.feishu.sourceCompatibilityProfile)
+  const rentedBindings = aiFoundationEnabled
+    ? resolvedContractBindings('rented', config.feishu.rentedFieldBindings, {
+      sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+    })
+    : {}
+  const historyBindings = aiFoundationEnabled
+    ? resolvedContractBindings('history', config.feishu.historyFieldBindings, {
+      sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+    })
+    : {}
   const result = await executeMirrorTableSync({
     sourceClient,
     targetClient,
     sourceTableId,
     miniTableId,
     locationTableId,
+    rentedTableId,
+    historyTableId,
     sourceBindings,
     sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     miniBindings,
     locationBindings,
+    rentedBindings,
+    historyBindings,
     maxDeactivateCount: config.feishu.mirrorMaxDeactivateCount,
     maxDeactivateRatio: config.feishu.mirrorMaxDeactivateRatio,
     allowMassDeactivate: config.feishu.mirrorAllowMassDeactivate,
     baselinePublishedSourceIds: options.baselinePublishedSourceIds,
     dryRun: options.dryRun === true,
+    nowMs: options.nowMs,
     runId: options.runId,
     materials
   })
   return { ...result, feishuToken: token }
+}
+
+async function configuredFoundationEnrichment(options = {}) {
+  const resources = assertFoundationEnrichmentConfiguration()
+  const targetBaseToken = resources.targetBaseToken
+  const miniTableId = resources.miniTableId
+  const historyTableId = resources.historyTableId
+  const miniBindings = resolvedContractBindings('mini', config.feishu.miniFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
+  const historyBindings = resolvedContractBindings('history', config.feishu.historyFieldBindings, {
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
+  })
+  const token = options.feishuToken || await tenantAccessToken()
+  const clientFactory = options.clientFactory || createBitableClient
+  const targetClient = options.targetClient || clientFactory({
+    baseUrl: config.feishu.baseUrl,
+    accessToken: token,
+    appToken: targetBaseToken,
+    pageSize: config.feishu.pageSize,
+    requestTimeoutMs: config.feishu.requestTimeoutMs,
+    maxRetries: config.feishu.requestMaxRetries,
+    retryDelayMs: config.feishu.requestRetryDelayMs,
+    fetchImpl: fetch
+  })
+  return executeFoundationEnrichment({
+    targetClient,
+    targetBaseToken,
+    miniTableId,
+    miniBindings,
+    historyTableId,
+    historyBindings,
+    privateMappings: options.privateMappings,
+    mappingSha256: options.mappingSha256,
+    confirmPlanSha256: options.confirmPlanSha256,
+    runId: options.runId,
+    nowMs: options.nowMs,
+    dryRun: options.dryRun !== false
+  })
 }
 
 async function syncViaMirror(db, adminId, options = {}) {
@@ -2872,6 +4312,8 @@ function status(db = {}) {
     sourceTableReady: mirrorState.sourceTableReady,
     miniTableReady: mirrorState.miniTableReady,
     locationTableReady: mirrorState.locationTableReady,
+    rentedTableReady: mirrorState.rentedTableReady,
+    historyTableReady: mirrorState.historyTableReady,
     tableIdsDistinct: mirrorState.tableIdsDistinct,
     tableResourcesDistinct: mirrorState.tableResourcesDistinct,
     sourceBaseReady: mirrorState.sourceBaseReady,
@@ -2881,6 +4323,9 @@ function status(db = {}) {
     sourceBindingsReady: mirrorState.sourceBindingsReady,
     miniBindingsReady: mirrorState.miniBindingsReady,
     locationBindingsReady: mirrorState.locationBindingsReady,
+    rentedBindingsReady: mirrorState.rentedBindingsReady,
+    historyBindingsReady: mirrorState.historyBindingsReady,
+    aiFoundationEnabled: mirrorState.aiFoundationEnabled,
     pairedBindingsReady: mirrorState.pairedBindingsReady,
     uploadToOss: config.feishu.uploadToOss,
     syncIntervalMinutes: config.feishu.syncIntervalMinutes,
@@ -2918,6 +4363,7 @@ module.exports = {
   isCommittableSyncResult,
   parseAdminDryRun,
   sanitizeSheetSnapshot,
+  configuredFoundationEnrichment,
   _internal: {
     roomIdentityKey,
     existingByExternalId,
@@ -2925,12 +4371,19 @@ module.exports = {
     canonicalMirrorRecordToSyncRow,
     executeMirrorTableSync,
     mirrorConfigurationStatus,
+    assertFoundationEnrichmentConfiguration,
     configuredMirrorTableSync,
     bindingContractStatus,
     resolvedContractBindings,
     pairedMirrorBindingsReady,
     loadConfiguredMirrorMaterials,
     semanticFieldsForWrite,
-    activeFeishuSourceRecordIds
+    activeFeishuSourceRecordIds,
+    stableCreateClientToken,
+    foundationBaselineCompleted,
+    foundationArchiveFields,
+    lifecycleHistoryOperations,
+    foundationEnrichmentPlanSha256,
+    executeFoundationEnrichment
   }
 }

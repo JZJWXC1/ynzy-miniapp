@@ -502,6 +502,68 @@ FEISHU_MIRROR_MAX_DEACTIVATE_RATIO=0.35
 FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 ```
 
+#### AI 数据底座与房源生命周期（默认关闭）
+
+在上述跨 Base 镜像已经稳定的基础上，可把兼容配置切换为
+`FEISHU_SOURCE_COMPATIBILITY_PROFILE=employee-ai-foundation-v1`。该配置仍把员工现表作为唯一日常编辑入口，但目标 Base 从“两张业务表”扩展为四张相互独立的业务表：
+
+1. **小程序位置字典**：继续负责城市、行政区、板块/商圈、标准小区、别名和坐标归一。
+2. **小程序专用房源源表**：既是小程序 canonical 房源源，也是当前房源主档。原业务列不变，另增 18 个内部生命周期字段。
+3. **已出租房源**：每次待租周期结束时追加一条不可变快照，不删除当前主档。
+4. **房源状态流水**：只追加“进入待租、重新进入待租、检测已出租、房态变化、责任归属变化”等事实事件。
+
+员工源表不新增字段、不改名、不回写。该 profile 要求源表原有“备注多久空出”列绑定为 `vacancyNote`，但允许单元格为空：
+
+- 源记录仍存在且 `vacancyNote` 为空：规范状态为“待出租”。
+- 源记录仍存在且 `vacancyNote` 非空：规范状态为“即将空出”，并完整保留备注原文。
+- 只有上一轮完整当前主档中存在、本轮完整源快照中消失的房源，才进入“已出租”；同时关闭 `published/enabled`，先追加已出租周期和状态流水并严格回读，再更新当前主档。分页不完整、字段错型、源空表、批量撤下熔断或任一写后回读不一致时，库存与公开十列表都不发布。
+- 状态流水事件 ID 必须存在且整表唯一，大小写变体也视为冲突并整批阻断。初始化基线不只核对固定事件 ID，还同时核对实体、周期、事件类型、目标状态、事件时间、runId 和版本；人工复制或伪造同名行不能开启“源消失即已出租”。
+- 已出租房源重新出现在员工源表时复用同一个底座房源 ID，并把待租周期号加一；相同周期的归档键和流水事件键稳定幂等，失败重跑只补缺口。
+- 同一物理房源换了员工源 `record_id` 时，必须先冻结旧周期并追加“检测已出租”，再开启新周期并追加“重新进入待租”；两条流水的事件时间严格递增。部分写入后重跑仍按稳定事件 ID 只补缺失事件，不能倒序。
+
+稳定身份规则固定如下：
+
+- 整租且有寓小二房源 ID：`YX2:<房源ID>:WHOLE`。
+- 合租且同时有寓小二房源 ID、房间 ID：`YX2:<房源ID>:<房间ID>`。
+- 缺少真实 ID：由服务端根据唯一物理房源键和源记录 ID 生成持久 `TMP-...` 身份。
+- 后续补入真实 ID 时只升级身份类型并保留临时 ID，不更换 `foundationListingId`，历史和周期不会断链。合租缺房间 ID、真实身份/源记录/物理房源键互相冲突，或一个物理房间命中多个身份时整批阻断。
+
+计时起点只使用员工源记录的飞书 `created_time`：状态为“即将空出”时字段 `metricKind=提前挂出天数`，状态为“待出租”时为 `metricKind=待租天数`，`lifecycleDays` 按完整 24 小时向下取整。创建时间必须是 13 位毫秒量级的安全整数；缺失、秒级误传、非法、冲突或未来创建时间均在首笔写入前阻断，不能用修改时间、合同开始/结束时间或同步时间代替。
+
+当前主档新增字段及类型：
+
+- 文本：`foundationListingId / temporaryListingId / yuxiaoerListingId / yuxiaoerRoomId / identityType / physicalUnitKey / lifecycleStatusText / vacancyNote / availabilityCycleId / metricKind / listingOwner / ownerDepartment / identityAliases`
+- 日期时间：`sourceCreatedAt`
+- 数字：`availabilityCycleNo / lifecycleDays / lifecycleVersion`
+- 复选框：`sourcePresent`
+
+“已出租房源”固定 45 个语义字段：`archiveKey / foundationListingId / temporaryListingId / yuxiaoerListingId / yuxiaoerRoomId / identityType / physicalUnitKey / sourceRecordId / availabilityCycleNo / availabilityCycleId / lifecycleStatusText / vacancyNote / sourceCreatedAt / metricKind / lifecycleDays / listingOwner / ownerDepartment / identityAliases / lifecycleVersion / previousLifecycleStatusText / locationId / locationRecordId / city / district / block / community / latitude / longitude / roomLabel / building / unit / roomNumber / layoutDescription / layoutCategory / monthlyRent / rentMode / viewingMethod / remark / listingStatus / tags / video / published / enabled / sourcePresent / archivedAt`。身份和生命周期字段优先冻结周期事件中的值，事件明确为空时也不得回退为当前主档旧值；位置、房号、户型、租金、出租方式、标签和视频等业务字段冻结当期当前主档快照。
+
+“房源状态流水”固定 13 个语义字段：`historyEventId / foundationListingId / sourceRecordId / availabilityCycleNo / availabilityCycleId / eventType / fromLifecycleStatusText / toLifecycleStatusText / eventAt / runId / listingOwner / ownerDepartment / lifecycleVersion`。所有字段继续使用环境中的稳定 `field_id` 绑定，不依赖显示列名或列顺序。
+
+合同 Excel 不是持续状态源，只允许一次性读取 `房源ID / 房间ID / 房源负责人 / 所属部门` 四项白名单用于补全当前主档；不得导入租客姓名、手机号、证件、合同状态、起止日期或其他租客数据，也不得用合同状态覆盖员工待租表。无法唯一匹配的当前房源继续使用临时 ID；负责人或部门缺失可以留空，但身份冲突必须人工复核。负责人、部门发生变化时允许形成可审计交接：`lifecycleVersion` 加一，先追加并回读“责任归属变化”流水，再更新当前主档；新增寓小二身份同时写入排序稳定的 `identityAliases`。负责人、部门、真实/临时身份和物理房源键只保存在目标 Base 内部主档、归档和流水中，不进入服务器公开库存投影或固定十列待租表。
+
+一次性补全使用 `server/scripts/feishu-foundation-enrich.js`，映射 JSON 必须放在仓库之外，每行必须且只能包含 `sourceRecordId / yuxiaoerListingId / yuxiaoerRoomId / listingOwner / ownerDepartment` 五项。工具默认只预演：
+
+```powershell
+node server/scripts/feishu-foundation-enrich.js --mapping D:\private\foundation-mapping.json
+node server/scripts/feishu-foundation-enrich.js --mapping D:\private\foundation-mapping.json --apply --confirm-sha256 <上一条命令输出的 planSha256>
+```
+
+预演同时输出映射原始字节的 `mappingSha256` 和实际写入计划的 `planSha256`。正式执行确认的是后者；计划摘要绑定目标 Base、当前主档表、流水表、映射原始字节、两张表的完整语义快照、当前表更新补丁和待追加流水。任一目标记录、流水、表资源或映射字节发生变化，都在首笔写入前拒绝旧摘要。即使绕过命令行直接调用执行入口，正式模式也必须提供同一计划摘要。命令行只输出计数与摘要，业务错误使用固定单行分类，不回显源记录 ID、寓小二 ID、负责人、部门、文件路径或飞书原始错误。
+
+AI 数据底座在旧镜像配置上增加以下环境项；示例只使用占位符，真实 token、table ID 和 field ID 不得写入仓库：
+
+```env
+FEISHU_SOURCE_COMPATIBILITY_PROFILE=employee-ai-foundation-v1
+FEISHU_RENTED_TABLE_ID=tbl_rented_placeholder
+FEISHU_HISTORY_TABLE_ID=tbl_history_placeholder
+FEISHU_RENTED_FIELD_BINDINGS={"archiveKey":"fld_archive_key","foundationListingId":"fld_foundation_id","temporaryListingId":"fld_temp_id","yuxiaoerListingId":"fld_yx_listing_id","yuxiaoerRoomId":"fld_yx_room_id","identityType":"fld_identity_type","physicalUnitKey":"fld_physical_key","sourceRecordId":"fld_source_record_id","availabilityCycleNo":"fld_cycle_no","availabilityCycleId":"fld_cycle_id","lifecycleStatusText":"fld_lifecycle_status","vacancyNote":"fld_vacancy_note","sourceCreatedAt":"fld_source_created_at","metricKind":"fld_metric_kind","lifecycleDays":"fld_lifecycle_days","listingOwner":"fld_listing_owner","ownerDepartment":"fld_owner_department","identityAliases":"fld_identity_aliases","lifecycleVersion":"fld_lifecycle_version","previousLifecycleStatusText":"fld_previous_status","locationId":"fld_location_id","locationRecordId":"fld_location_record_id","city":"fld_city","district":"fld_district","block":"fld_block","community":"fld_community","latitude":"fld_latitude","longitude":"fld_longitude","roomLabel":"fld_room_label","building":"fld_building","unit":"fld_unit","roomNumber":"fld_room_number","layoutDescription":"fld_layout_description","layoutCategory":"fld_layout_category","monthlyRent":"fld_monthly_rent","rentMode":"fld_rent_mode","viewingMethod":"fld_viewing_method","remark":"fld_remark","listingStatus":"fld_listing_status","tags":"fld_tags","video":"fld_video","published":"fld_published","enabled":"fld_enabled","sourcePresent":"fld_source_present","archivedAt":"fld_archived_at"}
+FEISHU_HISTORY_FIELD_BINDINGS={"historyEventId":"fld_history_event_id","foundationListingId":"fld_foundation_id","sourceRecordId":"fld_source_record_id","availabilityCycleNo":"fld_cycle_no","availabilityCycleId":"fld_cycle_id","eventType":"fld_event_type","fromLifecycleStatusText":"fld_from_status","toLifecycleStatusText":"fld_to_status","eventAt":"fld_event_at","runId":"fld_run_id","listingOwner":"fld_listing_owner","ownerDepartment":"fld_owner_department","lifecycleVersion":"fld_lifecycle_version"}
+```
+
+启用 AI profile 前，`FEISHU_MINI_FIELD_BINDINGS` 还必须补齐上述 18 个当前主档字段，`FEISHU_SOURCE_FIELD_BINDINGS` 必须补入 `vacancyNote`。员工源表、位置字典、当前主档、已出租表和流水表五个“Base token + table ID”资源必须互不重叠；一次性补全入口还会在取得 token、创建客户端或读取表前再次核验员工源 Base 与目标 Base 分离、当前主档与流水表独立，以及两表字段契约完整。上线顺序固定为：保持自动同步关闭 → 用应用身份完成五表字段与只读/写权限校验 → dry-run 对账源记录、当前主档、拟归档、拟流水和公开十列表数量 → 一次人工正式同步并回读四张目标表 → 核对公开库存和待租表 → 再单独授权打开自动同步。紧急止写必须关闭同步总开关，不能把 profile 改回 `employee-current-stock-v1` 当作数据回滚；代码会在旧 profile 写入时保护 17 个底座专有字段不被 full write 清空，`vacancyNote` 仍按员工源权威值正常同步，但旧 profile 不负责维护生命周期语义。正式回滚仍按本节既有总开关流程执行，禁止直接删表或用员工源反向覆盖归档。
+
 启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
 
 管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。

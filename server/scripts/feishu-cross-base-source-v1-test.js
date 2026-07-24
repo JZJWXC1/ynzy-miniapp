@@ -9,6 +9,7 @@ const feishuSync = require('../src/feishu-sync')
 
 const repoRoot = path.resolve(__dirname, '..', '..')
 const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
+const EMPLOYEE_AI_FOUNDATION_PROFILE = 'employee-ai-foundation-v1'
 
 function configTokens(envOverrides) {
   const env = {
@@ -58,7 +59,9 @@ function configTableIds(envOverrides) {
     'process.stdout.write(JSON.stringify({',
     'source: config.feishu.sourceTableId,',
     'mini: config.feishu.miniTableId,',
-    'location: config.feishu.locationTableId',
+    'location: config.feishu.locationTableId,',
+    'rented: config.feishu.rentedTableId,',
+    'history: config.feishu.historyTableId',
     '}))'
   ].join('\n')], {
     cwd: repoRoot,
@@ -68,6 +71,8 @@ function configTableIds(envOverrides) {
       FEISHU_SOURCE_TABLE_ID: '',
       FEISHU_MINI_TABLE_ID: '',
       FEISHU_LOCATION_TABLE_ID: '',
+      FEISHU_RENTED_TABLE_ID: '',
+      FEISHU_HISTORY_TABLE_ID: '',
       ...envOverrides
     },
     encoding: 'utf8'
@@ -347,14 +352,18 @@ async function testTokenResolutionFailsClosed() {
     configTableIds({
       FEISHU_SOURCE_TABLE_ID: ' tbl-source ',
       FEISHU_MINI_TABLE_ID: '\ttbl-mini\t',
-      FEISHU_LOCATION_TABLE_ID: ' tbl-location '
+      FEISHU_LOCATION_TABLE_ID: ' tbl-location ',
+      FEISHU_RENTED_TABLE_ID: ' tbl-rented ',
+      FEISHU_HISTORY_TABLE_ID: '\ttbl-history\t'
     }),
     {
       source: 'tbl-source',
       mini: 'tbl-mini',
-      location: 'tbl-location'
+      location: 'tbl-location',
+      rented: 'tbl-rented',
+      history: 'tbl-history'
     },
-    '三个表 ID 必须在资源比较和真实请求前统一去除前后空白'
+    '五个表 ID 必须在资源比较和真实请求前统一去除前后空白'
   )
 }
 
@@ -370,12 +379,19 @@ function testCompatibilityProfileConfigurationFailsClosed() {
     EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
     '兼容配置必须原样进入飞书同步配置'
   )
+  const aiFoundation = configProfile(EMPLOYEE_AI_FOUNDATION_PROFILE)
+  assert.strictEqual(aiFoundation.status, 0, `AI 数据底座配置必须可解析：${aiFoundation.stderr}`)
+  assert.strictEqual(
+    JSON.parse(aiFoundation.stdout),
+    EMPLOYEE_AI_FOUNDATION_PROFILE,
+    'AI 数据底座配置必须原样进入飞书同步配置'
+  )
 
   const unknown = configProfile('guess-current-stock-v2')
   assert.notStrictEqual(unknown.status, 0, '未知兼容配置必须在加载配置时 fail-closed')
   assert.match(
     `${unknown.stdout}\n${unknown.stderr}`,
-    /FEISHU_SOURCE_COMPATIBILITY_PROFILE|兼容|employee-current-stock-v1/i,
+    /FEISHU_SOURCE_COMPATIBILITY_PROFILE|兼容|employee-current-stock-v1|employee-ai-foundation-v1/i,
     '未知兼容配置错误必须指出允许值'
   )
 }

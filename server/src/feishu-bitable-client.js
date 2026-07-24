@@ -150,6 +150,44 @@ function normalizeCellValue(value, fieldType, semantic, recordId) {
   return numeric
 }
 
+function normalizePositiveIntegerMillis(value, label) {
+  let numeric
+  if (typeof value === 'number') {
+    numeric = value
+  } else if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    numeric = Number(value)
+  } else {
+    throw new Error(`${label}必须是严格正整数毫秒时间戳`)
+  }
+  if (!Number.isSafeInteger(numeric) || numeric < 1_000_000_000_000) {
+    throw new Error(`${label}必须是严格正整数毫秒时间戳`)
+  }
+  return numeric
+}
+
+function normalizeRecordCreatedTime(record, recordId, { requireCreatedTime, nowMs }) {
+  const source = record && typeof record === 'object' ? record : {}
+  const hasSnakeCase = Object.prototype.hasOwnProperty.call(source, 'created_time')
+  const hasCamelCase = Object.prototype.hasOwnProperty.call(source, 'createdTime')
+  if (!hasSnakeCase && !hasCamelCase) {
+    if (requireCreatedTime) throw new Error(`飞书记录 ${recordId} 缺少创建时间 created_time`)
+    return undefined
+  }
+
+  const snakeCaseValue = hasSnakeCase
+    ? normalizePositiveIntegerMillis(source.created_time, `飞书记录 ${recordId} 的创建时间 created_time`)
+    : undefined
+  const camelCaseValue = hasCamelCase
+    ? normalizePositiveIntegerMillis(source.createdTime, `飞书记录 ${recordId} 的创建时间 createdTime`)
+    : undefined
+  if (hasSnakeCase && hasCamelCase && snakeCaseValue !== camelCaseValue) {
+    throw new Error(`飞书记录 ${recordId} 的创建时间 created_time 与 createdTime 冲突`)
+  }
+  const createdTimeMs = hasSnakeCase ? snakeCaseValue : camelCaseValue
+  if (createdTimeMs > nowMs) throw new Error(`飞书记录 ${recordId} 的创建时间不得晚于当前时间`)
+  return createdTimeMs
+}
+
 function validateClientOptions(options) {
   const opts = options && typeof options === 'object' ? options : {}
   if (typeof opts.fetchImpl !== 'function') throw new Error('飞书客户端缺少 fetchImpl')
@@ -324,7 +362,17 @@ function createBitableClient(options) {
     return items
   }
 
-  async function readValidatedTableSnapshot({ tableId, bindings, allowEmpty = false }) {
+  async function readValidatedTableSnapshot({
+    tableId,
+    bindings,
+    allowEmpty = false,
+    requireCreatedTime = false,
+    nowMs = Date.now()
+  }) {
+    if (typeof requireCreatedTime !== 'boolean') {
+      throw new Error('飞书快照 requireCreatedTime 必须是布尔值')
+    }
+    const snapshotNowMs = normalizePositiveIntegerMillis(nowMs, '飞书快照 nowMs')
     const fields = await readAllPages(tableId, 'fields')
     const contract = validateFieldContract({ fields, bindings })
     const rawRecords = await readAllPages(tableId, 'records')
@@ -348,16 +396,26 @@ function createBitableClient(options) {
         }
         semanticFields[semantic] = normalizeCellValue(value, contractField.type, semantic, recordId)
       })
-      return { recordId, fields: semanticFields }
+      const createdTimeMs = normalizeRecordCreatedTime(record, recordId, {
+        requireCreatedTime,
+        nowMs: snapshotNowMs
+      })
+      const normalizedRecord = { recordId, fields: semanticFields }
+      if (createdTimeMs !== undefined) normalizedRecord.createdTimeMs = createdTimeMs
+      return normalizedRecord
     })
 
-    const digestRecords = records.map((record) => ({
-      recordId: record.recordId,
-      fields: Object.keys(record.fields).sort().reduce((result, semantic) => {
-        result[semantic] = stableDigestValue(record.fields[semantic], contract.bySemantic[semantic].type)
-        return result
-      }, {})
-    })).sort((left, right) => left.recordId.localeCompare(right.recordId))
+    const digestRecords = records.map((record) => {
+      const digestRecord = {
+        recordId: record.recordId,
+        fields: Object.keys(record.fields).sort().reduce((result, semantic) => {
+          result[semantic] = stableDigestValue(record.fields[semantic], contract.bySemantic[semantic].type)
+          return result
+        }, {})
+      }
+      if (record.createdTimeMs !== undefined) digestRecord.createdTimeMs = record.createdTimeMs
+      return digestRecord
+    }).sort((left, right) => left.recordId.localeCompare(right.recordId))
     const fieldNames = Object.keys(contract.bySemantic).sort().reduce((result, semantic) => {
       result[semantic] = contract.bySemantic[semantic].fieldName
       return result

@@ -255,12 +255,16 @@ module.exports = {
     sourceTableId: String(process.env.FEISHU_SOURCE_TABLE_ID || process.env.FEISHU_BITABLE_TABLE_ID || '').trim(),
     miniTableId: String(process.env.FEISHU_MINI_TABLE_ID || '').trim(),
     locationTableId: String(process.env.FEISHU_LOCATION_TABLE_ID || '').trim(),
+    rentedTableId: String(process.env.FEISHU_RENTED_TABLE_ID || '').trim(),
+    historyTableId: String(process.env.FEISHU_HISTORY_TABLE_ID || '').trim(),
     sourceFieldBindings: fieldBindingsFromEnv('FEISHU_SOURCE_FIELD_BINDINGS'),
     miniFieldBindings: fieldBindingsFromEnv('FEISHU_MINI_FIELD_BINDINGS'),
     locationFieldBindings: fieldBindingsFromEnv('FEISHU_LOCATION_FIELD_BINDINGS'),
+    rentedFieldBindings: fieldBindingsFromEnv('FEISHU_RENTED_FIELD_BINDINGS'),
+    historyFieldBindings: fieldBindingsFromEnv('FEISHU_HISTORY_FIELD_BINDINGS'),
     sourceCompatibilityProfile: enumFromEnv(
       'FEISHU_SOURCE_COMPATIBILITY_PROFILE',
-      ['', 'employee-current-stock-v1']
+      ['', 'employee-current-stock-v1', 'employee-ai-foundation-v1']
     ),
     mirrorSyncEnabled: boolFromEnv('FEISHU_MIRROR_SYNC_ENABLED', false),
     syncEnabled: boolFromEnv('FEISHU_SYNC_ENABLED', true),

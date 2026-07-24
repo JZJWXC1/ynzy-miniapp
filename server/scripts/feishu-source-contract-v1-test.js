@@ -411,6 +411,125 @@ function makePagedFetch(recordPageHandler) {
   return fetchImpl
 }
 
+function createdTimeRecord(recordId, createdTimeFields = {}) {
+  return {
+    record_id: recordId,
+    fields: { 小区: '甲小区', 月租金: 3000, 视频: [] },
+    ...createdTimeFields
+  }
+}
+
+async function testRecordCreatedTimeContract() {
+  const fixedNowMs = 1784822400000
+  const snakeCaseFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-created-snake', { created_time: '1784736000000' })],
+    has_more: false
+  }))
+  const snakeCaseSnapshot = await makeClient(snakeCaseFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: fixedNowMs
+  })
+  assert.strictEqual(
+    snakeCaseSnapshot.records[0].createdTimeMs,
+    1784736000000,
+    '飞书 created_time 数字字符串必须规范化为严格的毫秒整数'
+  )
+
+  const camelCaseFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-created-camel', { createdTime: 1784736000000 })],
+    has_more: false
+  }))
+  const camelCaseSnapshot = await makeClient(camelCaseFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: fixedNowMs
+  })
+  assert.strictEqual(
+    camelCaseSnapshot.records[0].createdTimeMs,
+    1784736000000,
+    '兼容形态 createdTime 也必须规范化为 createdTimeMs'
+  )
+
+  const optionalMissingFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-created-optional', { last_modified_time: '1784736000000' })],
+    has_more: false
+  }))
+  const optionalMissingSnapshot = await makeClient(optionalMissingFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    nowMs: fixedNowMs
+  })
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(optionalMissingSnapshot.records[0], 'createdTimeMs'),
+    false,
+    '默认可选模式缺少创建时间时不得伪造 createdTimeMs，last_modified_time 也不得替代'
+  )
+
+  const firstDigestFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-created-digest', { created_time: '1784649600000' })],
+    has_more: false
+  }))
+  const secondDigestFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-created-digest', { created_time: '1784736000000' })],
+    has_more: false
+  }))
+  const firstDigest = await makeClient(firstDigestFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: fixedNowMs
+  })
+  const secondDigest = await makeClient(secondDigestFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: fixedNowMs
+  })
+  assert.notStrictEqual(
+    firstDigest.digest,
+    secondDigest.digest,
+    '同一记录字段相同但 createdTimeMs 不同时，完整快照 digest 必须变化'
+  )
+
+  for (const [createdTimeFields, requireCreatedTime, label] of [
+    [{}, true, '必需模式缺失'],
+    [{ last_modified_time: '1784736000000' }, true, '仅有最后修改时间'],
+    [{ created_time: 0 }, true, '零值'],
+    [{ created_time: -1 }, true, '负数'],
+    [{ created_time: 1784736000000.5 }, true, '小数'],
+    [{ created_time: 1784736000 }, true, '秒级时间戳'],
+    [{ created_time: ' 1784736000000 ' }, true, '带空白字符串'],
+    [{ created_time: '1.784736e12' }, true, '指数格式字符串'],
+    [{ created_time: '1784908800000' }, true, '未来时间'],
+    [{ created_time: 'not-a-time' }, false, '可选模式非法值']
+  ]) {
+    const invalidFetch = makePagedFetch(() => success({
+      items: [createdTimeRecord(`rec-created-invalid-${label}`, createdTimeFields)],
+      has_more: false
+    }))
+    await expectReject(
+      () => makeClient(invalidFetch).readValidatedTableSnapshot({
+        tableId: 'tbl-source',
+        bindings: BINDINGS,
+        allowEmpty: false,
+        requireCreatedTime,
+        nowMs: fixedNowMs
+      }),
+      /创建时间|created_time|createdTime|毫秒|未来|缺失|非法/i,
+      `${label}必须整批阻断`
+    )
+    assertOnlyGets(invalidFetch.calls, `创建时间契约-${label}`)
+  }
+}
+
 async function testPaginationMustBeComplete() {
   {
     const fetchImpl = makePagedFetch(({ callNumber, pageToken }) => {
@@ -621,6 +740,7 @@ async function main() {
   await testAttachmentDigestIgnoresTemporaryMetadata()
   await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()
+  await testRecordCreatedTimeContract()
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()
   await testBatchWriteRequestContract()
