@@ -5,7 +5,9 @@ const assert = require('assert')
 const config = require('../src/config')
 const feishuSync = require('../src/feishu-sync')
 const {
-  buildCompanySheetSnapshot
+  buildCompanySheetSnapshot,
+  buildLocationCatalog,
+  prepareSourceSnapshotForCompatibility
 } = require('../src/feishu-source-mirror')
 
 const PROFILE = 'employee-ai-foundation-v1'
@@ -139,17 +141,20 @@ function bindingsFor(names, prefix) {
   }, {})
 }
 
-function sourceBindings() {
-  return {
+function sourceBindings(options = {}) {
+  const result = {
     community: binding('src-community'),
     roomLabel: binding('src-room-label'),
     layoutDescription: binding('src-layout-description'),
     layoutCategory: binding('src-layout-category'),
     monthlyRent: binding('src-monthly-rent'),
     viewingMethod: binding('src-viewing-method'),
-    remark: binding('src-remark'),
-    vacancyNote: binding('src-vacancy-note', false)
+    remark: binding('src-remark')
   }
+  if (options.includeVacancyNote === true) {
+    result.vacancyNote = binding('src-vacancy-note', false)
+  }
+  return result
 }
 
 function miniBindings() {
@@ -214,9 +219,8 @@ function sourceSnapshot() {
       layoutDescription: '2室1厅',
       layoutCategory: '两室',
       monthlyRent: 3200,
-      viewingMethod: '',
-      remark: '公开备注',
-      vacancyNote: '月底空出'
+      viewingMethod: '8.1空出，看房提前联系',
+      remark: '公开备注'
     }
   }])
 }
@@ -233,7 +237,6 @@ function sourceRecord(recordId, roomNumber, overrides = {}) {
       monthlyRent: 3200,
       viewingMethod: '',
       remark: '公开备注',
-      vacancyNote: '',
       ...overrides
     }
   }
@@ -498,7 +501,8 @@ function assertInternalValuesAbsent(value, message) {
     'YUXIAOER-ROOM-ID-PRIVATE',
     'PHYSICAL-UNIT-KEY-PRIVATE',
     'OWNER-NAME-PRIVATE',
-    'OWNER-DEPARTMENT-PRIVATE'
+    'OWNER-DEPARTMENT-PRIVATE',
+    'VACANCY-NOTE-PRIVATE'
   ].forEach((privateValue) => {
     assert.strictEqual(
       json.includes(privateValue),
@@ -516,27 +520,41 @@ function testFoundationBindingContracts() {
   assert.deepStrictEqual(
     bindingContractStatus('source', source, { sourceCompatibilityProfile: PROFILE }),
     { ready: true, issues: [] },
-    'employee-ai-foundation-v1 必须被支持，且 vacancyNote 必须建列但单元格可空'
+    'employee-ai-foundation-v1 必须支持当前 17 列员工源表，不要求独立 vacancyNote 列'
+  )
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(source, 'vacancyNote'),
+    false,
+    '当前员工源表只绑定一次看房方式，不得把同一列重复绑定为 vacancyNote'
   )
 
-  const sourceWithoutVacancyNote = { ...source }
-  delete sourceWithoutVacancyNote.vacancyNote
+  const sourceWithoutViewingMethod = { ...source }
+  delete sourceWithoutViewingMethod.viewingMethod
   assert.strictEqual(
-    bindingContractStatus('source', sourceWithoutVacancyNote, {
+    bindingContractStatus('source', sourceWithoutViewingMethod, {
       sourceCompatibilityProfile: PROFILE
     }).ready,
     false,
-    'employee-ai-foundation-v1 缺少 vacancyNote 字段绑定必须 fail-closed'
+    'employee-ai-foundation-v1 必须保留看房方式字段，供看房规则与空出语义共同解析'
   )
   assert.ok(
-    bindingContractStatus('source', sourceWithoutVacancyNote, {
+    bindingContractStatus('source', sourceWithoutViewingMethod, {
       sourceCompatibilityProfile: PROFILE
-    }).issues.includes('vacancyNote:missing'),
-    'vacancyNote 缺列必须给出稳定的 missing 诊断'
+    }).issues.includes('viewingMethod:missing'),
+    '看房方式缺列必须给出稳定的 missing 诊断'
+  )
+
+  const sourceWithVacancyNote = sourceBindings({ includeVacancyNote: true })
+  assert.deepStrictEqual(
+    bindingContractStatus('source', sourceWithVacancyNote, {
+      sourceCompatibilityProfile: PROFILE
+    }),
+    { ready: true, issues: [] },
+    '未来标准源表若显式绑定独立 vacancyNote 文本列，仍必须通过契约'
   )
 
   const sourceWithRequiredVacancyNote = {
-    ...source,
+    ...sourceWithVacancyNote,
     vacancyNote: binding('src-vacancy-note', true)
   }
   assert.strictEqual(
@@ -598,6 +616,112 @@ function testFoundationBindingContracts() {
       `状态流水表缺少 ${semantic} 必须阻断`
     )
   })
+}
+
+function testViewingMethodDerivesVacancyNoteWithoutConfusingDoorCodes() {
+  const catalog = buildLocationCatalog(locationSnapshot().records.map((record) => ({
+    recordId: record.recordId,
+    ...record.fields
+  })))
+  const prepared = prepareSourceSnapshotForCompatibility(sourceSnapshotOf([
+    sourceRecord('source-vacancy-810', '810', {
+      viewingMethod: '8.10空出，不配合提前联系'
+    }),
+    sourceRecord('source-vacancy-819', '819', {
+      viewingMethod: '  8.19空出（配合搬家）   看房提前联系  '
+    }),
+    sourceRecord('source-sublet', '820', {
+      viewingMethod: '租客转租，看房提前联系'
+    }),
+    sourceRecord('source-door-code', '821', {
+      viewingMethod: '336699#'
+    }),
+    sourceRecord('source-short-code', '822', {
+      viewingMethod: '1581'
+    }),
+    sourceRecord('source-code-note', '823', {
+      viewingMethod: '111111（六个1）'
+    })
+  ]), {
+    profile: PROFILE,
+    sourceBindings: sourceBindings(),
+    locationCatalog: catalog
+  })
+  const byId = new Map(prepared.records.map((record) => [record.recordId, record.fields]))
+
+  ;[
+    ['source-vacancy-810', '8.10空出,不配合提前联系'],
+    ['source-vacancy-819', '8.19空出(配合搬家) 看房提前联系']
+  ].forEach(([recordId, expectedNote]) => {
+    const fields = byId.get(recordId)
+    assert.strictEqual(fields.vacancyNote, expectedNote, '明确含“空出”的看房方式必须完整规范化保留')
+    assert.strictEqual(fields.listingStatus, '即将空出', '明确含“空出”的记录必须标为即将空出')
+    assert.strictEqual(fields.viewingMethod, '联系房东', '空出说明处理后仍须归一为安全看房方式')
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(fields, 'viewingPassword'),
+      false,
+      '空出说明不得进入看房密码'
+    )
+    assert.strictEqual(fields.remark, '公开备注', '空出说明不得拼入公开备注')
+  })
+
+  ;['source-sublet', 'source-code-note'].forEach((recordId) => {
+    const fields = byId.get(recordId)
+    assert.strictEqual(fields.vacancyNote, '', '不含“空出”的联系或说明文字不得猜成空出备注')
+    assert.strictEqual(fields.listingStatus, '待出租', '不含“空出”的员工源记录仍是待出租')
+  })
+
+  ;[
+    ['source-door-code', '336699#'],
+    ['source-short-code', '1581']
+  ].forEach(([recordId, password]) => {
+    const fields = byId.get(recordId)
+    assert.strictEqual(fields.vacancyNote, '', '门锁密码不得因数字或符号被误判为空出时间')
+    assert.strictEqual(fields.listingStatus, '待出租', '门锁密码记录仍是待出租')
+    assert.strictEqual(fields.viewingMethod, '密码', '已验证门锁码必须继续归一为密码看房')
+    assert.strictEqual(fields.viewingPassword, password, '已验证门锁码必须继续进入专用密码字段')
+  })
+
+  const explicitPrepared = prepareSourceSnapshotForCompatibility(sourceSnapshotOf([
+    sourceRecord('source-explicit-empty', '824', {
+      viewingMethod: '8.24空出，看房提前联系',
+      vacancyNote: ''
+    }),
+    sourceRecord('source-explicit-value', '825', {
+      viewingMethod: '336699#',
+      vacancyNote: '  9.1空出  '
+    })
+  ]), {
+    profile: PROFILE,
+    sourceBindings: sourceBindings({ includeVacancyNote: true }),
+    locationCatalog: catalog
+  })
+  const explicitById = new Map(explicitPrepared.records.map((record) => [record.recordId, record.fields]))
+  assert.strictEqual(
+    explicitById.get('source-explicit-empty').vacancyNote,
+    '',
+    '显式独立 vacancyNote 列即使为空也必须保持权威，不得回退猜看房方式'
+  )
+  assert.strictEqual(
+    explicitById.get('source-explicit-empty').listingStatus,
+    '待出租',
+    '显式独立 vacancyNote 为空时必须标为待出租'
+  )
+  assert.strictEqual(
+    explicitById.get('source-explicit-value').vacancyNote,
+    '9.1空出',
+    '显式独立 vacancyNote 非空时必须规范化并完整保留'
+  )
+  assert.strictEqual(
+    explicitById.get('source-explicit-value').listingStatus,
+    '即将空出',
+    '显式独立 vacancyNote 非空时必须标为即将空出'
+  )
+  assert.strictEqual(
+    explicitById.get('source-explicit-value').viewingPassword,
+    '336699#',
+    '显式 vacancyNote 与看房密码必须可独立共存'
+  )
 }
 
 function testBaselineMarkerAndHistoryIdsFailClosed() {
@@ -727,6 +851,7 @@ function testInternalFoundationFieldsStayOutOfPublicProjection() {
       rentMode: '整租',
       viewingMethod: '联系房东',
       remark: '公开备注',
+      vacancyNote: 'VACANCY-NOTE-PRIVATE',
       listingStatus: '即将空出',
       published: true,
       canonical: true,
@@ -742,9 +867,10 @@ function testInternalFoundationFieldsStayOutOfPublicProjection() {
   }
 
   const syncRow = feishuSync._internal.canonicalMirrorRecordToSyncRow(canonicalRecord, 0)
+  assert.strictEqual(syncRow.fields.备注, '公开备注', '服务器公开库存备注必须只取公开 remark')
   assertInternalValuesAbsent(
     syncRow,
-    'canonicalMirrorRecordToSyncRow 的服务器库存投影'
+    'canonicalMirrorRecordToSyncRow 的服务器库存投影（含私有空出原文）'
   )
 
   const sheet = buildCompanySheetSnapshot([canonicalRecord])
@@ -763,7 +889,13 @@ function assertFoundationPlannedRecord(result) {
   assert.strictEqual(result.records.length, 1, '单条员工待租记录必须形成一条当前状态')
   const fields = result.records[0].fields
   assert.strictEqual(fields.lifecycleStatusText, '即将空出', '备注多久空出非空必须派生为即将空出')
-  assert.strictEqual(fields.vacancyNote, '月底空出', '备注多久空出原文必须完整保留')
+  assert.strictEqual(fields.vacancyNote, '8.1空出,看房提前联系', '看房方式中的空出说明必须完整保留')
+  assert.strictEqual(fields.viewingMethod, '联系房东', '空出说明必须继续归一为安全看房方式')
+  assert.strictEqual(
+    String(fields.viewingPassword || ''),
+    '',
+    '空出说明不得进入看房密码'
+  )
   assert.strictEqual(fields.sourceCreatedAt, SOURCE_CREATED_TIME_MS, '计时起点必须使用飞书 created_time')
   assert.strictEqual(fields.metricKind, '提前挂出天数', '即将空出不得冒充真实空置天数')
   assert.strictEqual(fields.lifecycleDays, 2, '提前挂出天数必须按固定 now 与创建时间计算')
@@ -867,7 +999,11 @@ async function testLegacyProfileCannotEraseFoundationFields() {
     sourceCompatibilityProfile: 'employee-current-stock-v1',
     dryRun: false
   }))
-  assert.strictEqual(legacyNoop.noop, true, '旧 profile 的业务字段未变化时必须保持真正 no-op')
+  assert.strictEqual(
+    legacyNoop.noop,
+    true,
+    '当前 17 列源表误切旧 profile 时，不得因源未绑定 vacancyNote 制造虚假更新'
+  )
   assert.strictEqual(
     clients.calls.some((call) => call.client === 'target' && call.action === 'update'),
     false,
@@ -898,7 +1034,7 @@ async function testLegacyProfileCannotEraseFoundationFields() {
       return result
     }, {}),
     internalBefore,
-    '旧 profile 保留 18 个 bindings 时，普通业务更新也不得把底座字段写成 null'
+    '当前 17 列源表误切旧 profile 后，普通业务更新不得清空包括 vacancyNote 在内的 18 个底座字段'
   )
 
   const protectedBeforeVacancyChange = FOUNDATION_MINI_FIELDS
@@ -907,11 +1043,13 @@ async function testLegacyProfileCannotEraseFoundationFields() {
       result[semantic] = current.fields[semantic]
       return result
     }, {})
+  const legacyBindings = sourceBindings({ includeVacancyNote: true })
   changedSource.records[0].fields.vacancyNote = '下月中旬空出'
   clients.setSourceSnapshot(changedSource)
   clients.calls.length = 0
   const legacyVacancyUpdate = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
     sourceCompatibilityProfile: 'employee-current-stock-v1',
+    sourceBindings: legacyBindings,
     dryRun: false
   }))
   assert.strictEqual(legacyVacancyUpdate.counts.update, 1, '旧 profile 仍须同步员工修改的“备注多久空出”')
@@ -1103,7 +1241,7 @@ async function testTargetIdentityAndResponsibilityEnrichmentIsPreserved() {
   })
 
   clients.setSourceSnapshot(sourceSnapshotOf([
-    sourceRecord('source-enrichment-1', '401', { vacancyNote: '月底空出' })
+    sourceRecord('source-enrichment-1', '401', { viewingMethod: '月底空出，看房提前联系' })
   ]))
   const updated = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
     dryRun: false
@@ -1229,9 +1367,9 @@ async function testRepeatedSameDirectionTransitionsKeepDistinctHistory() {
     dryRun: false
   }))
 
-  for (const vacancyNote of ['月底空出', '', '再次月底空出', '']) {
+  for (const viewingMethod of ['月底空出，看房提前联系', '', '再次月底空出，看房提前联系', '']) {
     clients.setSourceSnapshot(sourceSnapshotOf([
-      sourceRecord('source-history-loop', '701', { vacancyNote })
+      sourceRecord('source-history-loop', '701', { viewingMethod })
     ]))
     const result = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
       dryRun: false
@@ -1615,6 +1753,7 @@ async function main() {
   const failures = []
   const cases = [
     ['数据底座字段契约', testFoundationBindingContracts],
+    ['看房方式空出说明与门锁密码分流', testViewingMethodDerivesVacancyNoteWithoutConfusingDoorCodes],
     ['基线标记真实性与流水 ID 唯一性', testBaselineMarkerAndHistoryIdsFailClosed],
     ['生产配置五表完整性', testConfiguredFoundationRequiresAllResources],
     ['三张目标业务表资源独立', testLifecycleTableResourcesMustBeDistinct],

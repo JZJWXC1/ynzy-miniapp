@@ -528,7 +528,7 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 - 员工现表的小区列为空时，profile 只能使用本轮已经完整校验的位置字典，对“小区+房号”执行标准小区名和别名的最长且唯一前缀反解；缺字典、无匹配或歧义都整批阻断。该规则使新增小区继续只需维护位置字典，不在代码里新增小区特判。
 - `listingStatus` 绑定整体缺失时，本轮有效源行写为“在租”。源记录从完整快照消失时，专用表同一行原子写入 `listingStatus=已下架 / published=false / enabled=false`；重新出现时按本轮 canonical 结果恢复“在租/true/true”。
 - 只要显式配置了 `rentMode` 或 `listingStatus` 绑定，就完全以该列为准；单元格为空或值非法时仍由严格 canonical 层整批阻断，绝不回退上述派生规则。
-- 员工现表的“看房方式”混存门锁码、腾房日期和联系说明。profile 对这张已核员工表只接受两种高置信旧门锁码：排除 `19xx/20xx` 年份后的 4 位纯数字，或恰好 7 位且仅含数字与 `#`、同时至少各含一个数字和 `#`；其余文本默认收敛为 `viewingMethod=联系房东`。手机号、座机、400/800、国家码/分机、微信/QQ/VX 等社交标识、日期年份、腾房/空置/退租/到期/搬离/可看/联系说明均不得进入 `viewingPassword`，原说明和号码也不得转存到备注；电话号码数字之间即使插入任意非数字字符（包括空格、括号、点、横线、斜杠、间隔号、逗号、分号、竖线或字母伪装）仍按敏感号码阻断。含“钥匙/取钥匙”写成 `viewingMethod=钥匙`。若另行显式绑定独立 `viewingPassword` 列，该列保持权威，兼容推导不得覆盖或回填，但仍必须通过同一敏感内容拒绝门：门锁码行的显式密码必须非空且不得是电话、社交账号、日期或联系说明；钥匙或联系房东行的显式密码必须为空，任一矛盾都会整批阻断。
+- 员工现表的“看房方式”混存门锁码、空出说明和联系要求。profile 对这张已核员工表只接受两种高置信旧门锁码：排除 `19xx/20xx` 年份后的 4 位纯数字，或恰好 7 位且仅含数字与 `#`、同时至少各含一个数字和 `#`；其余文本默认收敛为 `viewingMethod=联系房东`。启用 `employee-ai-foundation-v1` 且源绑定中没有独立 `vacancyNote` 时，兼容层会在收敛看房方式前读取原文：只有规范化原文明确包含“空出”才把整段原文写入目标主档私有 `vacancyNote` 并标为“即将空出”；纯日期、门锁码、“租客转租”、提前联系等不含“空出”的值仍标为“待出租”，绝不猜日期或年份。空出原文不得进入 `viewingPassword`、公开备注或固定十列首页快照。手机号、座机、400/800、国家码/分机、微信/QQ/VX 等社交标识、日期年份、腾房/空置/退租/到期/搬离/可看/联系说明均不得进入 `viewingPassword`，原说明和号码也不得转存到备注；电话号码数字之间即使插入任意非数字字符（包括空格、括号、点、横线、斜杠、间隔号、逗号、分号、竖线或字母伪装）仍按敏感号码阻断。含“钥匙/取钥匙”写成 `viewingMethod=钥匙`。若另行显式绑定独立 `viewingPassword` 列，该列保持权威，兼容推导不得覆盖或回填，但仍必须通过同一敏感内容拒绝门：门锁码行的显式密码必须非空且不得是电话、社交账号、日期或联系说明；钥匙或联系房东行的显式密码必须为空，任一矛盾都会整批阻断。
 - profile 只忽略“所有已绑定业务字段均为空”的单个模板记录；任一业务字段已有内容但缺少“小区+房号”的半填行仍整批阻断。为了识别这一模板，读取层允许先取回空单元格，但所有已绑定列仍须真实存在且类型正确。
 - 月租金只绑定现有“押一付一月租金”。员工源里的“押一付一月租金”和“押二付一 月租金”两列都原样完整保留，后者不参与本 profile 的 canonical 月租金，避免两列自动猜选。
 
@@ -577,10 +577,11 @@ FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 3. **已出租房源**：每次待租周期结束时追加一条不可变快照，不删除当前主档。
 4. **房源状态流水**：只追加“进入待租、重新进入待租、检测已出租、房态变化、责任归属变化”等事实事件。
 
-员工源表不新增字段、不改名、不回写。该 profile 要求源表原有“备注多久空出”列绑定为 `vacancyNote`，但允许单元格为空：
+员工源表不新增字段、不改名、不回写。当前 17 列员工现表没有独立“备注多久空出”列，`FEISHU_SOURCE_FIELD_BINDINGS` 只绑定一次原有“看房方式”，不得把同一个 `field_id` 同时绑定为 `viewingMethod` 与 `vacancyNote`。该 profile 在归一看房方式之前，按以下规则派生目标主档的私有 `vacancyNote`：
 
-- 源记录仍存在且 `vacancyNote` 为空：规范状态为“待出租”。
-- 源记录仍存在且 `vacancyNote` 非空：规范状态为“即将空出”，并完整保留备注原文。
+- “看房方式”规范化原文明确包含“空出”：把整段原文写入目标 `vacancyNote`，规范状态为“即将空出”；例如“8.10空出，不配合提前联系”完整保留，但不解析成绝对日期。
+- 不含“空出”：目标 `vacancyNote` 为空，规范状态为“待出租”；门锁密码、纯日期、“租客转租”和联系要求都不得误判。
+- 未来标准源表如果真正建立并显式绑定独立 `vacancyNote` 文本列，则该列唯一权威：即使某行为空也不得回退解析“看房方式”，两列内容不自动合并或猜冲突。
 - 只有上一轮完整当前主档中存在、本轮完整源快照中消失的房源，才进入“已出租”；同时关闭 `published/enabled`，先追加已出租周期和状态流水并严格回读，再更新当前主档。分页不完整、字段错型、源空表、批量撤下熔断或任一写后回读不一致时，库存与公开十列表都不发布。
 - 状态流水事件 ID 必须存在且整表唯一，大小写变体也视为冲突并整批阻断。初始化基线不只核对固定事件 ID，还同时核对实体、周期、事件类型、目标状态、事件时间、runId 和版本；人工复制或伪造同名行不能开启“源消失即已出租”。
 - 已出租房源重新出现在员工源表时复用同一个底座房源 ID，并把待租周期号加一；相同周期的归档键和流水事件键稳定幂等，失败重跑只补缺口。
@@ -627,7 +628,7 @@ FEISHU_RENTED_FIELD_BINDINGS={"archiveKey":"fld_archive_key","foundationListingI
 FEISHU_HISTORY_FIELD_BINDINGS={"historyEventId":"fld_history_event_id","foundationListingId":"fld_foundation_id","sourceRecordId":"fld_source_record_id","availabilityCycleNo":"fld_cycle_no","availabilityCycleId":"fld_cycle_id","eventType":"fld_event_type","fromLifecycleStatusText":"fld_from_status","toLifecycleStatusText":"fld_to_status","eventAt":"fld_event_at","runId":"fld_run_id","listingOwner":"fld_listing_owner","ownerDepartment":"fld_owner_department","lifecycleVersion":"fld_lifecycle_version"}
 ```
 
-启用 AI profile 前，`FEISHU_MINI_FIELD_BINDINGS` 还必须补齐上述 18 个当前主档字段，`FEISHU_SOURCE_FIELD_BINDINGS` 必须补入 `vacancyNote`。员工源表、位置字典、当前主档、已出租表和流水表五个“Base token + table ID”资源必须互不重叠；一次性补全入口还会在取得 token、创建客户端或读取表前再次核验员工源 Base 与目标 Base 分离、当前主档与流水表独立，以及两表字段契约完整。上线顺序固定为：保持自动同步关闭 → 用应用身份完成五表字段与只读/写权限校验 → dry-run 对账源记录、当前主档、拟归档、拟流水和公开十列表数量 → 一次人工正式同步并回读四张目标表 → 核对公开库存和待租表 → 再单独授权打开自动同步。紧急止写必须关闭同步总开关，不能把 profile 改回 `employee-current-stock-v1` 当作数据回滚；代码会在旧 profile 写入时保护 17 个底座专有字段不被 full write 清空，`vacancyNote` 仍按员工源权威值正常同步，但旧 profile 不负责维护生命周期语义。正式回滚仍按本节既有总开关流程执行，禁止直接删表或用员工源反向覆盖归档。
+启用 AI profile 前，`FEISHU_MINI_FIELD_BINDINGS` 必须补齐上述 18 个当前主档字段，其中目标 `vacancyNote` 仍是必建文本列；当前 17 列员工现表的 `FEISHU_SOURCE_FIELD_BINDINGS` 保持既有 `viewingMethod` 绑定且省略 `vacancyNote`。只有未来确有独立空出列时才可额外绑定源 `vacancyNote`，并继续通过 `field_id` 不重复门禁。员工源表、位置字典、当前主档、已出租表和流水表五个“Base token + table ID”资源必须互不重叠；一次性补全入口还会在取得 token、创建客户端或读取表前再次核验员工源 Base 与目标 Base 分离、当前主档与流水表独立，以及两表字段契约完整。上线顺序固定为：保持自动同步关闭 → 用应用身份完成五表字段与只读/写权限校验 → dry-run 对账源记录、当前主档、拟归档、拟流水和公开十列表数量 → 一次人工正式同步并回读四张目标表 → 核对公开库存和待租表 → 再单独授权打开自动同步。紧急止写必须关闭同步总开关，不能把 profile 改回 `employee-current-stock-v1` 当作数据回滚；代码会在旧 profile 写入时保护 17 个底座专有字段不被 full write 清空。旧 profile 只有在源表确有独立 `vacancyNote` 绑定时才同步该字段，且不负责从“看房方式”维护生命周期语义。正式回滚仍按本节既有总开关流程执行，禁止直接删表或用员工源反向覆盖归档。
 
 启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
 

@@ -512,10 +512,11 @@ function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {
         fields.rentMode = deriveEmployeeCurrentStockRentMode(fields, sourceRecordId)
       }
       if (isAiFoundationProfile) {
-        if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'vacancyNote')) {
-          throw new Error('AI 数据底座兼容配置缺少“备注多久空出”字段绑定')
-        }
-        fields.vacancyNote = normalizeText(fields.vacancyNote)
+        const hasExplicitVacancyNote = Object.prototype.hasOwnProperty.call(sourceBindings, 'vacancyNote')
+        const sourceViewingMethod = normalizeText(fields.viewingMethod)
+        fields.vacancyNote = hasExplicitVacancyNote
+          ? normalizeText(fields.vacancyNote)
+          : (sourceViewingMethod.includes('空出') ? sourceViewingMethod : '')
         fields.listingStatus = fields.vacancyNote ? '即将空出' : '待出租'
       } else if (!Object.prototype.hasOwnProperty.call(sourceBindings, 'listingStatus')) {
         fields.listingStatus = '在租'
@@ -627,6 +628,7 @@ function managedFieldsOf(fields, options = {}) {
     ? Array.from(new Set([...MANAGED_MIRROR_FIELDS, ...FOUNDATION_MIRROR_FIELDS]))
     : MANAGED_MIRROR_FIELDS.filter((field) => !FOUNDATION_MIRROR_FIELDS.includes(field))
   managedFields.forEach((field) => {
+    if (options.ignoreVacancyNote === true && field === 'vacancyNote') return
     // 飞书清空单元格后会按字段类型回读为 null、省略、空字符串或空数组；这些形态
     // 与源字段未提供等价。已有非空旧值仍会保留在 managed 中并由本轮写空清除。
     const value = fields[field]
@@ -641,7 +643,13 @@ function managedFieldsOf(fields, options = {}) {
   return managed
 }
 
-function planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId } = {}) {
+function planMirrorSync({
+  sourceSnapshot,
+  mirrorSnapshot,
+  locationCatalog,
+  runId,
+  ignoreVacancyNote
+} = {}) {
   assertSnapshot(sourceSnapshot, '源快照', { nonEmpty: true })
   assertSnapshot(mirrorSnapshot, '镜像快照')
   assertUniqueSourceRecords(sourceSnapshot.records)
@@ -678,7 +686,8 @@ function planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId
       return
     }
 
-    if (!equalPlain(managedFieldsOf(existingFields), managedFieldsOf(fields))) {
+    const managedOptions = { ignoreVacancyNote }
+    if (!equalPlain(managedFieldsOf(existingFields, managedOptions), managedFieldsOf(fields, managedOptions))) {
       operations.push({ type: 'update', recordId, sourceRecordId, fields: clonePlain(fields) })
       counts.update += 1
       return

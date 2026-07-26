@@ -2262,7 +2262,6 @@ function bindingContractStatus(role, bindings, options = {}) {
     requiredSchema.delete('rentMode')
     requiredSchema.delete('listingStatus')
   }
-  if (role === 'source' && aiFoundationEnabled) requiredSchema.add('vacancyNote')
   if (role === 'mini' && aiFoundationEnabled) {
     FOUNDATION_MINI_FIELDS.forEach((semantic) => requiredSchema.add(semantic))
   }
@@ -2511,10 +2510,18 @@ function semanticFieldsForWrite(fieldNames, fields, options = {}) {
   return output
 }
 
-function legacyMirrorFieldNames(fieldNames) {
+function legacyMirrorFieldNames(fieldNames, sourceBindings) {
   const source = fieldNames && typeof fieldNames === 'object' ? fieldNames : {}
+  const hasExplicitVacancyNote = Boolean(
+    sourceBindings &&
+    typeof sourceBindings === 'object' &&
+    Object.prototype.hasOwnProperty.call(sourceBindings, 'vacancyNote')
+  )
   return Object.keys(source).sort().reduce((result, semantic) => {
-    if (!LEGACY_PROTECTED_FOUNDATION_FIELD_SET.has(semantic)) result[semantic] = source[semantic]
+    const protectedVacancyNote = semantic === 'vacancyNote' && !hasExplicitVacancyNote
+    if (!LEGACY_PROTECTED_FOUNDATION_FIELD_SET.has(semantic) && !protectedVacancyNote) {
+      result[semantic] = source[semantic]
+    }
     return result
   }, {})
 }
@@ -3964,7 +3971,18 @@ async function executeMirrorTableSync(options = {}) {
     })
     return { ...foundationResult, sourceNoteMaterials }
   }
-  const plan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
+  const hasExplicitVacancyNote = Object.prototype.hasOwnProperty.call(
+    options.sourceBindings && typeof options.sourceBindings === 'object' ? options.sourceBindings : {},
+    'vacancyNote'
+  )
+  const ignoreVacancyNote = !hasExplicitVacancyNote
+  const plan = planMirrorSync({
+    sourceSnapshot,
+    mirrorSnapshot,
+    locationCatalog,
+    runId,
+    ignoreVacancyNote
+  })
   const plannedRecords = activeMirrorRecords({
     records: plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan)
   })
@@ -4005,7 +4023,7 @@ async function executeMirrorTableSync(options = {}) {
   const updates = plan.operations.filter((operation) => operation.type !== 'create')
   // AI 数据底座启用后若误切回旧 profile，环境中可能仍保留 18 个内部字段绑定。
   // 旧镜像只能管理原业务列；即便本轮有普通业务更新，也不得以 full write 把底座列清空。
-  const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames)
+  const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames, options.sourceBindings)
   for (const batch of chunksOf(creates)) {
     await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
       fields: semanticFieldsForWrite(writableFieldNames, operation.fields, { full: true })
@@ -4031,7 +4049,8 @@ async function executeMirrorTableSync(options = {}) {
     sourceSnapshot,
     mirrorSnapshot: readback,
     locationCatalog,
-    runId: `${runId}-readback`
+    runId: `${runId}-readback`,
+    ignoreVacancyNote
   })
   if (!remainingPlan.noop) {
     const error = new Error('飞书专用源表写后回读不一致，已阻断库存与待租表发布')
