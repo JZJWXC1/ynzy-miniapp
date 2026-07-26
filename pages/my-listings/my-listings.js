@@ -1,22 +1,23 @@
 const apiService = require('../../utils/api-service')
 const apiClient = require('../../utils/api-client')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+const {
+  DEFAULT_LAYOUT_OPTIONS,
+  normalizeListingFilterOptions,
+  listingFilterOptionsFromListings,
+  mergeListingFilterOptions
+} = require('../../utils/listing-filter-options')
 
 function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
 }
 
-const regionOptions = [
-  { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
-  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
-  { name: '余杭区', blocks: [] }
-]
-const layoutOptions = ['不限', '一室', '两室', '三室', '三室以上']
 const defaultCompanyFilters = {
-  district: '拱墅区',
+  district: '',
   block: '',
   community: '',
   layout: '',
+  rentMode: '',
   rentMin: '',
   rentMax: ''
 }
@@ -77,6 +78,14 @@ function includesText(hay, needle) {
   return !key || String(hay || '').indexOf(key) !== -1
 }
 
+function normalizedDistrict(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/区$/, '')
+}
+
+function normalizedBlock(value) {
+  return String(value || '').normalize('NFKC').trim()
+}
+
 // 户型按室数比较，与后端 domain.matchesLayoutFilter 同口径：房源落库用「二室」，筛选栏用「两室」，
 // 必须归一到室数否则「两室」永远匹配不到、「三室以上」漏掉四室以上。
 function roomCountFromLayout(text) {
@@ -100,8 +109,9 @@ function matchLayoutFilter(item, layoutFilter) {
 // 本地过滤我的房源：复用公司房源那套筛选维度（整租合租/小区/租金为用户明确要求，另兼容区域/板块/户型）。
 function matchOwnerFilter(item, filters) {
   const f = filters || {}
-  if (f.district && !includesText(`${item.district || ''}${item.area || ''}`, f.district)) return false
-  if (f.block && !includesText(item.block, f.block)) return false
+  const district = normalizedDistrict(f.district)
+  if (district && ![item.district, item.area].map(normalizedDistrict).includes(district)) return false
+  if (f.block && normalizedBlock(item.block) !== normalizedBlock(f.block)) return false
   if (f.community && !includesText(`${item.community || ''}${item.locationSummary || ''}${item.title || ''}`, f.community)) return false
   if (!matchLayoutFilter(item, f.layout)) return false
   if (f.rentMode && f.rentMode !== '不限' && String(item.rentMode || item.type || '') !== f.rentMode) return false
@@ -116,8 +126,8 @@ Page({
     stats: [],
     listings: [],
     isCompanyMode: false,
-    regionOptions,
-    layoutOptions,
+    regionOptions: [],
+    layoutOptions: DEFAULT_LAYOUT_OPTIONS.slice(),
     companyFilters: Object.assign({}, defaultCompanyFilters),
     companyLoading: false,
     companyCommunityOptions: [],
@@ -152,6 +162,7 @@ Page({
   onShow() {
     this._pageActive = true
     this.syncAuthSession()
+    this.loadListingFilterOptions()
     this.refresh();
   },
 
@@ -167,22 +178,26 @@ Page({
         clearTimeout(this.ownerFilterTimer)
         this.ownerFilterTimer = null
       }
+      this.allOwnerListings = []
       if (!this.data.isCompanyMode) {
-        this.allOwnerListings = []
         this.setData({
           stats: [],
           listings: [],
           ownerCommunityOptions: [],
+          ownerFilters: Object.assign({}, defaultOwnerFilters),
           ownerLoading: false,
           loadFailed: false
         })
       }
+      // 账号私有地点必须在新账号请求返回前立即从筛选项移除；公司模式也只保留公共元数据。
+      this.applyListingFilterOptions(this.listingFilterMetadata)
     }
     return { key: nextSessionKey, changed }
   },
 
   onUnload() {
     this._pageActive = false
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
     this._ownerRequestSeq = Number(this._ownerRequestSeq || 0) + 1
     this._ownerVerificationSeq = Number(this._ownerVerificationSeq || 0) + 1
     this.activeCompanyRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
@@ -212,6 +227,7 @@ Page({
       const all = formatOwnerListings(listings)
       const sourceStats = profile.sourceStats || []
       this.allOwnerListings = all
+      this.applyListingFilterOptions(this.listingFilterMetadata)
       this.setData({
         loadFailed: false,
         stats: [
@@ -289,13 +305,15 @@ Page({
       block: filters.block || '',
       community: filters.community || '',
       layout: filters.layout || '',
+      rentMode: filters.rentMode || '',
       rentMin: filters.rentMin || '',
       rentMax: filters.rentMax || ''
     }
     const communityQuery = {
       category: '公司房源',
       district: filters.district || '',
-      block: filters.block || ''
+      block: filters.block || '',
+      rentMode: filters.rentMode || ''
     }
     Promise.all([
       apiService.getListings(query),
@@ -328,6 +346,32 @@ Page({
 
   retryListings() {
     this.refresh()
+  },
+
+  loadListingFilterOptions() {
+    if (typeof apiService.getListingFilterOptions !== 'function') return Promise.resolve()
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    const requestSeq = this._filterOptionsRequestSeq
+    return apiService.getListingFilterOptions().then((payload) => {
+      if (this._pageActive === false || requestSeq !== this._filterOptionsRequestSeq) return
+      const options = normalizeListingFilterOptions(payload)
+      this.listingFilterMetadata = options
+      this.applyListingFilterOptions(options)
+    }).catch(() => {})
+  },
+
+  applyListingFilterOptions(payload) {
+    const publicOptions = normalizeListingFilterOptions(payload || {})
+    const options = this.data.isCompanyMode
+      ? publicOptions
+      : mergeListingFilterOptions(
+          publicOptions,
+          listingFilterOptionsFromListings(this.allOwnerListings || [])
+        )
+    this.setData({
+      regionOptions: options.regionOptions,
+      layoutOptions: options.layoutOptions
+    })
   },
 
   scheduleCompanyFilterRefresh() {

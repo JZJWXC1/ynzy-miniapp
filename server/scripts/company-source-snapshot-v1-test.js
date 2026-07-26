@@ -52,7 +52,12 @@ async function main() {
     viewingPassword: 'PRIVATE_PASSWORD_A',
     materialToken: 'PRIVATE_MATERIAL_TOKEN_A',
     materialUrl: 'https://private.invalid/material-a',
-    futureMysteryField: 'PRIVATE_FUTURE_VALUE_A'
+    futureMysteryField: 'PRIVATE_FUTURE_VALUE_A',
+    vacancyNote: 'PRIVATE_VACANCY_NOTE_A',
+    metricKind: 'PRIVATE_METRIC_KIND_A',
+    lifecycleDays: 17,
+    listingOwner: 'PRIVATE_LISTING_OWNER_A',
+    ownerDepartment: 'PRIVATE_OWNER_DEPARTMENT_A'
   })
   const safeB = canonicalRecord({
     district: '上城区',
@@ -129,12 +134,33 @@ async function main() {
     'PRIVATE_MATERIAL_TOKEN_A',
     'https://private.invalid/material-a',
     'PRIVATE_FUTURE_VALUE_A',
+    'PRIVATE_VACANCY_NOTE_A',
+    'PRIVATE_METRIC_KIND_A',
+    'PRIVATE_LISTING_OWNER_A',
+    'PRIVATE_OWNER_DEPARTMENT_A',
     'DISABLED_ROW_SENTINEL',
     'UNPUBLISHED_ROW_SENTINEL',
     'NON_CANONICAL_ROW_SENTINEL'
   ].forEach((forbidden) => {
     assert.ok(!serialized.includes(forbidden), `待租表键或值不得泄露非白名单内容：${forbidden}`)
   })
+  ;['vacancyNote', 'metricKind', 'lifecycleDays', 'listingOwner', 'ownerDepartment'].forEach((forbiddenKey) => {
+    assert.ok(!serialized.includes(forbiddenKey), `待租表不得泄露内部数据底座字段名：${forbiddenKey}`)
+  })
+
+  const upcomingSnapshot = buildCompanySheetSnapshot([
+    canonicalRecord({
+      remark: '月底可预约看房',
+      vacancyNote: 'PRIVATE_UPCOMING_VACANCY_NOTE',
+      metricKind: '提前挂出天数',
+      lifecycleDays: 3,
+      listingStatus: '即将空出'
+    })
+  ])
+  assert.strictEqual(upcomingSnapshot.rows[1][8], '月底可预约看房', '公开备注必须固定进入第九列')
+  assert.strictEqual(upcomingSnapshot.rows[1][9], '即将空出', '即将空出必须固定进入房源状态列')
+  assert.ok(!JSON.stringify(upcomingSnapshot).includes('PRIVATE_UPCOMING_VACANCY_NOTE'), '备注多久空出原文不得冒充公开备注')
+  assert.ok(!JSON.stringify(upcomingSnapshot).includes('提前挂出天数'), '内部计时口径不得进入固定十列')
 
   const db = {
     companySheetSnapshot: {

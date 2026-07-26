@@ -707,8 +707,18 @@ async function run() {
     const snapshot = await apiService.getCompanySheetSnapshot()
     assert.deepStrictEqual(
       Object.keys(snapshot).sort(),
-      ['columnCount', 'rowCount', 'rows', 'sensitiveStripped', 'title', 'unavailable', 'updatedAt'].sort(),
-      'Mock 飞书快照只能返回前端展示所需白名单字段'
+      [
+        'columnCount',
+        'rowCount',
+        'rows',
+        'schemaVersion',
+        'sensitiveStripped',
+        'sourceMode',
+        'title',
+        'unavailable',
+        'updatedAt'
+      ].sort(),
+      'Mock 房源表快照只能返回前端展示与固定结构校验所需的白名单字段'
     )
     for (const key of ['sheetUrl', 'range', 'startRow', 'startCol']) {
       assert.ok(!Object.prototype.hasOwnProperty.call(snapshot, key), `Mock 飞书快照不得返回 ${key}`)

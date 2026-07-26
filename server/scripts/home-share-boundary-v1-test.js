@@ -114,4 +114,40 @@ assert(detailSource.includes('wx.shareVideoMessage'), '详情页原视频转发�
 assert(detailSource.includes('wx.saveVideoToPhotosAlbum'), '详情页保存相册能力不得移除')
 assert(fs.readFileSync(sharedVideoPath, 'utf8').includes('onShareAppMessage()'), '既有共享视频页转发钩子不得误删')
 
+let detailDefinition = null
+const originalPage = global.Page
+const originalWx = global.wx
+try {
+  global.Page = (value) => { detailDefinition = value }
+  delete require.cache[require.resolve(detailPath)]
+  require(detailPath)
+  assert.ok(detailDefinition, '必须捕获房源详情页定义')
+  const detailPage = Object.assign({}, detailDefinition, {
+    data: JSON.parse(JSON.stringify(detailDefinition.data || {})),
+    setData(patch) {
+      this.data = Object.assign({}, this.data, patch || {})
+    },
+    bindAuthInvalidationListener() {},
+    loadListing() {}
+  })
+  const hiddenMenus = []
+  global.wx = {
+    hideShareMenu(options) { hiddenMenus.push(options) },
+    showShareMenu() { throw new Error('详情页不得打开系统分享菜单') }
+  }
+  detailPage.onLoad({ id: 'DETAIL-SHARE-GUARD' })
+  detailPage.onShow()
+  assert.deepStrictEqual(
+    hiddenMenus,
+    [
+      { menus: ['shareAppMessage', 'shareTimeline'] },
+      { menus: ['shareAppMessage', 'shareTimeline'] }
+    ],
+    '房源详情 onLoad/onShow 必须真实执行两次 hideShareMenu，不能只保留源码字符串'
+  )
+} finally {
+  global.Page = originalPage
+  global.wx = originalWx
+}
+
 console.log('home-share-boundary-v1-test passed')

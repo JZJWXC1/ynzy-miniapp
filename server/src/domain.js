@@ -261,7 +261,143 @@ function looksLikeVideoPath(value = '') {
   return /\.(mp4|mov|m4v|webm)(\?|#|$)/i.test(String(value || '').trim())
 }
 
+const MAX_LISTING_MEDIA_ASSETS = 64
+const LISTING_MEDIA_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/
+const LISTING_MEDIA_SHA256_PATTERN = /^[a-f0-9]{64}$/
+const LISTING_MEDIA_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/x-m4v', 'video/webm'])
+
+function listingMediaValidationError(message) {
+  const error = new Error(message)
+  error.statusCode = 400
+  return error
+}
+
+function normalizePrivateListingMediaAssets(value) {
+  if (!Array.isArray(value)) throw listingMediaValidationError('房源多媒体清单必须是数组')
+  if (value.length > MAX_LISTING_MEDIA_ASSETS) throw listingMediaValidationError('单套房源视频素材超过安全上限')
+  const assetIds = new Set()
+  const objectKeys = new Set()
+  const displayOrders = new Set()
+  const normalized = value.map((asset) => {
+    if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
+      throw listingMediaValidationError('房源视频素材结构无效')
+    }
+    const assetId = String(asset.assetId || '').trim()
+    const kind = String(asset.kind || '').trim()
+    const objectKey = String(asset.objectKey || '').trim()
+    const contentSha256 = String(asset.contentSha256 || '').trim().toLowerCase()
+    const sourceFingerprint = String(asset.sourceFingerprint || '').trim().toLowerCase()
+    const targetDriveFingerprint = String(asset.targetDriveFingerprint || '').trim().toLowerCase()
+    const mimeType = String(asset.mimeType || '').split(';')[0].trim().toLowerCase()
+    const displayOrder = Number(asset.displayOrder)
+    const size = Number(asset.size)
+    if (!LISTING_MEDIA_ASSET_ID_PATTERN.test(assetId)) throw listingMediaValidationError('房源视频素材 ID 无效')
+    if (kind !== 'video') throw listingMediaValidationError('房源素材类型暂不支持')
+    if (!objectKey || objectKey.length > 512 || /[\\\0\r\n?#]/.test(objectKey) || objectKey.startsWith('/')) {
+      throw listingMediaValidationError('房源视频对象键无效')
+    }
+    const objectKeySegments = objectKey.split('/')
+    if (objectKeySegments.some((segment) => !segment || segment === '.' || segment === '..') || !looksLikeVideoPath(objectKey)) {
+      throw listingMediaValidationError('房源视频对象键无效')
+    }
+    if (!LISTING_MEDIA_SHA256_PATTERN.test(contentSha256)) throw listingMediaValidationError('房源视频摘要无效')
+    if (!LISTING_MEDIA_SHA256_PATTERN.test(sourceFingerprint)) throw listingMediaValidationError('房源素材来源摘要无效')
+    if (targetDriveFingerprint && !LISTING_MEDIA_SHA256_PATTERN.test(targetDriveFingerprint)) {
+      throw listingMediaValidationError('房源云盘素材摘要无效')
+    }
+    if (!LISTING_MEDIA_MIME_TYPES.has(mimeType)) throw listingMediaValidationError('房源视频类型无效')
+    if (!Number.isSafeInteger(displayOrder) || displayOrder < 0 || displayOrder >= value.length) {
+      throw listingMediaValidationError('房源视频排序无效')
+    }
+    if (!Number.isSafeInteger(size) || size <= 0) throw listingMediaValidationError('房源视频大小无效')
+    if (asset.verified !== true) throw listingMediaValidationError('房源视频尚未通过写后回读')
+    if (assetIds.has(assetId) || objectKeys.has(objectKey) || displayOrders.has(displayOrder)) {
+      throw listingMediaValidationError('房源视频素材存在重复身份、对象键或排序')
+    }
+    assetIds.add(assetId)
+    objectKeys.add(objectKey)
+    displayOrders.add(displayOrder)
+    return {
+      assetId,
+      kind: 'video',
+      objectKey,
+      contentSha256,
+      sourceFingerprint,
+      targetDriveFingerprint,
+      displayOrder,
+      mimeType,
+      size,
+      verified: true
+    }
+  }).sort((left, right) => left.displayOrder - right.displayOrder || left.assetId.localeCompare(right.assetId))
+  normalized.forEach((asset, index) => {
+    if (asset.displayOrder !== index) throw listingMediaValidationError('房源视频排序必须连续且从 0 开始')
+  })
+  return normalized
+}
+
+function privateListingMediaAssets(listing = {}) {
+  if (!Object.prototype.hasOwnProperty.call(listing, 'mediaAssets')) return null
+  try {
+    return normalizePrivateListingMediaAssets(listing.mediaAssets)
+  } catch (error) {
+    // 数据库中只要出现一项非法私有素材，就整组 fail-closed，不能退回旧 videoKey
+    // 掩盖损坏，也不能把未完成写后回读的对象暴露给公共代理。
+    return []
+  }
+}
+
+function publicListingMediaSkeleton(listing = {}) {
+  const assets = privateListingMediaAssets(listing)
+  if (!assets) return []
+  return assets.map((asset, index) => ({
+    assetId: asset.assetId,
+    kind: 'video',
+    displayOrder: asset.displayOrder,
+    label: `视频 ${index + 1}`
+  }))
+}
+
+function listingMediaAssetsStateKey(listing = {}) {
+  const assets = privateListingMediaAssets(listing)
+  if (!assets) return ''
+  // CAS 必须绑定完整的规范私有清单。来源/目标回读摘要、类型或大小变化也代表
+  // 另一轮同步已经更新验证证据，旧任务不得用较窄状态键静默覆盖。
+  return crypto.createHash('sha256').update(JSON.stringify(assets)).digest('hex')
+}
+
+function replaceListingMediaAssets(db, listingId, mediaAssets, options = {}) {
+  const listing = listingById(db, listingId)
+  if (!listing) {
+    const error = new Error('未找到该房源')
+    error.statusCode = 404
+    throw error
+  }
+  const hasExpectedStateKey = Object.prototype.hasOwnProperty.call(options, 'expectedStateKey')
+  const expectedStateKey = String(options.expectedStateKey || '').trim()
+  if (hasExpectedStateKey && expectedStateKey !== listingMediaAssetsStateKey(listing)) {
+    const error = new Error('房源素材已被其他同步任务更新，请基于最新状态重试')
+    error.statusCode = 409
+    throw error
+  }
+  const normalized = normalizePrivateListingMediaAssets(mediaAssets)
+  listing.mediaAssets = normalized
+  // 旧单视频字段只作为兼容索引，真正公开能力始终从已校验 mediaAssets 解析。
+  listing.videoKey = normalized.length ? normalized[0].objectKey : ''
+  listing.videoUrl = ''
+  listing.updatedAt = options.updatedAt || nowText()
+  syncListingRecommendationProfile(listing)
+  return {
+    listingId: String(listing.id || ''),
+    mediaAssetCount: normalized.length,
+    mediaAssetIds: normalized.map((asset) => asset.assetId),
+    stateKey: listingMediaAssetsStateKey(listing)
+  }
+}
+
 function hasListingVideo(listing = {}) {
+  const mediaAssets = privateListingMediaAssets(listing)
+  if (mediaAssets) return mediaAssets.length > 0
   const videoKey = String(listing.videoKey || '').trim()
   const videoUrl = String(listing.videoUrl || '').trim()
   return looksLikeVideoPath(videoKey) || looksLikeVideoPath(videoUrl)
@@ -2341,6 +2477,29 @@ function publicLocationFilterMatches(location = {}, requested = '') {
     .indexOf(expected) !== -1
 }
 
+function normalizedStructuredDistrict(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/区$/, '')
+}
+
+function normalizedStructuredBlock(value) {
+  return String(value || '').normalize('NFKC').trim()
+}
+
+function structuredDistrictMatches(location = {}, requested = '') {
+  const expected = normalizedStructuredDistrict(requested)
+  if (!expected) return true
+  return [location.district, location.area]
+    .map(normalizedStructuredDistrict)
+    .filter(Boolean)
+    .includes(expected)
+}
+
+function structuredBlockMatches(location = {}, requested = '') {
+  const expected = normalizedStructuredBlock(requested)
+  if (!expected) return true
+  return normalizedStructuredBlock(location.block) === expected
+}
+
 function roomCountFromLayoutText(value = '') {
   const text = String(value || '')
   const matched = text.match(/([一二两三四五六七八九]|\d+)\s*室/)
@@ -2374,10 +2533,9 @@ function filterListings(db, filter = {}) {
       if (companyOnly && !isCompanyListing(listing)) return false
       if (!matchesCategory(listing, filter.category)) return false
       const location = needsLocation ? publicListingLocationFields(listing) : null
-      if (districtFilter && [location.district, location.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
-      const locationText = filter.block ? publicLocationSearchText(listing) : ''
+      if (!structuredDistrictMatches(location, districtFilter)) return false
       if (!publicLocationFilterMatches(location, filter.area)) return false
-      if (filter.block && locationText.indexOf(filter.block) === -1) return false
+      if (!structuredBlockMatches(location, filter.block)) return false
       if (!publicCommunityFilterMatches(location && location.community, filter.community)) return false
       const housing = needsHousing ? publicListingHousingFields(listing) : null
       if (!matchesLayoutFilter(listing, filter.layout, housing)) return false
@@ -2403,6 +2561,73 @@ function filterListings(db, filter = {}) {
         commissionText: row.commissionText
       }
     })
+}
+
+function listingFilterOptions(db) {
+  const districts = new Map()
+  // 动态筛选项只从已完成公开投影的有效房源派生，不能读取原始地址、房号、
+  // 联系方式、负责人或部门等内部字段。
+  filterListings(db, { publicGuest: true }).forEach((listing) => {
+    const district = String(listing.district || listing.area || '').trim()
+    const block = String(listing.block || '').trim()
+    if (!district) return
+    if (!districts.has(district)) districts.set(district, new Set())
+    if (block) districts.get(district).add(block)
+  })
+  return {
+    regionOptions: Array.from(districts.entries())
+      .map(([name, blocks]) => ({
+        name,
+        blocks: Array.from(blocks).sort()
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+    layoutOptions: ['不限', '一室', '两室', '三室', '三室以上'],
+    rentModeOptions: ['全部', '整租', '合租']
+  }
+}
+
+function adminListingFilterOptions(db) {
+  const districts = new Map()
+  activeListings(db).forEach((listing) => {
+    const district = String(listing.district || listing.area || '').trim()
+    const block = String(listing.block || '').trim()
+    if (!district) return
+    if (!districts.has(district)) districts.set(district, new Set())
+    if (block) districts.get(district).add(block)
+  })
+  return {
+    regionOptions: Array.from(districts.entries())
+      .map(([name, blocks]) => ({
+        name,
+        blocks: Array.from(blocks).sort((left, right) => left.localeCompare(right, 'zh-CN'))
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+    layoutOptions: ['不限', '一室', '两室', '三室', '三室以上'],
+    rentModeOptions: ['全部', '整租', '合租']
+  }
+}
+
+function expiredListingFilterOptions(db) {
+  autoExpireOverdueListings(db)
+  const districts = new Map()
+  ;(db.listings || []).filter(isExpiredListing).forEach((listing) => {
+    // 该元数据只经管理员鉴权端点下发，必须与 expiredListings 的管理员位置真值同源，
+    // 否则游客投影清洗后的选项无法回查生成它的旧废房源。
+    const location = listingLocationFields(listing)
+    const district = String(location.district || location.area || '').trim()
+    const block = String(location.block || '').trim()
+    if (!district) return
+    if (!districts.has(district)) districts.set(district, new Set())
+    if (block) districts.get(district).add(block)
+  })
+  return {
+    regionOptions: Array.from(districts.entries())
+      .map(([name, blocks]) => ({
+        name,
+        blocks: Array.from(blocks).sort((left, right) => left.localeCompare(right, 'zh-CN'))
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }
 }
 
 function favoriteRows(db, mutable = false) {
@@ -2636,8 +2861,8 @@ function favoriteListings(db, userId, filter = {}) {
       const location = publicListingLocationFields(listing)
       const housing = publicListingHousingFields(listing)
       if (filter.category && !matchesCategory(listing, filter.category)) return false
-      if (districtFilter && [location.district, location.area].map((item) => String(item || '')).join('').indexOf(districtFilter) === -1) return false
-      if (filter.block && String(location.block || '').indexOf(String(filter.block)) === -1) return false
+      if (!structuredDistrictMatches(location, districtFilter)) return false
+      if (!structuredBlockMatches(location, filter.block)) return false
       if (!publicCommunityFilterMatches(location.community, filter.community)) return false
       if (!matchesLayoutFilter(listing, filter.layout, housing)) return false
       if (filter.rentMode && (housing.rentMode || housing.type) !== filter.rentMode) return false
@@ -2892,6 +3117,7 @@ function buildListingDetail(db, listing, viewerId = '') {
       : safeGuestPublicText(listing.videoLabel, listing, '房源实拍视频'),
     videoUrl: '',
     hasVideo: hasListingVideo(listing),
+    mediaAssets: publicListingMediaSkeleton(listing),
     coverUrl: listingCoverUrl(listing),
     status: publicListingStatus(listing),
     ...detailDisplay,
@@ -3612,6 +3838,8 @@ function normalizeMapFilter(filter = {}) {
     sourceType: String(filter.sourceType || '').trim(),
     companyOnly: truthyFlag(filter.companyOnly),
     publicGuest: filter.publicGuest === true,
+    district: String(filter.district || '').trim(),
+    block: String(filter.block || '').trim(),
     area: String(filter.area || filter.region || '').trim(),
     community: String(filter.community || '').trim(),
     listingIds: new Set(mapFilterList(filter.listingIds))
@@ -3635,12 +3863,14 @@ function listingMatchesMapFilter(listing = {}, filter, display = {}) {
   const rent = publicListingRentValue(listing)
   if (filter.rentMin !== null && rent < filter.rentMin) return false
   if (filter.rentMax !== null && rent > filter.rentMax) return false
-  if (filter.layout && String(housing.layout || '').indexOf(filter.layout) === -1) return false
+  if (!matchesLayoutFilter(listing, filter.layout, housing)) return false
   if (filter.rentMode && String(housing.rentMode || housing.type || housing.layout || '').indexOf(filter.rentMode) === -1) return false
   if (filter.sourceType && filter.sourceType !== '全部') {
     if ([COMPANY_SOURCE, OWNER_SOURCE, SECOND_LANDLORD_SOURCE].indexOf(filter.sourceType) === -1) return false
     if (sourceType !== filter.sourceType) return false
   }
+  if (!structuredDistrictMatches(location, filter.district)) return false
+  if (!structuredBlockMatches(location, filter.block)) return false
   if (!publicLocationFilterMatches(location, filter.area)) return false
   if (!publicCommunityFilterMatches(location.community, filter.community)) return false
   return true
@@ -3717,15 +3947,22 @@ function mapCommunities(db, filter = {}) {
     const housing = publicListingHousingFields(listing)
     if (!listingMatchesMapFilter(listing, normalizedFilter, display)) return
     const community = location.community || (companyListing ? coordinate.community : '')
-    const key = String(community || '').trim()
-    if (!key) return
+    const communityName = String(community || '').normalize('NFKC').trim()
+    if (!communityName) return
+    const district = String(location.district || location.area || '').normalize('NFKC').trim()
+    const block = String(location.block || '').normalize('NFKC').trim()
+    const key = JSON.stringify([district, block, communityName])
+    const groupId = `MAP-${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`
     const coordinateCandidate = {
       priority: mapCoordinateCandidatePriority(listing, selectedCoordinate || coordinate),
       tieBreaker: String(listing.id || '')
     }
     if (!groups.has(key)) {
       groups.set(key, {
-        community: key,
+        groupId,
+        district,
+        block,
+        community: communityName,
         latitude: coordinate.latitude,
         longitude: coordinate.longitude,
         coordinateSource: coordinate.source || '',
@@ -3852,10 +4089,17 @@ function matchListingVideoMaterialFilter(listing, status) {
 }
 
 function adminListings(db, filter = {}) {
+  const district = String(filter.district || filter.area || '').trim()
+  const districtKey = normalizedStructuredDistrict(district)
   return activeListings(db)
     .filter((listing) => {
-      if (filter.area && String(listing.area || '').indexOf(filter.area) === -1) return false
-      if (filter.block && String(listing.block || '').indexOf(filter.block) === -1) return false
+      if (districtKey) {
+        const listingDistrictKeys = [listing.district, listing.area]
+          .map(normalizedStructuredDistrict)
+          .filter(Boolean)
+        if (!listingDistrictKeys.includes(districtKey)) return false
+      }
+      if (!structuredBlockMatches(listingLocationFields(listing), filter.block)) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
       if (!matchListingSourceFilter(listing, filter.source)) return false
       if (!matchListingStatusFilter(listing, filter.status)) return false
@@ -3893,13 +4137,23 @@ function adminListings(db, filter = {}) {
 
 function expiredListings(db, filter = {}) {
   autoExpireOverdueListings(db)
+  const district = String(filter.district || filter.area || '').trim()
+  const source = String(filter.sourceType || filter.category || filter.source || '').trim()
+  const hasRentMin = filter.rentMin !== undefined && String(filter.rentMin).trim() !== ''
+  const hasRentMax = filter.rentMax !== undefined && String(filter.rentMax).trim() !== ''
   return (db.listings || [])
     .filter(isExpiredListing)
     .filter((listing) => {
-      if (filter.area && String(listing.area || '').indexOf(filter.area) === -1) return false
-      if (filter.block && String(listing.block || '').indexOf(filter.block) === -1) return false
+      const location = listingLocationFields(listing)
+      const housing = publicListingHousingFields(listing)
+      if (!structuredDistrictMatches(location, district)) return false
+      if (!structuredBlockMatches(location, filter.block)) return false
       if (filter.community && String(listing.community || '').indexOf(filter.community) === -1) return false
-      if (!matchListingSourceFilter(listing, filter.source)) return false
+      if (!matchListingSourceFilter(listing, source)) return false
+      if (!matchesLayoutFilter(listing, filter.layout, housing)) return false
+      if (filter.rentMode && (housing.rentMode || housing.type) !== filter.rentMode) return false
+      if (hasRentMin && publicListingRentValue(listing) < Number(filter.rentMin)) return false
+      if (hasRentMax && publicListingRentValue(listing) > Number(filter.rentMax)) return false
       return true
     })
     .map((listing) => {
@@ -8042,6 +8296,7 @@ function editableListingDetail(db, userId, listingId, options = {}) {
     videoLabel: listing.videoLabel || '房源实拍视频',
     videoUrl: listing.videoUrl || '',
     videoKey: listing.videoKey || '',
+    mediaAssets: publicListingMediaSkeleton(listing),
     viewingPassword: firstText(listing.viewingPassword, listing.showingPassword),
     ...listingViewingMethodFields(listing),
     viewingKeyLocation: listingViewingKeyLocation(listing),
@@ -8316,6 +8571,7 @@ function submitListingVerification(db, userId, listingId, outcome, options = {})
 }
 
 module.exports = {
+  MAX_LISTING_MEDIA_ASSETS,
   currentUser,
   loginByPhone,
   registerUser,
@@ -8352,6 +8608,9 @@ module.exports = {
   __withGuestPublicContextCacheForTest: withGuestPublicContextCacheForTest,
   sanitizeCompanyPublicText: safeCompanyPublicText,
   filterListings,
+  listingFilterOptions,
+  adminListingFilterOptions,
+  expiredListingFilterOptions,
   favoriteListing,
   unfavoriteListing,
   favoriteListingIds,
@@ -8360,6 +8619,9 @@ module.exports = {
   matchListings,
   listingDetail,
   listingDetailState,
+  normalizePrivateListingMediaAssets,
+  listingMediaAssetsStateKey,
+  replaceListingMediaAssets,
   isCompanyListing,
   isNoCommissionListing,
   listingLogs,

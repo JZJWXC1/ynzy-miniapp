@@ -19,6 +19,61 @@ function safeText(value) {
   return String(value || '').trim()
 }
 
+function normalizePublicMediaAssets(listing = {}) {
+  if (!Array.isArray(listing.mediaAssets)) return []
+  const assetIds = new Set()
+  return listing.mediaAssets
+    .map((asset) => ({
+      assetId: safeText(asset && asset.assetId),
+      kind: safeText(asset && asset.kind),
+      displayOrder: Number(asset && asset.displayOrder),
+      label: safeText(asset && asset.label),
+      videoUrl: safeText(asset && asset.videoUrl),
+      coverUrl: safeText(asset && asset.coverUrl)
+    }))
+    .filter((asset) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/.test(asset.assetId) ||
+          asset.kind !== 'video' || !asset.videoUrl || assetIds.has(asset.assetId)) return false
+      assetIds.add(asset.assetId)
+      return true
+    })
+    .sort((left, right) => (
+      (Number.isFinite(left.displayOrder) ? left.displayOrder : Number.MAX_SAFE_INTEGER) -
+        (Number.isFinite(right.displayOrder) ? right.displayOrder : Number.MAX_SAFE_INTEGER) ||
+      left.assetId.localeCompare(right.assetId)
+    ))
+    .map((asset, index) => ({
+      ...asset,
+      displayOrder: index,
+      label: asset.label || `视频 ${index + 1}`
+    }))
+}
+
+function listingWithSelectedMedia(listing = {}, preferredAssetId = '') {
+  const mediaAssets = normalizePublicMediaAssets(listing)
+  if (!mediaAssets.length) {
+    return {
+      listing: {
+        ...listing,
+        mediaAssets: []
+      },
+      selectedMediaAssetId: '',
+      canShareVideo: Boolean(safeText(listing.videoUrl))
+    }
+  }
+  const selected = mediaAssets.find((asset) => asset.assetId === safeText(preferredAssetId)) || mediaAssets[0]
+  return {
+    listing: {
+      ...listing,
+      mediaAssets,
+      videoUrl: selected.videoUrl,
+      coverUrl: selected.coverUrl || ''
+    },
+    selectedMediaAssetId: selected.assetId,
+    canShareVideo: true
+  }
+}
+
 function isAlbumAuthError(error) {
   const message = String((error && (error.errMsg || error.message)) || '')
   return /auth|authorize|permission|deny|denied|scope\.writePhotosAlbum/i.test(message)
@@ -147,6 +202,7 @@ Page({
     sensitiveConfirmVisible: false,
     sensitiveSubmitting: false,
     canShareVideo: false,
+    selectedMediaAssetId: '',
     shareVideoBusy: false,
     saveVideoBusy: false,
     shareStateText: '原视频可直接播放、转发或保存，不包含具体地址和房东联系方式。',
@@ -243,6 +299,7 @@ Page({
       showingPhotoPath: '',
       shareVideoBusy: false,
       saveVideoBusy: false,
+      selectedMediaAssetId: '',
       phoneCallBusy: false,
       shareStateText: '正在按当前账号重新读取房源'
     })
@@ -263,11 +320,16 @@ Page({
   },
 
   invalidateDetailOperations() {
-    this._shareVideoOperationSeq = Number(this._shareVideoOperationSeq || 0) + 1
+    this.invalidateMediaOperations()
     this._showingOperationSeq = Number(this._showingOperationSeq || 0) + 1
   },
 
+  invalidateMediaOperations() {
+    this._shareVideoOperationSeq = Number(this._shareVideoOperationSeq || 0) + 1
+  },
+
   beginDetailOperation(kind) {
+    const mediaBound = kind !== 'showing'
     const sequenceField = kind === 'showing' ? '_showingOperationSeq' : '_shareVideoOperationSeq'
     const sequence = Number(this[sequenceField] || 0) + 1
     const listing = this.data.listing || {}
@@ -275,9 +337,11 @@ Page({
     return {
       sequenceField,
       sequence,
+      mediaBound,
       sessionKey: currentAuthSessionKey(),
       listingGeneration: Number(this.listingLoadGeneration || 0),
       listingId: safeText(listing.id),
+      mediaAssetId: safeText(this.data.selectedMediaAssetId),
       needId: safeText(this.data.needId),
       needTemporary: Boolean(this.data.needTemporary)
     }
@@ -289,7 +353,8 @@ Page({
     return this[operation.sequenceField] === operation.sequence &&
       currentAuthSessionKey() === operation.sessionKey &&
       Number(this.listingLoadGeneration || 0) === operation.listingGeneration &&
-      safeText(listing.id) === operation.listingId
+      safeText(listing.id) === operation.listingId &&
+      (!operation.mediaBound || safeText(this.data.selectedMediaAssetId) === operation.mediaAssetId)
   },
 
   bindAuthInvalidationListener() {
@@ -323,7 +388,9 @@ Page({
     this.listingId = id
     this.invalidateDetailOperations()
     this._videoPlaybackRefreshCount = 0
+    this._videoPlaybackFailureNotified = false
     this._mediaRefreshPromise = null
+    this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
     if (wx.hideLoading) wx.hideLoading()
     const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
     const requestSessionKey = currentAuthSessionKey()
@@ -360,6 +427,7 @@ Page({
       ownSensitiveLoadFailed: false,
       shareVideoBusy: false,
       saveVideoBusy: false,
+      selectedMediaAssetId: '',
       showingSubmitting: false,
       showingPhotoPath: '',
       phoneCallBusy: false
@@ -376,14 +444,14 @@ Page({
           .then((profile) => ({ profile }))
           .catch(() => ({ profile: { user: {} } }))
         : Promise.resolve({ profile: { user: {} } })
-    ]).then(([listing, logs, profileState]) => {
+    ]).then(([listingResult, logs, profileState]) => {
       // 同页重载或换号后，较早请求即使更晚返回也不得覆盖新账号状态或触发旧账号队列补发。
       if (recoverPublicReadAfterAuthFallback()) return
       if (!isCurrentRequest()) return
-      if (listing && listing.unavailable) {
+      if (listingResult && listingResult.unavailable) {
         this.setData({
           listing: {},
-          unavailableListing: listing,
+          unavailableListing: listingResult,
           listingLoading: false,
           listingLoadFailed: false,
           listingAccessRequired: false,
@@ -395,6 +463,7 @@ Page({
           ownSensitiveLoading: false,
           ownSensitiveLoadFailed: false,
           canShareVideo: false,
+          selectedMediaAssetId: '',
           shareBrokerName: '',
           currentUserId: '',
           phoneCallBusy: false,
@@ -411,6 +480,9 @@ Page({
         user.authed === '手机号登录' ||
         String(user.role || '').indexOf('中介') !== -1
       )
+      const mediaSelection = listingWithSelectedMedia(listingResult || {})
+      const listing = mediaSelection.listing
+      // 游客能力只由服务端公开详情是否给出当前视频决定，不绑定登录身份。
       const canShareVideo = Boolean(listing && listing.videoUrl)
       const companyListing = Boolean(listing && listing.companyListing)
       const ownListing = Boolean(listing && listing.ownListing)
@@ -441,6 +513,7 @@ Page({
         isVerified: canTrySensitive,
         sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
+        selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
         shareBrokerName: user.name || '',
         currentUserId: user.id || '',
         phoneCallBusy: false,
@@ -467,7 +540,8 @@ Page({
           listingAccessRequired: false,
           isVerified: false,
           sensitiveVisible: false,
-          canShareVideo: false
+          canShareVideo: false,
+          selectedMediaAssetId: ''
         })
         return
       }
@@ -482,7 +556,9 @@ Page({
             unavailable: true,
             reason: 'not-found',
             reasonText: '这套房源不存在或已下架，请返回重新找房。'
-          }
+          },
+          canShareVideo: false,
+          selectedMediaAssetId: ''
         })
         return
       }
@@ -495,7 +571,8 @@ Page({
         listingLoadErrorText: '暂时无法读取这套房源，请检查网络后重试。',
         listingAccessRequired: false,
         sensitiveVisible: false,
-        canShareVideo: false
+        canShareVideo: false,
+        selectedMediaAssetId: ''
       })
     });
   },
@@ -556,6 +633,34 @@ Page({
     })
   },
 
+  selectMediaAsset(event) {
+    const assetId = safeText(event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.assetId)
+    const listing = this.data.listing || {}
+    const mediaAssets = normalizePublicMediaAssets(listing)
+    const selected = mediaAssets.find((asset) => asset.assetId === assetId)
+    if (!selected || assetId === safeText(this.data.selectedMediaAssetId)) return
+    // 切换视频时立即作废旧下载、分享、保存和媒体刷新；迟到回调不得再操作新选中的视频。
+    this.invalidateMediaOperations()
+    this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
+    this._mediaRefreshPromise = null
+    this._videoPlaybackRefreshCount = 0
+    this._videoPlaybackFailureNotified = false
+    if (wx.hideLoading) wx.hideLoading()
+    this.setData({
+      listing: {
+        ...listing,
+        mediaAssets,
+        videoUrl: selected.videoUrl,
+        coverUrl: selected.coverUrl || ''
+      },
+      selectedMediaAssetId: selected.assetId,
+      canShareVideo: true,
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      shareStateText: '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+    })
+  },
+
   refreshListingMedia() {
     const listing = this.data.listing || {}
     const listingId = safeText(listing.id || this.listingId)
@@ -563,9 +668,12 @@ Page({
     if (this._mediaRefreshPromise) return this._mediaRefreshPromise
     const requestGeneration = Number(this.listingLoadGeneration || 0)
     const requestSessionKey = currentAuthSessionKey()
+    const requestSelectionGeneration = Number(this._mediaSelectionGeneration || 0)
+    const selectedMediaAssetId = safeText(this.data.selectedMediaAssetId)
     const isCurrentRequest = () => (
       this._pageActive !== false &&
       Number(this.listingLoadGeneration || 0) === requestGeneration &&
+      Number(this._mediaSelectionGeneration || 0) === requestSelectionGeneration &&
       currentAuthSessionKey() === requestSessionKey &&
       safeText(this.data.listing && this.data.listing.id) === listingId
     )
@@ -575,17 +683,23 @@ Page({
         error.staleMediaRefresh = true
         throw error
       }
-      if (!fresh || fresh.unavailable || !fresh.videoUrl) {
+      const mediaSelection = listingWithSelectedMedia(fresh || {}, selectedMediaAssetId)
+      if (!fresh || fresh.unavailable || !mediaSelection.canShareVideo) {
         const error = new Error('房源视频不存在或已下架')
         error.statusCode = 404
         throw error
       }
       const merged = Object.assign({}, this.data.listing || {}, {
-        videoUrl: fresh.videoUrl,
-        coverUrl: fresh.coverUrl || (this.data.listing && this.data.listing.coverUrl) || '',
+        mediaAssets: mediaSelection.listing.mediaAssets,
+        videoUrl: mediaSelection.listing.videoUrl,
+        coverUrl: mediaSelection.listing.coverUrl || '',
         hasVideo: true
       })
-      this.setData({ listing: merged, canShareVideo: true })
+      this.setData({
+        listing: merged,
+        selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
+        canShareVideo: true
+      })
       return merged
     }).finally(() => {
       if (this._mediaRefreshPromise === request) this._mediaRefreshPromise = null
@@ -595,15 +709,24 @@ Page({
   },
 
   onVideoPlaybackError() {
-    if (Number(this._videoPlaybackRefreshCount || 0) >= 1) return
+    if (Number(this._videoPlaybackRefreshCount || 0) >= 1) {
+      this.notifyVideoPlaybackFailure()
+      return
+    }
     this._videoPlaybackRefreshCount = Number(this._videoPlaybackRefreshCount || 0) + 1
     const requestGeneration = Number(this.listingLoadGeneration || 0)
     const requestSessionKey = currentAuthSessionKey()
     this.refreshListingMedia().catch((error) => {
       if (error && error.staleMediaRefresh) return
       if (this._pageActive === false || Number(this.listingLoadGeneration || 0) !== requestGeneration || currentAuthSessionKey() !== requestSessionKey) return
-      wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
+      this.notifyVideoPlaybackFailure()
     })
+  },
+
+  notifyVideoPlaybackFailure() {
+    if (this._pageActive === false || this._videoPlaybackFailureNotified) return
+    this._videoPlaybackFailureNotified = true
+    wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
   },
 
   downloadVideoFileOnce(videoUrl) {
@@ -831,7 +954,7 @@ Page({
         icon: 'none'
       })
     } finally {
-      if (this.isDetailOperationCurrent(operation)) this.setData({ saveVideoBusy: false })
+      if (this.isDetailOperationSequenceCurrent(operation)) this.setData({ saveVideoBusy: false })
     }
   },
 

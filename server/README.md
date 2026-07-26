@@ -66,7 +66,13 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 - `adminAccounts`：管理后台账号。
 - `llmConfig`：LLM 配置。
 - `uploadRecords`：上传记录。
-- `companySheetSnapshot`：飞书公司房源表快照缓存。
+- `companySheetSnapshot`：飞书公司房源固定十列快照缓存；镜像模式下同时保存
+  `sourceMode=feishu-mini-mirror-v1` 与 `schemaVersion=1`，未知来源或未知版本不得被首页渲染。
+- `listings[].mediaAssets`：服务端私有的已验证多视频清单；每项保存稳定素材 ID、受控 OSS
+  对象键、内容摘要、顺序和回读证据。公开接口只投影素材 ID、顺序和 API 域能力地址，不返回
+  OSS 对象键、飞书 token、源文件名或源记录 ID。
+- `listings[].noteMaterialState`：员工源表“房源笔记”素材同步的私有状态、集合摘要和失败状态；
+  不进入公开房源 DTO。
 
 生产部署包含 `db.json` 定时备份：
 
@@ -293,7 +299,13 @@ token 还签入账号级 `tokenVersion`：`POST /mini/auth/logout`、用户自�
 - 公司房源免视频，允许无视频进入公司房源列表和详情。
 - 二房东房源、业主房源必须带真实视频，`videoUrl` 或 `videoKey` 至少有一个。
 - 视频文件本体不进 `db.json`；房源只持久化受控目录内的 `videoKey`，并兼容读取可还原为同一受控对象键的历史 OSS 源 URL。
+- 员工“房源笔记”可为同一房源提供多个视频。服务端私有 `mediaAssets` 按稳定
+  `assetId/displayOrder` 保存全部已验证视频，`videoKey` 仅兼容指向第一条；所有视频必须在
+  飞书目标目录和 OSS 实际 GET 回读均验证内容摘要与字节数后，才原子替换整套清单。
 - 当前有效房源的公开 DTO 只返回 API 域不透明能力地址，默认有效 6 小时；地址不包含 OSS 对象键、历史文件名、AccessKey 或 OSS 签名参数。`GET /mini/listings/:id/media/:kind` 支持 `GET`、`HEAD` 和单段 `Range`，每次请求都重新核对房源仍为前台有效状态，再由服务端生成默认 900 秒的 OSS 短签名并限长流式转发。媒体源只允许配置中的精确 OSS origin 和受控上传目录，不跟随重定向；重复房源 ID 无法唯一解析时 fail-closed。代理默认全局最多 24 路、同一可信客户端最多 6 路，客户端断开、上游 abort/error、超时及正常结束都必须主动销毁上游并只释放一次名额，避免单个来源占满全局并发。
+- 多视频能力令牌同时绑定房源、`assetId`、对象键指纹和整套媒体状态；视频被替换、删除、
+  调序或房态失效后旧能力立即失效。详情页仍只渲染一个播放器，多素材时显示选择条；切换素材
+  会作废旧播放、保存和转发操作，详情刷新时优先保留仍存在的当前素材，否则回到第一条。
 - 上传人通过受保护的“我的房源”接口查看本人待审核/暂不可公开房源时，服务端签发独立 `owner` scope 的短时能力 URL。该令牌同时绑定服务端验签账号、房源、媒体对象和当前审核/维护状态；URL 不明文携带账号或状态，不能跨账号、降级成公共令牌或在房态/媒体变化后继续使用。微信原生 `image/video` 读取已签 URL 时无需再附 Authorization，但 URL 只能由可信本人接口取得。
 - 当前有效合作房源视频属于公开推广素材，游客可直接播放、转发或保存。播放器 `binderror`、保存视频收到 `401/403/404` 时只允许匿名刷新详情并重试一次，禁止循环；保存下载超时为 300 秒。转发留痕仍只接受已登录账号，留痕失败不得造成视频重复发送。含能力地址的列表/详情 JSON 与媒体响应均禁止共享缓存。
 - 小程序 `request` 与 `downloadFile` 域名必须同时配置为合法 HTTPS 且与 API 严格同源（不得含 URL 用户名/密码），并在微信后台将同一 API 域加入 request、downloadFile 与 video 媒体合法域名。发布前在目标数据环境运行 `node scripts/listing-media-readiness-audit.js`；脚本只输出计数和不可逆短指纹，任一前台视频无法解析为受控对象键时退出 `2` 并阻止发布。该脚本只验证“当前仍声明有视频”的行，发布/同步巡检还必须比较前后 `withVideo` 汇总数；无业务解释的减少要停止推进并核对同步对账，不能把“剩余视频都可解析”误当成数量守恒。
@@ -390,13 +402,48 @@ GET /mini/listings?district=上城区&block=闸弄口&rentMode=整租
 GET /mini/listings?district=拱墅区&block=东新园&layout=两室&rentMin=3000&rentMax=5000
 ```
 
-区域和板块配置来自 `server/src/config.js`：
+筛选选项不再由小程序或后台硬编码。公开端先读取：
 
-- 拱墅区：万达、北部软件园、城北万象城、石桥、华丰、永佳、半山、东新园、杭氧、新天地。
-- 上城区：闸弄口、新塘、元宝塘、东站。
-- 余杭区：暂无固定板块，主要通过下面的小区级覆盖归属。
+```http
+GET /mini/listing-filter-options
+```
 
-除板块映射外，`config.js` 还提供 `communityLocationOverrides` 小区级覆盖表（小洋坝家园一/二/三区、大华海派风景、风雅乐府、瑷颐湾等固定为余杭区/城北万象城）。**小区级覆盖优先级高于板块映射**：命中覆盖表的小区直接按覆盖行政区和板块归属，不再落回板块所属区。飞书同步、快照房源和前台筛选都使用同一套 `districtForLocation` 映射入口，后续扩展行政区时优先改服务端配置。
+该接口只从当前有效且已经安全公开投影的房源生成 `regionOptions`；每个行政区携带自己的
+`blocks`。列表、公司房源、收藏和地图选中行政区后，只展示该行政区下真实存在的板块；清空
+行政区时才展示全部板块。未来在位置字典加入新行政区、板块、小区并成功同步后，无需再次改
+小程序代码。本人上传页会把受保护接口返回的本人房源位置与公开元数据合并；收藏页同样把本
+账号全部安全收藏 DTO 的位置合并回来。因此只存在于本人待审核房源、暂不可公开房源或失效
+收藏中的新行政区/板块也可筛选，且换号或迟到响应不能沿用上一账号的私有位置选项。
+
+管理后台不能携管理员 Bearer Token 调用上述 `/mini/*` 端点，必须读取：
+
+```http
+GET /admin/listing-filter-options
+```
+
+它与后台 `/admin/listings` 同源，覆盖全部 active 房源，包括待审核、尚未公开的后台房源；这些
+私有地点不会反向进入游客 `/mini/listing-filter-options`。管理员端点走管理员鉴权，不会把管理员
+token 当作小程序 token 造成 401 与清会话。后台在租列表查询使用 canonical `district`，服务端
+继续兼容旧 `area`。行政区与板块属于结构化字段：所有列表、收藏、地图、本人上传和废房源入口
+都先做 NFKC/首尾空白规范化后再等值匹配，行政区额外兼容末尾“区”的差异；板块不得再用包含
+匹配误收相近名称。切换行政区先清理从属板块再发唯一请求，并以请求代次拒绝迟到旧响应。地图、
+列表、收藏或本人上传页检测到登录账号变化时，会同时清空上一账号的完整筛选条件、板块选项和
+需求画像，不能只刷新地点元数据后沿用旧账号条件。
+
+废房源池使用独立的管理员元数据：
+
+```http
+GET /admin/expired-listing-filter-options
+```
+
+它只从废房源池的管理员位置真值生成行政区与板块，不能复用公开有效房源元数据，也不能使用
+游客公开投影清洗后的地点反推管理员选项；因此某条私有废房源出现在下拉项后，必须能用同一
+选项筛回该行。后台和离线 Mock 都按行政区、板块、小区、来源、最低/最高租金、户型、整租/合租
+做同一组 AND 筛选，并用请求代次拒绝迟到响应覆盖新结果。
+
+`server/src/config.js` 中既有板块映射和 `communityLocationOverrides` 只保留为旧 Sheet
+兼容与位置规范化兜底，不再承担前端选项清单。镜像模式的行政区、板块、小区与坐标以“小程序
+位置字典”为权威；新增地点应维护字典并完成同步，而不是在页面里加常量。
 
 地图接口：
 
@@ -405,7 +452,7 @@ GET /mini/map/communities
 GET /mini/map/pins
 ```
 
-地图筛选复用区域、板块、小区、租金、户型和租赁方式等参数，并用 `sourceType` 精确筛选公司/业主/二房东来源，但只返回可靠小区坐标。从官方联想选择的小区在列表、收藏、地图、普通匹配和 LLM 助手中统一按规范化名称精确匹配，不能把“城发天地”扩大成“城发天地大厦”；未命中官方词库的自由文字搜索仍可模糊召回。从地图切回列表时会独立保留 `community` 与当前来源等筛选条件；游客公开字段投影与列表一致。
+地图筛选复用区域、板块、小区、租金、户型和租赁方式等参数，并用 `sourceType` 精确筛选公司/业主/二房东来源，但只返回可靠小区坐标。从官方联想选择的小区在列表、收藏、地图、普通匹配和 LLM 助手中统一按规范化名称精确匹配，不能把“城发天地”扩大成“城发天地大厦”；未命中官方词库的自由文字搜索仍可模糊召回。地图点位按 `district + block + community` 三元组聚合，并返回稳定 `groupId` 区分跨区域或跨板块的同名小区；点击点位再进入列表时必须携带这三个结构化轴，不能只带同名 `community` 而串入另一组。从地图切回列表时还会独立保留当前来源等筛选条件；游客公开字段投影与列表一致。
 
 坐标分级（`verified`/`approximate`/`block-center` 三档，含板块中心兜底）与离线地理编码依赖腾讯位置服务：`QQ_MAP_WEBSERVICE_KEY`（兼容旧名 `QQ_MAP_KEY`）从环境变量读取，`server/scripts/geocode-listing-communities.js` 用它批量补小区坐标。
 
@@ -417,9 +464,27 @@ GET /mini/map/pins
 GET /mini/company-sheet-snapshot
 ```
 
-快照接口按飞书表头动态返回列，不再要求前端硬编码表头。后端会修正区域合并单元格的向下填充，并保证表头与数据行列数一致。当前公司房源快照不做游客双视图，匿名与登录中介看到同一份公司公开表，包含房号、`看房方式密码` 等公司公开字段；表头前简介行、动态联系电话列和其他数据行中的手机号会统一替换为 `COMPANY_CONTACT_PHONES` 中的合法号码，座机、邮箱、Telegram/WhatsApp/微信等社交账号、任意通用裸域名及其端口/路径/查询和外链都会清除，绝不下发飞书原始私联。响应只包含标题、更新时间、行列数据和脱敏标记，不包含飞书表 URL、sheet token、range、缓存时间或内部起始行列。公司房源详情把全部合法统一号码放入 `companyContactPhones` 并逐项展示；首号同时保留在旧客户端兼容字段中。未配置合法号码时返回空列表，不回退房源自身 `contact` / `landlordPhone`。
+镜像模式的公开快照固定为以下十列，顺序和语义都属于版本契约：
 
-原表头行不会混入数据行；前端应按接口返回的 `rows[0]` 渲染列。
+```text
+行政区｜板块/商圈｜小区｜小区+房号｜户型描述｜户型分类｜月租金｜看房方式｜备注｜房源状态
+```
+
+后端只从完整回读通过的 canonical 专用表生成这十列，并返回
+`sourceMode=feishu-mini-mirror-v1`、`schemaVersion=1`。首页只有在来源、版本、十列表头和
+每行列数全部匹配时才生成图片；未知列、旧八列、敏感表头、来源不可用或数据损坏一律关闭图片
+生成并保留安全空态，不猜列、不回退旧缓存。
+
+首页图片按“行政区 → 板块/商圈 → 小区”三级合并，房号、户型描述和备注最多两行，其余业务
+列一行。为兼容微信设备 Canvas，按最高 2 倍像素输出且任一物理边不得超过 4096px；固定十列
+当前最多安全生成 37 条房源，第 38 条起拒绝生成不完整图片并提示改用列表。前端不会把十列
+裁成旧八列，也不会偷偷降低清晰度绕过边界。
+
+当前公司房源快照不做游客双视图，匿名与登录中介看到同一份已经公开脱敏的公司待租表。
+手机号只允许替换成 `COMPANY_CONTACT_PHONES` 中合法统一号码；座机、邮箱、社交账号、裸域名、
+外链、飞书/Lark 地址、密码、内部身份、负责人、部门、OSS key 和源素材信息都不会进入响应。
+响应不包含飞书表 URL、sheet token、range、缓存时间或内部起始行列。公司详情继续按既有规则
+展示服务器统一号码，未配置时不回退房源自身联系方式。
 
 ## 飞书公司房源同步
 
@@ -566,6 +631,8 @@ FEISHU_HISTORY_FIELD_BINDINGS={"historyEventId":"fld_history_event_id","foundati
 
 启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
 
+未启用员工 profile 的旧单 Base 配置仍受兼容支持，但运行时也会为同一个 Base 分别创建硬只读源客户端和可写目标客户端；源读取与目标表写入不得复用同一客户端。员工 profile 继续强制源、目标 Base 分离。
+
 管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。
 
 紧急止写应设置 `FEISHU_SYNC_ENABLED=false`。需要回滚到旧模式时，先关闭自动同步和镜像开关，确认没有在途任务，再同时清空 source/target 两项新 token 并恢复旧 Base/Sheet 配置，重启后先 dry-run 和计数对账；不得只清一个新 token，也不要在未对账时直接切回旧 Sheet，避免半配置或重新形成双事实源。
@@ -641,6 +708,93 @@ node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-p
 
 若进程被强杀或机器断电，锁文件可能保留。只允许在确认没有任何素材复制进程后处理：先备份并保留原状态文件，核对同路径 `.lock` 确属这次中断，再只删除该 `.lock`；随后必须使用 `--resume` 重新 dry-run 和续传，禁止普通 `--apply`。不要按文件年龄自动清理锁，也不要删除或改写状态文件。
 
+#### 员工源表“房源笔记”素材同步
+
+该链路与上面的历史素材库复制工具互相独立。它只在
+`employee-current-stock-v1` / `employee-ai-foundation-v1` 员工源 profile 下读取员工源 Base
+中稳定字段 ID `fldyeAGJHV`，并要求飞书字段 API 回读类型为超链接（类型码 `15`）。员工改显示列名
+不会影响读取；同步客户端以 `readOnly=true` 建立，任何员工源 POST/PATCH/DELETE 都会在发请求前
+被拒绝。“房源笔记”不会复制进小程序专用房源表，也不会把原始链接写入数据库或公开接口。
+
+单元格只接受白名单租户 HTTPS 下的 `folder/file/docx/wiki` 路径，禁止用户名、密码、非 443
+端口、重定向、编码路径分隔符和非白名单主机。文件夹、文档和 Wiki 会完整分页并递归展开；
+默认最大深度 8、最多检查 5000 项，重复引用会去重，循环、跨房源复用同一源 token、分页异常或
+超过上限都会在首个目标写入前阻断。飞书客户端在分页累计超过 `maxItems` 的当页立即停止，不会
+先读完最多数万条元数据再由解析层拒绝。当前进入小程序的素材只支持 `.mp4/.mov/.m4v/.webm` 视频；
+图片和普通文件只计入 `nonVideo` 对账，不复制、不公开，验收时必须单独报告，不能声称已经同步。
+
+每套房的规范飞书目录固定为：
+
+```text
+目标素材根目录/
+  房源笔记导入-v1/
+    行政区/
+      板块/
+        locationId__标准小区/
+          楼栋__单元__房号/
+```
+
+目录和文件都在写后按同名全量回读验证；同名异类型或多项冲突立即失败。素材 ID 只由员工源
+`sourceRecordId + 资源类型 + 源 token` 生成，因此文件改版不会改变素材身份；每次同步都先受限
+下载当前源文件并计算完整 SHA-256，完整内容摘要进入目标文件名与 OSS 对象键。相同 token 即使
+文件名、大小和修改时间都未变化，只要实际内容变化，也会生成新的 Drive 文件名与 OSS 对象键，
+旧版本不会被覆盖；同一内容重跑则复用同名同键且零重复写。计划阶段逐项下载后只保留摘要、
+大小和类型，不在内存计划中保存视频 Buffer；正式阶段先逐项完成全批第二遍内容预检，全部通过后
+再第三遍逐项重下并核对计划摘要。Drive 不再按可变源 token 调服务端复制，而是上传第三遍刚校验的
+同一 Buffer，随后把目标文件下载回读，再把回读一致的内容写 OSS 并释放。因此内存上界由单个视频
+而不是 64 个视频总和决定。每个视频验证目标云盘内容摘要后，确定性写入
+`ALI_OSS_UPLOAD_DIR/feishu-note-v1/...`，并通过 OSS 鉴权 GET 回读实际字节数和 SHA-256。
+源发现集合、目标云盘集合、OSS 集合、私有清单集合不完全相等时，整套房视频不得发布。
+复用已有目标前仍必须按相同源 token 重新下载当前源内容；即使文件名、大小、修改时间均未变化，
+内容摘要不同也必须重新物化。单套房最多 64 个视频；第 65 个视频会在创建目录、上传 Drive 或写
+OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回。
+
+全批第二遍预检保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
+若后序素材在全批预检通过后、第三遍逐项写入期间才发生变化，任务会在该素材写入前失败关闭，
+不会发布私有清单或公开能力，但此前已写的内容寻址目录/对象可能暂留并供后续同内容重跑复用。
+遇到该状态只允许先只读对账后重跑，禁止按名称盲删、覆盖或跳过摘要门禁。
+
+素材 dry-run 仍会只读下载源文件并计算上述真实内容摘要，确保正式计划不会只凭易失元数据假绿；
+但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有这次只读预演完整成功后，才允许执行一次
+正式同步。
+
+同一房源的全部视频成功后，服务端才通过领域层原子替换 `mediaAssets`。空链接只清除
+`feishu-note-v1` 管理的视频，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或
+链接指纹变化会清除笔记管理视频。只有相同链接指纹、相同且非空物理房间、房源仍在架、已有
+视频且错误属于网络、限流、临时权限或 5xx 时，才允许保留上轮已验证清单。库存同步失败时素材
+阶段完全不启动；素材失败不会回滚已经成功的库存字段，但本轮 `noteMaterials.published=false`，
+必须单独处理后才能声称素材同步完成。服务端明确拆分两个状态：`inventoryCommittable=true`
+表示库存与首页快照可原子提交；只有素材也完整成功时顶层 `success=true`。库存提交后素材失败时
+顶层固定为 `success=false/status=inventory-published-materials-failed`，后台面板和定时任务日志
+必须显示“库存已提交，但素材同步未完整成功”，不得写成整体完成。
+
+每条记录在开始解析时固定完整媒体状态键；目标处理前后、发布以及失败清理都必须继续使用同一
+旧键做 CAS。若另一同步任务已更新任一素材字段，旧任务只记录 `state-conflict`，不得用重新计算
+出的新键清空或覆盖新状态。目录分页必须逐页核验 `has_more/page_token`，缺失或重复 token 立即
+失败；上传后的飞书目标文件还必须下载回读并核对字节数和 SHA-256，不能只相信上传接口响应。
+
+新增环境变量如下，真实 token、租户域名和凭据只放服务器环境，不写仓库：
+
+```env
+FEISHU_NOTE_MATERIAL_SYNC_ENABLED=false
+FEISHU_NOTE_MATERIAL_FIELD_ID=fldyeAGJHV
+FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
+FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
+FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
+FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
+```
+
+新链路默认关闭，且目标根目录必须显式配置，不能回退或等于旧
+`FEISHU_MATERIAL_FOLDER_TOKEN`。首次启用顺序固定为：先关闭
+`FEISHU_AUTO_SYNC_ENABLED` → 配置独立目标根和白名单 → 显式把
+`FEISHU_NOTE_MATERIAL_SYNC_ENABLED` 改为 `true` → 重启后只运行一次 `dryRun=true` →
+核对预演零 Drive/OSS/数据库写入 → 人工正式同步一次并完整对账 → 最后才恢复自动同步。
+dry-run 允许解析源集合但不得创建目录、上传云盘、写 OSS 或替换媒体。正式同步后必须同时回读
+顶层 `success=true`、`noteMaterials.complete=true`、
+`noteMaterials.published=true`，并对账 `video/nonVideo/duplicateReference/failed/retained/cleared`
+等汇总。公开响应只允许 `assetId/kind/displayOrder/label` 和 API 能力地址，不得出现原始链接、
+飞书 token、云盘路径、OSS key、源文件名、源记录 ID 或私有同步状态。
+
 同步规则：
 
 - 房源表和视频素材库按房号/楼栋单元房号等 Key 对齐。
@@ -675,6 +829,12 @@ FEISHU_SYNC_ENABLED=true
 FEISHU_AUTO_SYNC_ENABLED=true
 FEISHU_MIRROR_SYNC_ENABLED=false
 FEISHU_MATERIAL_FOLDER_TOKEN=
+FEISHU_NOTE_MATERIAL_SYNC_ENABLED=false
+FEISHU_NOTE_MATERIAL_FIELD_ID=fldyeAGJHV
+FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
+FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
+FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
+FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
 FEISHU_UPLOAD_TO_OSS=true
 FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000
 FEISHU_MATERIAL_TRANSFER_RETRY_COUNT=2
@@ -758,7 +918,9 @@ Authorization: Bearer <admin-token>
 - `GET /admin/dashboard`
 - `GET /admin/launch-check`
 - `GET /admin/env-template`
+- `GET /admin/listing-filter-options`
 - `GET /admin/listings`
+- `GET /admin/expired-listing-filter-options`
 - `GET /admin/listings/:id/video-compatible-preview`（Bearer 鉴权；只按受控上传目录内的房源持久 `videoKey` 生成 H.264 审核预览）
 - `GET /admin/expired-listings`
 - `POST /admin/expired-listings/:id/restore`

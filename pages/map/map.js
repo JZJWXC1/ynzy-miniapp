@@ -5,6 +5,11 @@ const {
   createPendingFilterEnvelope,
   consumePendingFilterEnvelope
 } = require('../../utils/pending-filter-storage')
+const {
+  DEFAULT_LAYOUT_OPTIONS,
+  normalizeListingFilterOptions,
+  blocksForDistrict
+} = require('../../utils/listing-filter-options')
 
 const PENDING_MAP_FILTERS_KEY = 'ynzy_pending_map_filters'
 const PENDING_LISTING_FILTERS_KEY = 'ynzy_pending_listing_filters'
@@ -23,7 +28,7 @@ const RENT_FILTERS = [
   { label: '5千+', key: '5000-', rentMin: 5000, rentMax: '' }
 ]
 
-const LAYOUT_FILTERS = ['全部', '一室', '两室', '三室']
+const LAYOUT_FILTERS = ['全部'].concat(DEFAULT_LAYOUT_OPTIONS.filter((item) => item !== '不限'))
 const RENT_MODE_FILTERS = ['全部', '整租', '合租']
 const SOURCE_TYPE_FILTERS = ['全部', '公司房源', '业主房源', '二房东房源']
 
@@ -112,7 +117,9 @@ function normalizeCommunity(item, index) {
   const minRent = Number(item.minRent || (rentValues.length ? Math.min.apply(null, rentValues) : 0))
   const maxRent = Number(item.maxRent || (rentValues.length ? Math.max.apply(null, rentValues) : 0))
   return {
-    id: item.community || item.id || `community-${index}`,
+    id: item.groupId || item.id || item.community || `community-${index}`,
+    district: item.district || item.area || '',
+    block: item.block || '',
     community: item.community || '已确认小区',
     latitude: Number(item.latitude),
     longitude: Number(item.longitude),
@@ -149,6 +156,8 @@ function emptyFilters() {
     layout: '',
     rentMode: '',
     sourceType: '',
+    district: '',
+    block: '',
     area: '',
     community: '',
     listingIds: []
@@ -181,6 +190,8 @@ Page({
     layoutFilters: LAYOUT_FILTERS,
     rentModeFilters: RENT_MODE_FILTERS,
     sourceTypeFilters: SOURCE_TYPE_FILTERS,
+    regionOptions: [],
+    blockOptions: [],
     assistantReturnAvailable: false
   },
 
@@ -189,6 +200,7 @@ Page({
     this._assistantReturnOpening = false
     this.bindAuthInvalidationListener()
     const sessionState = this.syncAuthSession()
+    this.loadListingFilterOptions()
     this.setTabBarSelected()
     let pending = {}
     try {
@@ -222,6 +234,7 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
     if (typeof this._unsubscribeAuthInvalidation === 'function') {
       this._unsubscribeAuthInvalidation()
       this._unsubscribeAuthInvalidation = null
@@ -237,13 +250,14 @@ Page({
     if (changed) {
       this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
       this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
-      const filters = Object.assign({}, this.data.filters || emptyFilters(), { needId: '', listingIds: [] })
+      const filters = emptyFilters()
       this.setData({
         communities: [],
         markers: [],
         markerCommunityMap: {},
         selectedCommunityId: '',
         selectedCommunity: null,
+        blockOptions: blocksForDistrict(this.data.regionOptions, ''),
         mapCenter: DEFAULT_CENTER,
         mapScale: 13,
         loading: false,
@@ -284,7 +298,9 @@ Page({
     const layout = pending.layout || pending.houseType || ''
     const rentMode = pending.rentMode || pending.mode || pending.type || ''
     const sourceType = pending.sourceType || pending.houseSourceType || pending.category || ''
-    const area = pending.area || pending.region || pending.district || pending.block || ''
+    const district = pending.district || ''
+    const block = pending.block || ''
+    const area = pending.area || pending.region || ''
     const community = pending.community || ''
     const listingIds = toArray(pending.listingIds || pending.ids || pending.listingId)
     const needId = pending.needId || pending.rentalNeedId || pending.clientNeedId || ''
@@ -297,6 +313,8 @@ Page({
       layout: layout === '全部' ? '' : layout,
       rentMode: rentMode === '全部' ? '' : rentMode,
       sourceType: sourceType === '全部' ? '' : sourceType,
+      district,
+      block,
       area,
       community,
       listingIds
@@ -315,6 +333,8 @@ Page({
       layout: filters.layout,
       rentMode: filters.rentMode,
       sourceType: filters.sourceType,
+      district: filters.district,
+      block: filters.block,
       area: filters.area,
       community: filters.community,
       listingIds: filters.listingIds
@@ -377,6 +397,21 @@ Page({
 
   retryMap() {
     this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
+  },
+
+  loadListingFilterOptions() {
+    if (typeof apiService.getListingFilterOptions !== 'function') return Promise.resolve()
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    const requestSeq = this._filterOptionsRequestSeq
+    return apiService.getListingFilterOptions().then((payload) => {
+      if (this._pageActive === false || requestSeq !== this._filterOptionsRequestSeq) return
+      const options = normalizeListingFilterOptions(payload)
+      this.setData({
+        regionOptions: options.regionOptions,
+        blockOptions: blocksForDistrict(options.regionOptions, this.data.filters && this.data.filters.district),
+        layoutFilters: ['全部'].concat(options.layoutOptions.filter((item) => item !== '不限'))
+      })
+    }).catch(() => {})
   },
 
   returnToAssistant() {
@@ -470,6 +505,32 @@ Page({
     }
     this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
     this.loadCommunities({ recenter: false })
+  },
+
+  changeLocationFilter(event) {
+    const type = event.currentTarget.dataset.type
+    const value = event.currentTarget.dataset.value || ''
+    if (type !== 'district' && type !== 'block') return
+    const filters = {
+      ...this.data.filters,
+      [type]: value
+    }
+    const patch = {
+      filters,
+      selectedCommunityId: '',
+      selectedCommunity: null
+    }
+    if (type === 'district') {
+      filters.block = ''
+      // 用户主动选择行政区后，清除找房助手遗留的通用范围，避免两个位置轴叠加误筛。
+      filters.area = ''
+      filters.community = ''
+      patch.blockOptions = blocksForDistrict(this.data.regionOptions, value)
+    } else {
+      filters.community = ''
+    }
+    this.setData(patch)
+    this.loadCommunities({ recenter: true })
   },
 
   updateRentInput(event) {
@@ -575,8 +636,9 @@ Page({
       category: listingCategoryFromMapFilters(filters),
       filters: {
         needId: filters.needId || '',
+        district: selectedCommunity ? (selectedCommunity.district || '') : (filters.district || ''),
         area: selectedCommunity ? '' : (filters.area || ''),
-        block: '',
+        block: selectedCommunity ? (selectedCommunity.block || '') : (filters.block || ''),
         community: selectedCommunity ? selectedCommunity.community : (filters.community || ''),
         layout: filters.layout || '',
         rentMode: filters.rentMode || '',

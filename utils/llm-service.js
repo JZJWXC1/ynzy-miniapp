@@ -12,6 +12,7 @@ const {
 const MAX_RECOMMEND_COUNT = 5
 const LLM_MATCH_TIMEOUT_MS = 60000
 const AREA_WORDS = ['钱江新城', '上城区', '拱墅区', '西湖区', '滨江区', '萧山区', '余杭区', '临平区', '钱塘区', '上城', '拱墅', '西湖', '滨江', '萧山', '余杭', '临平', '钱塘', '西兴', '长河', '浦沿', '东新园', '建设路']
+const COMMUNITY_WORDS = ['东新园']
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
@@ -45,6 +46,35 @@ const FEATURE_ALIASES = {
 
 function pickWord(text, words) {
   return words.find((word) => text.indexOf(word) !== -1) || ''
+}
+
+function uniqueLocationWords(values) {
+  return Array.from(new Set((values || [])
+    .map((value) => String(value || '').trim())
+    .filter((value) => value.length >= 2 && value.length <= 40)))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right, 'zh-CN'))
+}
+
+function publicLocationCandidates(candidates) {
+  if (Array.isArray(candidates)) return candidates
+  try {
+    const listings = dataCenter.getListings({ publicGuest: true })
+    return Array.isArray(listings) ? listings : []
+  } catch (error) {
+    return []
+  }
+}
+
+function localLocationDictionary(candidates) {
+  const listings = publicLocationCandidates(candidates)
+  const areaWords = uniqueLocationWords(AREA_WORDS.concat(
+    listings.flatMap((listing) => [listing && listing.district, listing && listing.area])
+  ))
+  const areaKeys = new Set(areaWords)
+  const communityWords = uniqueLocationWords(COMMUNITY_WORDS.concat(
+    listings.flatMap((listing) => [listing && listing.block, listing && listing.community])
+  )).filter((word) => !areaKeys.has(word))
+  return { areaWords, communityWords }
 }
 
 function cnDigit(value) {
@@ -120,20 +150,21 @@ function parseBudget(source) {
   return value >= 1000 ? { minBudget: '', maxBudget: value, budget: String(value) } : { minBudget: '', maxBudget: '', budget: '' }
 }
 
-function parseNeedText(text) {
+function parseNeedText(text, candidates) {
   const source = scrubDemandSource(text).replace(/\s+/g, '')
   const budget = parseBudget(source)
   const layoutMatch = source.match(/单间|[一二两三四五六七八九\d](?:室|房)/)
   const features = LISTING_FEATURE_OPTIONS
     .filter((feature) => feature !== NO_FEATURE)
     .filter((feature) => (FEATURE_ALIASES[feature] || [feature]).some((word) => source.indexOf(word) !== -1))
+  const locationDictionary = localLocationDictionary(candidates)
 
   return {
     budget: budget.budget,
     minBudget: budget.minBudget,
     maxBudget: budget.maxBudget,
-    area: pickWord(source, AREA_WORDS),
-    community: source.indexOf('东新园') !== -1 ? '东新园' : '',
+    area: pickWord(source, locationDictionary.areaWords),
+    community: pickWord(source, locationDictionary.communityWords),
     rentMode: source.indexOf('合租') !== -1 || source.indexOf('单间') !== -1
       ? '合租'
       : (source.indexOf('整租') !== -1 ? '整租' : ''),

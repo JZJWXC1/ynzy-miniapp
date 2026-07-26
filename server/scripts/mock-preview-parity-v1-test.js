@@ -359,8 +359,12 @@ async function run() {
 
   await check('Mock 列表 district 与服务端一致', () => {
     const districtRows = mockData.getListings({ district: '拱墅区' })
-    assert.deepStrictEqual(ids(districtRows), [company.id, contactSmuggledCompany.id, owner.id, secondLandlord.id, corruptRent.id, corruptLandlineRent.id].sort())
+    assert.deepStrictEqual(ids(districtRows), [company.id, owner.id, secondLandlord.id, corruptRent.id, corruptLandlineRent.id].sort())
     assert.ok(!ids(districtRows).includes(otherDistrictCompany.id), 'district 不得被忽略')
+    assert.ok(
+      !ids(districtRows).includes(contactSmuggledCompany.id),
+      '清除联系方式后仍残留非规范尾缀的结构化行政区不得靠包含匹配混入 canonical district'
+    )
   })
 
   await check('Mock 卡片动态佣金、媒体字段与服务端一致', () => {

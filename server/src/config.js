@@ -274,6 +274,16 @@ module.exports = {
     sheetId: process.env.FEISHU_SHEET_ID || jsonValue(feishuSheetTokenFile, 'sheet_id'),
     sheetRange: process.env.FEISHU_SHEET_RANGE || jsonValue(feishuSheetTokenFile, 'range') || 'A1:ZZ1000',
     folderToken: process.env.FEISHU_MATERIAL_FOLDER_TOKEN || jsonValue(feishuFolderTokenFile, 'folder_token'),
+    // 员工源表“房源笔记”只读绑定使用稳定 field_id；显示列名变化不会改变读取目标。
+    // 新链路会写飞书云盘、OSS 与私有素材清单，必须在首次 dry-run 和目标目录核验后显式开启。
+    noteMaterialSyncEnabled: boolFromEnv('FEISHU_NOTE_MATERIAL_SYNC_ENABLED', false),
+    noteMaterialFieldId: String(process.env.FEISHU_NOTE_MATERIAL_FIELD_ID || 'fldyeAGJHV').trim(),
+    noteMaterialAllowedHosts: listFromEnv('FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS', ['ccn9urs7d60k.feishu.cn']),
+    noteMaterialTargetRootFolderToken: String(
+      process.env.FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN || ''
+    ).trim(),
+    noteMaterialMaxDepth: numberFromEnv('FEISHU_NOTE_MATERIAL_MAX_DEPTH', 8),
+    noteMaterialMaxItems: numberFromEnv('FEISHU_NOTE_MATERIAL_MAX_ITEMS', 5000),
     pageSize: numberFromEnv('FEISHU_PAGE_SIZE', 50),
     requestTimeoutMs: numberFromEnv('FEISHU_REQUEST_TIMEOUT_MS', 30000),
     requestMaxRetries: numberFromEnv('FEISHU_REQUEST_MAX_RETRIES', 2),

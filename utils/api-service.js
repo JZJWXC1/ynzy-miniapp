@@ -2,6 +2,7 @@ const apiClient = require('./api-client')
 const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
+const listingFilterOptions = require('./listing-filter-options')
 const { anonymousPublicRequestData } = require('./public-request-safety')
 const OFFICIAL_COMMUNITY_KEYS = new Set(require('./gongshu-communities')
   .map((name) => String(name || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase())
@@ -246,6 +247,8 @@ function normalizeMapMockFilter(filter = {}) {
     rentMode: String(filter.rentMode || '').trim(),
     sourceType: String(filter.sourceType || '').trim(),
     companyOnly: filter.companyOnly === true || filter.companyOnly === 'true' || filter.companyOnly === 1 || filter.companyOnly === '1',
+    district: String(filter.district || '').trim(),
+    block: String(filter.block || '').trim(),
     area: String(filter.area || filter.region || '').trim(),
     community: String(filter.community || '').trim(),
     listingIds: mapFilterList(filter.listingIds)
@@ -288,6 +291,29 @@ function mapMockLocationText(item = {}) {
 
 function normalizedPublicCommunityKey(value) {
   return String(value || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+}
+
+function normalizedStructuredDistrict(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/区$/, '')
+}
+
+function normalizedStructuredBlock(value) {
+  return String(value || '').normalize('NFKC').trim()
+}
+
+function mapMockStructuredDistrictMatches(item = {}, requested = '') {
+  const expected = normalizedStructuredDistrict(requested)
+  if (!expected) return true
+  return [item.district, item.area]
+    .map(normalizedStructuredDistrict)
+    .filter(Boolean)
+    .indexOf(expected) !== -1
+}
+
+function mapMockStructuredBlockMatches(item = {}, requested = '') {
+  const expected = normalizedStructuredBlock(requested)
+  if (!expected) return true
+  return normalizedStructuredBlock(item.block) === expected
 }
 
 function mapMockLocationMatches(item = {}, requested = '') {
@@ -355,13 +381,37 @@ function publicMapMockListing(listing = {}) {
   }
 }
 
+function mapMockRoomCount(value = '') {
+  const matched = String(value || '').match(/([一二两三四五六七八九]|\d+)\s*室/)
+  if (!matched) return 0
+  const numbers = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+  return numbers[matched[1]] || Number(matched[1]) || 0
+}
+
+function mapMockMatchesLayout(item = {}, listing = {}, requested = '') {
+  const filter = String(requested || '').trim()
+  if (!filter || filter === '不限') return true
+  const roomCount = mapMockRoomCount([
+    listing.layout,
+    item.layout,
+    item.room,
+    item.type,
+    item.rentMode
+  ].map((part) => String(part || '')).join(' '))
+  if (filter === '一室') return roomCount === 1
+  if (filter === '两室' || filter === '二室') return roomCount === 2
+  if (filter === '三室') return roomCount === 3
+  if (filter === '三室以上') return roomCount >= 3
+  return String(listing.layout || item.layout || '').indexOf(filter) !== -1
+}
+
 function mapMockMatchesFilter(item = {}, listing = {}, filter) {
   if (filter.listingIds.length && filter.listingIds.indexOf(String(listing.id || item.id || '')) === -1) return false
   if (filter.companyOnly && !listing.companyListing) return false
   const rent = mapRent(listing.rent || item.rent || item.price)
   if (filter.rentMin !== null && rent < filter.rentMin) return false
   if (filter.rentMax !== null && rent > filter.rentMax) return false
-  if (filter.layout && String(listing.layout || item.layout || '').indexOf(filter.layout) === -1) return false
+  if (!mapMockMatchesLayout(item, listing, filter.layout)) return false
   if (filter.rentMode && String(listing.rentMode || item.rentMode || item.type || item.layout || '').indexOf(filter.rentMode) === -1) return false
   if (filter.sourceType && filter.sourceType !== '全部') {
     if (LISTING_SOURCE_TYPES.indexOf(filter.sourceType) !== -1) {
@@ -370,6 +420,8 @@ function mapMockMatchesFilter(item = {}, listing = {}, filter) {
       return false
     }
   }
+  if (!mapMockStructuredDistrictMatches(item, filter.district)) return false
+  if (!mapMockStructuredBlockMatches(item, filter.block)) return false
   if (!mapMockLocationMatches(item, filter.area)) return false
   if (!mapMockCommunityMatches(item.community, filter.community)) return false
   return true
@@ -392,9 +444,15 @@ function mockMapCommunities(filter = {}) {
     if (!mapMockMatchesFilter(item, listing, normalizedFilter)) return
     const community = String(item.community || '').trim()
     if (!community) return
-    if (!groups[community]) {
+    const district = String(item.district || item.area || '').normalize('NFKC').trim()
+    const block = String(item.block || '').normalize('NFKC').trim()
+    const groupKey = JSON.stringify([district, block, community])
+    if (!groups[groupKey]) {
       const approximate = /guest-community-approximate|block-center|approximate/i.test(String(coordinate.source || ''))
-      groups[community] = {
+      groups[groupKey] = {
+        groupId: `MAP-MOCK-${encodeURIComponent(groupKey)}`,
+        district,
+        block,
         community,
         latitude: coordinate.latitude,
         longitude: coordinate.longitude,
@@ -414,7 +472,7 @@ function mockMapCommunities(filter = {}) {
         listings: []
       }
     }
-    const group = groups[community]
+    const group = groups[groupKey]
     const rent = mapRent(listing.rent)
     group.listingCount += 1
     group.minRent = group.minRent ? Math.min(group.minRent, rent) : rent
@@ -461,6 +519,32 @@ function getListings(filter) {
     publicReadAuthFallback: true,
     mock: () => mockData.getListings(mockListingAccessFilter(filter))
   }).then((listings) => listingDisplay.normalizeListings(listings))
+}
+
+function listingFilterOptionsFromListings(listings) {
+  const regions = new Map()
+  ;(listings || []).forEach((listing) => {
+    const district = String(listing && (listing.district || listing.area) || '').trim()
+    const block = String(listing && listing.block || '').trim()
+    if (!district) return
+    if (!regions.has(district)) regions.set(district, new Set())
+    if (block) regions.get(district).add(block)
+  })
+  return listingFilterOptions.normalizeListingFilterOptions({
+    regionOptions: Array.from(regions.entries()).map(([name, blocks]) => ({
+      name,
+      blocks: Array.from(blocks)
+    }))
+  })
+}
+
+function getListingFilterOptions() {
+  return apiClient.call({
+    path: '/mini/listing-filter-options',
+    publicReadAuthFallback: true,
+    // Mock 也必须从当前公开有效房源派生，避免新增行政区或板块后仅真机接口生效。
+    mock: () => listingFilterOptionsFromListings(mockData.getListings(mockListingAccessFilter({})))
+  }).then((payload) => listingFilterOptions.normalizeListingFilterOptions(payload))
 }
 
 function getCompanyListings() {
@@ -511,11 +595,24 @@ function buildMockCompanySheetSnapshot() {
   return {
     title: '寓你住一起房源表',
     updatedAt: '',
-    rows: [],
-    rowCount: 0,
-    columnCount: 9,
+    rows: [[
+      '行政区',
+      '板块/商圈',
+      '小区',
+      '小区+房号',
+      '户型描述',
+      '户型分类',
+      '月租金',
+      '看房方式',
+      '备注',
+      '房源状态'
+    ]],
+    rowCount: 1,
+    columnCount: 10,
     unavailable: true,
-    sensitiveStripped: true
+    sensitiveStripped: true,
+    sourceMode: 'feishu-mini-mirror-v1',
+    schemaVersion: 1
   }
 }
 
@@ -1201,6 +1298,7 @@ function addNormalListing(form) {
 module.exports = {
   getHomeListings,
   getListings,
+  getListingFilterOptions,
   getCompanyListings,
   getFavoriteIds,
   getFavorites,
@@ -1253,5 +1351,11 @@ module.exports = {
   createVideoUploadPolicy,
   uploadVideo,
   unlockGroup,
-  addNormalListing
+  addNormalListing,
+  _internal: {
+    mapMockRoomCount,
+    mapMockMatchesLayout,
+    mapMockMatchesFilter,
+    mockMapCommunities
+  }
 }

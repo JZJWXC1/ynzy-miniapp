@@ -262,6 +262,34 @@ function assertMultiplicativeAddressesRemoved(rows, listings, label) {
 
 function assertProductionProjection() {
   const legal = partnerListing('COPY-LEGAL')
+  const multiMedia = partnerListing('COPY-MULTI-MEDIA', {
+    mediaAssets: [
+      {
+        assetId: 'MAT-11111111111111111111111111111111',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/safe/MAT-11111111111111111111111111111111.mp4',
+        contentSha256: 'a'.repeat(64),
+        sourceFingerprint: 'b'.repeat(64),
+        targetDriveFingerprint: 'c'.repeat(64),
+        displayOrder: 0,
+        mimeType: 'video/mp4',
+        size: 1024,
+        verified: true
+      },
+      {
+        assetId: 'MAT-22222222222222222222222222222222',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/safe/MAT-22222222222222222222222222222222.mp4',
+        contentSha256: 'd'.repeat(64),
+        sourceFingerprint: 'e'.repeat(64),
+        targetDriveFingerprint: 'f'.repeat(64),
+        displayOrder: 1,
+        mimeType: 'video/mp4',
+        size: 2048,
+        verified: true
+      }
+    ]
+  })
   const companyExternalLink = partnerListing('COPY-COMPANY-EXTERNAL-LINK', {
     companyListing: true,
     isCompanyListing: true,
@@ -332,6 +360,7 @@ function assertProductionProjection() {
   const db = {
     listings: [
       legal,
+      multiMedia,
       companyExternalLink,
       address,
       maliciousDate,
@@ -406,6 +435,19 @@ function assertProductionProjection() {
   const legalDetail = domain.listingDetail(db, legal.id)
   assertLegalEnglishCopy(legalDetail, '生产详情')
   assert.strictEqual(legalDetail.videoLabel, '2 rooms', '生产详情必须保留合法英文视频标题')
+  const multiMediaDetail = domain.listingDetail(db, multiMedia.id)
+  assert.strictEqual(multiMediaDetail.mediaAssets.length, 2, '生产详情必须投影全部已验证素材的安全骨架')
+  multiMediaDetail.mediaAssets.forEach((asset, index) => {
+    assert.deepStrictEqual(
+      Object.keys(asset).sort(),
+      ['assetId', 'displayOrder', 'kind', 'label'].sort(),
+      `生产详情素材 ${index + 1} 不得夹带私有字段`
+    )
+  })
+  const serializedMultiMediaDetail = JSON.stringify(multiMediaDetail)
+  ;['objectKey', 'contentSha256', 'sourceFingerprint', 'targetDriveFingerprint', 'house-videos'].forEach((secret) => {
+    assert.ok(!serializedMultiMediaDetail.includes(secret), `生产详情不得泄露多视频私有字段 ${secret}`)
+  })
 
   const publicSurfaces = {
     home: domain.homeListings(db),

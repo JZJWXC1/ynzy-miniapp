@@ -224,7 +224,8 @@ function validateClientOptions(options) {
     pageSize,
     requestTimeoutMs,
     maxRetries,
-    retryDelayMs
+    retryDelayMs,
+    readOnly: opts.readOnly === true
   }
 }
 
@@ -449,6 +450,11 @@ function createBitableClient(options) {
   }
 
   async function writeBatch(tableId, records, suffix, operation, clientToken) {
+    if (config.readOnly) {
+      const error = new Error('员工源表客户端为硬只读，禁止任何新增或更新请求')
+      error.statusCode = 403
+      throw error
+    }
     validateBatchRecords(records, operation)
     if (records.length === 0) return []
     const url = new URL(endpoint(tableId, suffix))
@@ -478,6 +484,7 @@ function createBitableClient(options) {
   }
 
   return {
+    readOnly: config.readOnly,
     readValidatedTableSnapshot,
     batchCreateRecords,
     batchUpdateRecords

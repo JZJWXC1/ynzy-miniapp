@@ -8,6 +8,14 @@
 
   <view class="filter-panel">
     <view class="filter-row">
+      <view class="filter-chip {{!filters.district ? 'active' : ''}}" bindtap="changeLocationFilter" data-type="district" data-value="">全部区域</view>
+      <view wx:for="{{regionOptions}}" wx:key="name" class="filter-chip {{filters.district === item.name ? 'active' : ''}}" bindtap="changeLocationFilter" data-type="district" data-value="{{item.name}}">{{item.name}}</view>
+    </view>
+    <view wx:if="{{blockOptions.length}}" class="filter-row">
+      <view class="filter-chip {{!filters.block ? 'active' : ''}}" bindtap="changeLocationFilter" data-type="block" data-value="">全部板块</view>
+      <view wx:for="{{blockOptions}}" wx:key="*this" class="filter-chip {{filters.block === item ? 'active' : ''}}" bindtap="changeLocationFilter" data-type="block" data-value="{{item}}">{{item}}</view>
+    </view>
+    <view class="filter-row">
       <view wx:for="{{rentFilters}}" wx:key="key" class="filter-chip {{filters.rentKey === item.key ? 'active' : ''}}" bindtap="changeRentFilter" data-key="{{item.key}}">{{item.label}}</view>
     </view>
     <view class="custom-rent-row">

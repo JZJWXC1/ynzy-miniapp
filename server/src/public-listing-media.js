@@ -4,6 +4,7 @@ const crypto = require('crypto')
 const http = require('http')
 const https = require('https')
 const { URL } = require('url')
+const { normalizePrivateListingMediaAssets } = require('./domain')
 
 // 公开视频用于播放、转发和保存；能力地址本身不暴露对象键，且每次请求仍会重验房源状态。
 // 默认覆盖六小时长驻页面/弱网播放窗口，客户端 binderror 再做一次受控刷新。
@@ -13,6 +14,7 @@ const DEFAULT_MAX_BYTES = 300 * 1024 * 1024
 const DEFAULT_MAX_CONCURRENT = 24
 const DEFAULT_MAX_CONCURRENT_PER_CLIENT = 6
 const VIDEO_EXTENSION_RE = /\.(mp4|mov|m4v|webm)$/i
+const MEDIA_ASSET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/
 
 function normalizedOrigin(value) {
   try {
@@ -87,6 +89,62 @@ function resolveManagedVideoObjectKey(listing = {}, options = {}) {
   return managedObjectKeyFromUrl(listing.videoUrl, options)
 }
 
+function normalizedListingMediaAssets(listing = {}, options = {}) {
+  if (!Object.prototype.hasOwnProperty.call(listing, 'mediaAssets')) return null
+  let assets
+  try {
+    // 公共媒体代理直接复用领域层的完整 canonical 校验，避免来源摘要、目标回读摘要、
+    // MIME 或大小在两层之间产生“领域已关闭、代理仍放行”的漂移。
+    assets = normalizePrivateListingMediaAssets(listing.mediaAssets)
+  } catch (error) {
+    return []
+  }
+  const managed = assets.map((asset) => ({
+    ...asset,
+    objectKey: normalizeManagedObjectKey(asset.objectKey, options.uploadDir)
+  }))
+  return managed.some((asset) => !asset.objectKey) ? [] : managed
+}
+
+function mediaAssetStateKey(asset = {}) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    assetId: String(asset.assetId || ''),
+    kind: String(asset.kind || ''),
+    objectKey: String(asset.objectKey || ''),
+    contentSha256: String(asset.contentSha256 || ''),
+    sourceFingerprint: String(asset.sourceFingerprint || ''),
+    targetDriveFingerprint: String(asset.targetDriveFingerprint || ''),
+    displayOrder: Number(asset.displayOrder),
+    mimeType: String(asset.mimeType || ''),
+    size: Number(asset.size),
+    verified: asset.verified === true
+  })).digest('hex')
+}
+
+function mediaManifestStateKey(assets = []) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify((Array.isArray(assets) ? assets : []).map(mediaAssetStateKey)))
+    .digest('hex')
+}
+
+function resolveListingMediaSource(listing = {}, assetIdValue = '', options = {}) {
+  const assetId = String(assetIdValue || '').trim()
+  const assets = normalizedListingMediaAssets(listing, options)
+  if (assets) {
+    if (!assetId) return null
+    const asset = assets.find((item) => item.assetId === assetId)
+    if (!asset) return null
+    return {
+      assetId: asset.assetId,
+      objectKey: asset.objectKey,
+      mediaStateKey: mediaManifestStateKey(assets)
+    }
+  }
+  if (assetId) return null
+  const objectKey = resolveManagedVideoObjectKey(listing, options)
+  return objectKey ? { assetId: '', objectKey, mediaStateKey: '' } : null
+}
+
 function mediaError(statusCode, message) {
   const error = new Error(message || '媒体不可用')
   error.statusCode = statusCode
@@ -107,7 +165,9 @@ function normalizedCapabilityScope(options = {}) {
   const scope = options.scope === 'owner' ? 'owner' : 'public'
   const audience = scope === 'owner' ? String(options.audience || '').trim() : ''
   const stateKey = scope === 'owner' ? String(options.stateKey || '') : ''
-  return { scope, audience, stateKey }
+  const assetId = String(options.assetId || '').trim()
+  const mediaStateKey = String(options.mediaStateKey || '')
+  return { scope, audience, stateKey, assetId, mediaStateKey }
 }
 
 function capabilityPayload(listingId, kind, expiresAt, objectKey, options = {}) {
@@ -120,7 +180,9 @@ function capabilityPayload(listingId, kind, expiresAt, objectKey, options = {}) 
     mediaFingerprint(objectKey),
     capability.scope,
     mediaFingerprint(capability.audience),
-    mediaFingerprint(capability.stateKey)
+    mediaFingerprint(capability.stateKey),
+    mediaFingerprint(capability.assetId),
+    mediaFingerprint(capability.mediaStateKey)
   ].join('\n')
 }
 
@@ -286,17 +348,46 @@ function createPublicListingMediaService(options = {}) {
     const url = new URL(pathname, baseUrl)
     const capability = normalizedCapabilityScope(capabilityOptions)
     if (capability.scope === 'owner' && (!capability.audience || !capability.stateKey)) return ''
+    if (capability.assetId && !MEDIA_ASSET_ID_RE.test(capability.assetId)) return ''
     url.searchParams.set('token', capabilityToken(listingId, kind, objectKey, capability))
+    if (capability.assetId) url.searchParams.set('assetId', capability.assetId)
     if (capability.scope === 'owner') url.searchParams.set('scope', 'owner')
     return url.toString()
   }
 
   function urlsForListing(listing = {}, capabilityOptions = {}) {
+    const assets = normalizedListingMediaAssets(listing, sourceOptions)
+    if (!listing.id) return { videoUrl: '', coverUrl: '', mediaAssets: [] }
+    if (assets) {
+      const mediaStateKey = mediaManifestStateKey(assets)
+      const mediaAssets = assets.map((asset, index) => {
+        const boundOptions = {
+          ...capabilityOptions,
+          assetId: asset.assetId,
+          mediaStateKey
+        }
+        return {
+          assetId: asset.assetId,
+          kind: 'video',
+          displayOrder: asset.displayOrder,
+          label: `视频 ${index + 1}`,
+          videoUrl: publicUrl(listing.id, 'video', asset.objectKey, boundOptions),
+          coverUrl: publicUrl(listing.id, 'cover', asset.objectKey, boundOptions)
+        }
+      }).filter((asset) => asset.videoUrl && asset.coverUrl)
+      const primary = mediaAssets[0] || {}
+      return {
+        videoUrl: primary.videoUrl || '',
+        coverUrl: primary.coverUrl || '',
+        mediaAssets
+      }
+    }
     const objectKey = resolveManagedVideoObjectKey(listing, sourceOptions)
-    if (!objectKey || !listing.id) return { videoUrl: '', coverUrl: '' }
+    if (!objectKey) return { videoUrl: '', coverUrl: '', mediaAssets: [] }
     return {
       videoUrl: publicUrl(listing.id, 'video', objectKey, capabilityOptions),
-      coverUrl: publicUrl(listing.id, 'cover', objectKey, capabilityOptions)
+      coverUrl: publicUrl(listing.id, 'cover', objectKey, capabilityOptions),
+      mediaAssets: []
     }
   }
 
@@ -317,14 +408,17 @@ function createPublicListingMediaService(options = {}) {
     const listing = input.listing || {}
     const listingId = String(input.listingId || '')
     if (!listing.id || listingId !== String(listing.id)) return Promise.reject(mediaError(404, '媒体不存在'))
-    const objectKey = resolveManagedVideoObjectKey(listing, sourceOptions)
-    if (!objectKey || !verifyCapability(listingId, kind, objectKey, input.token, {
+    const source = resolveListingMediaSource(listing, input.assetId, sourceOptions)
+    if (!source || !verifyCapability(listingId, kind, source.objectKey, input.token, {
       scope: input.scope,
       audience: input.audience,
-      stateKey: input.stateKey
+      stateKey: input.stateKey,
+      assetId: source.assetId,
+      mediaStateKey: source.mediaStateKey
     })) {
       return Promise.reject(mediaError(404, '媒体不存在'))
     }
+    const objectKey = source.objectKey
     const requestedRange = parseSingleRange(req.headers && req.headers.range)
     if (requestedRange === false) {
       writeRangeRejected(res)
@@ -556,6 +650,8 @@ function createPublicListingMediaService(options = {}) {
 module.exports = {
   createPublicListingMediaService,
   resolveManagedVideoObjectKey,
+  normalizedListingMediaAssets,
+  resolveListingMediaSource,
   normalizeManagedObjectKey,
   parseSingleRange,
   isSecureSameOrigin

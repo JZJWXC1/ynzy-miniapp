@@ -659,6 +659,67 @@ async function testConfiguredSyncCreatesSeparateBaseClients() {
   }
 }
 
+async function testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget() {
+  const previous = JSON.parse(JSON.stringify(config.feishu))
+  const bindings = validBindings()
+  const clients = makeClients()
+  const createdClients = []
+  try {
+    Object.assign(config.feishu, {
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      bitableAppToken: 'shared-legacy-base',
+      sourceBitableAppToken: 'shared-legacy-base',
+      targetBitableAppToken: 'shared-legacy-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: 'tbl-source',
+      miniTableId: 'tbl-mini',
+      locationTableId: 'tbl-location',
+      sourceFieldBindings: bindings.source,
+      miniFieldBindings: bindings.mini,
+      locationFieldBindings: bindings.location,
+      sourceCompatibilityProfile: '',
+      noteMaterialSyncEnabled: false,
+      folderToken: 'folder-token'
+    })
+    const result = await feishuSync._internal.configuredMirrorTableSync({
+      feishuToken: 'tenant-token-for-test',
+      dryRun: false,
+      materials: [],
+      runId: 'legacy-same-base-formal-test',
+      clientFactory(options) {
+        createdClients.push({
+          appToken: options.appToken,
+          readOnly: options.readOnly === true
+        })
+        if (createdClients.length === 1) return clients.sourceClient
+        if (createdClients.length === 2) return clients.targetClient
+        throw new Error('同 Base 兼容同步创建了多余客户端')
+      }
+    })
+    assert.strictEqual(result.status, 'success', '旧单 Base 配置的正式同步必须继续可用')
+    assert.deepStrictEqual(
+      createdClients,
+      [
+        { appToken: 'shared-legacy-base', readOnly: true },
+        { appToken: 'shared-legacy-base', readOnly: false }
+      ],
+      '同 Base 也必须分别创建硬只读源客户端和可写目标客户端'
+    )
+    assert.deepStrictEqual(
+      clients.calls.filter((call) => call.client === 'source').map((call) => call.action),
+      ['read'],
+      '旧单 Base 正式同步仍不得通过源客户端写入'
+    )
+    assert.ok(
+      clients.calls.some((call) => call.client === 'target' && call.action === 'create' && call.tableId === 'tbl-mini'),
+      '旧单 Base 正式同步必须由独立目标客户端写入专用表'
+    )
+  } finally {
+    restore(config.feishu, previous)
+  }
+}
+
 async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
   const bindings = validBindings()
   const sourceBindings = employeeSourceBindings()
@@ -978,6 +1039,7 @@ async function main() {
   await testResourceIdentityAndPartialConfiguration()
   await testSeparateClientsRouteReadsAndWrites()
   await testConfiguredSyncCreatesSeparateBaseClients()
+  await testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget()
   await testEmployeeCurrentStockProfileDryRunIsReadOnly()
   await testEmployeeProfileExplicitPasswordConflictsStopBeforeTargetWrite()
   await testDeactivateWritesOnlyMiniTableAndAllThreeFields()

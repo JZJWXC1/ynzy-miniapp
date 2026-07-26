@@ -9,6 +9,8 @@ const { refreshRecommendationProfile } = require('./listing-recommendation-profi
 const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 const { createBitableClient } = require('./feishu-bitable-client')
+const { createFeishuNoteMaterialClient } = require('./feishu-note-material-client')
+const { syncNoteMaterialsForInventory } = require('./feishu-note-material-sync')
 const sourceMirror = require('./feishu-source-mirror')
 const {
   buildLocationCatalog,
@@ -90,7 +92,8 @@ const MIRROR_FIELD_TYPE_CONTRACTS = Object.freeze({
     community: [1, 3], roomLabel: [1], building: [1, 2], unit: [1, 2], roomNumber: [1, 2],
     layoutDescription: [1], layoutCategory: [1, 3], monthlyRent: [1, 2], rentMode: [1, 3],
     viewingMethod: [1, 3], remark: [1], vacancyNote: [1], listingStatus: [1, 3], contact: [1, 13],
-    viewingPassword: [1], landlordCommissionPercent: [1, 2], tags: [1, 4], video: [17]
+    viewingPassword: [1], landlordCommissionPercent: [1, 2], tags: [1, 4], video: [17],
+    noteMaterialLink: [15]
   }),
   mini: Object.freeze({
     sourceRecordId: [1], locationId: [1], locationRecordId: [1], city: [1], district: [1, 3],
@@ -3873,6 +3876,31 @@ async function executeAiFoundationSync({
   }
 }
 
+function sourceNoteMaterialRows(sourceSnapshot = {}) {
+  return (Array.isArray(sourceSnapshot.records) ? sourceSnapshot.records : []).map((record) => {
+    const value = record && record.fields && record.fields.noteMaterialLink
+    return {
+      sourceRecordId: normalizeText(record && (record.recordId || record.record_id)),
+      value: value === undefined ? null : clone(value)
+    }
+  })
+}
+
+function sourceBindingsWithNoteMaterial(bindings, options = {}) {
+  const source = bindings && typeof bindings === 'object' && !Array.isArray(bindings)
+    ? { ...bindings }
+    : {}
+  if (options.enabled !== true) return source
+  const fieldId = normalizeText(options.fieldId)
+  if (!fieldId) throw new Error('房源笔记稳定 field_id 未配置')
+  source.noteMaterialLink = {
+    fieldId,
+    type: 15,
+    required: false
+  }
+  return source
+}
+
 async function executeMirrorTableSync(options = {}) {
   assertLifecycleTableResourcesDistinct(options)
   const sourceClient = options.sourceClient || options.client
@@ -3890,6 +3918,9 @@ async function executeMirrorTableSync(options = {}) {
     requireCreatedTime: aiFoundationProfileEnabled(options.sourceCompatibilityProfile),
     nowMs: options.nowMs
   })
+  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
+    ? sourceNoteMaterialRows(rawSourceSnapshot)
+    : []
   const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
     bindings: options.locationBindings,
@@ -3920,7 +3951,7 @@ async function executeMirrorTableSync(options = {}) {
       bindings: options.historyBindings,
       allowEmpty: true
     })
-    return executeAiFoundationSync({
+    const foundationResult = await executeAiFoundationSync({
       targetClient,
       sourceSnapshot,
       mirrorSnapshot,
@@ -3931,6 +3962,7 @@ async function executeMirrorTableSync(options = {}) {
       runId,
       nowMs
     })
+    return { ...foundationResult, sourceNoteMaterials }
   }
   const plan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
   const plannedRecords = activeMirrorRecords({
@@ -3959,6 +3991,8 @@ async function executeMirrorTableSync(options = {}) {
       counts: clone(plan.counts),
       records: plannedRecords,
       materials: options.materials || []
+      ,
+      sourceNoteMaterials
     }
   }
 
@@ -4019,6 +4053,8 @@ async function executeMirrorTableSync(options = {}) {
     counts: clone(plan.counts),
     records: activeMirrorRecords(readback),
     materials: options.materials || []
+    ,
+    sourceNoteMaterials
   }
 }
 
@@ -4049,20 +4085,28 @@ async function configuredMirrorTableSync(options = {}) {
     retryDelayMs: config.feishu.requestRetryDelayMs,
     fetchImpl: fetch
   }
+  const employeeSourceProfile = [
+    EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+    EMPLOYEE_AI_FOUNDATION_PROFILE
+  ].includes(config.feishu.sourceCompatibilityProfile)
+  const noteMaterialSyncEnabled = config.feishu.noteMaterialSyncEnabled === true && employeeSourceProfile
   const sourceClient = options.sourceClient || options.client || clientFactory({
     ...commonClientOptions,
-    appToken: sourceBaseToken
+    appToken: sourceBaseToken,
+    readOnly: true
   })
-  const targetClient = options.targetClient || options.client || (
-    sourceBaseToken === targetBaseToken && !options.sourceClient
-      ? sourceClient
-      : clientFactory({
-          ...commonClientOptions,
-          appToken: targetBaseToken
-        })
-  )
+  // 即便 legacy 配置的源、目标仍在同一 Base，也必须把读源与写目标拆成两只客户端。
+  // 复用硬只读源客户端会让正式同步首个目标写请求固定失败；把源客户端改回可写又会破坏只读边界。
+  const targetClient = options.targetClient || options.client || clientFactory({
+    ...commonClientOptions,
+    appToken: targetBaseToken
+  })
   const materials = await loadConfiguredMirrorMaterials(token, options)
-  const sourceBindings = resolvedContractBindings('source', config.feishu.sourceFieldBindings, {
+  const configuredSourceBindings = sourceBindingsWithNoteMaterial(config.feishu.sourceFieldBindings, {
+    enabled: noteMaterialSyncEnabled,
+    fieldId: config.feishu.noteMaterialFieldId
+  })
+  const sourceBindings = resolvedContractBindings('source', configuredSourceBindings, {
     sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile
   })
   const miniBindings = resolvedContractBindings('mini', config.feishu.miniFieldBindings, {
@@ -4101,7 +4145,8 @@ async function configuredMirrorTableSync(options = {}) {
     dryRun: options.dryRun === true,
     nowMs: options.nowMs,
     runId: options.runId,
-    materials
+    materials,
+    noteMaterialSyncEnabled
   })
   return { ...result, feishuToken: token }
 }
@@ -4145,6 +4190,194 @@ async function configuredFoundationEnrichment(options = {}) {
   })
 }
 
+async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
+  const sourceRows = Array.isArray(mirrorResult && mirrorResult.sourceNoteMaterials)
+    ? mirrorResult.sourceNoteMaterials
+    : []
+  if (config.feishu.noteMaterialSyncEnabled !== true || sourceRows.length === 0) {
+    return {
+      complete: true,
+      published: options.dryRun !== true,
+      dryRun: options.dryRun === true,
+      sourceRecordCount: sourceRows.length,
+      synced: 0,
+      cleared: 0,
+      retained: 0,
+      failed: 0,
+      skipped: true,
+      rows: []
+    }
+  }
+  const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
+  const legacySourceRoot = String(config.feishu.folderToken || '').trim()
+  const configurationReady = config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
+    Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
+    config.feishu.noteMaterialAllowedHosts.length > 0 &&
+    Boolean(targetRoot) &&
+    (!legacySourceRoot || targetRoot !== legacySourceRoot) &&
+    (Boolean(options.noteMaterialOss) || oss.hasReadConfig())
+  if (options.dryRun !== true && !configurationReady) {
+    return {
+      complete: false,
+      published: false,
+      dryRun: false,
+      sourceRecordCount: sourceRows.length,
+      synced: 0,
+      cleared: 0,
+      retained: 0,
+      failed: sourceRows.length,
+      status: 'configuration-not-ready',
+      rows: []
+    }
+  }
+  try {
+    const drive = options.noteMaterialDrive || createFeishuNoteMaterialClient({
+      fetchImpl: options.fetchImpl || fetch,
+      accessToken: mirrorResult.feishuToken || options.feishuToken,
+      baseUrl: config.feishu.baseUrl,
+      pageSize: config.feishu.pageSize,
+      maxItems: config.feishu.noteMaterialMaxItems,
+      timeoutMs: config.feishu.materialTransferTimeoutMs,
+      maxBytes: config.oss.maxVideoSize,
+      targetRootFolderToken: config.feishu.noteMaterialTargetRootFolderToken
+    })
+    return await syncNoteMaterialsForInventory({
+      db: workingDb,
+      sourceRows,
+      allowedHosts: config.feishu.noteMaterialAllowedHosts,
+      maxDepth: config.feishu.noteMaterialMaxDepth,
+      maxItems: config.feishu.noteMaterialMaxItems,
+      targetRootFolderToken: config.feishu.noteMaterialTargetRootFolderToken,
+      uploadDir: config.oss.uploadDir,
+      drive,
+      oss: options.noteMaterialOss || oss,
+      dryRun: options.dryRun === true,
+      nowText: nowText(),
+      mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
+      replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
+        workingDb,
+        listing.id,
+        mediaAssets,
+        {
+          expectedStateKey: context.expectedStateKey,
+          updatedAt: context.updatedAt
+        }
+      )
+    })
+  } catch (error) {
+    return {
+      complete: false,
+      published: false,
+      dryRun: options.dryRun === true,
+      sourceRecordCount: sourceRows.length,
+      synced: 0,
+      cleared: 0,
+      retained: 0,
+      failed: Math.max(1, sourceRows.length),
+      rows: [{ status: 'pipeline-failed', error: shortError(error) }]
+    }
+  }
+}
+
+async function syncNoteMaterialsAfterInventory(workingDb, inventory, mirrorResult, options = {}) {
+  const inventoryComplete = inventory && inventory.failed === 0 && inventory.skippedInvalid === 0
+  if (inventoryComplete) return syncMirrorNoteMaterials(workingDb, mirrorResult, options)
+  return {
+    complete: false,
+    published: false,
+    dryRun: options.dryRun === true,
+    sourceRecordCount: Array.isArray(mirrorResult && mirrorResult.sourceNoteMaterials)
+      ? mirrorResult.sourceNoteMaterials.length
+      : 0,
+    synced: 0,
+    cleared: 0,
+    retained: 0,
+    failed: 0,
+    skipped: true,
+    status: 'skipped-inventory-failed',
+    rows: []
+  }
+}
+
+function finalizeMirrorSyncResult(run = {}) {
+  const inventory = run.inventory && typeof run.inventory === 'object' ? run.inventory : {}
+  const noteMaterials = inventory.noteMaterials && typeof inventory.noteMaterials === 'object'
+    ? inventory.noteMaterials
+    : null
+  const inventoryClassification = classifyMirrorRunResult(run)
+  const inventoryCommittable = inventoryClassification.success === true && run.dryRun !== true
+  const inventoryPublished = inventoryClassification.success === true && run.published === true
+  const flattened = {
+    ...inventory,
+    complete: run.complete,
+    published: run.published,
+    validated: run.validated,
+    planned: run.planned,
+    failed: run.failed,
+    schemaInvalid: run.schemaInvalid,
+    mirrorIncomplete: run.mirrorIncomplete,
+    success: run.success,
+    status: run.status,
+    noop: run.noop,
+    dryRun: run.dryRun,
+    mirror: run.mirror,
+    noteMaterials,
+    sheetSnapshot: run.snapshot,
+    inventoryCommittable,
+    inventoryPublished
+  }
+  if (!inventoryClassification.success || !noteMaterials) return flattened
+
+  const materialSucceeded = noteMaterials.complete === true &&
+    Number(noteMaterials.failed || 0) === 0 &&
+    (run.dryRun === true ? noteMaterials.dryRun === true : noteMaterials.published === true)
+  if (materialSucceeded) return flattened
+
+  return {
+    ...flattened,
+    complete: false,
+    published: false,
+    success: false,
+    status: run.dryRun === true
+      ? 'inventory-validated-materials-failed'
+      : 'inventory-published-materials-failed',
+    failed: Math.max(1, Number(noteMaterials.failed || 0)),
+    noop: false
+  }
+}
+
+function recordMirrorSyncOutcome(db, result = {}) {
+  const logs = db && Array.isArray(db.feishuSyncLogs) ? db.feishuSyncLogs : []
+  const latest = logs[0]
+  if (!latest || typeof latest !== 'object' || Array.isArray(latest)) return false
+  const note = result.noteMaterials && typeof result.noteMaterials === 'object'
+    ? result.noteMaterials
+    : null
+  latest.success = result.success === true
+  latest.status = String(result.status || (result.success === true ? 'success' : 'failed'))
+  latest.inventoryCommittable = result.inventoryCommittable === true
+  latest.inventoryPublished = result.inventoryPublished === true
+  latest.noteMaterials = note
+    ? {
+        complete: note.complete === true,
+        published: note.published === true,
+        dryRun: note.dryRun === true,
+        sourceRecordCount: Number(note.sourceRecordCount || 0),
+        resolved: Number(note.resolved || 0),
+        synced: Number(note.synced || 0),
+        cleared: Number(note.cleared || 0),
+        retained: Number(note.retained || 0),
+        failed: Number(note.failed || 0),
+        video: Number(note.video || 0),
+        nonVideo: Number(note.nonVideo || 0),
+        duplicateReference: Number(note.duplicateReference || 0),
+        skipped: note.skipped === true,
+        status: String(note.status || '')
+      }
+    : null
+  return true
+}
+
 async function syncViaMirror(db, adminId, options = {}) {
   const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
   const run = await runCompanySourceSync({
@@ -4160,8 +4393,15 @@ async function syncViaMirror(db, adminId, options = {}) {
         trustedCanonicalCoordinates: true
       })
       const complete = inventory.failed === 0 && inventory.skippedInvalid === 0
+      const noteMaterials = await syncNoteMaterialsAfterInventory(
+        workingDb,
+        inventory,
+        mirrorResult,
+        options
+      )
       return {
         ...inventory,
+        noteMaterials,
         complete,
         published: complete,
         noop: inventory.created === 0 && inventory.updated === 0 && inventory.down === 0
@@ -4193,29 +4433,14 @@ async function syncViaMirror(db, adminId, options = {}) {
     commit: async () => ({ complete: true, noop: true, dryRun: options.dryRun === true })
   })
 
-  const inventory = run.inventory && typeof run.inventory === 'object' ? run.inventory : {}
-  return {
-    ...inventory,
-    complete: run.complete,
-    published: run.published,
-    validated: run.validated,
-    planned: run.planned,
-    failed: run.failed,
-    schemaInvalid: run.schemaInvalid,
-    mirrorIncomplete: run.mirrorIncomplete,
-    success: run.success,
-    status: run.status,
-    noop: run.noop,
-    dryRun: run.dryRun,
-    mirror: run.mirror,
-    sheetSnapshot: run.snapshot
-  }
+  const result = finalizeMirrorSyncResult(run)
+  recordMirrorSyncOutcome(db, result)
+  return result
 }
 
 function isCommittableSyncResult(result) {
   if (!config.feishu.mirrorSyncEnabled) return true
-  const classified = classifyMirrorRunResult(result)
-  return classified.success && classified.dryRun !== true
+  return Boolean(result && result.inventoryCommittable === true && result.dryRun !== true)
 }
 
 function parseAdminDryRun(body = {}) {
@@ -4295,6 +4520,14 @@ function status(db = {}) {
   const hasFolder = Boolean(config.feishu.folderToken || config.feishu.materialsFile)
   const legacyReady = (hasLocalFiles || hasBitable || hasSheet) && hasFolder
   const mirrorState = mirrorConfigurationStatus()
+  const noteMaterialsReady = config.feishu.noteMaterialSyncEnabled === true &&
+    config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
+    Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
+    config.feishu.noteMaterialAllowedHosts.length > 0 &&
+    Boolean(config.feishu.noteMaterialTargetRootFolderToken) &&
+    (!config.feishu.folderToken ||
+      String(config.feishu.noteMaterialTargetRootFolderToken).trim() !== String(config.feishu.folderToken).trim()) &&
+    oss.hasReadConfig()
   const sourceReady = config.feishu.syncEnabled && (config.feishu.mirrorSyncEnabled ? mirrorState.ready : legacyReady)
   return {
     ready: sourceReady,
@@ -4309,6 +4542,7 @@ function status(db = {}) {
       : (hasLocalFiles || hasBitable || hasSheet),
     sheetReady: hasSheet,
     materialsReady: config.feishu.mirrorSyncEnabled ? mirrorState.materialsReady : hasFolder,
+    noteMaterialsReady,
     sourceTableReady: mirrorState.sourceTableReady,
     miniTableReady: mirrorState.miniTableReady,
     locationTableReady: mirrorState.locationTableReady,
@@ -4373,6 +4607,12 @@ module.exports = {
     mirrorConfigurationStatus,
     assertFoundationEnrichmentConfiguration,
     configuredMirrorTableSync,
+    syncMirrorNoteMaterials,
+    syncNoteMaterialsAfterInventory,
+    finalizeMirrorSyncResult,
+    recordMirrorSyncOutcome,
+    sourceBindingsWithNoteMaterial,
+    sourceNoteMaterialRows,
     bindingContractStatus,
     resolvedContractBindings,
     pairedMirrorBindingsReady,

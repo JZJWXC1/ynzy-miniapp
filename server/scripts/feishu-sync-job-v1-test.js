@@ -62,6 +62,19 @@ function testIndexWiringContract() {
   assert.ok(scheduledBlock.includes('if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return'), '总开关或自动开关关闭时定时任务必须零执行')
   assert.ok(scheduledBlock.includes('feishuSync.isCommittableSyncResult(result)'), '定时同步必须检查完整发布分类')
   assert.ok(scheduledBlock.indexOf('feishuSync.isCommittableSyncResult(result)') < scheduledBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)'), '定时同步必须先过发布门禁再提交数据库')
+  assert.ok(
+    scheduledBlock.includes('if (result.success !== true)'),
+    '库存可提交但素材失败时，定时同步必须单独识别整轮失败'
+  )
+  assert.ok(
+    scheduledBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)') <
+      scheduledBlock.indexOf('if (result.success !== true)'),
+    '整轮失败日志只能在库存成功提交后说明库存已提交、素材失败'
+  )
+  assert.ok(
+    scheduledBlock.includes('库存已提交，但素材同步未完整成功'),
+    '定时同步不得把嵌套素材失败写成自动同步完成'
+  )
   const timerBlock = source.slice(scheduledEnd, source.indexOf('// 实时 ASR', scheduledEnd))
   assert.ok(timerBlock.includes('if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return'), '自动开关关闭时不得启动定时器，但手动 dry-run 仍可用')
 
@@ -71,6 +84,24 @@ function testIndexWiringContract() {
   const mirrorBlock = syncSource.slice(mirrorStart, mirrorEnd)
   assert.ok(mirrorBlock.includes('activeFeishuSourceRecordIds(db)'), '镜像同步必须从线上活跃飞书库存生成第二撤下基线')
   assert.ok(mirrorBlock.includes('baselinePublishedSourceIds'), '线上库存撤下基线必须传入专用表写前熔断')
+
+  const adminSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'admin-web', 'index.html'), 'utf8')
+  assert.ok(
+    adminSource.includes('库存已提交，但素材同步未完整成功'),
+    '后台同步面板必须明确区分库存已提交与素材失败，不能显示成整体完成'
+  )
+  assert.ok(
+    adminSource.includes('inventoryCommittable: Boolean(lastLog.inventoryCommittable)'),
+    '后台同步结果必须展示库存可提交状态'
+  )
+  assert.ok(
+    adminSource.includes('noteMaterials: lastLog.noteMaterials || null'),
+    '后台同步结果必须展示嵌套素材阶段，供人工对账完整成功'
+  )
+  assert.ok(
+    adminSource.includes('const lastLog = payload.result || status.lastLog || null'),
+    '刚执行同步时必须优先展示本轮整轮结果，不能被库存阶段旧日志遮住素材失败'
+  )
 }
 
 async function main() {

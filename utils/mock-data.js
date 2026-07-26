@@ -581,6 +581,29 @@
       .indexOf(expected) !== -1;
   }
 
+  function normalizedStructuredDistrict(value) {
+    return String(value || '').normalize('NFKC').trim().replace(/区$/, '');
+  }
+
+  function normalizedStructuredBlock(value) {
+    return String(value || '').normalize('NFKC').trim();
+  }
+
+  function structuredDistrictMatches(location, requested) {
+    var expected = normalizedStructuredDistrict(requested);
+    if (!expected) return true;
+    return [location && location.district, location && location.area]
+      .map(normalizedStructuredDistrict)
+      .filter(Boolean)
+      .indexOf(expected) !== -1;
+  }
+
+  function structuredBlockMatches(location, requested) {
+    var expected = normalizedStructuredBlock(requested);
+    if (!expected) return true;
+    return normalizedStructuredBlock(location && location.block) === expected;
+  }
+
   function publicListingLocationFields(listing) {
     var rawCity = listing.city || '杭州';
     var rawArea = normalizeDistrict(listing.district || listing.area || '待分区');
@@ -3552,10 +3575,9 @@
       if (truthyFlag(query.companyOnly) && listingSourceType(listing) !== COMPANY_SOURCE) return false;
       if (!matchesCategory(listing, query.category)) return false;
       var location = needsLocation ? publicListingLocationFields(listing) : null;
-      if (districtFilter && String((location.district || '') + (location.area || '')).indexOf(districtFilter) === -1) return false;
-      var areaText = query.block ? publicLocationSearchText(listing) : '';
+      if (!structuredDistrictMatches(location, districtFilter)) return false;
       if (!publicLocationFilterMatches(location, query.area)) return false;
-      if (query.block && areaText.indexOf(query.block) === -1) return false;
+      if (!structuredBlockMatches(location, query.block)) return false;
       if (!publicCommunityFilterMatches(location && location.community, query.community)) return false;
       var housing = needsHousing ? publicListingHousingFields(listing) : null;
       if (query.layout && String(housing.layout || '').indexOf(query.layout) === -1) return false;
@@ -3759,8 +3781,8 @@
         var housing = publicListingHousingFields(listing);
         var district = String(query.district || query.area || '');
         if (query.category && !matchesCategory(listing, query.category)) return false;
-        if (district && [location.district, location.area].join('').indexOf(district) === -1) return false;
-        if (query.block && String(location.block || '').indexOf(query.block) === -1) return false;
+        if (!structuredDistrictMatches(location, district)) return false;
+        if (!structuredBlockMatches(location, query.block)) return false;
         if (!publicCommunityFilterMatches(location.community, query.community)) return false;
         if (!mockFavoriteLayoutMatches(listing, query.layout)) return false;
         if (query.rentMode && housing.rentMode !== query.rentMode) return false;
@@ -5952,14 +5974,51 @@
     return rule;
   }
 
+  function mockRoomCountFromLayout(value) {
+    var matched = String(value || '').match(/([一二两三四五六七八九]|\d+)\s*室/);
+    if (!matched) return 0;
+    var map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    return map[matched[1]] || Number(matched[1]) || 0;
+  }
+
+  function mockMatchesLayoutFilter(listing, value) {
+    var filter = String(value || '').trim();
+    if (!filter || filter === '不限') return true;
+    var roomCount = mockRoomCountFromLayout([
+      listing.layout,
+      listing.room,
+      listing.type,
+      listing.rentMode
+    ].join(' '));
+    if (filter === '一室') return roomCount === 1;
+    if (filter === '两室' || filter === '二室') return roomCount === 2;
+    if (filter === '三室') return roomCount === 3;
+    if (filter === '三室以上') return roomCount >= 3;
+    return String(listing.layout || '').indexOf(filter) !== -1;
+  }
+
+  function expiredListingMatchesFilter(listing, filter) {
+    var query = filter || {};
+    var location = listingLocationFields(listing);
+    var district = String(query.district || query.area || '').trim();
+    var sourceType = String(query.sourceType || query.source || '').trim();
+    var rent = Number(String(listing.rent == null ? '' : listing.rent).replace(/[^0-9.]/g, '')) || 0;
+    if (!structuredDistrictMatches(location, district)) return false;
+    if (!structuredBlockMatches(location, query.block)) return false;
+    if (query.community && String(location.community || listing.community || '').indexOf(query.community) === -1) return false;
+    if (sourceType && sourceType !== '全部' && listingSourceType(listing) !== sourceType) return false;
+    if (!mockMatchesLayoutFilter(listing, query.layout)) return false;
+    if (query.rentMode && query.rentMode !== '全部' && String(listing.rentMode || listing.type || '') !== query.rentMode) return false;
+    if (query.rentMin !== undefined && String(query.rentMin).trim() && rent < Number(query.rentMin)) return false;
+    if (query.rentMax !== undefined && String(query.rentMax).trim() && rent > Number(query.rentMax)) return false;
+    return true;
+  }
+
   function getExpiredListings(filter) {
     autoExpireOverdueListings();
     var query = filter || {};
     return state.listings.filter(isExpiredListing).filter(function (listing) {
-      if (query.area && listing.area !== query.area) return false;
-      if (query.block && listing.block !== query.block) return false;
-      if (query.community && String(listing.community || '').indexOf(query.community) === -1) return false;
-      return true;
+      return expiredListingMatchesFilter(listing, query);
     }).map(formatAdminListing).map(function (row) {
       var listing = getListing(row.id) || {};
       row.expiredAt = listing.expiredAt || '';
@@ -6075,6 +6134,10 @@
   if (typeof process !== 'undefined' && process.versions && process.versions.node) {
     Object.defineProperty(api, '__withGuestPublicContextCacheForTest', {
       value: withGuestPublicContextCacheForTest,
+      enumerable: false
+    });
+    Object.defineProperty(api, '__expiredListingMatchesFilterForTest', {
+      value: expiredListingMatchesFilter,
       enumerable: false
     });
   }

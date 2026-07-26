@@ -9,6 +9,26 @@ const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
 const snapshotCanvasPadding = 24
 const MIN_VOICE_PRESS_DURATION_MS = 600
+// 兼容微信不同设备的 Canvas 实现：按 2 倍像素生成时，任一物理边不超过 4096px。
+// 固定十列表格由此最多安全容纳 37 条房源；更多行只展示预览并拒绝生成不完整图片。
+const companySheetCanvasMaxEdgePixels = 4096
+const companySheetCanvasMaxPixelRatio = 2
+const companySheetCanvasLogicalMaxEdge = Math.floor(companySheetCanvasMaxEdgePixels / companySheetCanvasMaxPixelRatio)
+const companySheetSourceMode = 'feishu-mini-mirror-v1'
+const companySheetSchemaVersion = 1
+const companySheetColumns = [
+  { title: '行政区', role: 'district', aliases: ['行政区', '区域', '区', 'district', 'area'], minWidth: 132, maxWidth: 180, maxLines: 1 },
+  { title: '板块/商圈', role: 'block', aliases: ['板块/商圈', '板块', '商圈', 'block'], minWidth: 150, maxWidth: 220, maxLines: 1 },
+  { title: '小区', role: 'community', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'], minWidth: 180, maxWidth: 260, maxLines: 1 },
+  { title: '小区+房号', role: 'roomLabel', aliases: ['小区+房号', '房号', '房间号', '门牌号', '室号', '房源房号', 'roomLabel'], minWidth: 260, maxWidth: 420, maxLines: 2 },
+  { title: '户型描述', role: 'layoutDescription', aliases: ['户型描述', '描述', '房源描述', '户型信息', 'layoutDescription'], minWidth: 300, maxWidth: 520, maxLines: 2 },
+  { title: '户型分类', role: 'layoutCategory', aliases: ['户型分类', '户型', '格局', '分类', 'layoutCategory'], minWidth: 150, maxWidth: 220, maxLines: 1 },
+  { title: '月租金', role: 'monthlyRent', aliases: ['月租金', '月租', '租金', '价格', 'rent', 'price'], minWidth: 140, maxWidth: 180, maxLines: 1 },
+  { title: '看房方式', role: 'viewingMethod', aliases: ['看房方式', 'viewingMethod'], minWidth: 160, maxWidth: 240, maxLines: 1 },
+  { title: '备注', role: 'remark', aliases: ['备注', '说明', '备注说明', 'note', 'remark'], minWidth: 240, maxWidth: 360, maxLines: 2 },
+  { title: '房源状态', role: 'listingStatus', aliases: ['房源状态', '状态', 'listingStatus'], minWidth: 150, maxWidth: 210, maxLines: 1 }
+]
+const companySheetHeaders = companySheetColumns.map((column) => column.title)
 const tabBarPages = [
   '/pages/index/index',
   listingTabUrl,
@@ -51,11 +71,15 @@ function hasCellText(row) {
 
 function isAreaHeader(value) {
   const text = String(value || '').trim()
-  return /^(区域|区|片区|商圈)$/.test(text) || /区域/.test(text)
+  return /^(行政区|区域|区|片区)$/.test(text)
+}
+
+function isBlockHeader(value) {
+  return /^(板块\/商圈|板块|商圈)$/.test(String(value || '').trim())
 }
 
 function isCommunityHeader(value) {
-  return /小区|楼盘|社区/.test(String(value || '').trim())
+  return /^(小区|小区名称|楼盘|社区)$/.test(String(value || '').trim())
 }
 
 function isBuildingHeader(value) {
@@ -118,8 +142,10 @@ function formatRoomNumber(building, unit, room) {
 }
 
 function findHeaderIndex(rows) {
-  const index = rows.findIndex((row) => row.some(isAreaHeader) && row.some(isCommunityHeader))
-  return index
+  return rows.findIndex((row) => {
+    if (!Array.isArray(row) || row.length !== companySheetHeaders.length) return false
+    return companySheetHeaders.every((header, index) => String(row[index] || '').trim() === header)
+  })
 }
 
 function buildSheetColumnIndexes(header, dataRows, snapshot) {
@@ -169,16 +195,7 @@ function applyRoomMergeToRow(row, merge, headerRow) {
   return next
 }
 
-const sheetDisplayColumns = [
-  { title: '区域', aliases: ['区域', '区', '片区', '商圈', 'district', 'area'], minWidth: 132, maxWidth: 180 },
-  { title: '小区', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'], minWidth: 180, maxWidth: 260 },
-  { title: '房号', aliases: ['房号', '房间号', '门牌号', '室号', '房源房号', 'roomNumber', 'roomNo', 'houseNo', 'doorNo'], minWidth: 150, maxWidth: 210 },
-  { title: '户型描述', aliases: ['户型描述', '描述', '房源描述', '户型信息', '房源信息', '房源详情', 'layoutDescription', 'description'], minWidth: 420, maxWidth: 620 },
-  { title: '户型分类', aliases: ['户型分类', '户型', '格局', '分类', 'category', 'layoutCategory'], minWidth: 170, maxWidth: 230 },
-  { title: '押一付一', aliases: ['押一付一', '押一', '月租', '租金', '价格', 'rent', 'price'], minWidth: 140, maxWidth: 180 },
-  { title: '押二付一', aliases: ['押二付一', '押二', '押二付一价格', '押二价格'], minWidth: 140, maxWidth: 180 },
-  { title: '备注', aliases: ['备注', '说明', '备注说明', '水电', 'note', 'remark'], minWidth: 240, maxWidth: 360 }
-]
+const sheetDisplayColumns = companySheetColumns
 
 function normalizeFieldKey(value) {
   return String(value || '')
@@ -213,7 +230,8 @@ function longestText(values) {
 function projectSheetRow(cells, header) {
   const building = firstCellByAliases(cells, header, ['楼栋', '几栋', '栋', '幢', '楼号', '幢号', 'building', 'buildingNo'])
   const unit = firstCellByAliases(cells, header, ['单元', '几单元', 'unit', 'unitNo'])
-  const room = firstCellByAliases(cells, header, sheetDisplayColumns[2].aliases)
+  const roomColumn = sheetDisplayColumns.find((column) => column.role === 'roomLabel')
+  const room = firstCellByAliases(cells, header, roomColumn ? roomColumn.aliases : [])
   return sheetDisplayColumns.map((column) => {
     if (column.title === '房号') return formatRoomNumber(building, unit, room)
     if (column.title === '户型描述') {
@@ -275,37 +293,54 @@ function makeSpan(rows, colIndex, keyBuilder) {
   return spans
 }
 
-function buildSheetModel(snapshot) {
-  const rawRows = getSheetRows(snapshot).filter(hasCellText)
-  if (!rawRows.length) {
-    return {
-      noteRows: [],
-      header: ['区域', '小区', '房源信息'],
-      dataRows: [],
-      listingCount: 0,
-      groupColumns: [],
-      spans: []
-    }
+function emptySheetModel(options = {}) {
+  return {
+    noteRows: [],
+    header: companySheetHeaders.slice(),
+    dataRows: [],
+    listingCount: 0,
+    groupColumns: [0, 1, 2],
+    districtCol: 0,
+    blockCol: 1,
+    communityCol: 2,
+    areaCol: 0,
+    maxLines: companySheetColumns.map((column) => column.maxLines || 1),
+    spans: [],
+    invalidSchema: options.invalidSchema === true,
+    unavailable: options.unavailable === true
   }
+}
+
+function buildSheetModel(snapshot) {
+  const sourceRows = snapshot && snapshot.rows
+  const contractMatches = snapshot &&
+    snapshot.sourceMode === companySheetSourceMode &&
+    Number(snapshot.schemaVersion) === companySheetSchemaVersion
+  if (snapshot && snapshot.unavailable === true) return emptySheetModel({ unavailable: true })
+  if (!contractMatches ||
+      !Array.isArray(sourceRows) ||
+      !sourceRows.length ||
+      sourceRows.some((row) => !Array.isArray(row) || row.length !== companySheetHeaders.length)) {
+    return emptySheetModel({ invalidSchema: true })
+  }
+  const rawRows = getSheetRows(snapshot).filter(hasCellText)
+  if (!rawRows.length) return emptySheetModel({ invalidSchema: true })
 
   const headerIndex = findHeaderIndex(rawRows)
-  const hasHeader = headerIndex >= 0
-  const sourceHeader = hasHeader ? rawRows[headerIndex] : sheetDisplayColumns.map((column) => column.title)
-  const sourceDataRows = (hasHeader ? rawRows.slice(headerIndex + 1) : rawRows).filter(hasCellText)
-  const columnIndexes = buildSheetColumnIndexes(sourceHeader, sourceDataRows, snapshot)
-  const baseHeader = columnIndexes.map((sourceIndex, index) => {
-    const text = String(sourceHeader[sourceIndex] || '').trim()
-    return text || `字段${index + 1}`
-  })
-  const header = baseHeader
+  if (headerIndex < 0) return emptySheetModel({ invalidSchema: true })
+  const header = companySheetHeaders.slice()
+  const sourceDataRows = rawRows.slice(headerIndex + 1).filter(hasCellText)
+  const columnIndexes = companySheetHeaders.map((_, index) => index)
   const areaCol = header.findIndex(isAreaHeader)
+  const blockCol = header.findIndex(isBlockHeader)
   const communityCol = header.findIndex(isCommunityHeader)
   let lastArea = ''
+  let lastBlock = ''
   let lastCommunity = ''
   const dataRows = sourceDataRows.map((sourceRow) => {
     const cells = columnIndexes.map((sourceIndex) => String(sourceRow[sourceIndex] || '').trim())
     const hasListingValue = cells.some((cell, index) => {
-      if (index === areaCol || index === communityCol) return false
+      if (index === areaCol || index === blockCol || index === communityCol) return false
       return Boolean(String(cell || '').trim())
     })
     const sectionText = !hasListingValue ? longestText(cells) : ''
@@ -321,9 +356,18 @@ function buildSheetModel(snapshot) {
     if (areaCol >= 0) {
       if (cells[areaCol]) {
         lastArea = cells[areaCol]
+        lastBlock = ''
         lastCommunity = ''
       } else {
         cells[areaCol] = lastArea
+      }
+    }
+    if (blockCol >= 0) {
+      if (cells[blockCol]) {
+        if (cells[blockCol] !== lastBlock) lastCommunity = ''
+        lastBlock = cells[blockCol]
+      } else {
+        cells[blockCol] = lastBlock
       }
     }
     if (communityCol >= 0) {
@@ -335,36 +379,46 @@ function buildSheetModel(snapshot) {
     }
     return {
       area: areaCol >= 0 ? cells[areaCol] : '',
+      district: areaCol >= 0 ? cells[areaCol] : '',
+      block: blockCol >= 0 ? cells[blockCol] : '',
       community: communityCol >= 0 ? cells[communityCol] : '',
       cells
     }
   }).filter((row) => row.isSection || row.cells.some((cell) => String(cell || '').trim()))
 
-  const groupColumns = [areaCol, communityCol].filter((index) => index >= 0)
+  const groupColumns = [areaCol, blockCol, communityCol].filter((index) => index >= 0)
   const spans = []
   if (areaCol >= 0) {
-    spans.push(...makeSpan(dataRows, areaCol, (row) => row.area))
+    spans.push(...makeSpan(dataRows, areaCol, (row) => row.district))
+  }
+  if (blockCol >= 0) {
+    spans.push(...makeSpan(dataRows, blockCol, (row) => `${row.district}|${row.block}`))
   }
   if (communityCol >= 0) {
-    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.area}|${row.community}`))
+    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.district}|${row.block}|${row.community}`))
   }
 
   return {
-    noteRows: hasHeader ? rawRows.slice(0, headerIndex).filter(hasCellText) : [],
+    noteRows: [],
     header,
     dataRows,
     listingCount: dataRows.filter((row) => !row.isSection).length,
     groupColumns,
+    districtCol: areaCol,
+    blockCol,
     areaCol,
     communityCol,
-    spans
+    maxLines: companySheetColumns.map((column) => column.maxLines || 1),
+    spans,
+    invalidSchema: false,
+    unavailable: false
   }
 }
 
 function buildSnapshotMetrics(snapshot) {
   const model = buildSheetModel(snapshot)
   const widths = buildColumnWidths(model)
-  const maxImageWidth = 5200
+  const maxImageWidth = companySheetCanvasLogicalMaxEdge
   const baseWidth = widths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2
   const scale = baseWidth > maxImageWidth ? (maxImageWidth - snapshotCanvasPadding * 2) / (baseWidth - snapshotCanvasPadding * 2) : 1
   const columnWidths = widths.map((item) => Math.max(112, Math.floor(item * scale)))
@@ -380,6 +434,15 @@ function buildSnapshotMetrics(snapshot) {
     width: Math.max(640, columnWidths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2),
     height: 116 + noteHeight + headerHeight + Math.max(1, model.dataRows.length) * dataRowHeight + 54
   }
+}
+
+function snapshotMetricsFitCanvas(metrics, pixelRatio = companySheetCanvasMaxPixelRatio) {
+  if (!metrics || !Number.isFinite(metrics.width) || !Number.isFinite(metrics.height)) return false
+  const ratio = Math.max(1, Math.min(Number(pixelRatio) || companySheetCanvasMaxPixelRatio, companySheetCanvasMaxPixelRatio))
+  return metrics.width > 0 &&
+    metrics.height > 0 &&
+    Math.ceil(metrics.width * ratio) <= companySheetCanvasMaxEdgePixels &&
+    Math.ceil(metrics.height * ratio) <= companySheetCanvasMaxEdgePixels
 }
 
 function buildSheetPreview(snapshot) {
@@ -404,7 +467,7 @@ function buildSheetPreview(snapshot) {
         id: `r${rowIndex}c${cellIndex}`,
         text,
         width: widths[cellIndex] || 150,
-        strong: cellIndex < 2
+        strong: cellIndex < 3
       }))
     }
   })
@@ -414,6 +477,55 @@ function buildSheetPreview(snapshot) {
     tableWidth: widths.reduce((sum, item) => sum + item, 0),
     listingCount: model.listingCount,
     hiddenCount: Math.max(0, model.dataRows.length - rows.length)
+  }
+}
+
+function snapshotViewState(snapshot) {
+  const model = buildSheetModel(snapshot)
+  const preview = buildSheetPreview(snapshot)
+  if (model.unavailable) {
+    return {
+      model,
+      preview,
+      metrics: null,
+      shouldRender: false,
+      status: '房源表暂未同步'
+    }
+  }
+  if (model.invalidSchema) {
+    return {
+      model,
+      preview,
+      metrics: null,
+      shouldRender: false,
+      status: '房源表数据格式待更新'
+    }
+  }
+  if (!model.listingCount) {
+    return {
+      model,
+      preview,
+      metrics: null,
+      shouldRender: false,
+      status: '当前暂无待租房源'
+    }
+  }
+  const metrics = buildSnapshotMetrics(snapshot)
+  if (!snapshotMetricsFitCanvas(metrics, companySheetCanvasMaxPixelRatio)) {
+    return {
+      model,
+      preview,
+      metrics: null,
+      shouldRender: false,
+      status: '房源表内容较多，暂不生成图片'
+    }
+  }
+  return {
+    model,
+    preview,
+    metrics,
+    shouldRender: true,
+    status: '正在生成图片'
   }
 }
 
@@ -552,7 +664,10 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
       ctx.strokeRect(rowLeft, rowTop, width, metrics.dataRowHeight)
       ctx.fillStyle = '#222222'
       ctx.font = '400 15px sans-serif'
-      drawCellText(ctx, cell, rowLeft, rowTop, width, metrics.dataRowHeight, { maxLines: colIndex === 3 ? 2 : 1, lineHeight: 18 })
+      drawCellText(ctx, cell, rowLeft, rowTop, width, metrics.dataRowHeight, {
+        maxLines: model.maxLines[colIndex] || 1,
+        lineHeight: 18
+      })
       rowLeft += width
     })
   })
@@ -575,7 +690,7 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
 
   ctx.fillStyle = '#78918a'
   ctx.font = '400 18px sans-serif'
-  ctx.fillText(`已按区域/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列`, snapshotCanvasPadding, metrics.height - 20)
+  ctx.fillText(`已按行政区/板块/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列`, snapshotCanvasPadding, metrics.height - 20)
 }
 
 Page({
@@ -613,7 +728,7 @@ Page({
     companySheetSnapshot: null,
     sheetPreview: null,
     sheetSnapshotImagePath: '',
-    sheetSnapshotStatus: '正在同步飞书表格',
+    sheetSnapshotStatus: '正在加载房源表',
     snapshotCanvasWidth: 640,
     snapshotCanvasHeight: 480,
     todayTasks: [],
@@ -678,12 +793,15 @@ Page({
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
-    // 节流：任务与飞书快照 60 秒内切回首页不重复拉取（快照还伴随 canvas 重绘，开销大）
+    // 工作台任务保留 60 秒节流；房源表图片使用独立成功时间，失败后下次进入立即重试。
     const now = Date.now();
     if (!this._heavyLoadedAt || now - this._heavyLoadedAt > 60000) {
       this._heavyLoadedAt = now;
       this.loadTodayTasks();
-      this.loadCompanySheetSnapshot();
+    }
+    if (!this._sheetSnapshotLoading &&
+        (!this._sheetSnapshotLoadedAt || now - this._sheetSnapshotLoadedAt > 60000)) {
+      this.loadCompanySheetSnapshot()
     }
     this.loadHomeListings();
   },
@@ -897,28 +1015,38 @@ Page({
   loadCompanySheetSnapshot() {
     const requestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
     this._sheetSnapshotRequestSeq = requestSeq
-    this.setData({ sheetSnapshotStatus: '正在同步飞书表格' });
-    apiService.getCompanySheetSnapshot().then((snapshot) => {
+    this._sheetSnapshotLoading = true
+    this.setData({ sheetSnapshotStatus: '正在加载房源表' });
+    return apiService.getCompanySheetSnapshot().then((snapshot) => {
       if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
-      const metrics = buildSnapshotMetrics(snapshot);
-      const sheetPreview = buildSheetPreview(snapshot);
+      const viewState = snapshotViewState(snapshot)
+      const metrics = viewState.metrics
       this.setData({
         companySheetSnapshot: snapshot,
-        sheetPreview,
+        sheetPreview: viewState.preview,
         sheetSnapshotImagePath: '',
-        sheetSnapshotStatus: snapshot && snapshot.rows && snapshot.rows.length ? '正在生成截图' : '飞书表格暂无内容',
-        snapshotCanvasWidth: metrics.width,
-        snapshotCanvasHeight: metrics.height
-      }, () => this.renderCompanySheetSnapshot(metrics, requestSeq));
+        sheetSnapshotStatus: viewState.status,
+        snapshotCanvasWidth: metrics ? metrics.width : 640,
+        snapshotCanvasHeight: metrics ? metrics.height : 480
+      }, () => {
+        if (!viewState.shouldRender) {
+          this._sheetSnapshotLoading = false
+          this._sheetSnapshotLoadedAt = Date.now()
+          return
+        }
+        this.renderCompanySheetSnapshot(metrics, requestSeq)
+      });
     }).catch(() => {
       if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
+      this._sheetSnapshotLoading = false
+      this._sheetSnapshotLoadedAt = 0
       this.setData({
         companySheetSnapshot: null,
         sheetPreview: null,
         sheetSnapshotImagePath: '',
-        sheetSnapshotStatus: '飞书表格截图加载失败'
+        sheetSnapshotStatus: '房源表图片加载失败'
       });
-      wx.showToast({ title: '飞书表格加载失败', icon: 'none' });
+      wx.showToast({ title: '房源表加载失败', icon: 'none' });
     });
   },
 
@@ -929,40 +1057,63 @@ Page({
     )
     if (!isCurrentRequest()) return
     const snapshot = this.data.companySheetSnapshot;
-    if (!snapshot || !snapshot.rows || !snapshot.rows.length) return;
-    wx.createSelectorQuery()
-      .in(this)
-      .select('#companySheetCanvas')
-      .fields({ node: true, size: true })
-      .exec((result) => {
-        if (!isCurrentRequest()) return
-        const canvas = result && result[0] && result[0].node;
-        if (!canvas) {
-          this.setData({ sheetSnapshotStatus: '当前环境暂不支持生成截图' });
-          return;
-        }
-        const pixelRatio = Math.min(getSystemPixelRatio(), 2);
-        drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio);
-        wx.canvasToTempFilePath({
-          canvas,
-          fileType: 'png',
-          width: metrics.width,
-          height: metrics.height,
-          destWidth: metrics.width * pixelRatio,
-          destHeight: metrics.height * pixelRatio,
-          success: (res) => {
-            if (!isCurrentRequest()) return
-            this.setData({
-              sheetSnapshotImagePath: res.tempFilePath,
-              sheetSnapshotStatus: ''
-            });
-          },
-          fail: () => {
-            if (!isCurrentRequest()) return
-            this.setData({ sheetSnapshotStatus: '截图生成失败，请下拉刷新重试' });
+    if (!snapshot || !snapshot.rows || !snapshot.rows.length) {
+      this._sheetSnapshotLoading = false
+      this._sheetSnapshotLoadedAt = 0
+      return
+    }
+    try {
+      wx.createSelectorQuery()
+        .in(this)
+        .select('#companySheetCanvas')
+        .fields({ node: true, size: true })
+        .exec((result) => {
+          if (!isCurrentRequest()) return
+          const canvas = result && result[0] && result[0].node;
+          if (!canvas) {
+            this._sheetSnapshotLoading = false
+            this._sheetSnapshotLoadedAt = 0
+            this.setData({ sheetSnapshotStatus: '当前环境暂不支持生成图片' });
+            return;
           }
-        }, this);
-      });
+          const pixelRatio = Math.min(getSystemPixelRatio(), 2);
+          if (!snapshotMetricsFitCanvas(metrics, pixelRatio)) {
+            this._sheetSnapshotLoading = false
+            this._sheetSnapshotLoadedAt = Date.now()
+            this.setData({ sheetSnapshotStatus: '房源表内容较多，暂不生成图片' })
+            return
+          }
+          drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio);
+          wx.canvasToTempFilePath({
+            canvas,
+            fileType: 'png',
+            width: metrics.width,
+            height: metrics.height,
+            destWidth: metrics.width * pixelRatio,
+            destHeight: metrics.height * pixelRatio,
+            success: (res) => {
+              if (!isCurrentRequest()) return
+              this._sheetSnapshotLoading = false
+              this._sheetSnapshotLoadedAt = Date.now()
+              this.setData({
+                sheetSnapshotImagePath: res.tempFilePath,
+                sheetSnapshotStatus: ''
+              });
+            },
+            fail: () => {
+              if (!isCurrentRequest()) return
+              this._sheetSnapshotLoading = false
+              this._sheetSnapshotLoadedAt = 0
+              this.setData({ sheetSnapshotStatus: '图片生成失败，请重试' });
+            }
+          }, this);
+        });
+    } catch (error) {
+      if (!isCurrentRequest()) return
+      this._sheetSnapshotLoading = false
+      this._sheetSnapshotLoadedAt = 0
+      this.setData({ sheetSnapshotStatus: '图片生成失败，请重试' })
+    }
   },
 
   ensureSheetSnapshotImage() {

@@ -295,7 +295,7 @@ async function runPageBehavior() {
   assert.strictEqual(page.data.favorites[1].coverUrl, '', '当前封面真实失败才清空')
 
   // 即使 Date.now/Math.random 碰撞，快速连续筛选也只能采纳最后一次请求。
-  const pending = [deferred(), deferred(), deferred(), deferred()]
+  const pending = [deferred(), deferred(), deferred(), deferred(), deferred(), deferred()]
   let callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => pending[callIndex++].promise
   const originalNow = Date.now
@@ -305,11 +305,13 @@ async function runPageBehavior() {
   try {
     page.loadFavorites()
     page.loadFavorites()
-    pending[2].resolve([{ id: 'NEW', isAvailable: true }])
     pending[3].resolve([{ id: 'NEW', isAvailable: true }])
+    pending[4].resolve([{ id: 'NEW', isAvailable: true }])
+    pending[5].resolve([{ id: 'NEW', isAvailable: true }])
     await tick()
     pending[0].resolve([{ id: 'OLD', isAvailable: true }])
     pending[1].resolve([{ id: 'OLD', isAvailable: true }])
+    pending[2].resolve([{ id: 'OLD', isAvailable: true }])
     await tick()
     assert.deepStrictEqual(page.data.favorites.map((item) => item.id), ['NEW'], '旧筛选响应不得覆盖新结果')
   } finally {
@@ -318,27 +320,53 @@ async function runPageBehavior() {
   }
 
   // token A 的列表成功/失败迟到都不能写入 token B 页面；B 的新请求可以正常落地。
-  const tokenA = [deferred(), deferred()]
+  const tokenA = [deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => tokenA[callIndex++].promise
   pageToken = 'TOKEN_A'
+  page._publicFilterOptions = {
+    regionOptions: [{ name: '公开区', blocks: ['公开板块'] }]
+  }
+  page._favoriteFilterOptions = {
+    regionOptions: [{ name: '账号A私有区', blocks: ['账号A私有板块'] }]
+  }
+  page.setData({
+    regionOptions: [
+      { name: '公开区', blocks: ['公开板块'] },
+      { name: '账号A私有区', blocks: ['账号A私有板块'] }
+    ],
+    filters: {
+      ...page.data.filters,
+      district: '账号A私有区',
+      block: '账号A私有板块',
+      community: '账号A私有小区'
+    }
+  })
   page.loadFavorites()
   pageToken = 'TOKEN_B'
   tokenA[0].resolve([{ id: 'TOKEN_A_ROW', isAvailable: true }])
   tokenA[1].resolve([{ id: 'TOKEN_A_ROW', isAvailable: true }])
+  tokenA[2].resolve([{ id: 'TOKEN_A_ROW', isAvailable: true }])
   await tick()
   assert.deepStrictEqual(page.data.favorites, [], 'A 成功迟到时必须清掉页面残留的 A 账号行')
+  assert.deepStrictEqual(page.data.regionOptions, [{ name: '公开区', blocks: ['公开板块'] }], 'A 成功迟到发现换号时必须立即清掉 A 的私有地点')
+  assert.deepStrictEqual(
+    { district: page.data.filters.district, block: page.data.filters.block, community: page.data.filters.community },
+    { district: '', block: '', community: '' },
+    'A 成功迟到发现换号时必须清掉 A 的位置筛选'
+  )
 
-  const tokenB = [deferred(), deferred()]
+  const tokenB = [deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => tokenB[callIndex++].promise
   page.loadFavorites()
   tokenB[0].resolve([{ id: 'TOKEN_B_ROW', isAvailable: true }])
   tokenB[1].resolve([{ id: 'TOKEN_B_ROW', isAvailable: true }])
+  tokenB[2].resolve([{ id: 'TOKEN_B_ROW', isAvailable: true }])
   await tick()
   assert.deepStrictEqual(page.data.favorites.map((item) => item.id), ['TOKEN_B_ROW'])
 
-  const tokenC = [deferred(), deferred()]
+  const tokenC = [deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => tokenC[callIndex++].promise
   pageToken = 'TOKEN_C'
@@ -347,47 +375,74 @@ async function runPageBehavior() {
   assert.deepStrictEqual(page.data.communityOptions, [], '换号发请求时必须立即清空旧账号小区选项')
   tokenC[0].resolve([{ id: 'TOKEN_C_ROW', isAvailable: true }])
   tokenC[1].resolve([{ id: 'TOKEN_C_ROW', isAvailable: true }])
+  tokenC[2].resolve([{ id: 'TOKEN_C_ROW', isAvailable: true }])
   await tick()
   assert.deepStrictEqual(page.data.favorites.map((item) => item.id), ['TOKEN_C_ROW'])
 
   const toastBeforeOldFailure = toastCount
-  const oldFailure = [deferred(), deferred()]
+  const oldFailure = [deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => oldFailure[callIndex++].promise
   pageToken = 'TOKEN_A'
+  page._favoriteAccountToken = 'TOKEN_A'
+  page._favoriteFilterOptions = {
+    regionOptions: [{ name: '账号A失败私有区', blocks: ['账号A失败私有板块'] }]
+  }
+  page.setData({
+    regionOptions: [
+      { name: '公开区', blocks: ['公开板块'] },
+      { name: '账号A失败私有区', blocks: ['账号A失败私有板块'] }
+    ],
+    filters: {
+      ...page.data.filters,
+      district: '账号A失败私有区',
+      block: '账号A失败私有板块',
+      community: '账号A失败私有小区'
+    }
+  })
   page.loadFavorites()
   pageToken = 'TOKEN_B'
   oldFailure[0].reject(new Error('old-token-failure'))
   oldFailure[1].reject(new Error('old-token-failure'))
+  oldFailure[2].reject(new Error('old-token-failure'))
   await tick()
   assert.strictEqual(page.data.loadFailed, false, 'A 失败迟到不得污染 B 的失败态')
   assert.strictEqual(toastCount, toastBeforeOldFailure, 'A 失败迟到不得在 B 显示提示')
+  assert.deepStrictEqual(page.data.regionOptions, [{ name: '公开区', blocks: ['公开板块'] }], 'A 失败迟到发现换号时必须立即清掉 A 的私有地点')
+  assert.deepStrictEqual(
+    { district: page.data.filters.district, block: page.data.filters.block, community: page.data.filters.community },
+    { district: '', block: '', community: '' },
+    'A 失败迟到发现换号时必须清掉 A 的位置筛选'
+  )
 
   // 取消成功必须使在途旧列表失效，旧 GET 不得把刚取消的卡片加回来。
   pageToken = 'TOKEN_B'
   page._favoriteAccountToken = 'TOKEN_B'
   page.setData({ favorites: [{ id: 'CANCELLED', isAvailable: true }] })
-  const cancelPending = [deferred(), deferred(), deferred(), deferred()]
+  const cancelPending = [deferred(), deferred(), deferred(), deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => cancelPending[callIndex++].promise
   page.loadFavorites()
   page.handleFavoriteChange({ detail: { listingId: 'CANCELLED', favorited: false } })
-  cancelPending[2].resolve([{ id: 'CURRENT', isAvailable: true }])
   cancelPending[3].resolve([{ id: 'CURRENT', isAvailable: true }])
+  cancelPending[4].resolve([{ id: 'CURRENT', isAvailable: true }])
+  cancelPending[5].resolve([{ id: 'CURRENT', isAvailable: true }])
   await tick()
   cancelPending[0].resolve([{ id: 'CANCELLED', isAvailable: true }])
   cancelPending[1].resolve([{ id: 'CANCELLED', isAvailable: true }])
+  cancelPending[2].resolve([{ id: 'CANCELLED', isAvailable: true }])
   await tick()
   assert.deepStrictEqual(page.data.favorites.map((item) => item.id), ['CURRENT'], '取消成功后必须重拉当前筛选且旧列表不得回填')
 
   // 页面卸载必须使当前代次失效，迟到成功不能再 setData。
-  const unloadPending = [deferred(), deferred()]
+  const unloadPending = [deferred(), deferred(), deferred()]
   callIndex = 0
   require.cache[apiServicePath].exports.getFavorites = () => unloadPending[callIndex++].promise
   page.loadFavorites()
   page.onUnload()
   unloadPending[0].resolve([{ id: 'AFTER_UNLOAD', isAvailable: true }])
   unloadPending[1].resolve([{ id: 'AFTER_UNLOAD', isAvailable: true }])
+  unloadPending[2].resolve([{ id: 'AFTER_UNLOAD', isAvailable: true }])
   await tick()
   assert.deepStrictEqual(page.data.favorites.map((item) => item.id), ['CURRENT'], '卸载后迟到响应不得更新页面')
 }

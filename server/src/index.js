@@ -217,6 +217,8 @@ function mapQueryFilter(searchParams) {
     layout: searchParams.get('layout') || '',
     rentMode: searchParams.get('rentMode') || '',
     sourceType: searchParams.get('sourceType') || '',
+    district: searchParams.get('district') || '',
+    block: searchParams.get('block') || '',
     area: searchParams.get('area') || searchParams.get('region') || '',
     community: searchParams.get('community') || '',
     listingIds: searchParamValues(searchParams, ['listingIds', 'listingIds[]'])
@@ -1556,6 +1558,7 @@ function uniqueListingFromIndex(index, listingId) {
 function scrubAmbiguousListingMedia(result) {
   result.videoUrl = ''
   result.coverUrl = ''
+  result.mediaAssets = []
   result.video = ''
   result.hasVideo = false
   delete result.videoKey
@@ -1572,6 +1575,9 @@ function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptions
   if (!value || typeof value !== 'object') return value
   const result = {}
   Object.keys(value).forEach((key) => {
+    // 私有素材清单含 OSS 对象键、内容摘要和来源摘要，绝不能先递归复制再尝试删字段。
+    // 公开清单只允许在下方由服务端持久房源重新生成安全骨架与能力 URL。
+    if (key === 'mediaAssets') return
     result[key] = withPublicListingMedia(value[key], db, eligibleListingIds, capabilityOptionsForListing, sourceListingIndex)
   })
   const listingId = String(value.id || '').trim()
@@ -1583,6 +1589,7 @@ function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptions
   if (!mediaEligible) {
     if (Object.prototype.hasOwnProperty.call(value, 'videoUrl')) result.videoUrl = ''
     if (Object.prototype.hasOwnProperty.call(value, 'coverUrl')) result.coverUrl = ''
+    if (Object.prototype.hasOwnProperty.call(value, 'mediaAssets')) result.mediaAssets = []
     if (Object.prototype.hasOwnProperty.call(value, 'hasVideo')) result.hasVideo = false
     delete result.videoKey
     return result
@@ -1593,6 +1600,7 @@ function withPublicListingMedia(value, db, eligibleListingIds, capabilityOptions
   const media = publicListingMediaService().urlsForListing(listing, capabilityOptions)
   if (Object.prototype.hasOwnProperty.call(value, 'videoUrl')) result.videoUrl = media.videoUrl
   if (Object.prototype.hasOwnProperty.call(value, 'coverUrl')) result.coverUrl = media.coverUrl
+  if (Object.prototype.hasOwnProperty.call(value, 'mediaAssets')) result.mediaAssets = media.mediaAssets
   if (Object.prototype.hasOwnProperty.call(value, 'hasVideo')) result.hasVideo = Boolean(media.videoUrl)
   if (!media.videoUrl && Object.prototype.hasOwnProperty.call(value, 'video')) result.video = ''
   delete result.videoKey
@@ -1715,6 +1723,7 @@ async function handleMini(req, res, pathname, searchParams) {
       listingId,
       kind: publicMediaMatch[2],
       token: searchParams.get('token') || '',
+      assetId: searchParams.get('assetId') || '',
       clientKey: requestClientKey(req),
       ...capabilityOptions
     })
@@ -1861,6 +1870,11 @@ async function handleMini(req, res, pathname, searchParams) {
       return sendPublicListingJson(res, db, domain.filterListings(db, guestListingFilter(filter)))
     }
     return sendPublicListingJson(res, db, domain.filterListings(db, filter))
+  }
+
+  if (method === 'GET' && pathname === '/mini/listing-filter-options') {
+    if (isGuestUser(userId)) assertGuestRateLimit(req, 'mini-listing-filter-options', 30)
+    return sendJson(res, domain.listingFilterOptions(db))
   }
 
   if (method === 'GET' && pathname === '/mini/commission-config') {
@@ -2519,6 +2533,7 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'GET' && pathname === '/admin/listings') {
     return sendJson(res, withSignedListingVideoUrls(domain.adminListings(db, {
+      district: searchParams.get('district') || '',
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',
@@ -2529,11 +2544,23 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'GET' && pathname === '/admin/expired-listings') {
     return sendJson(res, withSignedListingVideoUrls(domain.expiredListings(db, {
+      district: searchParams.get('district') || '',
       area: searchParams.get('area') || '',
       block: searchParams.get('block') || '',
       community: searchParams.get('community') || '',
-      source: searchParams.get('source') || ''
+      source: searchParams.get('source') || '',
+      sourceType: searchParams.get('sourceType') || '',
+      layout: searchParams.get('layout') || '',
+      rentMode: searchParams.get('rentMode') || '',
+      rentMin: searchParams.get('rentMin') || '',
+      rentMax: searchParams.get('rentMax') || ''
     })))
+  }
+  if (method === 'GET' && pathname === '/admin/listing-filter-options') {
+    return sendJson(res, domain.adminListingFilterOptions(db))
+  }
+  if (method === 'GET' && pathname === '/admin/expired-listing-filter-options') {
+    return sendJson(res, domain.expiredListingFilterOptions(db))
   }
   const adminVideoPreviewMatch = pathname.match(/^\/admin\/listings\/([^/]+)\/video-compatible-preview$/)
   if (method === 'GET' && adminVideoPreviewMatch) {
@@ -3131,7 +3158,11 @@ async function runScheduledFeishuSync() {
       throw new Error(`镜像同步未完整发布：${result.status || 'failed'}`)
     }
     dbStore.commitDelta(baseSnapshot, nextDb)
-    console.log(result.noop ? '飞书房源自动同步完成：无变化' : '飞书房源自动同步完成')
+    if (result.success !== true) {
+      console.error(`飞书房源自动同步部分失败：库存已提交，但素材同步未完整成功（${result.status || 'materials-failed'}）`)
+    } else {
+      console.log(result.noop ? '飞书房源自动同步完成：无变化' : '飞书房源自动同步完成')
+    }
   } catch (error) {
     console.error(`飞书房源自动同步失败：${error.message}`)
   } finally {

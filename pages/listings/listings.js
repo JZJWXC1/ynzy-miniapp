@@ -3,6 +3,10 @@ const apiClient = require('../../utils/api-client')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 const { LISTING_FEATURE_OPTIONS, NO_FEATURE } = require('../../utils/listing-features')
 const { consumePendingFilterEnvelope } = require('../../utils/pending-filter-storage')
+const {
+  DEFAULT_LAYOUT_OPTIONS,
+  normalizeListingFilterOptions
+} = require('../../utils/listing-filter-options')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 // 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
@@ -11,12 +15,6 @@ const categories = ['全部', '公司房源', '业主房源', '二房东房源']
 function currentAuthSessionKey() {
   return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
 }
-const regionOptions = [
-  { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
-  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] },
-  { name: '余杭区', blocks: [] }
-]
-const layoutOptions = ['不限', '一室', '两室', '三室', '三室以上']
 const featureOptions = LISTING_FEATURE_OPTIONS.filter((item) => item !== NO_FEATURE)
 const emptyFilters = {
   needId: '',
@@ -92,8 +90,8 @@ function normalizeOptions(options = {}) {
 Page({
   data: {
     categories,
-    regionOptions,
-    layoutOptions,
+    regionOptions: [],
+    layoutOptions: DEFAULT_LAYOUT_OPTIONS.slice(),
     featureOptions,
     communityOptions: [],
     category: '全部',
@@ -123,6 +121,7 @@ Page({
   onShow() {
     this._pageActive = true
     const sessionState = this.syncAuthSession()
+    this.loadListingFilterOptions()
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 1 })
     }
@@ -136,10 +135,11 @@ Page({
     this.authSessionSnapshot = nextSessionKey
     if (changed) {
       this.activeListingRequestId = `session-reset-${Date.now()}-${Math.floor(Math.random() * 10000)}`
-      const filters = Object.assign({}, this.data.filters || emptyFilters, { needId: '' })
+      const filters = { ...emptyFilters }
       this.setData({
         listings: [],
         communityOptions: [],
+        category: '全部',
         filters,
         loading: false,
         loadFailed: false
@@ -197,6 +197,7 @@ Page({
 
   onUnload() {
     this._pageActive = false
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
     if (typeof this._unsubscribeAuthInvalidation === 'function') {
       this._unsubscribeAuthInvalidation()
       this._unsubscribeAuthInvalidation = null
@@ -298,6 +299,20 @@ Page({
 
   retryListings() {
     this.loadListings()
+  },
+
+  loadListingFilterOptions() {
+    if (typeof apiService.getListingFilterOptions !== 'function') return Promise.resolve()
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    const requestSeq = this._filterOptionsRequestSeq
+    return apiService.getListingFilterOptions().then((payload) => {
+      if (this._pageActive === false || requestSeq !== this._filterOptionsRequestSeq) return
+      const options = normalizeListingFilterOptions(payload)
+      this.setData({
+        regionOptions: options.regionOptions,
+        layoutOptions: options.layoutOptions
+      })
+    }).catch(() => {})
   },
 
   openListing(event) {

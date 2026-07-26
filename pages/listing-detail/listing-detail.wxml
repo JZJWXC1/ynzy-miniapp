@@ -44,6 +44,18 @@
         ></video>
       </view>
 
+      <scroll-view wx:if="{{listing.mediaAssets.length > 1}}" class="media-switcher" scroll-x enhanced show-scrollbar="{{false}}">
+        <view class="media-switcher-row">
+          <button
+            wx:for="{{listing.mediaAssets}}"
+            wx:key="assetId"
+            class="media-switch-button {{selectedMediaAssetId === item.assetId ? 'active' : ''}}"
+            data-asset-id="{{item.assetId}}"
+            bindtap="selectMediaAsset"
+          >{{item.label}}</button>
+        </view>
+      </scroll-view>
+
       <view class="video-share-card">
         <view class="video-share-copy">
           <view class="video-share-title">转发房间视频给租客</view>

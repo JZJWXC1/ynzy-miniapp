@@ -179,7 +179,7 @@ function readSourceOrigins() {
     .filter(Boolean)
 }
 
-function putObjectBuffer(objectKey, buffer, contentType) {
+function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
   const missing = missingConfigKeys()
   if (missing.length) {
     const error = new Error(`OSS 配置缺少 ${missing.join('、')}，无法保存飞书素材`)
@@ -196,6 +196,17 @@ function putObjectBuffer(objectKey, buffer, contentType) {
     'Content-Type': type,
     'Content-Length': body.length
   }
+  const metadata = options.metadata && typeof options.metadata === 'object' && !Array.isArray(options.metadata)
+    ? options.metadata
+    : {}
+  Object.keys(metadata).sort().forEach((key) => {
+    const normalizedKey = String(key || '').trim().toLowerCase()
+    const value = String(metadata[key] || '').trim()
+    if (!/^x-oss-meta-[a-z0-9-]+$/.test(normalizedKey) || !value || /[\r\n]/.test(value)) {
+      throw new Error('OSS 自定义元数据无效')
+    }
+    headers[normalizedKey] = value
+  })
   if (config.oss.securityToken) {
     headers['x-oss-security-token'] = config.oss.securityToken
   }
@@ -235,6 +246,128 @@ function putObjectBuffer(objectKey, buffer, contentType) {
     req.on('error', reject)
     req.end(body)
   })
+}
+
+function readObjectBufferAuthenticated(objectKey, maxBytes) {
+  const missing = missingConfigKeys()
+  if (missing.length) {
+    const error = new Error(`OSS 配置缺少 ${missing.join('、')}，无法回读素材`)
+    error.statusCode = 503
+    throw error
+  }
+  const safeMaxBytes = Number(maxBytes || config.oss.maxVideoSize)
+  if (!Number.isSafeInteger(safeMaxBytes) || safeMaxBytes < 1) throw new Error('OSS 回读大小上限无效')
+  const date = new Date().toUTCString()
+  const resourcePath = `/${config.oss.bucket}/${objectKey}`
+  const headers = { Date: date }
+  if (config.oss.securityToken) headers['x-oss-security-token'] = config.oss.securityToken
+  const stringToSign = [
+    'GET',
+    '',
+    '',
+    date,
+    `${canonicalizedOssHeaders(headers)}${resourcePath}`
+  ].join('\n')
+  headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      method: 'GET',
+      hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
+      path: `/${encodeObjectPath(objectKey)}`,
+      headers
+    }, (res) => {
+      const declaredLength = Number(res.headers && res.headers['content-length'])
+      if (Number.isFinite(declaredLength) && declaredLength > safeMaxBytes) {
+        res.resume()
+        const error = new Error('OSS 回读素材超过允许大小')
+        error.statusCode = 413
+        reject(error)
+        return
+      }
+      const chunks = []
+      let size = 0
+      res.on('data', (chunk) => {
+        size += chunk.length
+        if (size > safeMaxBytes) {
+          req.destroy()
+          const error = new Error('OSS 回读素材超过允许大小')
+          error.statusCode = 413
+          reject(error)
+          return
+        }
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const error = new Error(`OSS 回读素材失败：${res.statusCode}`)
+          error.statusCode = res.statusCode || 502
+          reject(error)
+          return
+        }
+        const buffer = Buffer.concat(chunks, size)
+        resolve({
+          buffer,
+          size,
+          contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+          metadataSha256: String(res.headers && res.headers['x-oss-meta-content-sha256'] || '').trim()
+        })
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function validateDeterministicVideoInput(input = {}) {
+  const objectKey = String(input.objectKey || '').trim()
+  const buffer = Buffer.isBuffer(input.buffer) ? input.buffer : (input.buffer == null ? null : Buffer.from(input.buffer))
+  const contentSha256 = String(input.contentSha256 || '').trim().toLowerCase()
+  if (!objectKey || !/\/feishu-note-v1\/.+\.(?:mp4|mov|m4v|webm)$/i.test(objectKey) ||
+      objectKey.split('/').some((part) => !part || part === '.' || part === '..') ||
+      /[\\?#\0\r\n]/.test(objectKey)) {
+    throw new Error('房源笔记 OSS 对象键无效')
+  }
+  if (!/^[0-9a-f]{64}$/.test(contentSha256)) throw new Error('房源笔记内容哈希无效')
+  if (buffer && (!buffer.length || buffer.length > config.oss.maxVideoSize)) {
+    throw new Error('房源笔记视频大小无效')
+  }
+  if (buffer && crypto.createHash('sha256').update(buffer).digest('hex') !== contentSha256) {
+    throw new Error('房源笔记上传内容与声明哈希不一致')
+  }
+  return { objectKey, buffer, contentSha256 }
+}
+
+async function verifyVideoDeterministic(asset = {}) {
+  const normalized = validateDeterministicVideoInput({
+    objectKey: asset.objectKey,
+    contentSha256: asset.contentSha256
+  })
+  const readback = await readObjectBufferAuthenticated(normalized.objectKey, config.oss.maxVideoSize)
+  return {
+    objectKey: normalized.objectKey,
+    contentSha256: readback.contentSha256,
+    size: readback.size,
+    verified: readback.contentSha256 === normalized.contentSha256 &&
+      (!readback.metadataSha256 || readback.metadataSha256 === normalized.contentSha256) &&
+      (!Number(asset.size) || readback.size === Number(asset.size))
+  }
+}
+
+async function putVideoDeterministic(input = {}) {
+  const normalized = validateDeterministicVideoInput(input)
+  await putObjectBuffer(
+    normalized.objectKey,
+    normalized.buffer,
+    input.contentType || 'video/mp4',
+    { metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 } }
+  )
+  const verified = await verifyVideoDeterministic({
+    objectKey: normalized.objectKey,
+    contentSha256: normalized.contentSha256,
+    size: normalized.buffer.length
+  })
+  if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希回读不一致')
+  return verified
 }
 
 function createVideoUploadPolicy(input = {}) {
@@ -386,5 +519,8 @@ module.exports = {
   hasReadConfig,
   readSourceOrigins,
   putObjectBuffer,
+  putVideoDeterministic,
+  verifyVideoDeterministic,
+  readObjectBufferAuthenticated,
   sanitizeOssErrorText
 }

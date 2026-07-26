@@ -117,11 +117,36 @@ const criticalScripts = [
   'server/scripts/feishu-ai-data-foundation-v1-test.js',
   'server/scripts/feishu-foundation-enrichment-v1-test.js',
   'server/scripts/company-source-snapshot-v1-test.js',
+  // 新员工源表固定十列快照与前端画布：首页只接受专用镜像 v1 契约，行政区/板块/小区三级合并，
+  // 未知结构、迟到响应、画布超限和敏感底座字段全部 fail-closed。
+  'server/scripts/home-company-sheet-snapshot-v1-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。
   'server/scripts/feishu-cross-base-source-v1-test.js',
+  // 员工源表房源笔记：稳定 field_id/type15、源客户端硬只读、受控飞书资源递归、独立云盘目录、
+  // OSS 内容回读、跨房源冲突、三重临时保留和真实集合对账。
+  'server/scripts/feishu-note-material-source-v1-test.js',
+  'server/scripts/feishu-note-material-sync-v1-test.js',
+  'server/scripts/feishu-note-material-oss-v1-test.js',
+  'server/scripts/feishu-note-material-pipeline-v1-test.js',
   // 素材迁移默认只读预演，三根目录隔离，真实复制必须绑定同一份计划摘要且不提供移动/删除能力。
   'server/scripts/feishu-material-copy-v1-test.js',
+  // 多视频私有清单只经服务端安全骨架与 assetId 能力公开；调包、素材更新/删除和旧 token 必须失效，
+  // 详情页仍只有一个播放器，切换会作废旧分享/保存异步。
+  'server/scripts/listing-media-persistence-v1-test.js',
+  'server/scripts/listing-media-proxy-v1-test.js',
+  'server/scripts/public-listing-copy-boundary-v1-test.js',
+  'server/scripts/listing-detail-multi-media-v1-test.js',
+  // 区域/板块由当前作用域房源动态生成：公开、本人上传、地图和废房源池各用正确数据集；
+  // 后台 Mock、地图 Mock、迟到响应及六轴组合筛选必须与真实接口同口径；真实 HTTP 门禁再锁定
+  // 公开/管理员元数据路由与废房源池八轴 AND 查询，防止路由误接或参数漏传仍假绿。
+  'server/scripts/dynamic-listing-filter-options-v1-test.js',
+  'server/scripts/dynamic-listing-filter-client-v1-test.js',
+  'server/scripts/dynamic-location-dictionary-v1-test.js',
+  'server/scripts/expired-listing-filters-v1-test.js',
+  'server/scripts/admin-expired-filter-client-v1-test.js',
+  'server/scripts/map-mock-layout-semantics-v1-test.js',
+  'server/scripts/dynamic-listing-filter-http-v1-test.js',
   // 登录态真 LLM 链路挂起时必须在供应商级超时后回本地真实匹配，不能让前端报网络失败。
   'server/scripts/llm-provider-timeout-fallback-test.js',
   // 把静态上线差距审计纳入最终门禁，避免旧 need/purpose、主动签单入口或足迹旁路再次漂移。
@@ -354,6 +379,8 @@ function checkSharedListingFilterComponent() {
   const myListingsJson = readText('pages/my-listings/my-listings.json')
   const listingsJs = readText('pages/listings/listings.js')
   const myListingsJs = readText('pages/my-listings/my-listings.js')
+  const filterOptionsSource = readText('utils/listing-filter-options.js')
+  const apiServiceSource = readText('utils/api-service.js')
 
   assertOk(listingsJson.includes('/components/listing-filter/listing-filter'), '全部房源页必须注册共用筛选组件')
   assertOk(myListingsJson.includes('/components/listing-filter/listing-filter'), '公司房源专区必须注册共用筛选组件')
@@ -365,14 +392,22 @@ function checkSharedListingFilterComponent() {
   ;['filterchange', 'filterapply', 'filterreset', 'visibleCommunities'].forEach((text) => {
     assertOk(componentJs.includes(text), `共用筛选组件缺少 ${text}`)
   })
-  ;['拱墅区', '上城区', '余杭区'].forEach((district) => {
-    assertOk(listingsJs.includes(district), `全部房源页区域选项缺少 ${district}`)
-    assertOk(myListingsJs.includes(district), `公司房源专区区域选项缺少 ${district}`)
+  ;[
+    ['全部房源页', listingsJs],
+    ['公司房源专区', myListingsJs]
+  ].forEach(([label, source]) => {
+    assertOk(source.includes('loadListingFilterOptions'), `${label}必须加载动态区域/板块元数据`)
+    assertOk(source.includes('getListingFilterOptions'), `${label}必须读取统一动态筛选接口`)
   })
+  assertOk(componentJs.includes('regionOptions'), '共用筛选组件必须消费页面下发的动态区域元数据')
+  assertOk(componentJs.includes('blocksForDistrict'), '共用筛选组件必须按已选区域派生从属板块')
+  assertOk(filterOptionsSource.includes('normalizeRegionOptions'), '动态区域/板块必须经统一清洗、去重和稳定排序')
+  assertOk(apiServiceSource.includes("path: '/mini/listing-filter-options'"), '小程序必须从服务端读取动态筛选元数据')
+  assertOk(myListingsJs.includes('listingFilterOptionsFromListings'), '我的上传必须合并本人全量房源位置，不能只依赖公开房源元数据')
   assertOk(listingsJs.includes('district: cleanFilterValue(sourceFilters.district || sourceFilters.area)'), '全部房源页必须兼容旧 area 参数并落到 district')
   assertOk(listingsJs.includes('communityOptions: uniqueCommunities'), '全部房源页小区联想必须来自当前在架房源去重')
   assertOk(myListingsJs.includes('companyCommunityOptions'), '公司房源专区小区联想必须来自当前公司房源去重')
-  return '全部房源页与公司房源专区共用 listing-filter，旧 area 参数兼容为 district'
+  return '全部房源页与公司房源专区共用 listing-filter，区域/板块来自动态元数据并保留旧 area 参数兼容'
 }
 
 function checkDistrictMappingConfig() {

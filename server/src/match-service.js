@@ -346,9 +346,14 @@ function configuredBlockNames() {
 
 function structuredScopeNames(candidates = []) {
   return unique((candidates || []).flatMap((listing) => [
+    listing.district,
+    listing.area,
     listing.community,
     listing.block
-  ]).concat(configuredBlockNames()))
+  ]).concat(
+    Object.keys(((config && config.location) || {}).districtBlocks || {}),
+    configuredBlockNames()
+  ))
 }
 
 function knownScopeNames(db = {}, candidates = []) {
@@ -522,10 +527,27 @@ function parseRadiusSearch(source, candidates = [], options = {}) {
   return null
 }
 
-function parseArea(source) {
+function areaWordsFromCandidates(candidates = []) {
+  return unique(AREA_WORDS.concat(
+    (candidates || []).flatMap((listing) => [listing && listing.district, listing && listing.area]),
+    Object.keys(((config && config.location) || {}).districtBlocks || {})
+  )).sort((left, right) => String(right).length - String(left).length)
+}
+
+function parseArea(source, candidates = []) {
   const text = compactText(source)
-  const matched = AREA_WORDS.find((word) => text.indexOf(word) !== -1)
-  return normalizeArea(matched || '')
+  const words = areaWordsFromCandidates(candidates)
+  const matched = words.find((word) => text.indexOf(word) !== -1)
+  if (matched) return normalizeArea(matched)
+
+  // 新增行政区不应再等代码发版。员工源/位置字典一旦出现“XX区”，用户省略末尾“区”
+  // 时仍按同一条候选词识别；返回值保留候选房源中的完整行政区名称。
+  const aliasMatch = words
+    .filter((word) => /区$/.test(word) && word.length >= 3)
+    .map((word) => ({ canonical: word, alias: word.slice(0, -1) }))
+    .sort((left, right) => right.alias.length - left.alias.length)
+    .find((item) => text.indexOf(item.alias) !== -1)
+  return aliasMatch ? normalizeArea(aliasMatch.canonical) : ''
 }
 
 function cleanExplicitCommunity(value) {
@@ -561,11 +583,13 @@ function parseExplicitCommunity(source) {
 function parseCommunity(source, candidates, options = {}) {
   const text = normalizeCommunity(source)
   if (!text) return ''
+  const areaKeys = new Set(areaWordsFromCandidates(candidates).map((item) => normalizeCommunity(item)))
   const communities = unique((candidates || []).map((listing) => listing.community)
     .concat((candidates || []).map((listing) => listing.block))
     .concat(options.communityNames || []))
     .concat(knownScopeNames(options.db || {}, candidates))
     .filter((item) => normalizeCommunity(item).length >= 2)
+    .filter((item) => !areaKeys.has(normalizeCommunity(item)))
     .sort((left, right) => normalizeCommunity(right).length - normalizeCommunity(left).length)
 
   const matched = communities.find((community) => {
@@ -660,7 +684,7 @@ function parseNeed(payload = {}, candidates = [], options = {}) {
     budget.budgetText = budget.minBudget ? `${budget.minBudget}-${budget.maxBudget}` : `${budget.maxBudget}`
   }
   const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames, db: options.db }))
-  const area = normalizeArea(form.area || parseArea(source))
+  const area = normalizeArea(form.area || parseArea(source, candidates))
   const layout = form.layout || parseLayout(source)
   const rentMode = form.rentMode || parseRentMode(source)
   const featureResult = parseFeatures([source, parseFeatureInput(form.features).join('，')].filter(Boolean).join('，'))

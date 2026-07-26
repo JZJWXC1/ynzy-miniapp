@@ -116,6 +116,7 @@ function startDirectServe(service, listing, capabilityUrl, options = {}) {
     listingId: listing.id,
     kind,
     token: parsed.searchParams.get('token') || '',
+    assetId: parsed.searchParams.get('assetId') || '',
     clientKey: options.clientKey || ''
   }).then(
     () => ({ ok: true }),
@@ -424,6 +425,160 @@ async function run() {
   assert.ok(!serializedUrls.includes('19900008888'), '能力 URL 不得包含历史手机号文件名')
   assert.ok(!/OSSAccessKeyId|Signature/.test(serializedUrls), '客户端不得直接拿 OSS 签名参数')
 
+  const multiListing = {
+    ...listing,
+    id: 'L-MEDIA-MULTI',
+    mediaAssets: [
+      {
+        assetId: 'MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4',
+        contentSha256: 'a'.repeat(64),
+        sourceFingerprint: '1'.repeat(64),
+        targetDriveFingerprint: '2'.repeat(64),
+        displayOrder: 0,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      },
+      {
+        assetId: 'MAT-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.mp4',
+        contentSha256: 'b'.repeat(64),
+        sourceFingerprint: '3'.repeat(64),
+        targetDriveFingerprint: '4'.repeat(64),
+        displayOrder: 1,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      }
+    ]
+  }
+  const multiUrls = service.urlsForListing(multiListing)
+  assert.strictEqual(multiUrls.mediaAssets.length, 2, '全部已验证私有视频必须生成安全公开能力')
+  assert.strictEqual(multiUrls.videoUrl, multiUrls.mediaAssets[0].videoUrl, '顶层兼容视频必须指向第一项')
+  assert.deepStrictEqual(
+    Object.keys(multiUrls.mediaAssets[0]).sort(),
+    ['assetId', 'coverUrl', 'displayOrder', 'kind', 'label', 'videoUrl'].sort(),
+    '公开素材只允许安全骨架和能力 URL'
+  )
+  const serializedMultiUrls = JSON.stringify(multiUrls)
+  ;['objectKey', 'contentSha256', 'sourceFingerprint', 'targetDriveFingerprint', 'house-videos', 'a'.repeat(64)].forEach((secret) => {
+    assert.ok(!serializedMultiUrls.includes(secret), `公开多视频不得泄露 ${secret}`)
+  })
+  const secondMultiUrl = new URL(multiUrls.mediaAssets[1].videoUrl)
+  assert.strictEqual(secondMultiUrl.searchParams.get('assetId'), multiListing.mediaAssets[1].assetId, '能力地址必须绑定不透明 assetId')
+  const oldFirstUrl = multiUrls.mediaAssets[0].videoUrl
+
+  const reorderedOtherAssetsListing = {
+    ...multiListing,
+    id: 'L-MEDIA-REORDER-OTHERS',
+    mediaAssets: [
+      ...multiListing.mediaAssets.map((item) => ({ ...item })),
+      {
+        assetId: 'MAT-cccccccccccccccccccccccccccccccc',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-cccccccccccccccccccccccccccccccc.mp4',
+        contentSha256: 'c'.repeat(64),
+        sourceFingerprint: '5'.repeat(64),
+        targetDriveFingerprint: '6'.repeat(64),
+        displayOrder: 2,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      }
+    ]
+  }
+  const preReorderFirstUrl = service.urlsForListing(reorderedOtherAssetsListing).mediaAssets[0].videoUrl
+  reorderedOtherAssetsListing.mediaAssets[1].displayOrder = 2
+  reorderedOtherAssetsListing.mediaAssets[2].displayOrder = 1
+  const reorderedOtherAttempt = startDirectServe(service, reorderedOtherAssetsListing, preReorderFirstUrl)
+  const reorderedOtherResult = await reorderedOtherAttempt.promise
+  assert.strictEqual(
+    reorderedOtherResult.error && reorderedOtherResult.error.statusCode,
+    404,
+    '同套房其他素材重排后，未改动素材的旧能力也必须失效'
+  )
+
+  const validSecondAttempt = startDirectServe(service, multiListing, multiUrls.mediaAssets[1].videoUrl)
+  validSecondAttempt.req.emit('aborted')
+  const validSecondResult = await validSecondAttempt.promise
+  assert.notStrictEqual(validSecondResult.error && validSecondResult.error.statusCode, 404, '正确 assetId 与素材状态必须先通过能力校验')
+
+  const tamperedAssetUrl = new URL(multiUrls.mediaAssets[1].videoUrl)
+  tamperedAssetUrl.searchParams.set('assetId', multiListing.mediaAssets[0].assetId)
+  const tamperedAssetAttempt = startDirectServe(service, multiListing, tamperedAssetUrl.toString())
+  const tamperedAssetResult = await tamperedAssetAttempt.promise
+  assert.strictEqual(tamperedAssetResult.error && tamperedAssetResult.error.statusCode, 404, '调包 assetId 必须返回 404')
+
+  const oldSecondUrl = multiUrls.mediaAssets[1].videoUrl
+  const validationService = directMediaService({
+    requestImpl: () => {
+      throw new Error('能力被错误放行后触发的合成上游请求')
+    }
+  })
+  const validationListing = {
+    ...multiListing,
+    id: 'L-MEDIA-VALIDATION',
+    mediaAssets: multiListing.mediaAssets.map((item) => ({ ...item }))
+  }
+  const validationUrl = validationService.urlsForListing(validationListing).mediaAssets[1].videoUrl
+  validationListing.mediaAssets[1].sourceFingerprint = 'invalid-source-fingerprint'
+  assert.strictEqual(
+    validationService.urlsForListing(validationListing).mediaAssets.length,
+    0,
+    '来源验证摘要损坏时媒体代理必须与领域层一样整组 fail-closed'
+  )
+  const invalidSourceAttempt = startDirectServe(validationService, validationListing, validationUrl)
+  const invalidSourceResult = await invalidSourceAttempt.promise
+  assert.strictEqual(
+    invalidSourceResult.error && invalidSourceResult.error.statusCode,
+    404,
+    '来源验证摘要损坏后旧能力必须立即失效，不能继续访问上游'
+  )
+  validationListing.mediaAssets[1].sourceFingerprint = '9'.repeat(64)
+  const validSourceChangeAttempt = startDirectServe(validationService, validationListing, validationUrl)
+  const validSourceChangeResult = await validSourceChangeAttempt.promise
+  assert.strictEqual(
+    validSourceChangeResult.error && validSourceChangeResult.error.statusCode,
+    404,
+    '来源验证摘要发生合法版本变化后旧能力也必须失效'
+  )
+
+  multiListing.mediaAssets[1] = {
+    ...multiListing.mediaAssets[1],
+    contentSha256: 'c'.repeat(64)
+  }
+  const changedStateAttempt = startDirectServe(service, multiListing, oldSecondUrl)
+  const changedStateResult = await changedStateAttempt.promise
+  assert.strictEqual(changedStateResult.error && changedStateResult.error.statusCode, 404, '素材摘要变化后旧 token 必须返回 404')
+  const siblingChangedAttempt = startDirectServe(service, multiListing, oldFirstUrl)
+  const siblingChangedResult = await siblingChangedAttempt.promise
+  assert.strictEqual(
+    siblingChangedResult.error && siblingChangedResult.error.statusCode,
+    404,
+    '同套房其他素材替换后，未改动素材的旧能力也必须失效'
+  )
+  multiListing.mediaAssets.splice(1, 1)
+  const removedAssetAttempt = startDirectServe(service, multiListing, oldSecondUrl)
+  const removedAssetResult = await removedAssetAttempt.promise
+  assert.strictEqual(removedAssetResult.error && removedAssetResult.error.statusCode, 404, '素材删除后旧 token 必须返回 404')
+  const siblingRemovedAttempt = startDirectServe(service, multiListing, oldFirstUrl)
+  const siblingRemovedResult = await siblingRemovedAttempt.promise
+  assert.strictEqual(
+    siblingRemovedResult.error && siblingRemovedResult.error.statusCode,
+    404,
+    '同套房其他素材删除后，未改动素材的旧能力也必须失效'
+  )
+
+  const legacyTransitionListing = { ...listing, id: 'L-MEDIA-TRANSITION' }
+  const preMigrationUrl = service.urlsForListing(legacyTransitionListing).videoUrl
+  legacyTransitionListing.mediaAssets = [multiListing.mediaAssets[0]]
+  const preMigrationAttempt = startDirectServe(service, legacyTransitionListing, preMigrationUrl)
+  const preMigrationResult = await preMigrationAttempt.promise
+  assert.strictEqual(preMigrationResult.error && preMigrationResult.error.statusCode, 404, '切换到多视频清单后旧单视频 token 必须立即失效')
+
   await assertPerClientConcurrencyFairness(listing)
   for (const stage of ['requestImpl', 'setTimeout', 'end']) {
     await assertSynchronousFailureReleasesSlot(listing, stage)
@@ -451,6 +606,7 @@ async function run() {
   assert.ok(!indexSource.includes('function sameConfiguredOrigin('), '不得保留仅比较 origin、会放行 HTTP 的旧门禁')
   assert.ok(indexSource.includes('if (res.headersSent || res.destroyed)'), '流式响应发头后异常不得二次 writeHead')
   assert.ok(indexSource.includes('clientKey: requestClientKey(req)'), '媒体并发客户端键必须由服务端可信网络键注入')
+  assert.ok(indexSource.includes("assetId: searchParams.get('assetId') || ''"), 'HTTP 媒体路由必须把 assetId 交给服务端能力校验')
   let currentOwnerAudience = ownerCapabilityOptions.audience
   let currentOwnerStateKey = ownerCapabilityOptions.stateKey
   const mediaServer = http.createServer(async (req, res) => {

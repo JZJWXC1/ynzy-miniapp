@@ -1285,20 +1285,12 @@
             <span>区域</span>
             <select id="areaFilter">
               <option value="">全部区域</option>
-              <option value="滨江">滨江</option>
-              <option value="萧山">萧山</option>
-              <option value="上城">上城</option>
             </select>
           </label>
           <label class="filter-item">
             <span>板块</span>
             <select id="blockFilter">
               <option value="">全部板块</option>
-              <option value="西兴">西兴</option>
-              <option value="长河">长河</option>
-              <option value="浦沿">浦沿</option>
-              <option value="建设路">建设路</option>
-              <option value="钱江新城">钱江新城</option>
             </select>
           </label>
           <label class="filter-item">
@@ -1368,6 +1360,56 @@
 
       <section class="panel" id="expiredListings">
         <div class="status-box audit-note">后台资产池保留完整房源信息、视频和标签；重新上架前请核对视频、房态、地址和房东联系方式。</div>
+        <div class="filter-bar">
+          <label class="filter-item">
+            <span>区域</span>
+            <select id="expiredDistrictFilter"><option value="">全部区域</option></select>
+          </label>
+          <label class="filter-item">
+            <span>板块</span>
+            <select id="expiredBlockFilter"><option value="">全部板块</option></select>
+          </label>
+          <label class="filter-item">
+            <span>小区</span>
+            <input id="expiredCommunityFilter" placeholder="输入小区名称筛选">
+          </label>
+          <label class="filter-item">
+            <span>房源类型</span>
+            <select id="expiredSourceFilter">
+              <option value="">全部类型</option>
+              <option value="公司房源">公司房源</option>
+              <option value="业主房源">业主房源</option>
+              <option value="二房东房源">二房东房源</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>最低租金</span>
+            <input id="expiredRentMinFilter" type="number" min="0" step="100" placeholder="不限">
+          </label>
+          <label class="filter-item">
+            <span>最高租金</span>
+            <input id="expiredRentMaxFilter" type="number" min="0" step="100" placeholder="不限">
+          </label>
+          <label class="filter-item">
+            <span>户型</span>
+            <select id="expiredLayoutFilter">
+              <option value="">不限户型</option>
+              <option value="一室">一室</option>
+              <option value="两室">两室</option>
+              <option value="三室">三室</option>
+              <option value="三室以上">三室以上</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>租赁方式</span>
+            <select id="expiredRentModeFilter">
+              <option value="">整租/合租不限</option>
+              <option value="整租">整租</option>
+              <option value="合租">合租</option>
+            </select>
+          </label>
+          <button class="ghost-button" id="resetExpiredListingFilters">重置废房源筛选</button>
+        </div>
         <div id="expiredListingList">
           <div class="table-wrap">
             <table>
@@ -1926,6 +1968,14 @@
     const sourceFilter = document.getElementById('sourceFilter');
     const statusFilter = document.getElementById('statusFilter');
     const missingVideoFilter = document.getElementById('missingVideoFilter');
+    const expiredDistrictFilter = document.getElementById('expiredDistrictFilter');
+    const expiredBlockFilter = document.getElementById('expiredBlockFilter');
+    const expiredCommunityFilter = document.getElementById('expiredCommunityFilter');
+    const expiredSourceFilter = document.getElementById('expiredSourceFilter');
+    const expiredRentMinFilter = document.getElementById('expiredRentMinFilter');
+    const expiredRentMaxFilter = document.getElementById('expiredRentMaxFilter');
+    const expiredLayoutFilter = document.getElementById('expiredLayoutFilter');
+    const expiredRentModeFilter = document.getElementById('expiredRentModeFilter');
     const listingRows = document.getElementById('listingRows');
     const listingEmpty = document.getElementById('listingEmpty');
     const listingReviewList = document.getElementById('listingReviewList');
@@ -2251,16 +2301,139 @@
       `).join('');
     }
 
-    async function renderListings(sourceListingData) {
-      const area = areaFilter.value;
+    let listingFilterMetadata = { regionOptions: [] };
+    let expiredListingFilterMetadata = { regionOptions: [] };
+    let activeListingRequestSeq = 0;
+    let expiredListingRequestSeq = 0;
+
+    function uniqueSortedText(values) {
+      return Array.from(new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean)))
+        .sort((left, right) => left.localeCompare(right, 'zh'));
+    }
+
+    function filterOptionsFromRows(rows) {
+      const blocksByDistrict = new Map();
+      (rows || []).forEach((item) => {
+        const district = String(item.district || item.area || '').trim();
+        const block = String(item.block || '').trim();
+        if (!district) return;
+        if (!blocksByDistrict.has(district)) blocksByDistrict.set(district, new Set());
+        if (block) blocksByDistrict.get(district).add(block);
+      });
+      return {
+        regionOptions: Array.from(blocksByDistrict.keys())
+          .sort((left, right) => left.localeCompare(right, 'zh'))
+          .map((name) => ({
+            name,
+            blocks: Array.from(blocksByDistrict.get(name)).sort((left, right) => left.localeCompare(right, 'zh'))
+          }))
+      };
+    }
+
+    function normalizeFilterMetadata(value) {
+      const source = value && typeof value === 'object' ? value : {};
+      const seenDistricts = new Set();
+      const regionOptions = (Array.isArray(source.regionOptions) ? source.regionOptions : [])
+        .map((region) => ({
+          name: String(region && region.name || '').trim(),
+          blocks: uniqueSortedText(region && region.blocks)
+        }))
+        .filter((region) => {
+          if (!region.name || seenDistricts.has(region.name)) return false;
+          seenDistricts.add(region.name);
+          return true;
+        })
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh'));
+      return { regionOptions };
+    }
+
+    function fillTextSelect(select, placeholder, values) {
+      if (!select) return;
+      const previous = String(select.value || '');
+      while (select.options.length) select.remove(0);
+      const emptyOption = document.createElement('option');
+      emptyOption.value = '';
+      emptyOption.textContent = placeholder;
+      select.appendChild(emptyOption);
+      uniqueSortedText(values).forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      if (previous && values.indexOf(previous) !== -1) select.value = previous;
+    }
+
+    function blocksForFilterDistrict(metadata, district) {
+      const source = metadata && Array.isArray(metadata.regionOptions) ? metadata.regionOptions : [];
+      const selected = String(district || '').trim();
+      if (!selected) {
+        return uniqueSortedText(source.flatMap((region) => region.blocks || []));
+      }
+      const region = source.find((item) => item.name === selected);
+      return region ? uniqueSortedText(region.blocks) : [];
+    }
+
+    function refreshActiveBlockOptions() {
+      fillTextSelect(blockFilter, '全部板块', blocksForFilterDistrict(listingFilterMetadata, areaFilter.value));
+    }
+
+    function handleActiveDistrictChange() {
+      refreshActiveBlockOptions();
+      refreshListingViews();
+    }
+
+    function refreshExpiredBlockOptions() {
+      fillTextSelect(expiredBlockFilter, '全部板块', blocksForFilterDistrict(expiredListingFilterMetadata, expiredDistrictFilter.value));
+    }
+
+    async function loadListingFilterMetadata() {
+      let metadata;
+      try {
+        metadata = await getAdminData('/admin/listing-filter-options', () => (
+          filterOptionsFromRows(dataCenter.getAdminListings ? dataCenter.getAdminListings() : [])
+        ));
+      } catch (error) {
+        metadata = filterOptionsFromRows(dataCenter.getAdminListings ? dataCenter.getAdminListings() : []);
+      }
+      listingFilterMetadata = normalizeFilterMetadata(metadata);
+      let expiredMetadata;
+      try {
+        expiredMetadata = await getAdminData('/admin/expired-listing-filter-options', () => (
+          filterOptionsFromRows(dataCenter.getExpiredListings ? dataCenter.getExpiredListings({}) : [])
+        ));
+      } catch (error) {
+        expiredMetadata = filterOptionsFromRows(dataCenter.getExpiredListings ? dataCenter.getExpiredListings({}) : []);
+      }
+      expiredListingFilterMetadata = normalizeFilterMetadata(expiredMetadata);
+      fillTextSelect(areaFilter, '全部区域', listingFilterMetadata.regionOptions.map((region) => region.name));
+      fillTextSelect(
+        expiredDistrictFilter,
+        '全部区域',
+        expiredListingFilterMetadata.regionOptions.map((region) => region.name)
+      );
+      refreshActiveBlockOptions();
+      refreshExpiredBlockOptions();
+    }
+
+    function normalizedLocationText(value) {
+      return String(value || '').normalize('NFKC').trim().replace(/区$/, '');
+    }
+
+	    async function renderListings(sourceListingData) {
+      activeListingRequestSeq += 1;
+      const requestSeq = activeListingRequestSeq;
+      const district = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
       const source = sourceFilter.value;
       const status = statusFilter.value;
       const missingVideoMaterial = missingVideoFilter.value;
-      const listingData = sourceListingData || await getAdminData(`/admin/listings${buildQuery({ area, block, community, source, status, missingVideoMaterial })}`, () => dataCenter.getAdminListings());
+      const listingData = sourceListingData || await getAdminData(`/admin/listings${buildQuery({ district, block, community, source, status, missingVideoMaterial })}`, () => dataCenter.getAdminListings());
+      if (requestSeq !== activeListingRequestSeq) return;
       const rows = arrayValue(listingData).filter((item) => {
-        const matchArea = !area || item.area === area;
+        const matchArea = !district ||
+          normalizedLocationText(item.district || item.area) === normalizedLocationText(district);
         const matchBlock = !block || item.block === block;
         const matchCommunity = !community || item.community.includes(community);
         const company = Boolean(item.companyListing || item.isCompanyListing);
@@ -2272,7 +2445,7 @@
           ? /成交|签单/.test(String(item.status || ''))
           : item.status === status);
         const missingVideo = Boolean(item.missingVideoMaterial) || item.videoMaterialStatus === '缺视频素材' || item.video === '缺视频素材';
-        const hasVideo = Boolean(item.videoPreviewUrl || item.videoUrl || item.videoKey || item.hasVideo);
+        const hasVideo = hasAdminListingVideo(item);
         const matchVideo = !missingVideoMaterial || (missingVideoMaterial === 'missing' ? missingVideo : (hasVideo && !missingVideo));
         return matchArea && matchBlock && matchCommunity && matchSource && matchStatus && matchVideo;
       });
@@ -2371,8 +2544,16 @@
       return shown.join('');
     }
 
+    function hasAdminListingVideo(item) {
+      const source = item && typeof item === 'object' ? item : {};
+      const manifestHasVideo = Array.isArray(source.mediaAssets) && source.mediaAssets.some((asset) => (
+        asset && typeof asset === 'object' && String(asset.kind || '').toLowerCase() === 'video'
+      ));
+      return Boolean(source.videoPreviewUrl || source.videoUrl || source.videoKey || source.hasVideo || manifestHasVideo);
+    }
+
     function videoStatusText(item) {
-      if (item.videoPreviewUrl || item.videoUrl || item.videoKey || item.hasVideo) return '有视频';
+      if (hasAdminListingVideo(item)) return '有视频';
       return pickText(item.videoMaterialStatus, item.video, '缺视频');
     }
 
@@ -2722,7 +2903,7 @@
         ['房东总佣金', `${item.landlordCommissionPercent === undefined || item.landlordCommissionPercent === null ? 50 : item.landlordCommissionPercent}% 月租`],
         ['上传人', item.uploader],
         ['上传人电话', item.uploaderPhone],
-        ['视频状态', item.hasVideo || item.videoUrl ? '已上传视频' : pickText(item.videoMaterialStatus, item.video, '未传视频')],
+        ['视频状态', hasAdminListingVideo(item) ? '已上传视频' : pickText(item.videoMaterialStatus, item.video, '未传视频')],
         ['素材文件', pickText(item.sourceMaterialName, item.sourceMaterialPath), true],
         ['素材失败原因', item.videoMaterialFailureReason, true],
         ['视频Key', item.videoKey, true],
@@ -3038,13 +3219,21 @@
     }
 
     async function renderExpiredListings() {
-      const area = areaFilter.value;
-      const block = blockFilter.value;
-      const community = communityFilter.value.trim();
-      const source = sourceFilter.value;
-      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community, source })}`, () => (
-        dataCenter.getExpiredListings ? dataCenter.getExpiredListings({ area, block, community }) : []
+      expiredListingRequestSeq += 1;
+      const requestSeq = expiredListingRequestSeq;
+      const district = expiredDistrictFilter.value;
+      const block = expiredBlockFilter.value;
+      const community = expiredCommunityFilter.value.trim();
+      const sourceType = expiredSourceFilter.value;
+      const rentMin = expiredRentMinFilter.value;
+      const rentMax = expiredRentMaxFilter.value;
+      const layout = expiredLayoutFilter.value;
+      const rentMode = expiredRentModeFilter.value;
+      const filters = { district, block, community, sourceType, rentMin, rentMax, layout, rentMode };
+      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery(filters)}`, () => (
+        dataCenter.getExpiredListings ? dataCenter.getExpiredListings(filters) : []
       )));
+      if (requestSeq !== expiredListingRequestSeq) return;
       expiredListingItems = rows;
       expiredListingRows.innerHTML = expiredListingItems.map(renderExpiredListRow).join('');
       expiredListingEmpty.hidden = rows.length > 0;
@@ -4373,16 +4562,30 @@
       };
     }
 
+    function feishuSyncRunSummary(result) {
+      if (!result || typeof result !== 'object' || typeof result.success !== 'boolean') return '';
+      if (result.success === true) {
+        return result.dryRun ? '飞书同步预演完整通过，尚未写入。' : '飞书库存与素材同步完整成功。';
+      }
+      const statusText = String(result.status || 'failed');
+      if (result.inventoryCommittable === true) {
+        return `飞书同步部分失败：库存已提交，但素材同步未完整成功（${statusText}）。`;
+      }
+      return `${result.dryRun ? '飞书同步预演' : '飞书同步'}失败（${statusText}），库存未提交。`;
+    }
+
     function renderFeishuSyncPayload(payload) {
       const status = payload.status || payload || fallbackFeishuSyncStatus();
-      const lastLog = status.lastLog || payload.result || null;
-      document.getElementById('feishuSyncStatus').textContent = status.ready
+      const lastLog = payload.result || status.lastLog || null;
+      const runSummary = feishuSyncRunSummary(payload.result);
+      document.getElementById('feishuSyncStatus').textContent = runSummary || (status.ready
         ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；素材${status.materialsReady ? '已配置' : '未配置'}；房源表${status.recordsReady ? '已配置' : '未配置'}。`
-        : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`;
+        : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`);
       document.getElementById('feishuSyncRows').innerHTML = [
         { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: status.bitableAppToken || '支持飞书多维表或本地导入文件' },
         { name: '飞书表格', value: status.sheetReady ? '已配置' : '未配置', note: status.sheetToken ? `${status.sheetToken} · ${status.sheetRange || '默认范围'}` : '支持普通飞书表格 Sheets' },
         { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: status.folderToken || '素材库 Folder Token / 本地素材文件' },
+        { name: '房源笔记素材', value: status.noteMaterialsReady ? '已准备' : '未启用/未准备', note: '必须显式启用独立目标目录，并完成 dry-run 后才能正式写入' },
         { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
         { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
         { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },
@@ -4395,6 +4598,10 @@
       document.getElementById('feishuSyncResult').textContent = lastLog
         ? JSON.stringify({
           dryRun: Boolean(lastLog.dryRun),
+          success: lastLog.success,
+          status: lastLog.status,
+          inventoryCommittable: Boolean(lastLog.inventoryCommittable),
+          inventoryPublished: Boolean(lastLog.inventoryPublished),
           startedAt: lastLog.startedAt,
           finishedAt: lastLog.finishedAt,
           sourceRecordCount: lastLog.sourceRecordCount,
@@ -4407,6 +4614,7 @@
           missingLandlordPhone: lastLog.missingLandlordPhone,
           skippedInvalid: lastLog.skippedInvalid,
           failed: lastLog.failed,
+          noteMaterials: lastLog.noteMaterials || null,
           messages: lastLog.messages || []
         }, null, 2)
         : '暂无同步记录';
@@ -4618,6 +4826,7 @@
 
     async function renderAll() {
       clearAdminDataFailure();
+      await loadListingFilterMetadata();
       const tasks = [
         renderDashboardStats(),
         renderAreaStats(),
@@ -4943,7 +5152,8 @@
 
     window.addEventListener('pagehide', releaseAllReviewVideoResources);
 
-    [areaFilter, blockFilter, communityFilter, sourceFilter, statusFilter, missingVideoFilter].forEach((item) => {
+    areaFilter.addEventListener('change', handleActiveDistrictChange);
+    [blockFilter, communityFilter, sourceFilter, statusFilter, missingVideoFilter].forEach((item) => {
       item.addEventListener('input', () => {
         refreshListingViews();
       });
@@ -4959,6 +5169,34 @@
       statusFilter.value = '';
       missingVideoFilter.value = '';
       refreshListingViews();
+    });
+    expiredDistrictFilter.addEventListener('change', () => {
+      refreshExpiredBlockOptions();
+      renderExpiredListings();
+    });
+    [
+      expiredBlockFilter,
+      expiredCommunityFilter,
+      expiredSourceFilter,
+      expiredRentMinFilter,
+      expiredRentMaxFilter,
+      expiredLayoutFilter,
+      expiredRentModeFilter
+    ].forEach((item) => {
+      item.addEventListener('input', renderExpiredListings);
+      item.addEventListener('change', renderExpiredListings);
+    });
+    document.getElementById('resetExpiredListingFilters').addEventListener('click', () => {
+      expiredDistrictFilter.value = '';
+      refreshExpiredBlockOptions();
+      expiredBlockFilter.value = '';
+      expiredCommunityFilter.value = '';
+      expiredSourceFilter.value = '';
+      expiredRentMinFilter.value = '';
+      expiredRentMaxFilter.value = '';
+      expiredLayoutFilter.value = '';
+      expiredRentModeFilter.value = '';
+      renderExpiredListings();
     });
     document.getElementById('saveListingEditor').addEventListener('click', () => {
       submitListingEditor().catch((error) => {
