@@ -125,6 +125,9 @@ function inventoryFixture(options = {}) {
         size: input.sourceEvidence.size,
         verified: true
       }
+    },
+    async verifyMaterializedVideo() {
+      return { verified: true }
     }
   }
   const oss = {
@@ -136,6 +139,9 @@ function inventoryFixture(options = {}) {
         size: input.buffer.length,
         verified: true
       }
+    },
+    async verifyVideoDeterministic() {
+      return { verified: true }
     }
   }
   return {
@@ -506,6 +512,67 @@ async function testParserAndScheduledGate() {
     { dryRun: false },
     '素材确认门未启用时不得扩大旧正式同步请求契约'
   )
+  assert.deepStrictEqual(
+    feishuSync.parseAdminSyncRequest({
+      dryRun: true,
+      runId: 'public-confirmation-run',
+      nowMs: FIXED_NOW_MS
+    }, { contentPlanConfirmationRequired: true }),
+    {
+      dryRun: true,
+      runId: 'public-confirmation-run',
+      nowMs: FIXED_NOW_MS
+    },
+    '后台解析器只允许输出公开同步契约字段'
+  )
+
+  for (const field of [
+    'noteMaterialOss',
+    'noteMaterialDrive',
+    'sourceClient',
+    'targetClient',
+    'feishuToken',
+    '_captureContentPlanConfirmation',
+    'privateMappings',
+    'materials',
+    'scheduled'
+  ]) {
+    assert.throws(
+      () => feishuSync.parseAdminSyncRequest({
+        dryRun: true,
+        [field]: {}
+      }, { contentPlanConfirmationRequired: true }),
+      (error) => Number(error.statusCode) === 400 && /字段|参数|不支持|未知/i.test(error.message),
+      `后台 JSON 不得把内部字段 ${field} 透传到可信同步 options`
+    )
+  }
+  for (const runId of [
+    'short',
+    '.invalid',
+    '人工-confirmation-run',
+    'invalid\nconfirmation-run',
+    'a'.repeat(129),
+    {}
+  ]) {
+    assert.throws(
+      () => feishuSync.parseAdminSyncRequest({
+        dryRun: true,
+        runId
+      }, { contentPlanConfirmationRequired: true }),
+      (error) => Number(error.statusCode) === 400 && /runId/i.test(error.message),
+      `公共 runId 必须拒绝非 ASCII 安全形状：${JSON.stringify(runId)}`
+    )
+  }
+  for (const nowMs of ['1', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => feishuSync.parseAdminSyncRequest({
+        dryRun: true,
+        nowMs
+      }, { contentPlanConfirmationRequired: true }),
+      (error) => Number(error.statusCode) === 400 && /nowMs/i.test(error.message),
+      `公共 nowMs 必须拒绝非正安全整数：${JSON.stringify(nowMs)}`
+    )
+  }
 
   const invalidBodies = [
     {},
@@ -819,6 +886,136 @@ async function testActualFeishuSyncEndToEndGate() {
       assert.strictEqual(fixture.calls.folderWrite, 0, '确定性素材正式配置失败时目标 Drive 目录必须零创建')
       assert.strictEqual(fixture.calls.driveWrite, 0, '确定性素材正式配置失败时目标 Drive 文件必须零写')
       assert.strictEqual(fixture.calls.ossWrite, 0, '确定性素材正式配置失败时 OSS 必须零写')
+    }
+
+    {
+      const fixture = e2eSyncFixture()
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-root-shape-human` })
+      )
+      assert.strictEqual(humanDry.success, true, '目标根格式漂移场景必须先生成合法 human dry 摘要')
+      const beforeDb = JSON.stringify(fixture.db)
+      const beforeBaseCallCount = fixture.baseCalls.length
+      const previousTargetRoot = config.feishu.noteMaterialTargetRootFolderToken
+      config.feishu.noteMaterialTargetRootFolderToken = 'x'
+      try {
+        await assert.rejects(
+          () => feishuSync.sync(
+            fixture.db,
+            'A-CONFIRM',
+            e2eSyncOptions(fixture, {
+              runId: `${FIXED_RUN_ID}-root-shape-formal`,
+              expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+              expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+            })
+          ),
+          (error) => Number(error.statusCode) === 503 && /素材|目标根|配置/i.test(error.message),
+          '格式非法但非空的目标根必须由真实 feishuSync.sync 写前拒绝'
+        )
+      } finally {
+        config.feishu.noteMaterialTargetRootFolderToken = previousTargetRoot
+      }
+      assert.strictEqual(
+        fixture.baseCalls.length,
+        beforeBaseCallCount,
+        '目标根格式非法必须早于员工源与目标 Base 的任何新增读写'
+      )
+      assert.strictEqual(targetBaseWriteCount(fixture), 0, '目标根格式非法时目标 Base 必须零写')
+      assert.strictEqual(JSON.stringify(fixture.db), beforeDb, '目标根格式非法时工作 DB 必须保持逐字不变')
+      assert.strictEqual(fixture.calls.folderWrite, 0, '目标根格式非法时目标 Drive 目录必须零创建')
+      assert.strictEqual(fixture.calls.driveWrite, 0, '目标根格式非法时目标 Drive 文件必须零写')
+      assert.strictEqual(fixture.calls.ossWrite, 0, '目标根格式非法时 OSS 必须零写')
+    }
+
+    for (const scenario of [{
+      name: '空 OSS 适配器',
+      patch: { noteMaterialOss: {} }
+    }, {
+      name: 'OSS 仅有写方法',
+      patch: {
+        noteMaterialOss: {
+          async putVideoDeterministic() {
+            throw new Error('非法 OSS 适配器不得被调用')
+          }
+        }
+      }
+    }, {
+      name: 'OSS 仅有校验方法',
+      patch: {
+        noteMaterialOss: {
+          async verifyVideoDeterministic() {
+            throw new Error('非法 OSS 适配器不得被调用')
+          }
+        }
+      }
+    }, {
+      name: '空 Drive 适配器',
+      patch: { noteMaterialDrive: {} }
+    }, ...[
+      'listFolder',
+      'downloadToken',
+      'ensureListingFolder',
+      'materializeVideo',
+      'verifyMaterializedVideo'
+    ].map((missingMethod) => ({
+      name: `Drive 缺少 ${missingMethod}`,
+      patchFactory: (fixture) => {
+        const noteMaterialDrive = {}
+        ;[
+          'listFolder',
+          'downloadToken',
+          'ensureListingFolder',
+          'materializeVideo',
+          'verifyMaterializedVideo'
+        ].filter((method) => method !== missingMethod).forEach((method) => {
+          noteMaterialDrive[method] = (...args) => fixture.drive[method](...args)
+        })
+        return { noteMaterialDrive }
+      }
+    }))]) {
+      const fixture = e2eSyncFixture()
+      const patch = typeof scenario.patchFactory === 'function'
+        ? scenario.patchFactory(fixture)
+        : scenario.patch
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, {
+          dryRun: true,
+          runId: `${FIXED_RUN_ID}-invalid-adapter-human`
+        })
+      )
+      assert.strictEqual(humanDry.success, true, `${scenario.name} 场景必须先取得合法 human dry 摘要`)
+      const beforeDb = JSON.stringify(fixture.db)
+      const beforeBaseCallCount = fixture.baseCalls.length
+      await assert.rejects(
+        () => feishuSync.sync(
+          fixture.db,
+          'A-CONFIRM',
+          {
+            ...e2eSyncOptions(fixture, {
+              runId: `${FIXED_RUN_ID}-invalid-adapter-formal`,
+              expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+              expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+            }),
+            ...patch
+          }
+        ),
+        (error) => Number(error.statusCode) === 503 && /素材|适配器|配置/i.test(error.message),
+        `${scenario.name} 必须在真实 feishuSync.sync 首个镜像读写前拒绝`
+      )
+      assert.strictEqual(
+        fixture.baseCalls.length,
+        beforeBaseCallCount,
+        `${scenario.name} 不得新增员工源或目标 Base 读写`
+      )
+      assert.strictEqual(targetBaseWriteCount(fixture), 0, `${scenario.name} 必须保持目标 Base 零写`)
+      assert.strictEqual(JSON.stringify(fixture.db), beforeDb, `${scenario.name} 必须保持工作 DB 不变`)
+      assert.strictEqual(fixture.calls.folderWrite, 0, `${scenario.name} 必须保持目标 Drive 目录零写`)
+      assert.strictEqual(fixture.calls.driveWrite, 0, `${scenario.name} 必须保持目标 Drive 文件零写`)
+      assert.strictEqual(fixture.calls.ossWrite, 0, `${scenario.name} 必须保持 OSS 零写`)
     }
 
     {
@@ -1154,6 +1351,7 @@ async function testAdminHttp400() {
     const token = login.body && login.body.data && login.body.data.token
     assert.ok(token, '超管登录必须返回 token')
     const auth = { Authorization: `Bearer ${token}` }
+    const dataAfterLogin = fs.readFileSync(dataFile, 'utf8')
     for (const body of [
       { dryRun: false },
       { dryRun: false, expectedContentPlanSha256: 'a'.repeat(64) },
@@ -1166,6 +1364,46 @@ async function testAdminHttp400() {
         dryRun: false,
         expectedContentPlanSha256: 'a'.repeat(64),
         expectedContentAssetCount: '1'
+      },
+      {
+        dryRun: true,
+        noteMaterialOss: {}
+      },
+      {
+        dryRun: true,
+        noteMaterialDrive: {}
+      },
+      {
+        dryRun: true,
+        sourceClient: {}
+      },
+      {
+        dryRun: true,
+        targetClient: {}
+      },
+      {
+        dryRun: true,
+        feishuToken: 'synthetic-http-injection'
+      },
+      {
+        dryRun: true,
+        _captureContentPlanConfirmation: {}
+      },
+      {
+        dryRun: true,
+        privateMappings: {}
+      },
+      {
+        dryRun: true,
+        client_supplied_sensitive_marker: {}
+      },
+      {
+        dryRun: true,
+        runId: '含中文的运行标识'
+      },
+      {
+        dryRun: true,
+        nowMs: '123'
       }
     ]) {
       const response = await request(baseUrl, 'POST', '/admin/feishu-sync/run', body, auth)
@@ -1173,9 +1411,18 @@ async function testAdminHttp400() {
       const responseText = JSON.stringify(response.body)
       assert.ok(!responseText.includes('synthetic-note-confirm-admin-secret'), 'HTTP 400 响应不得泄露服务端密钥')
       assert.ok(!responseText.includes('tokenVideoConfirmAlpha123'), 'HTTP 400 响应不得泄露素材 token')
+      assert.ok(
+        !responseText.includes('client_supplied_sensitive_marker'),
+        'HTTP 400 固定错误文案不得反射任意客户端字段名'
+      )
     }
     const dryResponse = await request(baseUrl, 'POST', '/admin/feishu-sync/run', { dryRun: 'true' }, auth)
     assert.strictEqual(dryResponse.statusCode, 400, 'dryRun 错型仍必须真实返回 HTTP 400')
+    assert.strictEqual(
+      fs.readFileSync(dataFile, 'utf8'),
+      dataAfterLogin,
+      '全部非法 HTTP 注入必须在任何数据库写入前 400'
+    )
   } finally {
     server.kill()
     await new Promise((resolve) => server.once('exit', resolve))
@@ -1184,6 +1431,16 @@ async function testAdminHttp400() {
 }
 
 async function main() {
+  if (process.env.FEISHU_NOTE_CONFIRM_TEST_SCOPE === 'sync') {
+    await testActualFeishuSyncEndToEndGate()
+    console.log('feishu-note-material-confirmation-v1-test sync scope passed')
+    return
+  }
+  if (process.env.FEISHU_NOTE_CONFIRM_TEST_SCOPE === 'http') {
+    await testAdminHttp400()
+    console.log('feishu-note-material-confirmation-v1-test http scope passed')
+    return
+  }
   await testParserAndScheduledGate()
   await testInventoryConfirmationBehavior()
   await testActualFeishuSyncEndToEndGate()

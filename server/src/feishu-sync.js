@@ -4307,15 +4307,35 @@ function noteMaterialRunTime(options = {}) {
     : nowText()
 }
 
+function adapterImplements(adapter, methods) {
+  return Boolean(adapter) && methods.every((method) => typeof adapter[method] === 'function')
+}
+
 function formalNoteMaterialConfigurationReady(options = {}) {
   const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
   const legacySourceRoot = String(config.feishu.folderToken || '').trim()
+  const explicitDrive = options.noteMaterialDrive
+  const explicitOss = options.noteMaterialOss
+  const driveReady = !explicitDrive || adapterImplements(explicitDrive, [
+    'listFolder',
+    'downloadToken',
+    'ensureListingFolder',
+    'materializeVideo',
+    'verifyMaterializedVideo'
+  ])
+  const ossReady = explicitOss
+    ? adapterImplements(explicitOss, [
+        'putVideoDeterministic',
+        'verifyVideoDeterministic'
+      ])
+    : oss.hasReadConfig()
   return config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
     Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
     config.feishu.noteMaterialAllowedHosts.length > 0 &&
-    Boolean(targetRoot) &&
+    /^[A-Za-z0-9_-]{8,160}$/.test(targetRoot) &&
     (!legacySourceRoot || targetRoot !== legacySourceRoot) &&
-    (Boolean(options.noteMaterialOss) || oss.hasReadConfig())
+    driveReady &&
+    ossReady
 }
 
 function assertFormalNoteMaterialConfiguration(options = {}) {
@@ -4706,13 +4726,40 @@ function parseAdminDryRun(body = {}) {
 
 function parseAdminSyncRequest(body = {}, options = {}) {
   const dryRun = parseAdminDryRun(body)
+  const allowedFields = new Set([
+    'dryRun',
+    'runId',
+    'nowMs',
+    'expectedContentPlanSha256',
+    'expectedContentAssetCount'
+  ])
+  const unknownFields = Object.keys(body).filter((field) => !allowedFields.has(field))
+  if (unknownFields.length) {
+    const error = new Error('飞书同步请求包含不支持字段')
+    error.statusCode = 400
+    throw error
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'runId') &&
+      (typeof body.runId !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(body.runId))) {
+    const error = new Error('runId 必须是 8 至 128 位 ASCII 安全标识')
+    error.statusCode = 400
+    throw error
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'nowMs') &&
+      (!Number.isSafeInteger(body.nowMs) || body.nowMs <= 0)) {
+    const error = new Error('nowMs 必须是正安全整数毫秒时间戳')
+    error.statusCode = 400
+    throw error
+  }
   const required = Object.prototype.hasOwnProperty.call(options, 'contentPlanConfirmationRequired')
     ? options.contentPlanConfirmationRequired === true
     : contentPlanConfirmationRequired()
   const expected = validatedExpectedContentPlan(body, dryRun !== true && required)
   return {
-    ...body,
     dryRun,
+    ...(Object.prototype.hasOwnProperty.call(body, 'runId') ? { runId: body.runId } : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, 'nowMs') ? { nowMs: body.nowMs } : {}),
     ...(expected || {})
   }
 }
