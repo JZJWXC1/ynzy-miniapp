@@ -4213,7 +4213,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
   const sourceRows = Array.isArray(mirrorResult && mirrorResult.sourceNoteMaterials)
     ? mirrorResult.sourceNoteMaterials
     : []
-  if (config.feishu.noteMaterialSyncEnabled !== true || sourceRows.length === 0) {
+  if (config.feishu.noteMaterialSyncEnabled !== true) {
     return {
       complete: true,
       published: options.dryRun !== true,
@@ -4226,6 +4226,14 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       skipped: true,
       rows: []
     }
+  }
+  if (sourceRows.length === 0) {
+    const emptyPlan = await syncNoteMaterialsForInventory({
+      db: workingDb,
+      sourceRows: [],
+      dryRun: options.dryRun === true
+    })
+    return { ...emptyPlan, skipped: true }
   }
   const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
   const legacySourceRoot = String(config.feishu.folderToken || '').trim()

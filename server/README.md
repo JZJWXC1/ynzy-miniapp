@@ -754,14 +754,26 @@ node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-p
 内容摘要不同也必须重新物化。单套房最多 64 个视频；第 65 个视频会在创建目录、上传 Drive 或写
 OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回。
 
+每次完整的素材 dry-run 和正式 apply 还会返回私有聚合字段
+`contentPlanSha256`（64 位小写十六进制）与 `contentPlanAssetCount`。摘要使用固定
+`feishu-note-content-plan-v1` 版本，按源记录不可逆 SHA-256 指纹、`assetId`、本次受限下载得到的
+真实内容 SHA-256、真实字节数、规范 MIME 类型和 `displayOrder` 排序后计算；输入记录或素材数组
+换序不会漂移，但任一归属、内容、大小、类型或展示顺序变化都会改变摘要。摘要响应不包含员工源
+记录 ID、源/目标 Drive token、链接、目录、Buffer、OSS 对象键或源文件名；这些计划字段也不写入
+房源、公开投影或普通同步日志。零视频有固定的空计划摘要。只要任一记录失败、状态冲突或最终
+`complete=false`，两个字段都省略，禁止把部分摘要用于确认正式同步。正式 apply 会返回本轮实际
+内容的同一聚合摘要；第二遍全批预检和第三遍写前下载继续核对内容 SHA-256、字节数与 MIME 类型，
+任一变化都在对应写入前失败。需要双次 dry-run 确认的运维控制器必须把这两个字段纳入外层
+`PLAN_SHA`，不能只比较链接、token、文件数量或易失元数据。
+
 全批第二遍预检保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
 若后序素材在全批预检通过后、第三遍逐项写入期间才发生变化，任务会在该素材写入前失败关闭，
 不会发布私有清单或公开能力，但此前已写的内容寻址目录/对象可能暂留并供后续同内容重跑复用。
 遇到该状态只允许先只读对账后重跑，禁止按名称盲删、覆盖或跳过摘要门禁。
 
-素材 dry-run 仍会只读下载源文件并计算上述真实内容摘要，确保正式计划不会只凭易失元数据假绿；
-但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有这次只读预演完整成功后，才允许执行一次
-正式同步。
+素材 dry-run 仍会只读下载源文件并计算上述真实内容摘要与聚合 `contentPlanSha256`，确保正式计划
+不会只凭易失元数据假绿；但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有两次完整预演的
+`contentPlanSha256/contentPlanAssetCount` 与外层计划摘要都一致后，才允许执行一次正式同步。
 
 同一房源的全部视频成功后，服务端才通过领域层原子替换 `mediaAssets`。空链接只清除
 `feishu-note-v1` 管理的视频，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或
@@ -792,12 +804,14 @@ FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
 新链路默认关闭，且目标根目录必须显式配置，不能回退或等于旧
 `FEISHU_MATERIAL_FOLDER_TOKEN`。首次启用顺序固定为：先关闭
 `FEISHU_AUTO_SYNC_ENABLED` → 配置独立目标根和白名单 → 显式把
-`FEISHU_NOTE_MATERIAL_SYNC_ENABLED` 改为 `true` → 重启后只运行一次 `dryRun=true` →
-核对预演零 Drive/OSS/数据库写入 → 人工正式同步一次并完整对账 → 最后才恢复自动同步。
+`FEISHU_NOTE_MATERIAL_SYNC_ENABLED` 改为 `true` → 重启后连续运行两次 `dryRun=true` →
+核对两次内容计划一致且预演零 Drive/OSS/数据库写入 → 人工正式同步一次并完整对账 → 最后才恢复
+自动同步。
 dry-run 允许解析源集合但不得创建目录、上传云盘、写 OSS 或替换媒体。正式同步后必须同时回读
 顶层 `success=true`、`noteMaterials.complete=true`、
 `noteMaterials.published=true`，并对账 `video/nonVideo/duplicateReference/failed/retained/cleared`
-等汇总。公开响应只允许 `assetId/kind/displayOrder/label` 和 API 能力地址，不得出现原始链接、
+等汇总，同时核对 `contentPlanSha256/contentPlanAssetCount` 与已确认计划一致。公开响应只允许
+`assetId/kind/displayOrder/label` 和 API 能力地址，不得出现原始链接、
 飞书 token、云盘路径、OSS key、源文件名、源记录 ID 或私有同步状态。
 
 同步规则：

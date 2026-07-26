@@ -8,6 +8,8 @@ const VIDEO_EXTENSION_RE = /\.(mp4|mov|m4v|webm)$/i
 const VIDEO_MIME_RE = /^video\/(?:mp4|quicktime|x-m4v|webm)(?:;|$)/i
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_MAX_ITEMS = 5000
+const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v1'
+const CONTENT_PLAN_EVIDENCE = Symbol('contentPlanEvidence')
 
 function normalizeText(value) {
   return value === undefined || value === null ? '' : String(value).normalize('NFKC').trim()
@@ -364,6 +366,60 @@ function contentSha256(value) {
   return hash
 }
 
+function normalizeContentMimeType(value) {
+  const mimeType = normalizeText(value).toLowerCase()
+  if (!mimeType || mimeType.length > 256 || /[\0\r\n]/.test(mimeType)) {
+    throw new Error('房源笔记素材内容 MIME 类型无效')
+  }
+  return mimeType
+}
+
+function normalizeContentPlanEvidence(raw = {}) {
+  const sourceRecordFingerprint = contentSha256(raw.sourceRecordFingerprint)
+  const assetId = normalizeText(raw.assetId)
+  if (!/^MAT-[a-f0-9]{32}$/i.test(assetId)) throw new Error('房源笔记内容计划素材 ID 无效')
+  const size = Number(raw.size)
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error('房源笔记内容计划素材大小无效')
+  const displayOrder = Number(raw.displayOrder)
+  if (!Number.isSafeInteger(displayOrder) || displayOrder < 0) {
+    throw new Error('房源笔记内容计划展示顺序无效')
+  }
+  return {
+    sourceRecordFingerprint,
+    assetId,
+    contentSha256: contentSha256(raw.contentSha256),
+    size,
+    mimeType: normalizeContentMimeType(raw.mimeType),
+    displayOrder
+  }
+}
+
+function normalizedContentPlanEvidence(values) {
+  if (!Array.isArray(values)) throw new Error('房源笔记内容计划证据必须是数组')
+  const evidence = values.map(normalizeContentPlanEvidence)
+  const identityKeys = evidence.map((item) => `${item.sourceRecordFingerprint}\n${item.assetId}`)
+  if (new Set(identityKeys).size !== identityKeys.length) {
+    throw new Error('房源笔记内容计划包含重复素材身份')
+  }
+  return evidence.sort((left, right) => (
+    left.sourceRecordFingerprint.localeCompare(right.sourceRecordFingerprint) ||
+    left.displayOrder - right.displayOrder ||
+    left.assetId.localeCompare(right.assetId)
+  ))
+}
+
+function buildContentPlanSummary(values) {
+  const evidence = normalizedContentPlanEvidence(values)
+  return {
+    contentPlanSha256: digest({
+      schemaVersion: CONTENT_PLAN_SCHEMA_VERSION,
+      assetCount: evidence.length,
+      assets: evidence
+    }),
+    contentPlanAssetCount: evidence.length
+  }
+}
+
 function sourceEvidenceForAsset(asset, evidence) {
   if (!evidence || !Buffer.isBuffer(evidence.buffer) || !evidence.buffer.length) {
     throw new Error('房源笔记源素材缺少受限下载内容')
@@ -383,7 +439,7 @@ function sourceEvidenceForAsset(asset, evidence) {
     buffer,
     contentSha256: actualHash,
     size: buffer.length,
-    contentType: normalizeText(evidence.contentType) || normalizeText(asset && asset.mimeType) || 'video/mp4'
+    contentType: normalizeContentMimeType(evidence.contentType || (asset && asset.mimeType) || 'video/mp4')
   }
 }
 
@@ -461,6 +517,15 @@ async function syncNoteMaterialVideos(input = {}) {
       displayOrder: index
     })
   }
+  const contentPlanEvidence = planned.map((plan) => normalizeContentPlanEvidence({
+    sourceRecordFingerprint: sha256Text(sourceRecordId),
+    assetId: plan.assetId,
+    contentSha256: plan.contentSha256,
+    size: plan.size,
+    mimeType: plan.contentType,
+    displayOrder: plan.displayOrder
+  }))
+  const contentPlanSummary = buildContentPlanSummary(contentPlanEvidence)
   const existingById = new Map((Array.isArray(input.existingMediaAssets) ? input.existingMediaAssets : [])
     .map((asset) => [normalizeText(asset && asset.assetId), asset]))
   const resultAssets = []
@@ -491,7 +556,8 @@ async function syncNoteMaterialVideos(input = {}) {
       await input.drive.downloadToken(plan.asset.sourceToken, plan.asset.sourceKind)
     )
     if (sourceEvidence.contentSha256 !== plan.contentSha256 ||
-        sourceEvidence.size !== plan.size) {
+        sourceEvidence.size !== plan.size ||
+        sourceEvidence.contentType !== plan.contentType) {
       throw new Error(failureMessage)
     }
     return sourceEvidence
@@ -627,11 +693,12 @@ async function syncNoteMaterialVideos(input = {}) {
     assertMaterialSetEquality({ source: sourceIds, manifest: manifestIds })
   }
   const mediaAssets = resultAssets.map(cloneMediaAsset)
-  return {
+  const result = {
     mediaAssets,
     primaryVideo: mediaAssets[0] || null,
     noop: transferred === 0 && input.dryRun !== true,
     dryRun: input.dryRun === true,
+    ...contentPlanSummary,
     counts: {
       source: planned.length,
       driveVerified: driveVerifiedIds.length,
@@ -641,6 +708,11 @@ async function syncNoteMaterialVideos(input = {}) {
       transferred
     }
   }
+  Object.defineProperty(result, CONTENT_PLAN_EVIDENCE, {
+    value: contentPlanEvidence,
+    enumerable: false
+  })
+  return result
 }
 
 function findCrossRecordTokenConflicts(rows) {
@@ -794,6 +866,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
     duplicateReference: 0,
     rows: []
   }
+  const contentPlanEvidence = []
 
   runningInventoryDatabases.add(db)
   try {
@@ -1000,6 +1073,12 @@ async function syncNoteMaterialsForInventory(input = {}) {
             }
           }
         })
+        const rowContentPlanEvidence = result[CONTENT_PLAN_EVIDENCE]
+        if (!Array.isArray(rowContentPlanEvidence) ||
+            rowContentPlanEvidence.length !== Number(result.counts && result.counts.source)) {
+          throw new Error('房源笔记内容计划证据不完整')
+        }
+        contentPlanEvidence.push(...rowContentPlanEvidence)
         if (input.dryRun !== true) {
           assertMediaAssetsStateUnchanged(row.listing, row.expectedStateKey, input.mediaAssetsStateKey)
           const nextAssets = result.mediaAssets.map(cloneMediaAsset)
@@ -1073,6 +1152,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
     }
     report.complete = report.failed === 0
     report.published = input.dryRun !== true && report.failed === 0
+    if (report.complete) Object.assign(report, buildContentPlanSummary(contentPlanEvidence))
     return report
   } finally {
     runningInventoryDatabases.delete(db)
@@ -1095,6 +1175,7 @@ module.exports = {
     normalizeSourceAsset,
     objectKeyForAsset,
     digest,
-    temporaryNoteMaterialFailure
+    temporaryNoteMaterialFailure,
+    buildContentPlanSummary
   }
 }
