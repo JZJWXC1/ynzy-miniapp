@@ -10,7 +10,12 @@ const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 const { createBitableClient } = require('./feishu-bitable-client')
 const { createFeishuNoteMaterialClient } = require('./feishu-note-material-client')
-const { syncNoteMaterialsForInventory } = require('./feishu-note-material-sync')
+const noteMaterialSync = require('./feishu-note-material-sync')
+const { syncNoteMaterialsForInventory } = noteMaterialSync
+const {
+  contentPlanConfirmationFromReport,
+  isContentPlanConfirmationError
+} = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
 const {
   buildLocationCatalog,
@@ -4209,6 +4214,117 @@ async function configuredFoundationEnrichment(options = {}) {
   })
 }
 
+function effectiveNoteMaterialSyncEnabled() {
+  return config.feishu.noteMaterialSyncEnabled === true &&
+    [
+      EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+      EMPLOYEE_AI_FOUNDATION_PROFILE
+    ].includes(config.feishu.sourceCompatibilityProfile)
+}
+
+function contentPlanConfirmationRequired() {
+  return config.feishu.mirrorSyncEnabled === true && effectiveNoteMaterialSyncEnabled()
+}
+
+function contentPlanConfirmationError(message, statusCode = 409) {
+  const error = new Error(message)
+  error.name = 'ContentPlanConfirmationError'
+  error.code = 'CONTENT_PLAN_CONFIRMATION_FAILED'
+  error.statusCode = statusCode
+  return error
+}
+
+function validatedExpectedContentPlan(options = {}, required = true) {
+  const hasHash = Object.prototype.hasOwnProperty.call(options, 'expectedContentPlanSha256') &&
+    options.expectedContentPlanSha256 !== undefined
+  const hasCount = Object.prototype.hasOwnProperty.call(options, 'expectedContentAssetCount') &&
+    options.expectedContentAssetCount !== undefined
+  if (hasHash !== hasCount) {
+    throw contentPlanConfirmationError('素材内容计划确认摘要与数量必须同时提供', 400)
+  }
+  if (!hasHash) {
+    if (required) throw contentPlanConfirmationError('正式飞书同步缺少素材内容计划确认', 400)
+    return null
+  }
+  if (typeof options.expectedContentPlanSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(options.expectedContentPlanSha256)) {
+    throw contentPlanConfirmationError('expectedContentPlanSha256 必须是 64 位小写十六进制摘要', 400)
+  }
+  if (!Number.isSafeInteger(options.expectedContentAssetCount) ||
+      options.expectedContentAssetCount < 0) {
+    throw contentPlanConfirmationError('expectedContentAssetCount 必须是非负安全整数', 400)
+  }
+  return {
+    expectedContentPlanSha256: options.expectedContentPlanSha256,
+    expectedContentAssetCount: options.expectedContentAssetCount
+  }
+}
+
+async function prepareMirrorContentPlanConfirmation(input = {}) {
+  const expected = validatedExpectedContentPlan(input, true)
+  if (typeof input.runPreflight !== 'function') {
+    throw contentPlanConfirmationError('正式飞书同步缺少素材内容只读预检器', 500)
+  }
+  const preflight = await input.runPreflight({
+    db: input.db,
+    adminId: input.adminId,
+    runId: input.runId,
+    nowMs: input.nowMs
+  })
+  if (!preflight || preflight.complete !== true || preflight.dryRun !== true ||
+      Number(preflight.failed || 0) !== 0 ||
+      preflight.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
+      preflight.contentPlanAssetCount !== expected.expectedContentAssetCount) {
+    throw contentPlanConfirmationError('正式飞书同步只读预检与已确认素材内容计划不一致')
+  }
+  const privateConfirmation = preflight.privateConfirmation
+  if (!privateConfirmation ||
+      privateConfirmation.expectedContentPlanSha256 !== expected.expectedContentPlanSha256 ||
+      privateConfirmation.expectedContentAssetCount !== expected.expectedContentAssetCount ||
+      !Array.isArray(privateConfirmation.expectedContentPlanEvidence)) {
+    throw contentPlanConfirmationError('正式飞书同步只读预检缺少同次行级内容计划')
+  }
+  return {
+    ...expected,
+    expectedContentPlanEvidence: privateConfirmation.expectedContentPlanEvidence
+  }
+}
+
+function fixedMirrorRunCoordinates(options = {}) {
+  const nowMs = options.nowMs == null ? Date.now() : Number(options.nowMs)
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) {
+    throw contentPlanConfirmationError('飞书同步 nowMs 必须是正整数毫秒时间戳', 400)
+  }
+  const runId = normalizeText(options.runId) ||
+    `mirror-${nowMs}-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+  return { runId, nowMs }
+}
+
+function noteMaterialRunTime(options = {}) {
+  const nowMs = Number(options.nowMs)
+  return Number.isSafeInteger(nowMs) && nowMs > 0
+    ? new Date(nowMs).toISOString()
+    : nowText()
+}
+
+function formalNoteMaterialConfigurationReady(options = {}) {
+  const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
+  const legacySourceRoot = String(config.feishu.folderToken || '').trim()
+  return config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
+    Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
+    config.feishu.noteMaterialAllowedHosts.length > 0 &&
+    Boolean(targetRoot) &&
+    (!legacySourceRoot || targetRoot !== legacySourceRoot) &&
+    (Boolean(options.noteMaterialOss) || oss.hasReadConfig())
+}
+
+function assertFormalNoteMaterialConfiguration(options = {}) {
+  if (formalNoteMaterialConfigurationReady(options)) return true
+  const error = new Error('房源笔记素材正式同步配置未就绪，已在镜像读写前阻断')
+  error.statusCode = 503
+  throw error
+}
+
 async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
   const sourceRows = Array.isArray(mirrorResult && mirrorResult.sourceNoteMaterials)
     ? mirrorResult.sourceNoteMaterials
@@ -4231,19 +4347,16 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
     const emptyPlan = await syncNoteMaterialsForInventory({
       db: workingDb,
       sourceRows: [],
-      dryRun: options.dryRun === true
+      dryRun: options.dryRun === true,
+      contentPlanConfirmationRequired: options.contentPlanConfirmationRequired === true,
+      expectedContentPlanSha256: options.expectedContentPlanSha256,
+      expectedContentAssetCount: options.expectedContentAssetCount,
+      expectedContentPlanEvidence: options.expectedContentPlanEvidence
     })
-    return { ...emptyPlan, skipped: true }
+    emptyPlan.skipped = true
+    return emptyPlan
   }
-  const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
-  const legacySourceRoot = String(config.feishu.folderToken || '').trim()
-  const configurationReady = config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
-    Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
-    config.feishu.noteMaterialAllowedHosts.length > 0 &&
-    Boolean(targetRoot) &&
-    (!legacySourceRoot || targetRoot !== legacySourceRoot) &&
-    (Boolean(options.noteMaterialOss) || oss.hasReadConfig())
-  if (options.dryRun !== true && !configurationReady) {
+  if (options.dryRun !== true && !formalNoteMaterialConfigurationReady(options)) {
     return {
       complete: false,
       published: false,
@@ -4279,7 +4392,11 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       drive,
       oss: options.noteMaterialOss || oss,
       dryRun: options.dryRun === true,
-      nowText: nowText(),
+      nowText: noteMaterialRunTime(options),
+      contentPlanConfirmationRequired: options.contentPlanConfirmationRequired === true,
+      expectedContentPlanSha256: options.expectedContentPlanSha256,
+      expectedContentAssetCount: options.expectedContentAssetCount,
+      expectedContentPlanEvidence: options.expectedContentPlanEvidence,
       mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
       replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
         workingDb,
@@ -4301,7 +4418,13 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       cleared: 0,
       retained: 0,
       failed: Math.max(1, sourceRows.length),
-      rows: [{ status: 'pipeline-failed', error: shortError(error) }]
+      status: isContentPlanConfirmationError(error) ? 'content-plan-confirmation-failed' : 'pipeline-failed',
+      rows: [{
+        status: isContentPlanConfirmationError(error)
+          ? 'content-plan-confirmation-failed'
+          : 'pipeline-failed',
+        error: shortError(error)
+      }]
     }
   }
 }
@@ -4405,18 +4528,102 @@ function recordMirrorSyncOutcome(db, result = {}) {
   return true
 }
 
+async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
+  const previewDb = clone(db)
+  let captured = null
+  const previewResult = await syncViaMirror(previewDb, adminId, {
+    ...options,
+    dryRun: true,
+    runId: options.runId,
+    nowMs: options.nowMs,
+    contentPlanConfirmationRequired: false,
+    _captureContentPlanConfirmation(value) {
+      captured = value
+    }
+  })
+  if (!previewResult || previewResult.complete !== true ||
+      previewResult.success !== true || previewResult.dryRun !== true ||
+      Number(previewResult.failed || 0) !== 0 ||
+      !captured || !captured.report || !captured.privateConfirmation) {
+    throw contentPlanConfirmationError('正式飞书同步的完整只读预检未通过')
+  }
+  const noteMaterials = captured.report
+  return {
+    ...noteMaterials,
+    privateConfirmation: captured.privateConfirmation,
+    feishuToken: captured.feishuToken || options.feishuToken || ''
+  }
+}
+
+function enforceFormalContentPlanResult(result, expected) {
+  if (!expected) return result
+  const note = result && result.noteMaterials
+  const matched = note && note.complete === true && note.published === true &&
+    note.contentPlanSha256 === expected.expectedContentPlanSha256 &&
+    note.contentPlanAssetCount === expected.expectedContentAssetCount
+  if (matched) return result
+  return {
+    ...result,
+    complete: false,
+    published: false,
+    success: false,
+    status: 'content-plan-confirmation-failed',
+    failed: Math.max(1, Number(result && result.failed || 0)),
+    noop: false,
+    inventoryCommittable: false,
+    inventoryPublished: false
+  }
+}
+
 async function syncViaMirror(db, adminId, options = {}) {
+  const coordinates = fixedMirrorRunCoordinates(options)
+  const confirmationRequired = contentPlanConfirmationRequired() && options.dryRun !== true
   const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
+  let confirmedContentPlan = null
+  let preflightFeishuToken = ''
+  if (confirmationRequired) {
+    confirmedContentPlan = await prepareMirrorContentPlanConfirmation({
+      db,
+      adminId,
+      runId: coordinates.runId,
+      nowMs: coordinates.nowMs,
+      expectedContentPlanSha256: options.expectedContentPlanSha256,
+      expectedContentAssetCount: options.expectedContentAssetCount,
+      runPreflight: async () => {
+        // 确定性正式配置必须在完整 dry 预检和正式镜像的首个 Base 读取/写入前成立；
+        // dry-run 本身允许用于诊断配置，但其成功不能替代正式配置门。
+        assertFormalNoteMaterialConfiguration(options)
+        const preflight = await runMirrorContentPlanPreflight(db, adminId, {
+          ...options,
+          ...coordinates,
+          baselinePublishedSourceIds,
+          dryRun: true
+        })
+        preflightFeishuToken = preflight.feishuToken || ''
+        return preflight
+      }
+    })
+  }
+  const effectiveOptions = {
+    ...options,
+    ...coordinates,
+    ...(confirmedContentPlan || {}),
+    contentPlanConfirmationRequired: confirmationRequired,
+    expectedContentPlanEvidence: confirmedContentPlan
+      ? confirmedContentPlan.expectedContentPlanEvidence
+      : undefined,
+    feishuToken: options.feishuToken || preflightFeishuToken || ''
+  }
   const run = await runCompanySourceSync({
     db,
-    mirrorSync: () => configuredMirrorTableSync({ ...options, baselinePublishedSourceIds }),
+    mirrorSync: () => configuredMirrorTableSync({ ...effectiveOptions, baselinePublishedSourceIds }),
     applyInventory: async (workingDb, records, mirrorResult) => {
       const rows = validateCanonicalMirrorRecords(records).map(canonicalMirrorRecordToSyncRow)
       const inventory = await applySync(workingDb, rows, mirrorResult.materials || [], adminId, {
-        ...options,
-        dryRun: options.dryRun === true,
+        ...effectiveOptions,
+        dryRun: effectiveOptions.dryRun === true,
         skipSheetSnapshot: true,
-        feishuToken: mirrorResult.feishuToken || options.feishuToken || '',
+        feishuToken: mirrorResult.feishuToken || effectiveOptions.feishuToken || '',
         trustedCanonicalCoordinates: true
       })
       const complete = inventory.failed === 0 && inventory.skippedInvalid === 0
@@ -4424,8 +4631,18 @@ async function syncViaMirror(db, adminId, options = {}) {
         workingDb,
         inventory,
         mirrorResult,
-        options
+        effectiveOptions
       )
+      if (effectiveOptions.dryRun === true &&
+          typeof effectiveOptions._captureContentPlanConfirmation === 'function' &&
+          noteMaterials && noteMaterials.complete === true &&
+          Number(noteMaterials.failed || 0) === 0) {
+        effectiveOptions._captureContentPlanConfirmation({
+          report: noteMaterials,
+          privateConfirmation: contentPlanConfirmationFromReport(noteMaterials),
+          feishuToken: mirrorResult.feishuToken || effectiveOptions.feishuToken || ''
+        })
+      }
       return {
         ...inventory,
         noteMaterials,
@@ -4457,10 +4674,13 @@ async function syncViaMirror(db, adminId, options = {}) {
       }
     },
     // DB 原子提交仍由 index.js 在最终分类成功后执行；dry-run 同样调用此阶段但不落盘。
-    commit: async () => ({ complete: true, noop: true, dryRun: options.dryRun === true })
+    commit: async () => ({ complete: true, noop: true, dryRun: effectiveOptions.dryRun === true })
   })
 
-  const result = finalizeMirrorSyncResult(run)
+  const result = enforceFormalContentPlanResult(
+    finalizeMirrorSyncResult(run),
+    confirmedContentPlan
+  )
   recordMirrorSyncOutcome(db, result)
   return result
 }
@@ -4482,6 +4702,19 @@ function parseAdminDryRun(body = {}) {
     throw error
   }
   return body.dryRun === true
+}
+
+function parseAdminSyncRequest(body = {}, options = {}) {
+  const dryRun = parseAdminDryRun(body)
+  const required = Object.prototype.hasOwnProperty.call(options, 'contentPlanConfirmationRequired')
+    ? options.contentPlanConfirmationRequired === true
+    : contentPlanConfirmationRequired()
+  const expected = validatedExpectedContentPlan(body, dryRun !== true && required)
+  return {
+    ...body,
+    dryRun,
+    ...(expected || {})
+  }
 }
 
 async function loadRowsAndMaterials(options = {}) {
@@ -4623,6 +4856,7 @@ module.exports = {
   applySync,
   isCommittableSyncResult,
   parseAdminDryRun,
+  parseAdminSyncRequest,
   sanitizeSheetSnapshot,
   configuredFoundationEnrichment,
   _internal: {
@@ -4646,6 +4880,10 @@ module.exports = {
     loadConfiguredMirrorMaterials,
     semanticFieldsForWrite,
     activeFeishuSourceRecordIds,
+    contentPlanConfirmationRequired,
+    prepareMirrorContentPlanConfirmation,
+    runMirrorContentPlanPreflight,
+    enforceFormalContentPlanResult,
     stableCreateClientToken,
     foundationBaselineCompleted,
     foundationArchiveFields,

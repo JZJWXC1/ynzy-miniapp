@@ -2492,8 +2492,8 @@ async function handleAdmin(req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/admin/feishu-sync/run') {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    const dryRun = feishuSync.parseAdminDryRun(body)
-    const syncOptions = { ...body, dryRun }
+    const syncOptions = feishuSync.parseAdminSyncRequest(body)
+    const dryRun = syncOptions.dryRun
     // dry-run 也必须与正式/定时同步共用互斥锁；否则会读取正在分批写入、尚未回校完成的副表。
     if (feishuSyncRunning) {
       const busy = new Error('已有飞书同步任务进行中，请稍候再试')

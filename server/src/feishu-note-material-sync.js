@@ -420,6 +420,95 @@ function buildContentPlanSummary(values) {
   }
 }
 
+function contentPlanConfirmationError(message, statusCode = 409) {
+  const error = new Error(message)
+  error.name = 'ContentPlanConfirmationError'
+  error.code = 'CONTENT_PLAN_CONFIRMATION_FAILED'
+  error.statusCode = statusCode
+  return error
+}
+
+function isContentPlanConfirmationError(error) {
+  return Boolean(error && error.code === 'CONTENT_PLAN_CONFIRMATION_FAILED')
+}
+
+function expectedContentPlanFromInput(input = {}) {
+  if (input.contentPlanConfirmationRequired !== true || input.dryRun === true) return null
+  const hash = input.expectedContentPlanSha256
+  const count = input.expectedContentAssetCount
+  if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) {
+    throw contentPlanConfirmationError('房源笔记素材正式同步缺少合法内容计划确认摘要', 400)
+  }
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw contentPlanConfirmationError('房源笔记素材正式同步缺少合法内容计划确认数量', 400)
+  }
+  if (!Array.isArray(input.expectedContentPlanEvidence)) {
+    throw contentPlanConfirmationError('房源笔记素材正式同步缺少同次预检的行级内容计划', 400)
+  }
+  const evidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
+  const summary = buildContentPlanSummary(evidence)
+  if (summary.contentPlanSha256 !== hash || summary.contentPlanAssetCount !== count) {
+    throw contentPlanConfirmationError('房源笔记素材确认摘要与行级内容计划不一致', 400)
+  }
+  return {
+    expectedContentPlanSha256: hash,
+    expectedContentAssetCount: count,
+    expectedContentPlanEvidence: evidence
+  }
+}
+
+function assertContentPlanMatchesExpected(values, expected, message) {
+  if (!expected) return
+  const evidence = normalizedContentPlanEvidence(values)
+  const summary = buildContentPlanSummary(evidence)
+  if (summary.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
+      summary.contentPlanAssetCount !== expected.expectedContentAssetCount ||
+      JSON.stringify(evidence) !== JSON.stringify(expected.expectedContentPlanEvidence)) {
+    throw contentPlanConfirmationError(message || '房源笔记素材内容计划与确认预检不一致')
+  }
+}
+
+function expectedEvidenceForSourceRecord(expected, sourceRecordId) {
+  if (!expected) return null
+  const sourceRecordFingerprint = sha256Text(normalizeText(sourceRecordId))
+  return expected.expectedContentPlanEvidence.filter((item) => (
+    item.sourceRecordFingerprint === sourceRecordFingerprint
+  ))
+}
+
+function attachContentPlanEvidence(target, values) {
+  const evidence = normalizedContentPlanEvidence(values)
+  Object.defineProperty(target, CONTENT_PLAN_EVIDENCE, {
+    value: evidence,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  })
+  return target
+}
+
+function contentPlanConfirmationFromReport(report) {
+  if (!report || report.complete !== true ||
+      typeof report.contentPlanSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(report.contentPlanSha256) ||
+      !Number.isSafeInteger(report.contentPlanAssetCount) ||
+      report.contentPlanAssetCount < 0 ||
+      !Array.isArray(report[CONTENT_PLAN_EVIDENCE])) {
+    throw contentPlanConfirmationError('房源笔记素材预检未生成可确认的完整内容计划')
+  }
+  const evidence = normalizedContentPlanEvidence(report[CONTENT_PLAN_EVIDENCE])
+  const summary = buildContentPlanSummary(evidence)
+  if (summary.contentPlanSha256 !== report.contentPlanSha256 ||
+      summary.contentPlanAssetCount !== report.contentPlanAssetCount) {
+    throw contentPlanConfirmationError('房源笔记素材预检摘要与私有行级计划不一致')
+  }
+  return {
+    expectedContentPlanSha256: summary.contentPlanSha256,
+    expectedContentAssetCount: summary.contentPlanAssetCount,
+    expectedContentPlanEvidence: evidence
+  }
+}
+
 function sourceEvidenceForAsset(asset, evidence) {
   if (!evidence || !Buffer.isBuffer(evidence.buffer) || !evidence.buffer.length) {
     throw new Error('房源笔记源素材缺少受限下载内容')
@@ -526,6 +615,12 @@ async function syncNoteMaterialVideos(input = {}) {
     displayOrder: plan.displayOrder
   }))
   const contentPlanSummary = buildContentPlanSummary(contentPlanEvidence)
+  if (Array.isArray(input.expectedContentPlanEvidence)) {
+    const expectedEvidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
+    if (JSON.stringify(contentPlanEvidence) !== JSON.stringify(expectedEvidence)) {
+      throw contentPlanConfirmationError('房源笔记素材内容计划确认在全局预检与逐行正式读取之间发生变化')
+    }
+  }
   const existingById = new Map((Array.isArray(input.existingMediaAssets) ? input.existingMediaAssets : [])
     .map((asset) => [normalizeText(asset && asset.assetId), asset]))
   const resultAssets = []
@@ -708,11 +803,7 @@ async function syncNoteMaterialVideos(input = {}) {
       transferred
     }
   }
-  Object.defineProperty(result, CONTENT_PLAN_EVIDENCE, {
-    value: contentPlanEvidence,
-    enumerable: false
-  })
-  return result
+  return attachContentPlanEvidence(result, contentPlanEvidence)
 }
 
 function findCrossRecordTokenConflicts(rows) {
@@ -844,6 +935,9 @@ function appendStateConflict(report, row, error) {
 async function syncNoteMaterialsForInventory(input = {}) {
   const db = input.db
   if (!db || typeof db !== 'object' || Array.isArray(db)) throw new Error('房源笔记素材同步缺少库存数据库')
+  // 正式确认字段必须在源表、工作 DB、Drive 或 OSS 的任何读取/写入之前完成形状校验。
+  // dry-run 与未启用确认门的旧链路不会被扩大契约。
+  const expectedContentPlan = expectedContentPlanFromInput(input)
   if (runningInventoryDatabases.has(db)) {
     const error = new Error('房源笔记素材同步正在执行，禁止并发覆盖独立素材状态')
     error.statusCode = 409
@@ -944,6 +1038,59 @@ async function syncNoteMaterialsForInventory(input = {}) {
         limit: MAX_LISTING_MEDIA_ASSETS
       })))
       return report
+    }
+
+    const unsupportedRows = resolvedRows.filter((row) => Number(row.resolved.counts.nonVideo || 0) > 0)
+    if (unsupportedRows.length) {
+      report.failed += unsupportedRows.length
+      report.complete = false
+      report.published = false
+      report.status = 'unsupported-non-video'
+      report.rows.push(...unsupportedRows.map((row) => ({
+        sourceRecordId: row.sourceRecordId,
+        status: 'unsupported-non-video',
+        nonVideo: Number(row.resolved.counts.nonVideo || 0)
+      })))
+      return report
+    }
+
+    // 正式同步先对全部可解析行执行一次完整只读计划，聚合结果与人类确认的同次预检
+    // 精确一致后，才允许清理 DB、创建 Drive 目录或写入任一素材。计划只保留摘要，
+    // 不持有 Buffer、token、URL、路径或对象 key。
+    if (expectedContentPlan) {
+      const inventoryPlanEvidence = []
+      for (const row of resolvedRows) {
+        const planned = await syncNoteMaterialVideos({
+          sourceRecordId: row.sourceRecordId,
+          assets: row.resolved.assets,
+          existingMediaAssets: row.listing.mediaAssets,
+          uploadDir: input.uploadDir,
+          targetRootFolderToken: input.targetRootFolderToken,
+          folderContext: {
+            district: row.listing.district,
+            block: row.listing.block || row.listing.area,
+            locationId: row.listing.locationId,
+            community: row.listing.community,
+            building: row.listing.building,
+            unit: row.listing.unit,
+            roomNumber: row.listing.roomNumber
+          },
+          drive: input.drive,
+          oss: input.oss,
+          dryRun: true
+        })
+        const evidence = planned[CONTENT_PLAN_EVIDENCE]
+        if (!Array.isArray(evidence) ||
+            evidence.length !== Number(planned.counts && planned.counts.source)) {
+          throw contentPlanConfirmationError('房源笔记素材正式全局预检缺少完整行级内容计划')
+        }
+        inventoryPlanEvidence.push(...evidence)
+      }
+      assertContentPlanMatchesExpected(
+        inventoryPlanEvidence,
+        expectedContentPlan,
+        '房源笔记素材正式全局预检与已确认内容计划不一致'
+      )
     }
 
     for (const row of pendingClears) {
@@ -1047,6 +1194,10 @@ async function syncNoteMaterialsForInventory(input = {}) {
           drive: input.drive,
           oss: input.oss,
           dryRun: input.dryRun === true,
+          expectedContentPlanEvidence: expectedEvidenceForSourceRecord(
+            expectedContentPlan,
+            row.sourceRecordId
+          ),
           verifyExisting: async (asset, target) => {
             if (!input.drive || typeof input.drive.verifyMaterializedVideo !== 'function' ||
                 !input.oss || typeof input.oss.verifyVideoDeterministic !== 'function') {
@@ -1103,6 +1254,9 @@ async function syncNoteMaterialsForInventory(input = {}) {
           counts: result.counts
         })
       } catch (error) {
+        // 确认预检后的内容漂移是整轮安全门，不得降级为普通素材失败后清空/沿用，
+        // 更不得继续处理后续行并产生部分 Drive/OSS 写入。
+        if (isContentPlanConfirmationError(error)) throw error
         if (mediaAssetsStateConflict(error) ||
             (input.dryRun !== true &&
               typeof input.mediaAssetsStateKey === 'function' &&
@@ -1152,7 +1306,15 @@ async function syncNoteMaterialsForInventory(input = {}) {
     }
     report.complete = report.failed === 0
     report.published = input.dryRun !== true && report.failed === 0
-    if (report.complete) Object.assign(report, buildContentPlanSummary(contentPlanEvidence))
+    if (report.complete) {
+      assertContentPlanMatchesExpected(
+        contentPlanEvidence,
+        expectedContentPlan,
+        '房源笔记素材正式响应与已确认内容计划不一致'
+      )
+      Object.assign(report, buildContentPlanSummary(contentPlanEvidence))
+      attachContentPlanEvidence(report, contentPlanEvidence)
+    }
     return report
   } finally {
     runningInventoryDatabases.delete(db)
@@ -1176,6 +1338,8 @@ module.exports = {
     objectKeyForAsset,
     digest,
     temporaryNoteMaterialFailure,
-    buildContentPlanSummary
+    buildContentPlanSummary,
+    contentPlanConfirmationFromReport,
+    isContentPlanConfirmationError
   }
 }

@@ -503,6 +503,23 @@ GET /admin/feishu-sync/status
 POST /admin/feishu-sync/run
 ```
 
+当镜像同步与房源笔记素材同步同时开启时，正式请求必须携带最近一次完整 dry-run 返回的两项
+内容计划确认值：
+
+```json
+{
+  "dryRun": false,
+  "expectedContentPlanSha256": "64位小写十六进制摘要",
+  "expectedContentAssetCount": 0
+}
+```
+
+`expectedContentPlanSha256` 与 `expectedContentAssetCount` 必须同时出现；前者只接受精确 64 位小写
+十六进制，后者只接受非负安全整数。缺失、单边、错型、负数、小数、超出安全整数或大写摘要都在
+取得同步互斥锁及任何飞书读写前返回 HTTP 400。`dryRun=true` 不要求确认值，但若主动携带也必须
+满足同一类型契约。只有镜像和房源笔记素材两项开关同时启用时才强制正式确认，关闭素材链或回退
+旧非镜像链不会扩大原请求契约。
+
 同步间隔默认值来自 `server/src/config.js`，当前默认 `60` 分钟；服务器可通过环境变量覆盖：
 
 ```env
@@ -634,11 +651,11 @@ FEISHU_HISTORY_FIELD_BINDINGS={"historyEventId":"fld_history_event_id","foundati
 
 启用 AI profile 前，`FEISHU_MINI_FIELD_BINDINGS` 必须补齐上述 18 个当前主档字段，其中目标 `vacancyNote` 仍是必建文本列；当前 17 列员工现表的 `FEISHU_SOURCE_FIELD_BINDINGS` 保持既有 `viewingMethod` 绑定且省略 `vacancyNote`。只有未来确有独立空出列时才可额外绑定源 `vacancyNote`，并继续通过 `field_id` 不重复门禁。员工源表、位置字典、当前主档、已出租表和流水表五个“Base token + table ID”资源必须互不重叠；一次性补全入口还会在取得 token、创建客户端或读取表前再次核验员工源 Base 与目标 Base 分离、当前主档与流水表独立，以及两表字段契约完整。上线顺序固定为：保持自动同步关闭 → 用应用身份完成五表字段与只读/写权限校验 → dry-run 对账源记录、当前主档、拟归档、拟流水和公开十列表数量 → 一次人工正式同步并回读四张目标表 → 核对公开库存和待租表 → 再单独授权打开自动同步。紧急止写必须关闭同步总开关，不能把 profile 改回 `employee-current-stock-v1` 当作数据回滚；代码会在旧 profile 写入时保护 17 个底座专有字段不被 full write 清空。旧 profile 只有在源表确有独立 `vacancyNote` 绑定时才同步该字段，且不负责从“看房方式”维护生命周期语义。正式回滚仍按本节既有总开关流程执行，禁止直接删表或用员工源反向覆盖归档。
 
-启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工执行一次正式同步并核对专用表、库存和十列待租表计数 → 再把自动开关改为 `true` 并重启。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
+启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典/专用表可读以及专用表可写 → 成对配置 source/target Base token、三个 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工携同次内容计划确认执行一次正式同步并核对专用表、库存和十列待租表计数。若房源笔记素材同步同时开启，当前内置定时任务没有自动生成确认摘要的能力，自动开关必须继续保持 `false`；未来只有经过独立审计的两阶段自动控制器可以恢复它。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
 
 未启用员工 profile 的旧单 Base 配置仍受兼容支持，但运行时也会为同一个 Base 分别创建硬只读源客户端和可写目标客户端；源读取与目标表写入不得复用同一客户端。员工 profile 继续强制源、目标 Base 分离。
 
-管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。
+管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库；撤下熔断以“专用表历史公开 ID + 当前线上活跃飞书库存 ID”的并集为基线，因此专用表为空或被重建也不能绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。当前内置定时任务不会生成或保存人类确认摘要；镜像与笔记素材同时开启时，它会因缺少确认在源表读取和目标写入前 fail-closed。除非后续另行实现并审计“先 dry-run、再绑定同计划正式执行”的自动控制器，否则必须保持 `FEISHU_AUTO_SYNC_ENABLED=false`，不得把手动确认值长期写入环境变量或复用上一轮摘要。
 
 紧急止写应设置 `FEISHU_SYNC_ENABLED=false`。需要回滚到旧模式时，先关闭自动同步和镜像开关，确认没有在途任务，再同时清空 source/target 两项新 token 并恢复旧 Base/Sheet 配置，重启后先 dry-run 和计数对账；不得只清一个新 token，也不要在未对账时直接切回旧 Sheet，避免半配置或重新形成双事实源。
 
@@ -766,6 +783,23 @@ OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回�
 任一变化都在对应写入前失败。需要双次 dry-run 确认的运维控制器必须把这两个字段纳入外层
 `PLAN_SHA`，不能只比较链接、token、文件数量或易失元数据。
 
+当镜像与房源笔记素材两项开关同时开启时，正式同步入口会先固定本轮 `runId/nowMs`，用正式
+working DB 的隔离 clone、同一源/目标表只读适配器和同一素材只读适配器完整重跑
+“镜像 dry-run → 新源行应用到 clone → 素材 dry-run → 首页快照预演 → 最终阶段分类”。正式入口
+在该预检之前还会先核对固定素材字段、白名单、独立且非旧源目录的目标根，以及可用 OSS 适配器；
+任一确定性配置不成立会在员工源或目标 Base 的首个镜像读写前返回 503。该预检得到的聚合摘要
+和数量必须与请求的 expected 两项精确一致，才允许开始目标 Base、工作 DB、Drive 或 OSS 的正式
+阶段；同一 token 若在人类 dry-run 后、服务端完整正式预检开始前已经原位换字节，会在首个正式
+写入前阻断。预检私下还保留仅由不可逆记录指纹、素材 ID、内容摘要、大小、MIME 和顺序组成的
+行级计划，不进入 JSON 响应、日志、房源或公开投影。
+
+正式素材阶段再次先为全部 `resolvedRows` 做只读计划并与上述私有行级计划聚合比对，早于任一
+素材目录、Drive、OSS 或媒体清单写入；随后逐行正式处理时还会在该行首个 Drive/OSS 写入前重新
+下载并逐项比对同一行计划，之后继续保留原有全批复核和单素材写前下载门。若任一层变化，错误按
+内容计划确认失败分类，失败响应不生成可复用摘要；最终正式响应的
+`contentPlanSha256/contentPlanAssetCount` 也必须与 expected 完全一致，否则顶层强制
+`inventoryCommittable=false`，数据库不得提交。
+
 全批第二遍预检保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
 若后序素材在全批预检通过后、第三遍逐项写入期间才发生变化，任务会在该素材写入前失败关闭，
 不会发布私有清单或公开能力，但此前已写的内容寻址目录/对象可能暂留并供后续同内容重跑复用。
@@ -805,8 +839,10 @@ FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
 `FEISHU_MATERIAL_FOLDER_TOKEN`。首次启用顺序固定为：先关闭
 `FEISHU_AUTO_SYNC_ENABLED` → 配置独立目标根和白名单 → 显式把
 `FEISHU_NOTE_MATERIAL_SYNC_ENABLED` 改为 `true` → 重启后连续运行两次 `dryRun=true` →
-核对两次内容计划一致且预演零 Drive/OSS/数据库写入 → 人工正式同步一次并完整对账 → 最后才恢复
-自动同步。
+核对两次内容计划一致且预演零目标 Base/Drive/OSS/数据库写入 → 把最后一次 dry-run 的两项确认值
+原样放入一次性正式请求 → 人工正式同步一次并完整对账。当前内置定时任务没有两阶段确认能力，
+所以笔记素材开关保持开启期间自动同步必须继续关闭；只有未来独立实现并审计自动两阶段控制器后
+才可恢复自动同步。
 dry-run 允许解析源集合但不得创建目录、上传云盘、写 OSS 或替换媒体。正式同步后必须同时回读
 顶层 `success=true`、`noteMaterials.complete=true`、
 `noteMaterials.published=true`，并对账 `video/nonVideo/duplicateReference/failed/retained/cleared`

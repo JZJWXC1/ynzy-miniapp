@@ -50,7 +50,14 @@ function testIndexWiringContract() {
   const manualEnd = source.indexOf("pathname === '/admin/listings'", manualStart)
   const manualBlock = source.slice(manualStart, manualEnd)
   assert.ok(manualStart >= 0 && manualEnd > manualStart, '必须定位手动飞书同步路由')
-  assert.ok(manualBlock.includes('feishuSync.parseAdminDryRun(body)'), '手动同步必须在调用飞书前统一校验 dryRun 类型')
+  assert.ok(
+    manualBlock.includes('feishuSync.parseAdminSyncRequest(body)'),
+    '手动同步必须在调用飞书前统一校验 dryRun 与素材内容确认字段'
+  )
+  assert.ok(
+    manualBlock.indexOf('feishuSync.parseAdminSyncRequest(body)') < manualBlock.indexOf('if (feishuSyncRunning)'),
+    '手动同步确认字段必须在取得互斥锁和任何飞书读写前完成校验'
+  )
   assert.ok(manualBlock.indexOf('if (feishuSyncRunning)') < manualBlock.indexOf('if (dryRun)'), 'dry-run 必须与正式同步共用互斥锁')
   assert.ok(manualBlock.includes('feishuSync.isCommittableSyncResult(result)'), '手动同步必须检查完整发布分类')
   assert.ok(manualBlock.indexOf('feishuSync.isCommittableSyncResult(result)') < manualBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)'), '手动同步必须先过发布门禁再提交数据库')
