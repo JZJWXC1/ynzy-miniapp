@@ -146,11 +146,36 @@
         <text wx:if="{{sheetPreview.hiddenCount}}">还有 {{sheetPreview.hiddenCount}} 行，点开看完整截图</text>
         <text wx:else>点开查看完整截图</text>
       </view>
+      <view wx:if="{{sheetSnapshotImagePaths.length > 1}}" class="sheet-page-nav">
+        <button
+          class="sheet-page-button"
+          bindtap="changeCompanySheetPage"
+          data-step="-1"
+          disabled="{{sheetSnapshotCurrentPage <= 0}}"
+        >上一页</button>
+        <view class="sheet-page-indicator">第 {{sheetSnapshotCurrentPage + 1}} / {{sheetSnapshotPageCount}} 页</view>
+        <button
+          class="sheet-page-button"
+          bindtap="changeCompanySheetPage"
+          data-step="1"
+          disabled="{{sheetSnapshotCurrentPage >= sheetSnapshotPageCount - 1}}"
+        >下一页</button>
+      </view>
       <view class="sheet-action-row">
         <button class="sheet-action-button" bindtap="previewCompanySheetSnapshot">查看大图</button>
         <button class="sheet-action-button" bindtap="shareCompanySheetSnapshot">转发图片</button>
-        <button class="sheet-action-button primary" bindtap="saveCompanySheetSnapshot">下载图片</button>
+        <button
+          class="sheet-action-button primary"
+          bindtap="saveCompanySheetSnapshot"
+          disabled="{{sheetSnapshotDownloading}}"
+          loading="{{sheetSnapshotDownloading}}"
+        >
+          <text wx:if="{{sheetSnapshotDownloading}}">下载中</text>
+          <text wx:elif="{{sheetSnapshotPageCount > 1}}">下载全部</text>
+          <text wx:else>下载图片</text>
+        </button>
       </view>
+      <view wx:if="{{sheetSnapshotDownloadProgress}}" class="sheet-download-progress">{{sheetSnapshotDownloadProgress}}</view>
       <button
         class="sheet-listing-button"
         bindtap="openPage"

@@ -10,10 +10,11 @@ const listingTabUrl = '/pages/listings/listings'
 const snapshotCanvasPadding = 24
 const MIN_VOICE_PRESS_DURATION_MS = 600
 // 兼容微信不同设备的 Canvas 实现：按 2 倍像素生成时，任一物理边不超过 4096px。
-// 固定十列表格由此最多安全容纳 37 条房源；更多行只展示预览并拒绝生成不完整图片。
+// 固定十列表格每页最多安全容纳 37 条原始数据行，超出后按原顺序继续生成下一页。
 const companySheetCanvasMaxEdgePixels = 4096
 const companySheetCanvasMaxPixelRatio = 2
 const companySheetCanvasLogicalMaxEdge = Math.floor(companySheetCanvasMaxEdgePixels / companySheetCanvasMaxPixelRatio)
+const companySheetMaxRowsPerPage = 37
 const companySheetSourceMode = 'feishu-mini-mirror-v1'
 const companySheetSchemaVersion = 1
 const companySheetColumns = [
@@ -311,6 +312,20 @@ function emptySheetModel(options = {}) {
   }
 }
 
+function buildSheetSpans(dataRows, areaCol, blockCol, communityCol) {
+  const spans = []
+  if (areaCol >= 0) {
+    spans.push(...makeSpan(dataRows, areaCol, (row) => row.district))
+  }
+  if (blockCol >= 0) {
+    spans.push(...makeSpan(dataRows, blockCol, (row) => `${row.district}|${row.block}`))
+  }
+  if (communityCol >= 0) {
+    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.district}|${row.block}|${row.community}`))
+  }
+  return spans
+}
+
 function buildSheetModel(snapshot) {
   const sourceRows = snapshot && snapshot.rows
   const contractMatches = snapshot &&
@@ -387,16 +402,7 @@ function buildSheetModel(snapshot) {
   }).filter((row) => row.isSection || row.cells.some((cell) => String(cell || '').trim()))
 
   const groupColumns = [areaCol, blockCol, communityCol].filter((index) => index >= 0)
-  const spans = []
-  if (areaCol >= 0) {
-    spans.push(...makeSpan(dataRows, areaCol, (row) => row.district))
-  }
-  if (blockCol >= 0) {
-    spans.push(...makeSpan(dataRows, blockCol, (row) => `${row.district}|${row.block}`))
-  }
-  if (communityCol >= 0) {
-    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.district}|${row.block}|${row.community}`))
-  }
+  const spans = buildSheetSpans(dataRows, areaCol, blockCol, communityCol)
 
   return {
     noteRows: [],
@@ -415,9 +421,22 @@ function buildSheetModel(snapshot) {
   }
 }
 
-function buildSnapshotMetrics(snapshot) {
-  const model = buildSheetModel(snapshot)
-  const widths = buildColumnWidths(model)
+function buildPagedSheetModel(model, dataRows) {
+  const rows = (dataRows || []).map((row) => Object.assign({}, row, {
+    cells: Array.isArray(row && row.cells) ? row.cells.slice() : []
+  }))
+  return Object.assign({}, model, {
+    dataRows: rows,
+    listingCount: rows.filter((row) => !row.isSection).length,
+    spans: buildSheetSpans(rows, model.areaCol, model.blockCol, model.communityCol)
+  })
+}
+
+function buildSnapshotMetrics(snapshot, modelOverride, widthSource) {
+  const model = modelOverride || buildSheetModel(snapshot)
+  const widths = Array.isArray(widthSource) && widthSource.length === model.header.length
+    ? widthSource.slice()
+    : buildColumnWidths(model)
   const maxImageWidth = companySheetCanvasLogicalMaxEdge
   const baseWidth = widths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2
   const scale = baseWidth > maxImageWidth ? (maxImageWidth - snapshotCanvasPadding * 2) / (baseWidth - snapshotCanvasPadding * 2) : 1
@@ -443,6 +462,36 @@ function snapshotMetricsFitCanvas(metrics, pixelRatio = companySheetCanvasMaxPix
     metrics.height > 0 &&
     Math.ceil(metrics.width * ratio) <= companySheetCanvasMaxEdgePixels &&
     Math.ceil(metrics.height * ratio) <= companySheetCanvasMaxEdgePixels
+}
+
+function buildSnapshotPages(snapshot, modelOverride) {
+  const model = modelOverride || buildSheetModel(snapshot)
+  if (model.invalidSchema || model.unavailable || !model.listingCount) return []
+  const pages = []
+  const sharedColumnWidths = buildColumnWidths(model)
+  let listingOffset = 0
+  for (let offset = 0; offset < model.dataRows.length; offset += companySheetMaxRowsPerPage) {
+    const pageRows = model.dataRows.slice(offset, offset + companySheetMaxRowsPerPage)
+    const pageModel = buildPagedSheetModel(model, pageRows)
+    const metrics = buildSnapshotMetrics(snapshot, pageModel, sharedColumnWidths)
+    if (!snapshotMetricsFitCanvas(metrics, companySheetCanvasMaxPixelRatio)) return []
+    const listingStart = listingOffset + 1
+    listingOffset += pageModel.listingCount
+    pages.push({
+      id: `sheet-page-${pages.length + 1}`,
+      pageIndex: pages.length,
+      pageNumber: pages.length + 1,
+      rowStart: offset,
+      rowEnd: offset + pageRows.length,
+      listingStart,
+      listingEnd: listingOffset,
+      listingCount: pageModel.listingCount,
+      model: pageModel,
+      metrics
+    })
+  }
+  const totalPages = pages.length
+  return pages.map((page) => Object.assign({}, page, { totalPages }))
 }
 
 function buildSheetPreview(snapshot) {
@@ -487,6 +536,7 @@ function snapshotViewState(snapshot) {
     return {
       model,
       preview,
+      pages: [],
       metrics: null,
       shouldRender: false,
       status: '房源表暂未同步'
@@ -496,6 +546,7 @@ function snapshotViewState(snapshot) {
     return {
       model,
       preview,
+      pages: [],
       metrics: null,
       shouldRender: false,
       status: '房源表数据格式待更新'
@@ -505,16 +556,18 @@ function snapshotViewState(snapshot) {
     return {
       model,
       preview,
+      pages: [],
       metrics: null,
       shouldRender: false,
       status: '当前暂无待租房源'
     }
   }
-  const metrics = buildSnapshotMetrics(snapshot)
-  if (!snapshotMetricsFitCanvas(metrics, companySheetCanvasMaxPixelRatio)) {
+  const pages = buildSnapshotPages(snapshot, model)
+  if (!pages.length) {
     return {
       model,
       preview,
+      pages: [],
       metrics: null,
       shouldRender: false,
       status: '房源表内容较多，暂不生成图片'
@@ -523,7 +576,8 @@ function snapshotViewState(snapshot) {
   return {
     model,
     preview,
-    metrics,
+    pages,
+    metrics: pages[0].metrics,
     shouldRender: true,
     status: '正在生成图片'
   }
@@ -588,11 +642,11 @@ function drawCenteredText(ctx, text, left, top, width, height, maxWeight) {
   ctx.textBaseline = 'alphabetic'
 }
 
-function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
+function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio, pageInfo) {
   const ctx = canvas.getContext('2d')
   const model = metrics.model
-  canvas.width = metrics.width * pixelRatio
-  canvas.height = metrics.height * pixelRatio
+  canvas.width = Math.ceil(metrics.width * pixelRatio)
+  canvas.height = Math.ceil(metrics.height * pixelRatio)
   ctx.scale(pixelRatio, pixelRatio)
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, metrics.width, metrics.height)
@@ -690,7 +744,10 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
 
   ctx.fillStyle = '#78918a'
   ctx.font = '400 18px sans-serif'
-  ctx.fillText(`已按行政区/板块/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列`, snapshotCanvasPadding, metrics.height - 20)
+  const pageText = pageInfo && pageInfo.totalPages > 1
+    ? ` · 第 ${pageInfo.pageNumber}/${pageInfo.totalPages} 页`
+    : ''
+  ctx.fillText(`已按行政区/板块/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列${pageText}`, snapshotCanvasPadding, metrics.height - 20)
 }
 
 Page({
@@ -728,6 +785,11 @@ Page({
     companySheetSnapshot: null,
     sheetPreview: null,
     sheetSnapshotImagePath: '',
+    sheetSnapshotImagePaths: [],
+    sheetSnapshotCurrentPage: 0,
+    sheetSnapshotPageCount: 0,
+    sheetSnapshotDownloading: false,
+    sheetSnapshotDownloadProgress: '',
     sheetSnapshotStatus: '正在加载房源表',
     snapshotCanvasWidth: 640,
     snapshotCanvasHeight: 480,
@@ -893,6 +955,10 @@ Page({
     this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
     this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
     this._sheetSnapshotRequestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
+    this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+    this._sheetSnapshotDownloading = false
+    this._sheetSnapshotLoading = false
+    this._sheetSnapshotPages = []
     this.cleanupVoiceInput();
   },
 
@@ -1020,11 +1086,20 @@ Page({
     return apiService.getCompanySheetSnapshot().then((snapshot) => {
       if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
       const viewState = snapshotViewState(snapshot)
-      const metrics = viewState.metrics
+      const pages = viewState.pages || []
+      const metrics = pages.length ? pages[0].metrics : null
+      this._sheetSnapshotPages = pages
+      this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+      this._sheetSnapshotDownloading = false
       this.setData({
         companySheetSnapshot: snapshot,
         sheetPreview: viewState.preview,
         sheetSnapshotImagePath: '',
+        sheetSnapshotImagePaths: [],
+        sheetSnapshotCurrentPage: 0,
+        sheetSnapshotPageCount: pages.length,
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '',
         sheetSnapshotStatus: viewState.status,
         snapshotCanvasWidth: metrics ? metrics.width : 640,
         snapshotCanvasHeight: metrics ? metrics.height : 480
@@ -1034,110 +1109,210 @@ Page({
           this._sheetSnapshotLoadedAt = Date.now()
           return
         }
-        this.renderCompanySheetSnapshot(metrics, requestSeq)
+        this.renderCompanySheetSnapshot(pages, requestSeq)
       });
     }).catch(() => {
       if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
       this._sheetSnapshotLoading = false
       this._sheetSnapshotLoadedAt = 0
+      this._sheetSnapshotPages = []
+      this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+      this._sheetSnapshotDownloading = false
       this.setData({
         companySheetSnapshot: null,
         sheetPreview: null,
         sheetSnapshotImagePath: '',
+        sheetSnapshotImagePaths: [],
+        sheetSnapshotCurrentPage: 0,
+        sheetSnapshotPageCount: 0,
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '',
         sheetSnapshotStatus: '房源表图片加载失败'
       });
       wx.showToast({ title: '房源表加载失败', icon: 'none' });
     });
   },
 
-  renderCompanySheetSnapshot(metrics, requestSeq) {
+  renderCompanySheetSnapshot(pages, requestSeq) {
     const isCurrentRequest = () => (
       this._pageActive !== false &&
       (requestSeq === undefined || this._sheetSnapshotRequestSeq === requestSeq)
     )
-    if (!isCurrentRequest()) return
-    const snapshot = this.data.companySheetSnapshot;
-    if (!snapshot || !snapshot.rows || !snapshot.rows.length) {
-      this._sheetSnapshotLoading = false
-      this._sheetSnapshotLoadedAt = 0
-      return
-    }
-    try {
-      wx.createSelectorQuery()
-        .in(this)
-        .select('#companySheetCanvas')
-        .fields({ node: true, size: true })
-        .exec((result) => {
-          if (!isCurrentRequest()) return
-          const canvas = result && result[0] && result[0].node;
-          if (!canvas) {
-            this._sheetSnapshotLoading = false
-            this._sheetSnapshotLoadedAt = 0
-            this.setData({ sheetSnapshotStatus: '当前环境暂不支持生成图片' });
-            return;
-          }
-          const pixelRatio = Math.min(getSystemPixelRatio(), 2);
-          if (!snapshotMetricsFitCanvas(metrics, pixelRatio)) {
-            this._sheetSnapshotLoading = false
-            this._sheetSnapshotLoadedAt = Date.now()
-            this.setData({ sheetSnapshotStatus: '房源表内容较多，暂不生成图片' })
-            return
-          }
-          drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio);
-          wx.canvasToTempFilePath({
-            canvas,
-            fileType: 'png',
-            width: metrics.width,
-            height: metrics.height,
-            destWidth: metrics.width * pixelRatio,
-            destHeight: metrics.height * pixelRatio,
-            success: (res) => {
-              if (!isCurrentRequest()) return
-              this._sheetSnapshotLoading = false
-              this._sheetSnapshotLoadedAt = Date.now()
-              this.setData({
-                sheetSnapshotImagePath: res.tempFilePath,
-                sheetSnapshotStatus: ''
-              });
-            },
-            fail: () => {
-              if (!isCurrentRequest()) return
-              this._sheetSnapshotLoading = false
-              this._sheetSnapshotLoadedAt = 0
-              this.setData({ sheetSnapshotStatus: '图片生成失败，请重试' });
-            }
-          }, this);
-        });
-    } catch (error) {
+    const renderPages = Array.isArray(pages) ? pages.slice() : []
+    const renderTask = () => {
       if (!isCurrentRequest()) return
-      this._sheetSnapshotLoading = false
-      this._sheetSnapshotLoadedAt = 0
-      this.setData({ sheetSnapshotStatus: '图片生成失败，请重试' })
+      const snapshot = this.data.companySheetSnapshot
+      if (!snapshot || !snapshot.rows || !snapshot.rows.length || !renderPages.length) {
+        if (isCurrentRequest()) {
+          this._sheetSnapshotLoading = false
+          this._sheetSnapshotLoadedAt = 0
+        }
+        return
+      }
+      return new Promise((resolve, reject) => {
+        try {
+          wx.createSelectorQuery()
+            .in(this)
+            .select('#companySheetCanvas')
+            .fields({ node: true, size: true })
+            .exec((result) => {
+              if (!isCurrentRequest()) {
+                resolve(null)
+                return
+              }
+              const canvas = result && result[0] && result[0].node
+              if (!canvas) {
+                const error = new Error('company sheet canvas unavailable')
+                error.sheetStatus = '当前环境暂不支持生成图片'
+                reject(error)
+                return
+              }
+              resolve(canvas)
+            })
+        } catch (error) {
+          reject(error)
+        }
+      }).then((canvas) => {
+        if (!canvas || !isCurrentRequest()) return []
+        const pixelRatio = Math.min(getSystemPixelRatio(), companySheetCanvasMaxPixelRatio)
+        const imagePaths = []
+        return renderPages.reduce((promise, page) => {
+          return promise.then(() => {
+            if (!isCurrentRequest()) return
+            const metrics = page && page.metrics
+            if (!snapshotMetricsFitCanvas(metrics, pixelRatio)) {
+              const error = new Error('company sheet page exceeds canvas limit')
+              error.sheetStatus = '房源表内容较多，暂不生成图片'
+              throw error
+            }
+            this.setData({
+              sheetSnapshotStatus: renderPages.length > 1
+                ? `正在生成第 ${page.pageNumber}/${page.totalPages} 页`
+                : '正在生成图片',
+              snapshotCanvasWidth: metrics.width,
+              snapshotCanvasHeight: metrics.height
+            })
+            drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio, page)
+            return new Promise((resolve, reject) => {
+              try {
+                wx.canvasToTempFilePath({
+                  canvas,
+                  fileType: 'png',
+                  width: metrics.width,
+                  height: metrics.height,
+                  destWidth: Math.ceil(metrics.width * pixelRatio),
+                  destHeight: Math.ceil(metrics.height * pixelRatio),
+                  success: (res) => {
+                    if (!isCurrentRequest()) {
+                      resolve()
+                      return
+                    }
+                    const filePath = String(res && res.tempFilePath || '')
+                    if (!filePath) {
+                      reject(new Error('company sheet image path missing'))
+                      return
+                    }
+                    imagePaths.push(filePath)
+                    resolve()
+                  },
+                  fail: reject
+                }, this)
+              } catch (error) {
+                reject(error)
+              }
+            })
+          })
+        }, Promise.resolve()).then(() => {
+          if (!isCurrentRequest()) return []
+          if (imagePaths.length !== renderPages.length) {
+            throw new Error('company sheet page set incomplete')
+          }
+          return imagePaths
+        })
+      }).then((imagePaths) => {
+        if (!isCurrentRequest() || !imagePaths || !imagePaths.length) return
+        this._sheetSnapshotLoading = false
+        this._sheetSnapshotLoadedAt = Date.now()
+        this.setData({
+          sheetSnapshotImagePath: imagePaths[0],
+          sheetSnapshotImagePaths: imagePaths,
+          sheetSnapshotCurrentPage: 0,
+          sheetSnapshotPageCount: imagePaths.length,
+          sheetSnapshotStatus: ''
+        })
+      }).catch((error) => {
+        if (!isCurrentRequest()) return
+        this._sheetSnapshotLoading = false
+        this._sheetSnapshotLoadedAt = 0
+        this.setData({
+          sheetSnapshotImagePath: '',
+          sheetSnapshotImagePaths: [],
+          sheetSnapshotCurrentPage: 0,
+          sheetSnapshotStatus: error && error.sheetStatus
+            ? error.sheetStatus
+            : '图片生成失败，请重试'
+        })
+      })
     }
+    const previous = this._sheetSnapshotRenderQueue || Promise.resolve()
+    const queued = previous.catch(() => {}).then(renderTask)
+    this._sheetSnapshotRenderQueue = queued.catch(() => {})
+    return queued
   },
 
-  ensureSheetSnapshotImage() {
-    if (this.data.sheetSnapshotImagePath) return true;
+  ensureSheetSnapshotImages() {
+    const imagePaths = Array.isArray(this.data.sheetSnapshotImagePaths)
+      ? this.data.sheetSnapshotImagePaths.filter(Boolean)
+      : []
+    if (imagePaths.length &&
+        imagePaths.length === Number(this.data.sheetSnapshotPageCount || imagePaths.length)) {
+      return imagePaths
+    }
     wx.showToast({ title: this.data.sheetSnapshotStatus || '截图正在生成', icon: 'none' });
-    return false;
+    return null
+  },
+
+  changeCompanySheetPage(event) {
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {}
+    const step = Number(dataset.step || 0)
+    const requestedIndex = dataset.index === undefined
+      ? Number(this.data.sheetSnapshotCurrentPage || 0) + step
+      : Number(dataset.index)
+    const nextIndex = Math.max(0, Math.min(imagePaths.length - 1, requestedIndex))
+    this.setData({
+      sheetSnapshotCurrentPage: nextIndex,
+      sheetSnapshotImagePath: imagePaths[nextIndex]
+    })
   },
 
   previewCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const currentIndex = Math.max(0, Math.min(
+      imagePaths.length - 1,
+      Number(this.data.sheetSnapshotCurrentPage || 0)
+    ))
     wx.previewImage({
-      current: this.data.sheetSnapshotImagePath,
-      urls: [this.data.sheetSnapshotImagePath]
+      current: imagePaths[currentIndex],
+      urls: imagePaths
     });
   },
 
   shareCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const currentIndex = Math.max(0, Math.min(
+      imagePaths.length - 1,
+      Number(this.data.sheetSnapshotCurrentPage || 0)
+    ))
     if (!wx.showShareImageMenu) {
       wx.showToast({ title: '当前微信版本暂不支持转发图片', icon: 'none' });
       return;
     }
     wx.showShareImageMenu({
-      path: this.data.sheetSnapshotImagePath,
+      path: imagePaths[currentIndex],
       fail: () => {
         wx.showToast({ title: '图片转发未完成', icon: 'none' });
       }
@@ -1145,28 +1320,84 @@ Page({
   },
 
   saveCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
-    wx.saveImageToPhotosAlbum({
-      filePath: this.data.sheetSnapshotImagePath,
-      success: () => {
-        wx.showToast({ title: '已保存到相册', icon: 'success' });
-      },
-      fail: (error) => {
-        const message = error && error.errMsg ? error.errMsg : '';
-        if (/auth|authorize|permission/i.test(message)) {
-          wx.showModal({
-            title: '需要相册权限',
-            content: '请允许保存图片到相册后再下载。',
-            confirmText: '去设置',
-            success: (res) => {
-              if (res.confirm && wx.openSetting) wx.openSetting({});
-            }
-          });
-          return;
+    if (this._sheetSnapshotDownloading) {
+      wx.showToast({ title: '正在下载，请稍候', icon: 'none' })
+      return
+    }
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const downloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+    this._sheetSnapshotDownloadSeq = downloadSeq
+    this._sheetSnapshotDownloading = true
+    const isCurrentDownload = () => (
+      this._pageActive !== false &&
+      this._sheetSnapshotDownloadSeq === downloadSeq
+    )
+    const results = []
+    this.setData({
+      sheetSnapshotDownloading: true,
+      sheetSnapshotDownloadProgress: `正在保存 1/${imagePaths.length}`
+    })
+
+    const saveNext = (index) => {
+      if (!isCurrentDownload() || index >= imagePaths.length) return Promise.resolve()
+      this.setData({ sheetSnapshotDownloadProgress: `正在保存 ${index + 1}/${imagePaths.length}` })
+      return new Promise((resolve) => {
+        try {
+          wx.saveImageToPhotosAlbum({
+            filePath: imagePaths[index],
+            success: () => resolve({ ok: true }),
+            fail: (error) => resolve({ ok: false, error })
+          })
+        } catch (error) {
+          resolve({ ok: false, error })
         }
-        wx.showToast({ title: '图片保存失败', icon: 'none' });
+      }).then((result) => {
+        if (!isCurrentDownload()) return
+        results.push(result)
+        return saveNext(index + 1)
+      })
+    }
+
+    return saveNext(0).then(() => {
+      if (!isCurrentDownload()) return
+      const successCount = results.filter((item) => item && item.ok).length
+      const failureCount = imagePaths.length - successCount
+      const summary = failureCount
+        ? `已保存 ${successCount}/${imagePaths.length} 张，${failureCount} 张失败`
+        : `已保存 ${successCount} 张图片`
+      this._sheetSnapshotDownloading = false
+      this.setData({
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: summary
+      })
+      wx.showToast({
+        title: summary,
+        icon: failureCount ? 'none' : 'success'
+      })
+      const permissionDenied = results.some((item) => {
+        const message = item && item.error && item.error.errMsg
+        return !item.ok && /auth|authorize|permission/i.test(String(message || ''))
+      })
+      if (permissionDenied) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存图片到相册后再下载失败的页面。',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
       }
-    });
+    }).catch(() => {
+      if (!isCurrentDownload()) return
+      this._sheetSnapshotDownloading = false
+      this.setData({
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '图片保存失败'
+      })
+      wx.showToast({ title: '图片保存失败', icon: 'none' })
+    })
   },
 
   loadTodayTasks() {

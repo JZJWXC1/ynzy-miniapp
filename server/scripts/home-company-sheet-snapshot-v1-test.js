@@ -5,8 +5,10 @@ const vm = require('vm')
 
 const repoRoot = path.join(__dirname, '..', '..')
 const indexPath = path.join(repoRoot, 'pages', 'index', 'index.js')
+const indexWxmlPath = path.join(repoRoot, 'pages', 'index', 'index.wxml')
 const apiServicePath = path.join(repoRoot, 'utils', 'api-service.js')
 const indexSource = fs.readFileSync(indexPath, 'utf8')
+const indexWxmlSource = fs.readFileSync(indexWxmlPath, 'utf8')
 const apiServiceSource = fs.readFileSync(apiServicePath, 'utf8')
 
 const FIXED_HEADERS = [
@@ -75,22 +77,32 @@ function setAtPath(target, key, value) {
   current[parts[parts.length - 1]] = value
 }
 
-function makePage(definition) {
+function makePage(definition, runtime) {
   const page = Object.assign({}, definition)
+  const state = runtime || {}
+  state.setDataPatches = state.setDataPatches || []
   page.data = JSON.parse(JSON.stringify(definition.data || {}))
   page.setData = function setData(patch, callback) {
+    state.setDataPatches.push(Object.assign({}, patch || {}))
     Object.keys(patch || {}).forEach((key) => setAtPath(page.data, key, patch[key]))
     if (typeof callback === 'function') callback()
   }
   return page
 }
 
-function canvasContext() {
+function canvasContext(state) {
+  state.contextCalls = Number(state.contextCalls || 0) + 1
+  state.fillTexts = state.fillTexts || []
+  if (Number(state.drawFailAt || 0) === state.contextCalls) {
+    throw new Error('synthetic draw failure')
+  }
   return {
     scale() {},
     fillRect() {},
     strokeRect() {},
-    fillText() {}
+    fillText(text) {
+      state.fillTexts.push(String(text || ''))
+    }
   }
 }
 
@@ -98,23 +110,54 @@ function loadIndexPage(apiStub, runtime) {
   let pageDefinition = null
   const state = runtime || {}
   state.drawCellTextCalls = []
+  state.previewCalls = state.previewCalls || []
+  state.shareCalls = state.shareCalls || []
+  state.saveCalls = state.saveCalls || []
+  state.saveCallbacks = state.saveCallbacks || []
+  state.canvasCallbacks = state.canvasCallbacks || []
+  state.canvasExports = state.canvasExports || []
+  state.toasts = state.toasts || []
+  state.modals = state.modals || []
   const canvas = {
     width: 0,
     height: 0,
     getContext() {
-      return canvasContext()
+      return canvasContext(state)
     }
   }
   const wxStub = {
     showShareMenu() {},
-    showToast() {},
-    showModal() {},
+    showToast(options) {
+      state.toasts.push(Object.assign({}, options || {}))
+    },
+    showModal(options) {
+      state.modals.push(Object.assign({}, options || {}))
+    },
     openSetting() {},
     hideKeyboard() {},
     vibrateShort() {},
-    previewImage() {},
-    showShareImageMenu() {},
-    saveImageToPhotosAlbum() {},
+    previewImage(options) {
+      state.previewCalls.push({
+        current: options && options.current,
+        urls: Array.from((options && options.urls) || [])
+      })
+    },
+    showShareImageMenu(options) {
+      state.shareCalls.push(Object.assign({}, options || {}))
+    },
+    saveImageToPhotosAlbum(options) {
+      const callIndex = state.saveCalls.length
+      state.saveCalls.push(options && options.filePath)
+      if (state.deferSaves === true) {
+        state.saveCallbacks.push(options)
+        return
+      }
+      if ((state.saveFailIndexes || []).includes(callIndex)) {
+        options.fail({ errMsg: 'synthetic save failure' })
+        return
+      }
+      options.success({})
+    },
     getWindowInfo() {
       return { pixelRatio: 2 }
     },
@@ -130,7 +173,17 @@ function loadIndexPage(apiStub, runtime) {
     },
     canvasToTempFilePath(options) {
       state.canvasCalls = Number(state.canvasCalls || 0) + 1
-      if (state.canvasShouldFail === true) {
+      state.canvasExports.push({
+        width: options.destWidth,
+        height: options.destHeight,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height
+      })
+      if (state.deferCanvasExports === true) {
+        state.canvasCallbacks.push(options)
+        return
+      }
+      if (state.canvasShouldFail === true || Number(state.canvasFailAt || 0) === state.canvasCalls) {
         options.fail({ errMsg: 'synthetic canvas failure' })
         return
       }
@@ -197,6 +250,8 @@ globalThis.__homeSheetAudit = {
   buildSheetModel,
   buildSheetPreview,
   buildSnapshotMetrics,
+  buildSnapshotPages,
+  snapshotMetricsFitCanvas,
   snapshotViewState
 }`,
     sandbox,
@@ -204,7 +259,7 @@ globalThis.__homeSheetAudit = {
   )
   assert.ok(pageDefinition, '必须捕获首页 Page 配置')
   return {
-    page: makePage(pageDefinition),
+    page: makePage(pageDefinition, state),
     helpers: sandbox.__homeSheetAudit,
     state
   }
@@ -224,9 +279,10 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-async function settle() {
-  await flushPromises()
-  await flushPromises()
+async function settle(rounds = 12) {
+  for (let index = 0; index < rounds; index += 1) {
+    await flushPromises()
+  }
 }
 
 function defaultApi(overrides) {
@@ -241,6 +297,20 @@ function defaultApi(overrides) {
       return Promise.resolve([])
     }
   }, overrides || {})
+}
+
+function listingRows(count, prefix) {
+  return Array.from({ length: count }, (_, index) => {
+    const number = index + 1
+    const label = `${prefix || '分页小区'}${number}`
+    return listingRow({
+      district: number > 37 ? '余杭区' : '拱墅区',
+      block: number > 37 ? '未来科技城' : '祥符',
+      community: label,
+      roomLabel: `${label} ${number}幢${String(number).padStart(3, '0')}`,
+      remark: `公开备注${number}`
+    })
+  })
 }
 
 function testFixedTenColumnModel() {
@@ -324,64 +394,74 @@ async function testDrawUsesFieldRoleLineLimits() {
   })
 }
 
-async function testCanvasSizeBoundaryFailsClosed() {
-  const safeRows = Array.from({ length: MAX_SAFE_LISTING_ROWS }, (_, index) => listingRow({
-    community: `安全小区${index + 1}`,
-    roomLabel: `安全小区${index + 1} ${index + 1}幢101`,
-    remark: `公开备注${index + 1}`
-  }))
+function testCanvasPaginationBoundaries() {
   const loaded = loadIndexPage(defaultApi(), {})
-  const safeState = loaded.helpers.snapshotViewState(snapshot([FIXED_HEADERS, ...safeRows]))
-  assert.strictEqual(safeState.shouldRender, true, '生产允许的最大 37 条房源必须仍可生成首页图片')
-  assert.ok(safeState.metrics, '安全边界内必须返回画布尺寸')
-  assert.ok(
-    safeState.metrics.width * MAX_SAFE_PIXEL_RATIO <= MAX_SAFE_CANVAS_EDGE_PX &&
-      safeState.metrics.height * MAX_SAFE_PIXEL_RATIO <= MAX_SAFE_CANVAS_EDGE_PX,
-    '最大允许行数在 2 倍像素下不得超过微信兼容画布单边'
-  )
+  const cases = [
+    { count: 1, pageRows: [1] },
+    { count: 37, pageRows: [37] },
+    { count: 38, pageRows: [37, 1] },
+    { count: 46, pageRows: [37, 9] },
+    { count: 74, pageRows: [37, 37] },
+    { count: 75, pageRows: [37, 37, 1] }
+  ]
 
-  const privateSentinel = 'PRIVATE_EXTRA_COLUMN_MUST_NOT_RENDER'
-  const oversizedRows = safeRows.concat([
-    listingRow({
-      community: '超限小区',
-      roomLabel: '超限小区 38幢101',
-      remark: '超限公开备注'
-    })
-  ])
-  const oversizedState = loaded.helpers.snapshotViewState(snapshot([FIXED_HEADERS, ...oversizedRows]))
-  assert.strictEqual(oversizedState.shouldRender, false, '第 38 条房源使画布超限时必须 fail-closed，不得继续截图')
-  assert.strictEqual(oversizedState.status, '房源表内容较多，暂不生成图片')
-  assert.strictEqual(oversizedState.metrics, null, '超限快照不得把不可用的大画布尺寸交给页面')
-  const oversizedPage = loadIndexPage(defaultApi({
-    getCompanySheetSnapshot() {
-      return Promise.resolve(snapshot([FIXED_HEADERS, ...oversizedRows]))
+  cases.forEach((testCase) => {
+    const sourceRows = listingRows(testCase.count, `边界${testCase.count}-`)
+    if (sourceRows.length > MAX_SAFE_LISTING_ROWS) {
+      sourceRows[MAX_SAFE_LISTING_ROWS][8] = '第二页独有的较长公开备注用于锁定所有分页列宽完全一致'
     }
-  }), {})
-  oversizedPage.page._pageActive = true
-  oversizedPage.page.onShow()
-  await settle()
-  assert.strictEqual(oversizedPage.state.canvasCalls || 0, 0, '超限快照不得调用 canvasToTempFilePath')
-  assert.strictEqual(oversizedPage.state.drawCellTextCalls.length, 0, '超限快照不得进入任何单元格绘制')
-  assert.strictEqual(oversizedPage.page.data.sheetSnapshotStatus, '房源表内容较多，暂不生成图片')
+    const sourceSnapshot = snapshot([FIXED_HEADERS, ...sourceRows])
+    const viewState = loaded.helpers.snapshotViewState(sourceSnapshot)
+    assert.strictEqual(viewState.shouldRender, true, `${testCase.count} 套房源必须可以生成完整多页图片`)
+    assert.strictEqual(viewState.pages.length, testCase.pageRows.length, `${testCase.count} 套分页数错误`)
+    assert.deepStrictEqual(
+      Array.from(viewState.pages, (page) => page.model.dataRows.length),
+      testCase.pageRows,
+      `${testCase.count} 套必须稳定按 37 条一页切分`
+    )
+    const flattened = viewState.pages.flatMap((page) => {
+      assert.deepStrictEqual(Array.from(page.model.header), FIXED_HEADERS, '每一页都必须重复固定十列表头')
+      assert.deepStrictEqual(
+        Array.from(page.metrics.columnWidths),
+        Array.from(viewState.pages[0].metrics.columnWidths),
+        '同一组图片的所有分页必须使用完全相同的十列宽度'
+      )
+      assert.ok(
+        loaded.helpers.snapshotMetricsFitCanvas(page.metrics, MAX_SAFE_PIXEL_RATIO),
+        '每一页在 2 倍像素下都必须落在微信 4096px 物理边界内'
+      )
+      assert.ok(
+        page.metrics.width * MAX_SAFE_PIXEL_RATIO <= MAX_SAFE_CANVAS_EDGE_PX &&
+          page.metrics.height * MAX_SAFE_PIXEL_RATIO <= MAX_SAFE_CANVAS_EDGE_PX,
+        '分页后的实际物理宽高不得超过 4096px'
+      )
+      return page.model.dataRows.map((row) => row.cells[3])
+    })
+    assert.deepStrictEqual(
+      Array.from(flattened),
+      sourceRows.map((row) => row[3]),
+      `${testCase.count} 套分页后必须零漏、零重且顺序不变`
+    )
+  })
+}
 
-  const sensitiveSchemaState = loaded.helpers.snapshotViewState(snapshot([
+async function testPaginationKeepsFixedTenColumnPrivacyBoundary() {
+  const loaded = loadIndexPage(defaultApi(), {})
+  const privateSentinel = 'PRIVATE_EXTRA_COLUMN_MUST_NOT_RENDER'
+  const sensitiveSnapshot = snapshot([
     FIXED_HEADERS.concat(['内部负责人']),
     listingRow().concat([privateSentinel])
   ], {
     rowCount: 2,
     columnCount: 11
-  }))
+  })
+  const sensitiveSchemaState = loaded.helpers.snapshotViewState(sensitiveSnapshot)
   assert.strictEqual(sensitiveSchemaState.shouldRender, false, '出现契约外字段时必须 fail-closed')
+  assert.strictEqual(sensitiveSchemaState.pages.length, 0, '契约外字段不得生成任何分页')
   assert.ok(!JSON.stringify(sensitiveSchemaState.preview).includes(privateSentinel), '额外敏感列不得进入首页预览')
   const sensitivePage = loadIndexPage(defaultApi({
     getCompanySheetSnapshot() {
-      return Promise.resolve(snapshot([
-        FIXED_HEADERS.concat(['内部负责人']),
-        listingRow().concat([privateSentinel])
-      ], {
-        rowCount: 2,
-        columnCount: 11
-      }))
+      return Promise.resolve(sensitiveSnapshot)
     }
   }), {})
   sensitivePage.page._pageActive = true
@@ -389,6 +469,173 @@ async function testCanvasSizeBoundaryFailsClosed() {
   await settle()
   assert.strictEqual(sensitivePage.state.canvasCalls || 0, 0, '契约外敏感列出现时不得调用 canvasToTempFilePath')
   assert.strictEqual(sensitivePage.state.drawCellTextCalls.length, 0, '契约外敏感列出现时不得进入绘制')
+}
+
+async function testAllPagesRenderPreviewAndCurrentPageShare() {
+  const rows = listingRows(46, '操作小区')
+  const runtime = {}
+  const loaded = loadIndexPage(defaultApi({
+    getCompanySheetSnapshot() {
+      return Promise.resolve(snapshot([FIXED_HEADERS, ...rows]))
+    }
+  }), runtime)
+  loaded.page._pageActive = true
+  loaded.page.onShow()
+  await settle()
+
+  assert.strictEqual(runtime.canvasCalls, 2, '46 套必须真实绘制 37+9 两张图片')
+  assert.deepStrictEqual(
+    Array.from(loaded.page.data.sheetSnapshotImagePaths),
+    ['/tmp/company-sheet-1.png', '/tmp/company-sheet-2.png'],
+    '全部分页都成功后才发布完整图片集合'
+  )
+  assert.strictEqual(loaded.page.data.sheetSnapshotPageCount, 2)
+  assert.strictEqual(loaded.page.data.sheetSnapshotCurrentPage, 0)
+  assert.strictEqual(loaded.page.data.sheetSnapshotImagePath, '/tmp/company-sheet-1.png')
+  assert.strictEqual(runtime.fillTexts.filter((text) => text === '行政区').length, 2, '每张实际图片都必须重复十列表头')
+  runtime.canvasExports.forEach((item) => {
+    assert.ok(item.width <= MAX_SAFE_CANVAS_EDGE_PX && item.height <= MAX_SAFE_CANVAS_EDGE_PX, '每张实际导出图片必须遵守 4096px 物理边界')
+  })
+
+  loaded.page.previewCompanySheetSnapshot()
+  assert.deepStrictEqual(runtime.previewCalls[0], {
+    current: '/tmp/company-sheet-1.png',
+    urls: ['/tmp/company-sheet-1.png', '/tmp/company-sheet-2.png']
+  }, '查看大图必须一次预览全部分页')
+
+  loaded.page.changeCompanySheetPage({ currentTarget: { dataset: { step: 1 } } })
+  assert.strictEqual(loaded.page.data.sheetSnapshotCurrentPage, 1, '分页控件必须能切换当前页')
+  assert.strictEqual(loaded.page.data.sheetSnapshotImagePath, '/tmp/company-sheet-2.png')
+  loaded.page.previewCompanySheetSnapshot()
+  assert.deepStrictEqual(runtime.previewCalls[1], {
+    current: '/tmp/company-sheet-2.png',
+    urls: ['/tmp/company-sheet-1.png', '/tmp/company-sheet-2.png']
+  }, '切页后预览仍须包含全部页，并从当前页打开')
+  loaded.page.shareCompanySheetSnapshot()
+  assert.strictEqual(runtime.shareCalls.length, 1)
+  assert.strictEqual(runtime.shareCalls[0].path, '/tmp/company-sheet-2.png', '图片转发必须只使用用户当前页')
+
+  assert.ok(/bindtap="changeCompanySheetPage"/.test(indexWxmlSource), '首页必须提供可操作的分页控件')
+  assert.ok(/disabled="\{\{sheetSnapshotDownloading\}\}"/.test(indexWxmlSource), '下载按钮必须在进行中禁用')
+}
+
+async function testAnyPageDrawFailureRejectsWholeGroup() {
+  const runtime = { drawFailAt: 2 }
+  const loaded = loadIndexPage(defaultApi({
+    getCompanySheetSnapshot() {
+      return Promise.resolve(snapshot([FIXED_HEADERS, ...listingRows(46, '绘图失败小区')]))
+    }
+  }), runtime)
+  loaded.page._pageActive = true
+  loaded.page.onShow()
+  await settle()
+
+  assert.strictEqual(runtime.canvasCalls, 1, '第二页绘图失败前只允许第一张图片完成导出')
+  assert.deepStrictEqual(Array.from(loaded.page.data.sheetSnapshotImagePaths || []), [], '任一页失败不得发布部分图片')
+  assert.strictEqual(loaded.page.data.sheetSnapshotImagePath, '', '任一页失败必须清空旧的单页兼容路径')
+  assert.strictEqual(loaded.page.data.sheetSnapshotStatus, '图片生成失败，请重试')
+  assert.strictEqual(loaded.page._sheetSnapshotLoadedAt, 0, '整组失败后下次进入必须立即重试')
+}
+
+async function testSequentialDownloadProgressGuardAndPartialFailure() {
+  const runtime = {}
+  const loaded = loadIndexPage(defaultApi({
+    getCompanySheetSnapshot() {
+      return Promise.resolve(snapshot([FIXED_HEADERS, ...listingRows(75, '下载小区')]))
+    }
+  }), runtime)
+  loaded.page._pageActive = true
+  loaded.page.onShow()
+  await settle()
+  assert.strictEqual(loaded.page.data.sheetSnapshotImagePaths.length, 3, '75 套必须先完整生成三页')
+
+  runtime.deferSaves = true
+  loaded.page.saveCompanySheetSnapshot()
+  loaded.page.saveCompanySheetSnapshot()
+  assert.deepStrictEqual(runtime.saveCalls, ['/tmp/company-sheet-1.png'], '下载必须串行，首张完成前不得并发保存后续页')
+  assert.ok(runtime.toasts.some((item) => item.title === '正在下载，请稍候'), '重复点击必须给出进行中提示')
+
+  runtime.saveCallbacks[0].success({})
+  await settle()
+  assert.deepStrictEqual(
+    runtime.saveCalls,
+    ['/tmp/company-sheet-1.png', '/tmp/company-sheet-2.png'],
+    '第一张完成后才能开始第二张'
+  )
+  runtime.saveCallbacks[1].fail({ errMsg: 'synthetic save failure' })
+  await settle()
+  assert.deepStrictEqual(
+    runtime.saveCalls,
+    ['/tmp/company-sheet-1.png', '/tmp/company-sheet-2.png', '/tmp/company-sheet-3.png'],
+    '中间页失败后仍须继续串行保存剩余页'
+  )
+  runtime.saveCallbacks[2].success({})
+  await settle()
+
+  assert.strictEqual(loaded.page.data.sheetSnapshotDownloading, false, '全部尝试完成后必须解除防双击状态')
+  assert.strictEqual(loaded.page.data.sheetSnapshotDownloadProgress, '已保存 2/3 张，1 张失败', '部分失败结果必须准确汇总')
+  const progressValues = runtime.setDataPatches
+    .map((patch) => patch.sheetSnapshotDownloadProgress)
+    .filter(Boolean)
+  assert.ok(progressValues.includes('正在保存 1/3'), '下载必须显示第一页进度')
+  assert.ok(progressValues.includes('正在保存 2/3'), '下载必须显示第二页进度')
+  assert.ok(progressValues.includes('正在保存 3/3'), '下载必须显示第三页进度')
+  assert.ok(runtime.toasts.some((item) => item.title === '已保存 2/3 张，1 张失败'), '部分失败必须向用户明确提示')
+}
+
+async function testRenderRaceAndUnloadAreSafe() {
+  const snapshots = [
+    snapshot([FIXED_HEADERS, ...listingRows(38, '旧批次小区')]),
+    snapshot([FIXED_HEADERS, listingRow({
+      block: '东新园',
+      community: '最新批次小区',
+      roomLabel: '最新批次小区 1幢101'
+    })])
+  ]
+  let callIndex = 0
+  const runtime = { deferCanvasExports: true }
+  const loaded = loadIndexPage(defaultApi({
+    getCompanySheetSnapshot() {
+      const value = snapshots[callIndex]
+      callIndex += 1
+      return Promise.resolve(value)
+    }
+  }), runtime)
+  loaded.page._pageActive = true
+  loaded.page.loadCompanySheetSnapshot()
+  await settle()
+  assert.strictEqual(runtime.canvasCallbacks.length, 1, '旧批次第一页应进入导出')
+
+  loaded.page.loadCompanySheetSnapshot()
+  await settle()
+  assert.strictEqual(runtime.canvasCallbacks.length, 1, '新批次必须等待共享 Canvas 上的旧导出回调收敛')
+  runtime.canvasCallbacks[0].success({ tempFilePath: '/tmp/stale-page.png' })
+  await settle()
+  assert.strictEqual(runtime.canvasCallbacks.length, 2, '旧导出收敛后才允许新批次开始绘制')
+  runtime.canvasCallbacks[1].success({ tempFilePath: '/tmp/latest-page.png' })
+  await settle()
+
+  assert.strictEqual(runtime.canvasCalls, 2, '旧批次变陈旧后不得继续绘制它的第二页')
+  assert.strictEqual(loaded.page.data.companySheetSnapshot.rows[1][2], '最新批次小区')
+  assert.deepStrictEqual(Array.from(loaded.page.data.sheetSnapshotImagePaths), ['/tmp/latest-page.png'], '最终只能发布最新请求的完整图片集合')
+
+  const unloadRuntime = { deferCanvasExports: true }
+  const unloadPage = loadIndexPage(defaultApi({
+    getCompanySheetSnapshot() {
+      return Promise.resolve(snapshot([FIXED_HEADERS, ...listingRows(46, '卸载小区')]))
+    }
+  }), unloadRuntime)
+  unloadPage.page._pageActive = true
+  unloadPage.page.loadCompanySheetSnapshot()
+  await settle()
+  assert.strictEqual(unloadRuntime.canvasCallbacks.length, 1)
+  unloadPage.page.onUnload()
+  const patchCountAtUnload = unloadRuntime.setDataPatches.length
+  unloadRuntime.canvasCallbacks[0].success({ tempFilePath: '/tmp/after-unload.png' })
+  await settle()
+  assert.strictEqual(unloadRuntime.canvasCalls, 1, '页面卸载后不得继续绘制剩余分页')
+  assert.strictEqual(unloadRuntime.setDataPatches.length, patchCountAtUnload, '页面卸载后的异步回调不得再写页面状态')
+  assert.deepStrictEqual(Array.from(unloadPage.page.data.sheetSnapshotImagePaths || []), [], '页面卸载后不得发布临时图片')
 }
 
 async function testMalformedSourceRowsFailClosed() {
@@ -556,7 +803,12 @@ function testRuntimeBrandingAndMockParity() {
 async function main() {
   testFixedTenColumnModel()
   await testDrawUsesFieldRoleLineLimits()
-  await testCanvasSizeBoundaryFailsClosed()
+  testCanvasPaginationBoundaries()
+  await testPaginationKeepsFixedTenColumnPrivacyBoundary()
+  await testAllPagesRenderPreviewAndCurrentPageShare()
+  await testAnyPageDrawFailureRejectsWholeGroup()
+  await testSequentialDownloadProgressGuardAndPartialFailure()
+  await testRenderRaceAndUnloadAreSafe()
   await testMalformedSourceRowsFailClosed()
   testSnapshotEmptyStates()
   await testRequestFailureRetriesImmediately()
