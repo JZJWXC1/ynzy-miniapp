@@ -437,6 +437,61 @@ async function testRecordCreatedTimeContract() {
     1784736000000,
     '飞书 created_time 数字字符串必须规范化为严格的毫秒整数'
   )
+  const requiredCreatedTimeRecordCalls = snakeCaseFetch.calls
+    .filter((call) => new URL(call.url).pathname.endsWith('/records'))
+  assert.ok(requiredCreatedTimeRecordCalls.length > 0, '创建时间必需模式必须真实读取记录接口')
+  requiredCreatedTimeRecordCalls.forEach((call) => {
+    assert.strictEqual(
+      new URL(call.url).searchParams.get('automatic_fields'),
+      'true',
+      '创建时间必需模式必须向飞书显式请求 automatic_fields=true'
+    )
+  })
+  const requiredCreatedTimeFieldCalls = snakeCaseFetch.calls
+    .filter((call) => new URL(call.url).pathname.endsWith('/fields'))
+  assert.ok(requiredCreatedTimeFieldCalls.length > 0, '创建时间必需模式必须先读取字段契约')
+  requiredCreatedTimeFieldCalls.forEach((call) => {
+    assert.strictEqual(
+      new URL(call.url).searchParams.has('automatic_fields'),
+      false,
+      'automatic_fields 只能用于记录接口，不得扩大字段接口请求'
+    )
+  })
+
+  const pagedCreatedTimeFetch = makePagedFetch(({ callNumber, pageToken }) => {
+    if (callNumber === 1) {
+      assert.strictEqual(pageToken, '', '创建时间分页第一页不得携带 page_token')
+      return success({
+        items: [createdTimeRecord('rec-created-page-1', { created_time: '1784649600000' })],
+        has_more: true,
+        page_token: 'created-page-2'
+      })
+    }
+    assert.strictEqual(pageToken, 'created-page-2', '创建时间分页第二页必须沿用服务端 token')
+    return success({
+      items: [createdTimeRecord('rec-created-page-2', { created_time: '1784736000000' })],
+      has_more: false
+    })
+  })
+  const pagedCreatedTimeSnapshot = await makeClient(pagedCreatedTimeFetch, 1)
+    .readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      nowMs: fixedNowMs
+    })
+  assert.strictEqual(pagedCreatedTimeSnapshot.recordCount, 2, '创建时间模式必须完整读取全部记录分页')
+  const pagedCreatedTimeRecordCalls = pagedCreatedTimeFetch.calls
+    .filter((call) => new URL(call.url).pathname.endsWith('/records'))
+  assert.strictEqual(pagedCreatedTimeRecordCalls.length, 2, '创建时间分页用例必须真实读取两页')
+  pagedCreatedTimeRecordCalls.forEach((call) => {
+    assert.strictEqual(
+      new URL(call.url).searchParams.get('automatic_fields'),
+      'true',
+      '创建时间模式的每一页记录请求都必须保留 automatic_fields=true'
+    )
+  })
 
   const camelCaseFetch = makePagedFetch(() => success({
     items: [createdTimeRecord('rec-created-camel', { createdTime: 1784736000000 })],
@@ -470,6 +525,15 @@ async function testRecordCreatedTimeContract() {
     false,
     '默认可选模式缺少创建时间时不得伪造 createdTimeMs，last_modified_time 也不得替代'
   )
+  const optionalCreatedTimeRecordCalls = optionalMissingFetch.calls
+    .filter((call) => new URL(call.url).pathname.endsWith('/records'))
+  optionalCreatedTimeRecordCalls.forEach((call) => {
+    assert.strictEqual(
+      new URL(call.url).searchParams.has('automatic_fields'),
+      false,
+      '创建时间可选模式不得无条件扩大飞书自动字段响应'
+    )
+  })
 
   const firstDigestFetch = makePagedFetch(() => success({
     items: [createdTimeRecord('rec-created-digest', { created_time: '1784649600000' })],

@@ -322,7 +322,7 @@ function createBitableClient(options) {
     }
   }
 
-  async function readAllPages(tableId, resource) {
+  async function readAllPages(tableId, resource, readOptions = {}) {
     const items = []
     const seenTokens = new Set()
     let nextToken = ''
@@ -333,6 +333,11 @@ function createBitableClient(options) {
       if (pageCount > MAX_PAGES) throw new Error('飞书分页超过安全上限')
       const url = new URL(endpoint(tableId, resource))
       url.searchParams.set('page_size', String(config.pageSize))
+      // 飞书只有显式请求 automatic_fields 才返回 created_time。只在计时必需的员工源快照
+      // 开启，避免无条件扩大其他表响应并改变既有目标表摘要。
+      if (resource === 'records' && readOptions.automaticFields === true) {
+        url.searchParams.set('automatic_fields', 'true')
+      }
       if (nextToken) url.searchParams.set('page_token', nextToken)
       const data = await requestJson(url.toString(), {
         method: 'GET',
@@ -376,7 +381,9 @@ function createBitableClient(options) {
     const snapshotNowMs = normalizePositiveIntegerMillis(nowMs, '飞书快照 nowMs')
     const fields = await readAllPages(tableId, 'fields')
     const contract = validateFieldContract({ fields, bindings })
-    const rawRecords = await readAllPages(tableId, 'records')
+    const rawRecords = await readAllPages(tableId, 'records', {
+      automaticFields: requireCreatedTime
+    })
     if (!allowEmpty && rawRecords.length === 0) throw new Error('飞书源表为空，已阻断同步')
 
     const seenRecordIds = new Set()
