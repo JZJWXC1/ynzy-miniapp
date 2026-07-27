@@ -5,6 +5,9 @@ const assert = require('assert')
 const config = require('../src/config')
 const feishuSync = require('../src/feishu-sync')
 const {
+  syncNoteMaterialsForInventory
+} = require('../src/feishu-note-material-sync')
+const {
   buildCompanySheetSnapshot,
   buildLocationCatalog,
   prepareSourceSnapshotForCompatibility
@@ -153,6 +156,9 @@ function sourceBindings(options = {}) {
   }
   if (options.includeVacancyNote === true) {
     result.vacancyNote = binding('src-vacancy-note', false)
+  }
+  if (options.includeNoteMaterial === true) {
+    result.noteMaterialLink = binding('src-note-material', false)
   }
   return result
 }
@@ -939,6 +945,86 @@ async function testDryRunReadsAllLifecycleTablesAndWritesNone() {
       .map((call) => call.tableId))).sort(),
     ['tbl-history', 'tbl-location', 'tbl-mini', 'tbl-rented'].sort(),
     'dry-run 必须真实读取位置字典、当前状态、已出租和流水四张目标表'
+  )
+}
+
+async function testEmptyTemplateCannotPoisonNoteMaterialSync() {
+  const noteSourceBindings = sourceBindings({ includeNoteMaterial: true })
+  const emptyBoundFields = Object.keys(noteSourceBindings).reduce((fields, semantic) => {
+    fields[semantic] = ''
+    return fields
+  }, {})
+  const validSource = sourceRecord('source-note-valid', '102', {
+    noteMaterialLink: ''
+  })
+  const emptyTemplate = {
+    recordId: 'source-empty-template',
+    createdTimeMs: SOURCE_CREATED_TIME_MS,
+    fields: emptyBoundFields
+  }
+  const clients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf([validSource, emptyTemplate])
+  })
+  const result = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    sourceBindings: noteSourceBindings,
+    noteMaterialSyncEnabled: true
+  }))
+
+  assert.deepStrictEqual(
+    result.records.map((record) => record.fields.sourceRecordId),
+    ['source-note-valid'],
+    '全空模板不得进入有效房源计划'
+  )
+  assert.deepStrictEqual(
+    result.sourceNoteMaterials.map((row) => row.sourceRecordId),
+    ['source-note-valid'],
+    '房源笔记素材必须与兼容过滤后的有效房源使用同一权威源记录集合'
+  )
+
+  const materialReport = await syncNoteMaterialsForInventory({
+    db: {
+      listings: [{
+        id: 'listing-note-valid',
+        externalSource: 'feishu',
+        feishuRecordId: 'source-note-valid',
+        sourceRecordId: 'source-note-valid',
+        mediaAssets: []
+      }]
+    },
+    sourceRows: result.sourceNoteMaterials,
+    dryRun: true,
+    allowedHosts: ['example.feishu.test']
+  })
+  assert.strictEqual(materialReport.sourceRecordCount, 1, '素材预演只能处理一条有效房源')
+  assert.strictEqual(materialReport.failed, 0, '全空模板不得制造 listing-missing')
+  assert.strictEqual(
+    materialReport.rows.some((row) => row.status === 'listing-missing'),
+    false,
+    '素材预演中不得出现全空模板对应的 listing-missing'
+  )
+
+  const materialOnlyFields = { ...emptyBoundFields }
+  materialOnlyFields.noteMaterialLink = 'https://example.feishu.test/file/mock-material'
+  const halfFilledClients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf([{
+      recordId: 'source-material-without-room',
+      createdTimeMs: SOURCE_CREATED_TIME_MS,
+      fields: materialOnlyFields
+    }])
+  })
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync(executeOptions(halfFilledClients, {
+      dryRun: true,
+      sourceBindings: noteSourceBindings,
+      noteMaterialSyncEnabled: true
+    })),
+    /房号|roomLabel|源记录/u,
+    '只有素材但没有房号的半填行必须失败关闭，不能伪装成空模板'
+  )
+  assertNoWrites(
+    halfFilledClients.calls,
+    '半填素材行阻断时不得写目标当前状态、已出租或流水表'
   )
 }
 
@@ -1759,6 +1845,7 @@ async function main() {
     ['三张目标业务表资源独立', testLifecycleTableResourcesMustBeDistinct],
     ['负责人部门与内部 ID 不进入公开投影', testInternalFoundationFieldsStayOutOfPublicProjection],
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
+    ['全空模板不污染房源笔记素材同步', testEmptyTemplateCannotPoisonNoteMaterialSync],
     ['正式写只走目标客户端', testApplyWritesOnlyTargetClient],
     ['旧 profile 回退不清空底座字段', testLegacyProfileCannotEraseFoundationFields],
     ['出租归档幂等与重新进入待租', testArchiveIdempotencyAndReappearance],

@@ -3930,9 +3930,6 @@ async function executeMirrorTableSync(options = {}) {
     requireCreatedTime: aiFoundationProfileEnabled(options.sourceCompatibilityProfile),
     nowMs: options.nowMs
   })
-  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
-    ? sourceNoteMaterialRows(rawSourceSnapshot)
-    : []
   const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
     bindings: options.locationBindings,
@@ -3944,6 +3941,9 @@ async function executeMirrorTableSync(options = {}) {
     sourceBindings: options.sourceBindings,
     locationCatalog
   })
+  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
+    ? sourceNoteMaterialRows(sourceSnapshot)
+    : []
   const mirrorSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
