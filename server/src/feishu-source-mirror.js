@@ -129,12 +129,26 @@ function validRoomPart(value) {
   return /^[0-9A-Za-z一二三四五六七八九十百]+$/.test(value)
 }
 
+function validRoomNumber(value) {
+  return validRoomPart(value) || /^[0-9]+-[0-9]+$/.test(value)
+}
+
 function parseRoomIdentity(value) {
   const text = normalizeText(value).replace(/\s+/g, '')
   if (!text) return null
   let parts = null
-  const dashed = text.split(/[-－—_/]/).map((item) => item.trim()).filter(Boolean)
-  if (dashed.length === 3) {
+  const dashed = text.split(/[-－—_/]/).map((item) => item.trim())
+  if (dashed.length > 1 && dashed.some((item) => !item)) return null
+  if (dashed.length === 4) {
+    if (!dashed.every((item) => /^[0-9]+$/.test(item))) return null
+    parts = {
+      building: dashed[0],
+      unit: dashed[1],
+      roomNumber: `${dashed[2]}-${dashed[3]}`
+    }
+  } else if (dashed.length > 4) {
+    return null
+  } else if (dashed.length === 3) {
     parts = { building: dashed[0], unit: dashed[1], roomNumber: dashed[2] }
   } else if (dashed.length === 2) {
     parts = { building: dashed[0], unit: '', roomNumber: dashed[1] }
@@ -151,7 +165,7 @@ function parseRoomIdentity(value) {
     roomNumber: normalizeRoomPart(parts.roomNumber, 'room')
   }
   if (!normalized.building || !normalized.roomNumber || !validRoomPart(normalized.building) ||
-      (normalized.unit && !validRoomPart(normalized.unit)) || !validRoomPart(normalized.roomNumber)) return null
+      (normalized.unit && !validRoomPart(normalized.unit)) || !validRoomNumber(normalized.roomNumber)) return null
   return normalized
 }
 

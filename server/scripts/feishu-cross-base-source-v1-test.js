@@ -749,6 +749,18 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
       }
     },
     {
+      recordId: 'source-record-four-segment',
+      fields: {
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 6-2-301-01',
+        layoutDescription: '2室1厅（整）',
+        layoutCategory: '两室',
+        monthlyRent: 3300,
+        viewingMethod: '联系房东',
+        remark: ''
+      }
+    },
+    {
       recordId: 'source-empty-template',
       fields: {}
     }
@@ -782,10 +794,10 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
       targetClient: clients.targetClient
     })
     assert.strictEqual(result.status, 'success-dry-run', '员工现表兼容模式必须先支持完整 dry-run')
-    assert.strictEqual(result.counts.create, 2, '全空模板行必须忽略，两个有效员工源记录必须进入计划')
+    assert.strictEqual(result.counts.create, 3, '全空模板行必须忽略，三个有效员工源记录必须进入计划')
     assert.deepStrictEqual(
       result.records.map((record) => record.fields.rentMode).sort(),
-      ['合租', '整租'],
+      ['合租', '整租', '整租'],
       '兼容规则必须派生明确出租方式'
     )
     assert.ok(
@@ -794,11 +806,91 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
     )
     const wholeRecord = result.records.find((record) => record.recordId === 'dry-run-source-record-whole')
     const sharedRecord = result.records.find((record) => record.recordId === 'dry-run-source-record-shared')
+    const fourSegmentRecord = result.records.find((record) => (
+      record.recordId === 'dry-run-source-record-four-segment'
+    ))
     assert.strictEqual(wholeRecord.fields.viewingMethod, '密码', '纯门锁码必须经完整配置链路标准化为密码')
     assert.strictEqual(wholeRecord.fields.viewingPassword, '135790#', '纯门锁码必须经完整配置链路拆入目标密码字段')
     assert.strictEqual(sharedRecord.fields.viewingMethod, '联系房东', '腾房说明必须经完整配置链路收敛为联系房东')
     assert.strictEqual(sharedRecord.fields.community, '风雅乐府', '兼容链路必须用已校验位置字典唯一别名恢复空小区列')
     assert.strictEqual(sharedRecord.fields.roomLabel, '风雅乐府 1幢1单元101A', '恢复小区后必须写入规范房号')
+    assert.strictEqual(fourSegmentRecord.fields.building, '6', '四段房号必须在真实配置链路保留楼栋')
+    assert.strictEqual(fourSegmentRecord.fields.unit, '2', '四段房号必须在真实配置链路保留单元')
+    assert.strictEqual(
+      fourSegmentRecord.fields.roomNumber,
+      '301-01',
+      '四段房号必须在真实配置链路把末两段完整保存为房号'
+    )
+    assert.strictEqual(
+      fourSegmentRecord.fields.roomLabel,
+      '风雅乐府 6幢2单元301-01',
+      '四段房号必须在真实配置链路重建规范展示值'
+    )
+    const fourSegmentInventoryRow = feishuSync._internal.canonicalMirrorRecordToSyncRow(
+      fourSegmentRecord,
+      2
+    )
+    assert.deepStrictEqual(
+      {
+        building: fourSegmentInventoryRow.fields.几栋,
+        unit: fourSegmentInventoryRow.fields.几单元,
+        roomNumber: fourSegmentInventoryRow.fields.房间号
+      },
+      {
+        building: '6',
+        unit: '2',
+        roomNumber: '301-01'
+      },
+      '四段房号进入最终库存投影时必须继续完整保留楼栋、单元和复合房号'
+    )
+    const normalizedFourSegment = feishuSync.normalizeRecord(
+      fourSegmentInventoryRow,
+      2,
+      { trustedCanonicalCoordinates: true }
+    )
+    assert.deepStrictEqual(
+      {
+        building: normalizedFourSegment.building,
+        unit: normalizedFourSegment.unit,
+        roomNumber: normalizedFourSegment.roomNumber
+      },
+      {
+        building: '6',
+        unit: '2',
+        roomNumber: '301-01'
+      },
+      '四段房号经过库存规范化层后不得丢失复合房号'
+    )
+    const inventoryDb = {
+      users: [{ id: 'A1', name: '管理员', role: '管理员', isAdmin: true }],
+      listings: [],
+      footprints: [],
+      pointLogs: []
+    }
+    const inventoryResult = await feishuSync.applySync(
+      inventoryDb,
+      [fourSegmentInventoryRow],
+      [],
+      'A1',
+      {
+        dryRun: true,
+        trustedCanonicalCoordinates: true
+      }
+    )
+    assert.strictEqual(inventoryResult.created, 1, '四段房号必须真实进入最终库存同步')
+    assert.deepStrictEqual(
+      {
+        building: inventoryDb.listings[0].building,
+        unit: inventoryDb.listings[0].unit,
+        roomNumber: inventoryDb.listings[0].roomNumber
+      },
+      {
+        building: '6',
+        unit: '2',
+        roomNumber: '301-01'
+      },
+      '四段房号落入最终库存后必须仍完整保留楼栋、单元和复合房号'
+    )
     assert.strictEqual(
       Object.prototype.hasOwnProperty.call(sharedRecord.fields, 'viewingPassword'),
       false,
@@ -831,6 +923,69 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
       miniRead.bindings.viewingPassword.type,
       1,
       '兼容 profile 的目标密码列必须按文本类型契约读取'
+    )
+  } finally {
+    restore(config.feishu, previous)
+  }
+}
+
+async function testEmployeeInvalidFourSegmentStopsBeforeAnyTargetWrite() {
+  const previous = JSON.parse(JSON.stringify(config.feishu))
+  const bindings = validBindings()
+  const sourceBindings = employeeSourceBindings()
+  const clients = makeClients({
+    sourceSnapshot: snapshot([{
+      recordId: 'source-record-four-segment-empty',
+      fields: {
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 6--301-01',
+        layoutDescription: '2室1厅（整）',
+        layoutCategory: '两室',
+        monthlyRent: 3300,
+        viewingMethod: '联系房东',
+        remark: ''
+      }
+    }])
+  })
+  try {
+    Object.assign(config.feishu, {
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      sourceBitableAppToken: 'source-base',
+      targetBitableAppToken: 'target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: 'tbl-source',
+      miniTableId: 'tbl-mini',
+      locationTableId: 'tbl-location',
+      sourceFieldBindings: sourceBindings,
+      miniFieldBindings: bindings.mini,
+      locationFieldBindings: bindings.location,
+      sourceCompatibilityProfile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+      folderToken: 'folder-token'
+    })
+
+    await assert.rejects(
+      feishuSync._internal.configuredMirrorTableSync({
+        feishuToken: 'tenant-token-for-test',
+        dryRun: false,
+        materials: [],
+        sourceClient: clients.sourceClient,
+        targetClient: clients.targetClient
+      }),
+      /房号|格式|解析/i,
+      '含空段的四段房号必须在目标写入前整批阻断'
+    )
+    assert.deepStrictEqual(
+      clients.calls.filter((call) => call.client === 'source').map((call) => call.action),
+      ['read'],
+      '四段房号非法时员工源 Base 必须始终只有一次读取'
+    )
+    assert.strictEqual(
+      clients.calls.filter((call) => (
+        call.client === 'target' && ['create', 'update', 'delete'].includes(call.action)
+      )).length,
+      0,
+      '四段房号非法时目标 Base 必须保持零写'
     )
   } finally {
     restore(config.feishu, previous)
@@ -1041,6 +1196,7 @@ async function main() {
   await testConfiguredSyncCreatesSeparateBaseClients()
   await testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget()
   await testEmployeeCurrentStockProfileDryRunIsReadOnly()
+  await testEmployeeInvalidFourSegmentStopsBeforeAnyTargetWrite()
   await testEmployeeProfileExplicitPasswordConflictsStopBeforeTargetWrite()
   await testDeactivateWritesOnlyMiniTableAndAllThreeFields()
   await testDryRunWritesNeitherBase()

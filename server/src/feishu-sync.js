@@ -420,6 +420,16 @@ function normalizeRoomPart(value, type) {
 function parseRoomText(value) {
   const text = normalizeText(value).replace(/\s+/g, '')
   if (!text) return null
+  const withUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
+  const hasBoundarySeparator = withUnit &&
+    (/^[-－—]/.test(withUnit[2]) || /^[-－—]/.test(withUnit[3]))
+  if (withUnit && !hasBoundarySeparator) {
+    return {
+      building: normalizeRoomPart(withUnit[1], 'building'),
+      unit: normalizeRoomPart(withUnit[2], 'unit'),
+      roomNumber: normalizeRoomPart(withUnit[3], 'room')
+    }
+  }
   const dashed = text.split(/[-－—]/).map((item) => item.trim()).filter(Boolean)
   if (dashed.length >= 3) {
     return {
@@ -433,14 +443,6 @@ function parseRoomText(value) {
       building: normalizeRoomPart(dashed[0], 'building'),
       unit: '',
       roomNumber: normalizeRoomPart(dashed[1], 'room')
-    }
-  }
-  const withUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)单元(.+?)(?:房间|房|室)?$/)
-  if (withUnit) {
-    return {
-      building: normalizeRoomPart(withUnit[1], 'building'),
-      unit: normalizeRoomPart(withUnit[2], 'unit'),
-      roomNumber: normalizeRoomPart(withUnit[3], 'room')
     }
   }
   const withoutUnit = text.match(/^(.+?)(?:号楼|楼|幢|栋)(.+?)(?:房间|房|室)?$/)

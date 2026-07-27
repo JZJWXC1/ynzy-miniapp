@@ -476,11 +476,41 @@ async function testMaterialAmbiguityIsFailLoudAndOrderIndependent() {
   assert.strictEqual(db.listings[0].videoUrl || '', '', '素材歧义时不得先到先得写入任一视频')
 }
 
+function testMixedStructuredSeparatorsRemainCompatible() {
+  ;[
+    { label: '半角短横线', separator: '-' },
+    { label: '全角短横线', separator: '－' },
+    { label: '破折号', separator: '—' }
+  ].forEach(({ label, separator }, index) => {
+    const normalized = feishuSync.normalizeRecord(record(`legacy-mixed-room-separators-${index}`, {
+      区域: '星桥',
+      小区: '测试小区',
+      房号: `1幢${separator}1单元${separator}101`,
+      户型: '一室一厅',
+      月租金: 3000
+    }), index)
+    assert.deepStrictEqual(
+      {
+        building: normalized.building,
+        unit: normalized.unit,
+        roomNumber: normalized.roomNumber
+      },
+      {
+        building: '1',
+        unit: '1',
+        roomNumber: '101'
+      },
+      `旧普通三段房号混用${label}时，必须继续按楼栋/单元/房号解析`
+    )
+  })
+}
+
 async function main() {
   await testAuthoritativeBindingContracts()
   await testMirrorWiringAndInventoryProjection()
   await testMirrorDryRunAndMassDeactivateGuard()
   await testMaterialAmbiguityIsFailLoudAndOrderIndependent()
+  testMixedStructuredSeparatorsRemainCompatible()
   const db = makeDb()
   const first = await feishuSync.applySync(db, [
     row({

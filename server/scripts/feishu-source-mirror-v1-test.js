@@ -1362,6 +1362,115 @@ function testRoomLabelCommunityAndUnitNormalization() {
   })
 }
 
+function testFourSegmentRoomIdentityPreservesEverySegmentAndFailsClosed() {
+  const catalog = buildLocationCatalog([
+    location(),
+    location({
+      recordId: 'loc-record-xingqiao',
+      locationId: 'LOC-XINGQIAO',
+      district: '临平区',
+      block: '星桥',
+      community: '星桥花苑',
+      aliases: ['星桥花苑小区']
+    })
+  ])
+  const validInput = {
+    sourceSnapshot: snapshot([source('src-four-segment', {
+      roomLabel: '风雅乐府 1-2-301-01',
+      building: '1',
+      unit: '2',
+      roomNumber: '301-01'
+    })]),
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: catalog,
+    runId: 'four-segment-room'
+  }
+  const validPlan = planMirrorSync(validInput)
+  const valid = assertOperation(validPlan, 'src-four-segment', 'create', '四段纯数字房号')
+  assert.strictEqual(valid.fields.building, '1', '四段房号第一段必须完整保留为楼栋')
+  assert.strictEqual(valid.fields.unit, '2', '四段房号第二段必须完整保留为单元')
+  assert.strictEqual(valid.fields.roomNumber, '301-01', '四段房号第三、四段必须以单个连字符完整保留')
+  assert.strictEqual(
+    valid.fields.roomLabel,
+    '风雅乐府 1幢2单元301-01',
+    '四段房号必须重建为唯一、可回读的规范房号'
+  )
+
+  ;[
+    {
+      recordId: 'src-four-segment-nonnumeric',
+      overrides: {
+        roomLabel: '风雅乐府 1-2-A-01',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      },
+      pattern: /房号|格式|解析/i,
+      message: '四段格式只允许四个纯数字段'
+    },
+    {
+      recordId: 'src-five-segment',
+      overrides: {
+        roomLabel: '风雅乐府 1-2-301-01-9',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      },
+      pattern: /房号|格式|解析/i,
+      message: '五段房号不得截断或猜测'
+    },
+    {
+      recordId: 'src-four-segment-empty',
+      overrides: {
+        roomLabel: '风雅乐府 1--301-01',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      },
+      pattern: /房号|格式|解析/i,
+      message: '含空段的四段房号不得过滤空段后错位解析'
+    },
+    {
+      recordId: 'src-four-segment-community-conflict',
+      overrides: {
+        community: '风雅乐府',
+        roomLabel: '星桥花苑 1-2-301-01',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      },
+      pattern: /不属于|小区|字典/i,
+      message: '小区列与另一已知位置前缀冲突时不得自动改小区'
+    },
+    {
+      recordId: 'src-four-segment-explicit-conflict',
+      overrides: {
+        roomLabel: '风雅乐府 1-2-301-01',
+        building: '1',
+        unit: '2',
+        roomNumber: '301'
+      },
+      pattern: /显式|不一致|房号/i,
+      message: '显式房号与四段解析结果冲突时必须阻断'
+    }
+  ].forEach(({ recordId, overrides, pattern, message }) => {
+    const inputs = {
+      sourceSnapshot: snapshot([source(recordId, overrides)]),
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: catalog
+    }
+    expectBlockedWithoutMutation(
+      () => planMirrorSync({
+        ...inputs,
+        runId: recordId
+      }),
+      inputs,
+      pattern,
+      message
+    )
+  })
+}
+
 function testReadbackMayOmitOptionalEmptyUnitWithoutRepeatUpdate() {
   const catalog = buildLocationCatalog([location()])
   const sourceRecord = source('src-readback-empty-unit', {
@@ -1439,6 +1548,7 @@ function main() {
   testCanonicalDerivationAndAttachmentProjection()
   testLocationCoordinatesAreMandatory()
   testRoomLabelCommunityAndUnitNormalization()
+  testFourSegmentRoomIdentityPreservesEverySegmentAndFailsClosed()
   testReadbackMayOmitOptionalEmptyUnitWithoutRepeatUpdate()
   console.log('feishu-source-mirror-v1-test passed')
 }
