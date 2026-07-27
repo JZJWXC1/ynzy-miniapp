@@ -380,59 +380,34 @@ function testSourceAliasAndPhysicalIdentityMatching() {
   assert.strictEqual(physicalState.sourceRecordId, 'src-new', '当前源 recordId 必须更新为新记录')
   assert.strictEqual(
     physicalState.availabilityCycleNo,
-    2,
-    '源行删除后以新 recordId 重建，必须结束旧周期并开启新待租周期'
+    1,
+    '仅复制源表导致 recordId 轮换时必须沿用原待租周期'
   )
-  assert.strictEqual(physicalState.sourceCreatedAt, replacementCreatedAt, '新周期必须按新源行录入时间重新计时')
-  assert.strictEqual(physicalState.lifecycleDays, 0, '新周期的待租计时必须从新源行录入时间开始')
-  assert.strictEqual(physicalState.lifecycleVersion, 2, '源行更换必须把生命周期版本推进一次')
-  assert.strictEqual(currentOperation(byPhysical, 'TMP-existing').type, 'restore',
-    '源行更换必须以新周期恢复操作落盘')
-  assert.strictEqual(byPhysical.rentalEventOperations.length, 1, '源行更换必须生成旧周期出租归档')
-  assert.deepStrictEqual(
-    byPhysical.rentalEventOperations[0].fields,
-    {
-      rentalEventId: 'TMP-existing:rented:1',
-      foundationListingId: 'TMP-existing',
-      availabilityCycleNo: 1,
-      availabilityCycleId: 'TMP-existing:available:1',
-      sourceRecordId: 'src-old',
-      yuxiaoerListingId: '',
-      yuxiaoerRoomId: '',
-      temporaryListingId: 'TMP-existing',
-      identityType: 'temporary',
-      rentMode: '整租',
-      physicalUnitKey: '杭州/拱墅/祥符/测试小区/1/1/101/整租',
-      identityAliases: '[{"aliasType":"sourceRecord","aliasValue":"src-old"},{"aliasType":"temporary","aliasValue":"TMP-existing"}]',
-      lifecycleVersion: 2,
-      previousLifecycleStatusText: '待出租',
-      sourceCreatedAt: CREATED_TIME_MS,
-      rentedDetectedAt: OBSERVED_AT,
-      elapsedDaysAtExit: 2,
-      vacancyNote: '',
-      listingOwner: '测试负责人',
-      ownerDepartment: '测试部门',
-      runId: 'run-now'
-    },
-    '源行更换归档必须冻结旧周期身份、计时、责任与版本'
+  assert.strictEqual(
+    physicalState.availabilityCycleId,
+    'TMP-existing:available:1',
+    'recordId 轮换不得更换待租周期 ID'
   )
+  assert.strictEqual(physicalState.sourceCreatedAt, CREATED_TIME_MS, '同一待租周期必须保留首次录入时间')
+  assert.strictEqual(physicalState.lifecycleDays, 2, 'recordId 轮换不得把待租计时清零')
+  assert.strictEqual(physicalState.lifecycleVersion, 1, '存储记录 ID 轮换不得推进业务生命周期版本')
+  assert.strictEqual(currentOperation(byPhysical, 'TMP-existing').type, 'update',
+    'recordId 轮换只允许更新追溯键和身份别名')
+  assert.strictEqual(byPhysical.rentalEventOperations.length, 0, 'recordId 轮换不得生成虚假出租归档')
   assert(byPhysical.aliasOperations.some((item) => item.fields.aliasType === 'sourceRecord' &&
     item.fields.aliasValue === 'src-new'), '新源 recordId 必须追加为别名')
 
   const replacementRetry = planListingLifecycle(baseInput({
     sourceSnapshot: snapshot([replacementSource]),
     currentStateSnapshot: snapshot([current('cur-existing', physicalState)]),
-    rentedEventSnapshot: snapshot([event('TMP-existing:rented:1', {
-      foundationListingId: 'TMP-existing'
-    })]),
     allocateTemporaryId() {
-      throw new Error('源行更换重试不得重新分配临时 ID')
+      throw new Error('recordId 轮换重试不得重新分配临时 ID')
     }
   }))
-  assert.strictEqual(desiredState(replacementRetry, 'TMP-existing').lifecycleVersion, 2,
-    '同一次源行更换重试必须保持相同生命周期版本')
-  assert.strictEqual(replacementRetry.rentalEventOperations.length, 0, '同一旧周期归档重试不得重复创建')
-  assert.strictEqual(replacementRetry.currentStateOperations.length, 0, '新周期当前状态已落盘后重试必须为 no-op')
+  assert.strictEqual(desiredState(replacementRetry, 'TMP-existing').lifecycleVersion, 1,
+    '同一次 recordId 轮换重试必须保持原生命周期版本')
+  assert.strictEqual(replacementRetry.rentalEventOperations.length, 0, 'recordId 轮换重试不得补造出租归档')
+  assert.strictEqual(replacementRetry.currentStateOperations.length, 0, '轮换后的当前状态已落盘后重试必须为 no-op')
 
   const persistedSourceAlias = planListingLifecycle(baseInput({
     sourceSnapshot: snapshot([source('src-persisted-alias', {
@@ -530,6 +505,28 @@ function testRentedEventIdempotencyAndReappearance() {
 
   const rentedCurrent = current('cur-1', rentedOperation.fields)
   const existingEvent = event('YX2:listing-1:WHOLE:rented:1')
+  assert.throws(
+    () => planListingLifecycle(baseInput({
+      sourceSnapshot: snapshot([source('src-return')]),
+      currentStateSnapshot: snapshot([existing]),
+      rentedEventSnapshot: snapshot([event('YX2:listing-1:WHOLE:rented:1', {
+        foundationListingId: 'YX2:other-listing:WHOLE'
+      })])
+    })),
+    /已出租事件与当前待租周期不一致/,
+    '已落盘归档的实体与当前主档不一致时必须失败关闭'
+  )
+  assert.throws(
+    () => planListingLifecycle(baseInput({
+      sourceSnapshot: snapshot([source('src-return')]),
+      currentStateSnapshot: snapshot([existing]),
+      rentedEventSnapshot: snapshot([event('YX2:listing-1:WHOLE:rented:1', {
+        availabilityCycleNo: 2
+      })])
+    })),
+    /已出租事件与当前待租周期不一致/,
+    '已落盘归档的周期与当前主档不一致时必须失败关闭'
+  )
   const repeatPlan = planListingLifecycle(baseInput({
     sourceSnapshot: snapshot([]),
     currentStateSnapshot: snapshot([rentedCurrent]),

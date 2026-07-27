@@ -2603,20 +2603,71 @@ function plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan) {
   })
 }
 
+function foundationRecordIdentity(record) {
+  const fields = record && record.fields || {}
+  return normalizeText(fields.foundationListingId) ||
+    yuxiaoerIdentityKey({
+      rentMode: fields.rentMode,
+      yuxiaoerListingId: fields.yuxiaoerListingId,
+      yuxiaoerRoomId: fields.yuxiaoerRoomId
+    }) ||
+    normalizeText(fields.temporaryListingId) ||
+    foundationPhysicalUnitKey(fields)
+}
+
+function foundationIdentityIndexKey(value) {
+  return normalizeText(value).toLocaleLowerCase('zh-CN')
+}
+
+function publishedFoundationIdentities(records, label) {
+  const identities = (records || []).filter((record) => (
+    record && record.fields && record.fields.enabled === true && record.fields.published === true
+  )).map((record) => foundationIdentityIndexKey(foundationRecordIdentity(record)))
+  const unique = new Set(identities)
+  if (unique.size !== identities.length) {
+    throw new Error(`AI 数据底座${label}存在重复实体身份`)
+  }
+  return unique
+}
+
 function assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, options = {}) {
   const foundationIdentityMode = options.foundationIdentityMode === true
+  if (foundationIdentityMode) {
+    // foundationListingId（或旧表的受控身份回退）与线上库存物理键不是同一身份域，
+    // 不能合并成一个 Set。目标主档按实体身份比较前后；线上库存仅作为独立数量下限，
+    // 既能容忍源表复制和区域/板块调整，又能在目标主档意外缺行时阻断真实缩量。
+    const publishedBefore = publishedFoundationIdentities(mirrorSnapshot.records, '当前主档')
+    const publishedAfter = publishedFoundationIdentities(plannedRecords, '计划主档')
+    const targetWithdrawCount = Array.from(publishedBefore)
+      .filter((identityKey) => !publishedAfter.has(identityKey))
+      .length
+    const baselineCount = new Set(
+      (Array.isArray(options.baselinePublishedFoundationIdentityKeys)
+        ? options.baselinePublishedFoundationIdentityKeys
+        : [])
+        .map(foundationIdentityIndexKey)
+        .filter(Boolean)
+    ).size
+    const activeBefore = Math.max(publishedBefore.size, baselineCount)
+    const baselineCoverageWithdrawCount = Math.max(0, baselineCount - publishedBefore.size)
+    const countFloorWithdrawCount = Math.max(0, activeBefore - publishedAfter.size)
+    const withdrawCount = Math.max(
+      targetWithdrawCount,
+      baselineCoverageWithdrawCount,
+      countFloorWithdrawCount
+    )
+    if (withdrawCount === 0 || options.allowMassDeactivate === true) return
+    return assertMirrorDeactivateThreshold(withdrawCount, activeBefore, options)
+  }
+
   const recordIdentity = (record) => {
     const fields = record && record.fields || {}
-    return foundationIdentityMode
-      ? foundationPhysicalUnitKey(fields)
-      : normalizeText(fields.sourceRecordId)
+    return normalizeText(fields.sourceRecordId)
   }
   const publishedBefore = new Set((mirrorSnapshot.records || []).filter((record) => (
     record && record.fields && record.fields.enabled === true && record.fields.published === true
   )).map(recordIdentity).filter(Boolean))
-  const baselineIdentities = foundationIdentityMode
-    ? options.baselinePublishedFoundationIdentityKeys
-    : options.baselinePublishedSourceIds
+  const baselineIdentities = options.baselinePublishedSourceIds
   ;(Array.isArray(baselineIdentities) ? baselineIdentities : [])
     .map(normalizeText)
     .filter(Boolean)
@@ -2626,13 +2677,15 @@ function assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, options = 
   )).map(recordIdentity).filter(Boolean))
   const withdrawCount = Array.from(publishedBefore).filter((identityKey) => !publishedAfter.has(identityKey)).length
   if (withdrawCount === 0 || options.allowMassDeactivate === true) return
+  return assertMirrorDeactivateThreshold(withdrawCount, publishedBefore.size, options)
+}
 
+function assertMirrorDeactivateThreshold(withdrawCount, activeBefore, options = {}) {
   const maxCount = options.maxDeactivateCount == null ? 10 : Number(options.maxDeactivateCount)
   const maxRatio = options.maxDeactivateRatio == null ? 0.35 : Number(options.maxDeactivateRatio)
   if (!Number.isInteger(maxCount) || maxCount < 1 || !Number.isFinite(maxRatio) || maxRatio <= 0 || maxRatio > 1) {
     throw new Error('飞书镜像批量停用熔断配置无效')
   }
-  const activeBefore = publishedBefore.size
   const ratio = activeBefore > 0 ? withdrawCount / activeBefore : 0
   const countExceeded = withdrawCount > maxCount
   const ratioExceeded = ratio > maxRatio
@@ -2698,15 +2751,13 @@ function assertLifecycleTableResourcesDistinct(options = {}) {
 function foundationPhysicalUnitKey(fields = {}) {
   const parts = [
     fields.city,
-    fields.district,
-    fields.block,
     fields.community,
     fields.building,
     fields.unit,
     fields.roomNumber,
     fields.rentMode
   ].map((value) => normalizeText(value).toLocaleLowerCase('zh-CN'))
-  if (!parts[3] || !parts[4] || !parts[6] || !/^(?:整租|合租)$/.test(normalizeText(fields.rentMode))) {
+  if (!parts[1] || !parts[2] || !parts[4] || !/^(?:整租|合租)$/.test(normalizeText(fields.rentMode))) {
     throw new Error('AI 数据底座无法生成唯一物理房源键')
   }
   return `UNIT-${crypto.createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 24).toUpperCase()}`
@@ -2722,7 +2773,9 @@ function deterministicTemporaryListingId({ physicalUnitKey, sourceRecordId } = {
 function normalizedFoundationCurrentSnapshot(snapshot, nowMs) {
   const records = (snapshot.records || []).map((record) => {
     const fields = clone(record && record.fields && typeof record.fields === 'object' ? record.fields : {})
-    const physicalUnitKey = normalizeText(fields.physicalUnitKey) || foundationPhysicalUnitKey(fields)
+    // 物理键是可升级的派生值，不信任旧表中可能仍包含行政区/板块的历史哈希。
+    // 每次按当前规范字段重算，foundationListingId 和身份别名继续承载持久实体身份。
+    const physicalUnitKey = foundationPhysicalUnitKey(fields)
     const realIdentity = yuxiaoerIdentityKey({
       rentMode: fields.rentMode,
       yuxiaoerListingId: fields.yuxiaoerListingId,

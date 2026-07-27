@@ -1351,10 +1351,130 @@ async function testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRot
     12,
     '线上库存第二基线必须为每个物理房间生成一个稳定身份'
   )
+  const retaggedBaselineIdentityKeys = feishuSync._internal.activeFeishuFoundationIdentityKeys({
+    listings: baselineListings.map((listing) => ({
+      ...listing,
+      district: '新行政区',
+      area: '新行政区',
+      block: '新板块'
+    }))
+  })
+  assert.deepStrictEqual(
+    retaggedBaselineIdentityKeys,
+    baselineIdentityKeys,
+    '行政区和板块是可变分类，不能改变同一物理房间的稳定身份'
+  )
+  ;[
+    ['city', '宁波市', '城市'],
+    ['community', '另一小区', '小区'],
+    ['building', '99', '楼栋'],
+    ['unit', '9', '单元'],
+    ['roomNumber', '999', '房号'],
+    ['rentMode', '合租', '出租方式']
+  ].forEach(([field, changedValue, label]) => {
+    assert.notDeepStrictEqual(
+      feishuSync._internal.activeFeishuFoundationIdentityKeys({
+        listings: baselineListings.map((listing, index) => (
+          index === 0 ? { ...listing, [field]: changedValue } : listing
+        ))
+      }),
+      baselineIdentityKeys,
+      `${label}发生变化时必须改变物理房间身份，不能从稳定物理键中漏掉该轴`
+    )
+  })
   assert.strictEqual(
     typeof feishuSync._internal.assertMirrorDeactivateSafety,
     'function',
     '测试必须能直接验证正式写前的撤下熔断'
+  )
+  const duplicateEntityRecord = {
+    ...clone(currentRecords[1]),
+    recordId: 'duplicate-foundation-entity',
+    fields: {
+      ...clone(currentRecords[1].fields),
+      foundationListingId: currentRecords[0].fields.foundationListingId.toLocaleLowerCase('zh-CN')
+    }
+  }
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: [currentRecords[0], duplicateEntityRecord] },
+      [currentRecords[0]],
+      { foundationIdentityMode: true }
+    ),
+    /重复实体身份/,
+    '同步前目标主档出现重复底座实体时必须在熔断计算前失败关闭'
+  )
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: [currentRecords[0]] },
+      [currentRecords[0], duplicateEntityRecord],
+      { foundationIdentityMode: true }
+    ),
+    /重复实体身份/,
+    '计划结果出现重复底座实体时必须在熔断计算前失败关闭'
+  )
+  assert.doesNotThrow(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: currentRecords },
+      currentRecords.map((record, index) => ({
+        ...clone(record),
+        fields: {
+          ...clone(record.fields),
+          district: '新行政区',
+          block: '新板块',
+          community: `修正后小区-${index + 1}`
+        }
+      })),
+      {
+        foundationIdentityMode: true,
+        baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+      }
+    ),
+    '同一 foundationListingId 只发生分类或地址展示修正时不得误算为整批撤下'
+  )
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: [] },
+      currentRecords,
+      {
+        foundationIdentityMode: true,
+        baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+      }
+    ),
+    /拟撤下 12\/12 条公开房源.*超过安全阈值/,
+    '目标主档被清空或重建时，即使计划数量与线上库存相同也不得绕过第二基线'
+  )
+  const replacedEntityRecords = currentRecords.map((record, index) => ({
+    ...clone(record),
+    recordId: `replaced-foundation-entity-${index + 1}`,
+    fields: {
+      ...clone(record.fields),
+      foundationListingId: `REPLACED-FOUNDATION-${index + 1}`
+    }
+  }))
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: currentRecords },
+      replacedEntityRecords,
+      {
+        foundationIdentityMode: true,
+        baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+      }
+    ),
+    /拟撤下 12\/12 条公开房源.*超过安全阈值/,
+    '计划数量不变但全部 foundation 实体被替换时，必须由目标主档实体差集精确阻断 12/12'
+  )
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: currentRecords.slice(0, 8) },
+      currentRecords.slice(0, 7),
+      {
+        foundationIdentityMode: true,
+        baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+      }
+    ),
+    /拟撤下 5\/12 条公开房源.*超过安全阈值/,
+    '目标主档撤下一条且 DB 基线覆盖缺口为五条时，必须由最终数量下限精确阻断 5/12'
   )
   assert.throws(
     () => feishuSync._internal.assertMirrorDeactivateSafety(
@@ -1388,6 +1508,63 @@ async function testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRot
     '旧库存 record_id 全量轮换后必须沿用同一批底座房源身份'
   )
   assertNoWrites(clients.calls, 'record_id 轮换预演必须保持员工源和三张目标业务表零写')
+
+  const migratedSourceRecords = currentSourceRecords.map((record, index) => ({
+    ...clone(record),
+    recordId: `source-rotation-migrated-${index + 1}`
+  }))
+  const migratedClients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf(migratedSourceRecords),
+    miniRecords: currentRecords.map((record, index) => ({
+      ...clone(record),
+      fields: {
+        ...clone(record.fields),
+        district: '旧行政区',
+        block: '旧板块',
+        physicalUnitKey: `UNIT-LEGACY-${String(index + 1).padStart(4, '0')}`
+      }
+    })),
+    historyRecords: clone(clients.tableRecords['tbl-history'])
+  })
+  const migrated = await feishuSync._internal.executeMirrorTableSync(executeOptions(migratedClients, {
+    dryRun: true,
+    baselinePublishedSourceIds: baselineListings.map((listing) => listing.feishuRecordId),
+    baselinePublishedFoundationIdentityKeys: retaggedBaselineIdentityKeys
+  }))
+  assert.strictEqual(migrated.baseline, false, 'recordId 迁移回归必须在已完成持久基线后执行')
+  assert.strictEqual(migrated.counts.create, 0, '源表复制且区域板块改名时不得为原房间新建第二个底座实体')
+  assert.strictEqual(migrated.counts.deactivate, 0, '源表复制且区域板块改名时不得把原房间误归档')
+  assert.strictEqual(migrated.lifecycleCounts.rentedArchived, 0, '源表 recordId 轮换不得制造虚假已出租周期')
+  assert.strictEqual(migrated.lifecycleCounts.historyAppended, 0, '源表 recordId 轮换不得制造虚假生命周期流水')
+  assert.deepStrictEqual(
+    migrated.records.map((record) => record.fields.foundationListingId).sort(),
+    foundationIdsBefore,
+    '旧版物理键必须按当前房间字段升级，并在源记录轮换后继续沿用原底座实体'
+  )
+  const lifecycleBefore = currentRecords
+    .map((record) => ({
+      foundationListingId: record.fields.foundationListingId,
+      availabilityCycleNo: record.fields.availabilityCycleNo,
+      availabilityCycleId: record.fields.availabilityCycleId,
+      lifecycleVersion: record.fields.lifecycleVersion,
+      sourceCreatedAt: record.fields.sourceCreatedAt
+    }))
+    .sort((left, right) => left.foundationListingId.localeCompare(right.foundationListingId))
+  const lifecycleAfter = migrated.records
+    .map((record) => ({
+      foundationListingId: record.fields.foundationListingId,
+      availabilityCycleNo: record.fields.availabilityCycleNo,
+      availabilityCycleId: record.fields.availabilityCycleId,
+      lifecycleVersion: record.fields.lifecycleVersion,
+      sourceCreatedAt: record.fields.sourceCreatedAt
+    }))
+    .sort((left, right) => left.foundationListingId.localeCompare(right.foundationListingId))
+  assert.deepStrictEqual(
+    lifecycleAfter,
+    lifecycleBefore,
+    '源表复制只允许更新来源追溯键，不得重置待租计时、周期或生命周期版本'
+  )
+  assertNoWrites(migratedClients.calls, '区域板块改名与源记录轮换预演必须保持四表零写')
 
   const incompleteMirrorClients = makeLifecycleClients({
     sourceSnapshot: sourceSnapshotOf([currentSourceRecords[0]]),
@@ -1586,26 +1763,37 @@ async function testRepeatedSameDirectionTransitionsKeepDistinctHistory() {
   assert.strictEqual(clients.tableRecords['tbl-history'].length, countBeforeRepeat, '原样重跑必须保持流水数量')
 }
 
-async function testSourceRecordReplacementClosesOldCycleBeforeOpeningNewCycle() {
+async function testRentedReappearanceClosesOldCycleBeforeOpeningNewCycle() {
   const oldSource = sourceRecord('source-replaced-old', '801')
   const newSource = sourceRecord('source-replaced-new', '801', {
-    remark: '同一物理房源的新员工源记录'
+    remark: '真正出租后重新进入员工待租源表'
   })
+  const keeper = sourceRecord('source-replaced-keeper', '802')
   const clients = makeLifecycleClients({
-    sourceSnapshot: sourceSnapshotOf([oldSource])
+    sourceSnapshot: sourceSnapshotOf([oldSource, keeper])
   })
   await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
-    dryRun: false
+    dryRun: false,
+    maxDeactivateRatio: 0.75
   }))
 
   const historyCountBefore = clients.tableRecords['tbl-history'].length
-  clients.setSourceSnapshot(sourceSnapshotOf([newSource]))
+  clients.setSourceSnapshot(sourceSnapshotOf([keeper]))
+  const rented = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false,
+    maxDeactivateRatio: 0.75
+  }))
+  assert.strictEqual(rented.lifecycleCounts.rentedArchived, 1, '完整快照真实消失必须冻结旧待租周期')
+  assert.strictEqual(rented.lifecycleCounts.historyAppended, 1, '完整快照真实消失必须写入旧周期关闭流水')
+
+  clients.setSourceSnapshot(sourceSnapshotOf([newSource, keeper]))
   const result = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
     dryRun: false,
-    allowMassDeactivate: true
+    maxDeactivateRatio: 0.75,
+    nowMs: FIXED_NOW_MS + 1_000
   }))
-  assert.strictEqual(result.lifecycleCounts.rentedArchived, 1, '源记录替换必须冻结旧待租周期')
-  assert.strictEqual(result.lifecycleCounts.historyAppended, 2, '源记录替换必须同时留下旧周期关闭和新周期进入流水')
+  assert.strictEqual(result.lifecycleCounts.rentedArchived, 0, '重新出现时不得重复归档已经关闭的旧周期')
+  assert.strictEqual(result.lifecycleCounts.historyAppended, 1, '重新出现必须只追加一条新周期进入流水')
 
   const events = clients.tableRecords['tbl-history']
     .slice(historyCountBefore)
@@ -1613,12 +1801,17 @@ async function testSourceRecordReplacementClosesOldCycleBeforeOpeningNewCycle() 
   assert.deepStrictEqual(
     events.map((fields) => fields.eventType),
     ['检测已出租', '重新进入待租'],
-    '同一物理房源替换源记录时必须先关闭旧周期，再开启新周期'
+    '房源必须先在完整快照中真实消失关闭旧周期，随后重新出现才开启新周期'
   )
   assert.deepStrictEqual(
     events.map((fields) => fields.availabilityCycleNo),
     [1, 2],
-    '源记录替换的两条流水必须分别属于旧周期和新周期'
+    '真实出租与重新上架的两条流水必须分别属于旧周期和新周期'
+  )
+  assert.deepStrictEqual(
+    events.map((fields) => fields.lifecycleVersion),
+    [2, 3],
+    '真实出租与重新上架必须把生命周期版本从关闭版本单调推进到恢复版本'
   )
   assert.ok(
     Number(events[0].eventAt) < Number(events[1].eventAt),
@@ -1626,21 +1819,23 @@ async function testSourceRecordReplacementClosesOldCycleBeforeOpeningNewCycle() 
   )
 }
 
-async function testSourceReplacementRecoversWhenArchiveSucceededBeforeHistory() {
+async function testRentedReappearanceRecoversWhenArchiveSucceededBeforeHistory() {
   const oldSource = sourceRecord('source-archive-only-old', '851')
   const newSource = sourceRecord('source-archive-only-new', '851')
+  const keeper = sourceRecord('source-archive-only-keeper', '852')
   const clients = makeLifecycleClients({
-    sourceSnapshot: sourceSnapshotOf([oldSource])
+    sourceSnapshot: sourceSnapshotOf([oldSource, keeper])
   })
   await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
-    dryRun: false
+    dryRun: false,
+    maxDeactivateRatio: 0.75
   }))
-  clients.setSourceSnapshot(sourceSnapshotOf([newSource]))
+  clients.setSourceSnapshot(sourceSnapshotOf([keeper]))
   clients.failNextCreate('tbl-history')
   await assert.rejects(
     feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
       dryRun: false,
-      allowMassDeactivate: true
+      maxDeactivateRatio: 0.75
     })),
     /目标表新增失败/,
     '旧周期归档落盘后流水首写失败必须停止且保持当前主档不变'
@@ -1654,11 +1849,12 @@ async function testSourceReplacementRecoversWhenArchiveSucceededBeforeHistory() 
     '流水首写失败时不得伪造任何业务事件'
   )
 
+  clients.setSourceSnapshot(sourceSnapshotOf([newSource, keeper]))
   const recovered = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
     dryRun: false,
-    allowMassDeactivate: true
+    maxDeactivateRatio: 0.75
   }))
-  assert.strictEqual(recovered.status, 'success', '归档已存在的重跑必须补齐流水和当前主档')
+  assert.strictEqual(recovered.status, 'success', '归档已存在且房源重新出现时必须补齐关闭、恢复流水和当前主档')
   assert.strictEqual(clients.tableRecords['tbl-rented'].length, 1, '重跑不得重复归档旧周期')
   const businessEvents = clients.tableRecords['tbl-history']
     .map((record) => record.fields)
@@ -1666,7 +1862,12 @@ async function testSourceReplacementRecoversWhenArchiveSucceededBeforeHistory() 
   assert.deepStrictEqual(
     businessEvents.map((fields) => fields.eventType),
     ['检测已出租', '重新进入待租'],
-    'archive-only 失败窗口重跑必须从已落盘归档重建旧周期关闭流水，再补新周期进入流水'
+    'archive-only 失败窗口遇到房源重新出现时，必须从归档证据重建旧周期关闭流水，再补新周期进入流水'
+  )
+  assert.deepStrictEqual(
+    businessEvents.map((fields) => fields.lifecycleVersion),
+    [2, 3],
+    '当前主档仍停在旧版本时，必须以已落盘归档版本为基数恢复到下一版本'
   )
   assert.ok(
     Number(businessEvents[0].eventAt) < Number(businessEvents[1].eventAt),
@@ -1674,37 +1875,53 @@ async function testSourceReplacementRecoversWhenArchiveSucceededBeforeHistory() 
   )
 }
 
-async function testSourceReplacementRecoversWhenOnlyOldCycleHistorySucceeded() {
+async function testRentedReappearanceRecoversWhenRestoreHistoryFails() {
   const oldSource = sourceRecord('source-old-history-written', '861')
   const newSource = sourceRecord('source-new-history-pending', '861')
+  const keeper = sourceRecord('source-history-keeper', '862')
   const clients = makeLifecycleClients({
-    sourceSnapshot: sourceSnapshotOf([oldSource])
+    sourceSnapshot: sourceSnapshotOf([oldSource, keeper])
   })
   await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
-    dryRun: false
+    dryRun: false,
+    maxDeactivateRatio: 0.75
   }))
-  clients.setSourceSnapshot(sourceSnapshotOf([newSource]))
-  clients.failCreateAt('tbl-history', 2)
+  clients.setSourceSnapshot(sourceSnapshotOf([keeper]))
+  clients.failNextMiniUpdate()
   await assert.rejects(
     feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
       dryRun: false,
-      allowMassDeactivate: true
+      maxDeactivateRatio: 0.75
     })),
-    /指定新增失败/,
-    '旧周期流水成功而新周期流水失败时必须停止且不提前更新当前主档'
+    /当前状态更新失败/,
+    '归档和关闭流水成功但当前主档失败时必须保留可恢复证据'
   )
-  const afterFailure = clients.tableRecords['tbl-history']
+  const afterDeactivateFailure = clients.tableRecords['tbl-history']
     .map((record) => record.fields)
     .filter((fields) => fields.eventType !== '初始化基线')
   assert.deepStrictEqual(
-    afterFailure.map((fields) => fields.eventType),
+    afterDeactivateFailure.map((fields) => fields.eventType),
     ['检测已出租'],
-    '第二条流水失败时只能保留已经落盘的旧周期关闭事件'
+    '当前主档失败时只能先保留已落盘的旧周期关闭事件'
   )
+
+  clients.setSourceSnapshot(sourceSnapshotOf([newSource, keeper]))
+  clients.failNextCreate('tbl-history')
+  await assert.rejects(
+    feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+      dryRun: false,
+      maxDeactivateRatio: 0.75
+    })),
+    /目标表新增失败/,
+    '恢复流水失败时必须停止且不得提前把当前主档切入新周期'
+  )
+  const currentBeforeRetry = clients.tableRecords['tbl-mini']
+    .find((record) => record.fields.roomNumber === '861')
+  assert.strictEqual(currentBeforeRetry.fields.availabilityCycleNo, 1, '恢复流水失败时当前主档必须仍停在旧周期')
 
   await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
     dryRun: false,
-    allowMassDeactivate: true
+    maxDeactivateRatio: 0.75
   }))
   const recovered = clients.tableRecords['tbl-history']
     .map((record) => record.fields)
@@ -1712,7 +1929,12 @@ async function testSourceReplacementRecoversWhenOnlyOldCycleHistorySucceeded() {
   assert.deepStrictEqual(
     recovered.map((fields) => fields.eventType),
     ['检测已出租', '重新进入待租'],
-    '重跑必须识别旧周期流水已存在，只补缺失的新周期进入事件'
+    '重跑必须识别归档与旧周期流水已存在，只补缺失的新周期进入事件'
+  )
+  assert.deepStrictEqual(
+    recovered.map((fields) => fields.lifecycleVersion),
+    [2, 3],
+    '恢复失败重试不得重复或回退生命周期版本'
   )
   assert.ok(
     Number(recovered[0].eventAt) < Number(recovered[1].eventAt),
@@ -1856,7 +2078,7 @@ function testArchiveProjectionPrioritizesEveryFrozenEventField() {
   assert.strictEqual(archived.sourcePresent, false, '归档必须强制标记源表已不存在')
 }
 
-function testReplacementHistoryKeepsOrderAfterPartialRetry() {
+function testRentedReappearanceHistoryKeepsOrderAfterPartialRetry() {
   const currentSnapshot = snapshot([{
     recordId: 'current-partial-history',
     fields: {
@@ -1883,7 +2105,7 @@ function testReplacementHistoryKeepsOrderAfterPartialRetry() {
       availabilityCycleId: 'TMP-PARTIAL-HISTORY:available:2',
       listingOwner: '',
       ownerDepartment: '',
-      lifecycleVersion: 2
+      lifecycleVersion: 3
     }
   }]
   const archiveOperations = [{
@@ -1913,6 +2135,11 @@ function testReplacementHistoryKeepsOrderAfterPartialRetry() {
     firstPlan.map((operation) => operation.fields.eventType),
     ['检测已出租', '重新进入待租'],
     '失败前完整历史计划必须先旧周期、后新周期'
+  )
+  assert.deepStrictEqual(
+    firstPlan.map((operation) => operation.fields.lifecycleVersion),
+    [2, 3],
+    '归档证据恢复必须分别使用旧周期关闭版本和新周期恢复版本'
   )
 
   const partialHistory = snapshot([{
@@ -1956,12 +2183,12 @@ async function main() {
     ['首次正式同步建立持久基线', testFirstApplyCreatesPersistentBaselineWithoutHistoricalRental],
     ['不确定新增跨进程复用稳定幂等号', testUncertainCreateReusesStableTokenAcrossRun],
     ['同周期重复同向变化保留完整流水', testRepeatedSameDirectionTransitionsKeepDistinctHistory],
-    ['源记录替换先关闭旧周期再开启新周期', testSourceRecordReplacementClosesOldCycleBeforeOpeningNewCycle],
-    ['归档先成功流水失败后重跑补齐顺序', testSourceReplacementRecoversWhenArchiveSucceededBeforeHistory],
-    ['旧周期流水成功新周期流水失败后只补缺口', testSourceReplacementRecoversWhenOnlyOldCycleHistorySucceeded],
+    ['真实出租后重新出现才开启新周期', testRentedReappearanceClosesOldCycleBeforeOpeningNewCycle],
+    ['归档先成功流水失败后按出租证据恢复', testRentedReappearanceRecoversWhenArchiveSucceededBeforeHistory],
+    ['旧周期关闭成功且恢复流水失败后只补缺口', testRentedReappearanceRecoversWhenRestoreHistoryFails],
     ['归档优先冻结事件身份与明确空前态', testArchiveUsesFrozenEventIdentityAndExplicitEmptyPreviousStatus],
     ['归档逐项优先冻结事件身份和生命周期字段', testArchiveProjectionPrioritizesEveryFrozenEventField],
-    ['源记录替换部分失败重跑仍保持事件顺序', testReplacementHistoryKeepsOrderAfterPartialRetry]
+    ['出租恢复部分失败重跑仍保持事件顺序', testRentedReappearanceHistoryKeepsOrderAfterPartialRetry]
   ]
 
   for (const [name, test] of cases) {

@@ -93,16 +93,16 @@ function testIndexWiringContract() {
   assert.ok(mirrorBlock.includes('baselinePublishedSourceIds'), '线上库存撤下基线必须传入专用表写前熔断')
   assert.ok(
     mirrorBlock.includes('activeFeishuFoundationIdentityKeys(db)'),
-    'AI 数据底座必须从线上活跃飞书库存生成稳定物理身份第二撤下基线'
+    'AI 数据底座必须从线上活跃飞书库存生成独立数量下限输入'
   )
   assert.ok(
     mirrorBlock.includes('baselinePublishedFoundationIdentityKeys'),
-    'AI 数据底座稳定物理身份第二基线必须传入专用表写前熔断'
+    'AI 数据底座线上库存数量下限必须传入专用表写前熔断'
   )
   assert.strictEqual(
     (mirrorBlock.match(/baselinePublishedFoundationIdentityKeys/g) || []).length,
     3,
-    '稳定物理身份第二基线必须且只能覆盖生成、正式前内容计划预演和正式镜像三处接线'
+    '线上库存数量下限必须且只能覆盖生成、正式前内容计划预演和正式镜像三处接线'
   )
   assert.ok(
     /\.\.\.coordinates,\s*baselinePublishedSourceIds,\s*baselinePublishedFoundationIdentityKeys,\s*dryRun:\s*true/.test(
@@ -140,7 +140,33 @@ function testIndexWiringContract() {
       foundationSyncBlock.includes(
         'baselinePublishedFoundationIdentityKeys: options.baselinePublishedFoundationIdentityKeys'
       ),
-    'AI 数据底座正式写前熔断必须启用稳定物理身份并接入线上库存第二基线'
+    'AI 数据底座正式写前熔断必须启用 foundation 实体身份并接入线上库存数量下限'
+  )
+  const fuseStart = syncSource.indexOf('function assertMirrorDeactivateSafety(')
+  const foundationFuseEnd = syncSource.indexOf('const recordIdentity =', fuseStart)
+  const foundationFuseBlock = syncSource.slice(fuseStart, foundationFuseEnd)
+  assert.ok(
+    foundationFuseBlock.includes('publishedFoundationIdentities(mirrorSnapshot.records') &&
+      foundationFuseBlock.includes('publishedFoundationIdentities(plannedRecords') &&
+      foundationFuseBlock.includes('Math.max(publishedBefore.size, baselineCount)') &&
+      foundationFuseBlock.includes('baselineCount - publishedBefore.size') &&
+      /Math\.max\(\s*targetWithdrawCount,\s*baselineCoverageWithdrawCount,\s*countFloorWithdrawCount\s*\)/.test(
+        foundationFuseBlock
+      ),
+    'AI 熔断必须按目标主档实体比较前后，并把线上库存作为数量与目标覆盖率双下限'
+  )
+  assert.ok(
+    !foundationFuseBlock.includes('publishedBefore.add(identityKey)'),
+    'AI 熔断不得再把数据库物理键与目标主档实体 ID 合并进同一身份集合'
+  )
+  const physicalKeyStart = syncSource.indexOf('function foundationPhysicalUnitKey(')
+  const physicalKeyEnd = syncSource.indexOf('\nfunction deterministicTemporaryListingId(', physicalKeyStart)
+  const physicalKeyBlock = syncSource.slice(physicalKeyStart, physicalKeyEnd)
+  assert.ok(
+    physicalKeyStart >= 0 && physicalKeyEnd > physicalKeyStart &&
+      !physicalKeyBlock.includes('fields.district') &&
+      !physicalKeyBlock.includes('fields.block'),
+    '物理房间身份不得包含可变的行政区或板块分类'
   )
 
   const adminSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'admin-web', 'index.html'), 'utf8')

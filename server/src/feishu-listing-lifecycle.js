@@ -631,15 +631,23 @@ function planListingLifecycle({
     usedFoundationIds.add(foundationKey)
 
     const existingFields = existing ? existing.fields : {}
-    const wasRented = existingFields.lifecycleStatusText === '已出租' || existingFields.sourcePresent === false
-    const previousSourceRecordId = normalizeText(existingFields.sourceRecordId)
-    const sourceReplaced = Boolean(
-      existing &&
-      previousSourceRecordId &&
-      identityIndexKey(previousSourceRecordId) !== identityIndexKey(sourceRecordId)
-    )
     const previousCycleNo = positiveCycleNo(existingFields.availabilityCycleNo)
-    const opensNewCycle = Boolean(existing && baseline !== true && (wasRented || sourceReplaced))
+    const previousRentalEventId = `${foundationListingId}:rented:${previousCycleNo}`
+    const persistedRentalEvent = existingEvents.get(identityIndexKey(previousRentalEventId)) || null
+    if (persistedRentalEvent) {
+      const eventFoundationListingId = normalizeText(persistedRentalEvent.foundationListingId)
+      const eventCycleNo = Number(persistedRentalEvent.availabilityCycleNo)
+      if (identityIndexKey(eventFoundationListingId) !== foundationKey ||
+          eventCycleNo !== previousCycleNo) {
+        throw new Error(`已出租事件与当前待租周期不一致：${previousRentalEventId}`)
+      }
+    }
+    // 飞书 recordId 只是源表存储标识，复制或迁移源表会整体变化，不能据此判定出租。
+    // 已出租事实只能来自当前主档的停用状态，或已先落盘但当前主档尚未来得及更新的周期归档。
+    const wasRented = existingFields.lifecycleStatusText === '已出租' ||
+      existingFields.sourcePresent === false ||
+      Boolean(persistedRentalEvent)
+    const opensNewCycle = Boolean(existing && baseline !== true && wasRented)
     const availabilityCycleNo = existing
       ? (opensNewCycle ? previousCycleNo + 1 : previousCycleNo)
       : 1
@@ -673,7 +681,12 @@ function planListingLifecycle({
     if (resolvedRealIdentity) ensureAlias('yuxiaoer', resolvedRealIdentity, foundationListingId)
     if (temporaryListingId) ensureAlias('temporary', temporaryListingId, foundationListingId)
     const identityAliases = identityAliasesText(plannedAliases, foundationListingId)
-    const previousLifecycleVersion = existing ? lifecycleVersionOf(existingFields.lifecycleVersion) : 0
+    const previousLifecycleVersion = existing
+      ? Math.max(
+          lifecycleVersionOf(existingFields.lifecycleVersion),
+          lifecycleVersionOf(persistedRentalEvent && persistedRentalEvent.lifecycleVersion)
+        )
+      : 0
     const statusChanged = Boolean(
       existing &&
       normalizeText(existingFields.lifecycleStatusText) !== lifecycleStatusText
@@ -687,19 +700,26 @@ function planListingLifecycle({
     )
     const lifecycleVersion = existing
       ? previousLifecycleVersion + (
-        wasRented || sourceReplaced || statusChanged || responsibilityChanged ? 1 : 0
+        wasRented || statusChanged || responsibilityChanged ? 1 : 0
       )
       : 1
 
-    if (baseline !== true && (wasRented || sourceReplaced)) {
+    if (baseline !== true && wasRented) {
       const previousIdentityAliases = identityAliasesText(existingAliases, foundationListingId)
       ensureRentalEvent(
         existingFields,
         foundationListingId,
-        wasRented ? previousLifecycleVersion : lifecycleVersion,
+        previousLifecycleVersion,
         previousIdentityAliases
       )
     }
+    const previousSourceCreatedAt = existingFields.sourceCreatedAt
+    const sourceCreatedAt = existing && !opensNewCycle &&
+      previousSourceCreatedAt !== undefined &&
+      previousSourceCreatedAt !== null &&
+      previousSourceCreatedAt !== ''
+      ? previousSourceCreatedAt
+      : sourceRow.createdTimeMs
 
     const desired = {
       foundationListingId,
@@ -714,11 +734,11 @@ function planListingLifecycle({
       lifecycleVersion,
       lifecycleStatusText,
       vacancyNote,
-      sourceCreatedAt: sourceRow.createdTimeMs,
+      sourceCreatedAt,
       availabilityCycleNo,
       availabilityCycleId,
       metricKind: lifecycleStatusText === '即将空出' ? '提前挂出天数' : '待租天数',
-      lifecycleDays: calculateLifecycleDays(sourceRow.createdTimeMs, observedAtMs),
+      lifecycleDays: calculateLifecycleDays(sourceCreatedAt, observedAtMs),
       listingOwner,
       ownerDepartment,
       sourcePresent: true,
@@ -736,7 +756,7 @@ function planListingLifecycle({
       })
     } else if (!equalPlain(managedCurrentFields(existingFields), desired)) {
       currentStateOperations.push({
-        type: wasRented || sourceReplaced ? 'restore' : 'update',
+        type: wasRented ? 'restore' : 'update',
         recordId: existing.recordId,
         foundationListingId,
         sourceRecordId,
