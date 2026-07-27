@@ -91,6 +91,57 @@ function testIndexWiringContract() {
   const mirrorBlock = syncSource.slice(mirrorStart, mirrorEnd)
   assert.ok(mirrorBlock.includes('activeFeishuSourceRecordIds(db)'), '镜像同步必须从线上活跃飞书库存生成第二撤下基线')
   assert.ok(mirrorBlock.includes('baselinePublishedSourceIds'), '线上库存撤下基线必须传入专用表写前熔断')
+  assert.ok(
+    mirrorBlock.includes('activeFeishuFoundationIdentityKeys(db)'),
+    'AI 数据底座必须从线上活跃飞书库存生成稳定物理身份第二撤下基线'
+  )
+  assert.ok(
+    mirrorBlock.includes('baselinePublishedFoundationIdentityKeys'),
+    'AI 数据底座稳定物理身份第二基线必须传入专用表写前熔断'
+  )
+  assert.strictEqual(
+    (mirrorBlock.match(/baselinePublishedFoundationIdentityKeys/g) || []).length,
+    3,
+    '稳定物理身份第二基线必须且只能覆盖生成、正式前内容计划预演和正式镜像三处接线'
+  )
+  assert.ok(
+    /\.\.\.coordinates,\s*baselinePublishedSourceIds,\s*baselinePublishedFoundationIdentityKeys,\s*dryRun:\s*true/.test(
+      mirrorBlock
+    ),
+    '正式前内容计划预演必须传入真实稳定物理身份第二基线，不得替换为空数组或占位值'
+  )
+  assert.ok(
+    /mirrorSync:\s*\(\)\s*=>\s*configuredMirrorTableSync\(\{\s*\.\.\.effectiveOptions,\s*baselinePublishedSourceIds,\s*baselinePublishedFoundationIdentityKeys\s*\}\)/.test(
+      mirrorBlock
+    ),
+    '正式镜像必须传入真实稳定物理身份第二基线，不得替换为空数组或占位值'
+  )
+  const foundationProfileGuardIndex = mirrorBlock.indexOf(
+    'aiFoundationProfileEnabled(config.feishu.sourceCompatibilityProfile)'
+  )
+  const foundationIdentityBaselineIndex = mirrorBlock.indexOf(
+    'activeFeishuFoundationIdentityKeys(db)'
+  )
+  assert.ok(
+    foundationProfileGuardIndex >= 0 &&
+      foundationIdentityBaselineIndex >= 0 &&
+      foundationProfileGuardIndex < foundationIdentityBaselineIndex,
+    'legacy profile 不得尝试从稀疏旧库存生成 AI 数据底座物理身份'
+  )
+  const foundationSyncStart = syncSource.indexOf('async function executeAiFoundationSync(')
+  const foundationSyncEnd = syncSource.indexOf('\nasync function executeMirrorTableSync(', foundationSyncStart)
+  assert.ok(
+    foundationSyncStart >= 0 && foundationSyncEnd > foundationSyncStart,
+    '必须能定位 AI 数据底座正式同步实现'
+  )
+  const foundationSyncBlock = syncSource.slice(foundationSyncStart, foundationSyncEnd)
+  assert.ok(
+    foundationSyncBlock.includes('foundationIdentityMode: true') &&
+      foundationSyncBlock.includes(
+        'baselinePublishedFoundationIdentityKeys: options.baselinePublishedFoundationIdentityKeys'
+      ),
+    'AI 数据底座正式写前熔断必须启用稳定物理身份并接入线上库存第二基线'
+  )
 
   const adminSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'admin-web', 'index.html'), 'utf8')
   assert.ok(

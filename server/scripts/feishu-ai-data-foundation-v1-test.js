@@ -1308,6 +1308,106 @@ async function testDeactivateFuseBlocksAllThreeWrites() {
   )
 }
 
+async function testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRotation() {
+  const currentSourceRecords = Array.from({ length: 12 }, (_, index) => (
+    sourceRecord(`source-rotation-current-${index + 1}`, String(501 + index))
+  ))
+  const clients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf(currentSourceRecords)
+  })
+  await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false
+  }))
+
+  assert.strictEqual(
+    typeof feishuSync._internal.activeFeishuFoundationIdentityKeys,
+    'function',
+    'AI 数据底座必须导出线上库存稳定物理身份基线'
+  )
+  const currentRecords = clone(clients.tableRecords['tbl-mini'])
+  const baselineListings = currentRecords.map((record, index) => {
+    const fields = record.fields || {}
+    return {
+      externalSource: 'feishu',
+      lifecycleStatus: 'active',
+      status: '在租',
+      feishuRecordId: `source-rotation-old-inventory-${index + 1}`,
+      city: fields.city,
+      district: fields.district,
+      area: fields.district,
+      block: fields.block,
+      community: fields.community,
+      building: fields.building,
+      unit: fields.unit,
+      roomNumber: fields.roomNumber,
+      rentMode: fields.rentMode
+    }
+  })
+  const baselineIdentityKeys = feishuSync._internal.activeFeishuFoundationIdentityKeys({
+    listings: baselineListings
+  })
+  assert.strictEqual(
+    baselineIdentityKeys.length,
+    12,
+    '线上库存第二基线必须为每个物理房间生成一个稳定身份'
+  )
+  assert.strictEqual(
+    typeof feishuSync._internal.assertMirrorDeactivateSafety,
+    'function',
+    '测试必须能直接验证正式写前的撤下熔断'
+  )
+  assert.throws(
+    () => feishuSync._internal.assertMirrorDeactivateSafety(
+      { records: [currentRecords[0]] },
+      [currentRecords[0]],
+      {
+        foundationIdentityMode: true,
+        baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+      }
+    ),
+    /拟撤下 11\/12 条公开房源.*超过安全阈值/,
+    '线上库存十二条稳定身份而计划只剩一条时必须精确按 11/12 阻断'
+  )
+
+  const foundationIdsBefore = currentRecords
+    .map((record) => record.fields.foundationListingId)
+    .sort()
+  clients.calls.length = 0
+  const rotated = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    baselinePublishedSourceIds: baselineListings.map((listing) => listing.feishuRecordId),
+    baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+  }))
+  assert.strictEqual(rotated.counts.deactivate, 0, '仅线上旧库存保留上一张源表 record_id 时不得误判为真实撤下')
+  assert.strictEqual(rotated.counts.noop, 12, '当前专用表与员工源一致时必须保持十二条 no-op')
+  assert.strictEqual(rotated.lifecycleCounts.rentedArchived, 0, '旧库存 record_id 轮换不得生成虚假已出租归档')
+  assert.strictEqual(rotated.lifecycleCounts.historyAppended, 0, '旧库存 record_id 轮换不得生成虚假生命周期流水')
+  assert.deepStrictEqual(
+    rotated.records.map((record) => record.fields.foundationListingId).sort(),
+    foundationIdsBefore,
+    '旧库存 record_id 全量轮换后必须沿用同一批底座房源身份'
+  )
+  assertNoWrites(clients.calls, 'record_id 轮换预演必须保持员工源和三张目标业务表零写')
+
+  const incompleteMirrorClients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf([currentSourceRecords[0]]),
+    miniRecords: [currentRecords[0]]
+  })
+  await assert.rejects(
+    feishuSync._internal.executeMirrorTableSync(executeOptions(incompleteMirrorClients, {
+      dryRun: true,
+      baselinePublishedSourceIds: [],
+      baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+    })),
+    /拟撤下 11\/12 条公开房源.*超过安全阈值|阻断/,
+    '即使目标主表只剩一条，线上库存额外 11 条稳定身份第二基线仍必须阻断真实异常缩量'
+  )
+  assertNoWrites(
+    incompleteMirrorClients.calls,
+    '稳定身份第二基线触发熔断后，员工源和三张目标业务表必须全部零写'
+  )
+}
+
 async function testTargetIdentityAndResponsibilityEnrichmentIsPreserved() {
   const sourceRow = sourceRecord('source-enrichment-1', '401')
   const clients = makeLifecycleClients({
@@ -1851,6 +1951,7 @@ async function main() {
     ['出租归档幂等与重新进入待租', testArchiveIdempotencyAndReappearance],
     ['出租事件先落盘后的失败补偿', testArchiveFirstCurrentWriteFailureCanRecover],
     ['批量撤下熔断三表零写', testDeactivateFuseBlocksAllThreeWrites],
+    ['源表 record_id 轮换按稳定物理身份熔断', testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRotation],
     ['目标主档身份与责任字段保留', testTargetIdentityAndResponsibilityEnrichmentIsPreserved],
     ['首次正式同步建立持久基线', testFirstApplyCreatesPersistentBaselineWithoutHistoricalRental],
     ['不确定新增跨进程复用稳定幂等号', testUncertainCreateReusesStableTokenAcrossRun],

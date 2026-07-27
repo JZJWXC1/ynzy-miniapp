@@ -2604,17 +2604,27 @@ function plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan) {
 }
 
 function assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, options = {}) {
+  const foundationIdentityMode = options.foundationIdentityMode === true
+  const recordIdentity = (record) => {
+    const fields = record && record.fields || {}
+    return foundationIdentityMode
+      ? foundationPhysicalUnitKey(fields)
+      : normalizeText(fields.sourceRecordId)
+  }
   const publishedBefore = new Set((mirrorSnapshot.records || []).filter((record) => (
     record && record.fields && record.fields.enabled === true && record.fields.published === true
-  )).map((record) => normalizeText(record.fields.sourceRecordId)).filter(Boolean))
-  ;(Array.isArray(options.baselinePublishedSourceIds) ? options.baselinePublishedSourceIds : [])
+  )).map(recordIdentity).filter(Boolean))
+  const baselineIdentities = foundationIdentityMode
+    ? options.baselinePublishedFoundationIdentityKeys
+    : options.baselinePublishedSourceIds
+  ;(Array.isArray(baselineIdentities) ? baselineIdentities : [])
     .map(normalizeText)
     .filter(Boolean)
-    .forEach((sourceRecordId) => publishedBefore.add(sourceRecordId))
+    .forEach((identityKey) => publishedBefore.add(identityKey))
   const publishedAfter = new Set((plannedRecords || []).filter((record) => (
     record && record.fields && record.fields.enabled === true && record.fields.published === true
-  )).map((record) => normalizeText(record.fields.sourceRecordId)).filter(Boolean))
-  const withdrawCount = Array.from(publishedBefore).filter((sourceRecordId) => !publishedAfter.has(sourceRecordId)).length
+  )).map(recordIdentity).filter(Boolean))
+  const withdrawCount = Array.from(publishedBefore).filter((identityKey) => !publishedAfter.has(identityKey)).length
   if (withdrawCount === 0 || options.allowMassDeactivate === true) return
 
   const maxCount = options.maxDeactivateCount == null ? 10 : Number(options.maxDeactivateCount)
@@ -2640,6 +2650,22 @@ function activeFeishuSourceRecordIds(db = {}) {
     listing && listing.externalSource === 'feishu' &&
     listing.lifecycleStatus !== 'expired' && listing.status !== '已下架'
   )).map((listing) => normalizeText(listing.feishuRecordId)).filter(Boolean))).sort()
+}
+
+function activeFeishuFoundationIdentityKeys(db = {}) {
+  return Array.from(new Set((db.listings || []).filter((listing) => (
+    listing && listing.externalSource === 'feishu' &&
+    listing.lifecycleStatus !== 'expired' && listing.status !== '已下架'
+  )).map((listing) => foundationPhysicalUnitKey({
+    city: listing.city,
+    district: listing.district || listing.area,
+    block: listing.block,
+    community: listing.community,
+    building: listing.building,
+    unit: listing.unit,
+    roomNumber: listing.roomNumber,
+    rentMode: listing.rentMode
+  })))).sort()
 }
 
 function activeMirrorRecords(snapshot) {
@@ -3718,7 +3744,9 @@ async function executeAiFoundationSync({
   )
   validateCanonicalMirrorRecords(plan.plannedRecords)
   assertMirrorDeactivateSafety(mirrorSnapshot, plan.plannedRecords, {
+    foundationIdentityMode: true,
     baselinePublishedSourceIds: options.baselinePublishedSourceIds,
+    baselinePublishedFoundationIdentityKeys: options.baselinePublishedFoundationIdentityKeys,
     maxDeactivateCount: options.maxDeactivateCount,
     maxDeactivateRatio: options.maxDeactivateRatio,
     allowMassDeactivate: options.allowMassDeactivate === true
@@ -4168,6 +4196,7 @@ async function configuredMirrorTableSync(options = {}) {
     maxDeactivateRatio: config.feishu.mirrorMaxDeactivateRatio,
     allowMassDeactivate: config.feishu.mirrorAllowMassDeactivate,
     baselinePublishedSourceIds: options.baselinePublishedSourceIds,
+    baselinePublishedFoundationIdentityKeys: options.baselinePublishedFoundationIdentityKeys,
     dryRun: options.dryRun === true,
     nowMs: options.nowMs,
     runId: options.runId,
@@ -4601,6 +4630,10 @@ async function syncViaMirror(db, adminId, options = {}) {
   const coordinates = fixedMirrorRunCoordinates(options)
   const confirmationRequired = contentPlanConfirmationRequired() && options.dryRun !== true
   const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
+  const baselinePublishedFoundationIdentityKeys =
+    aiFoundationProfileEnabled(config.feishu.sourceCompatibilityProfile)
+      ? activeFeishuFoundationIdentityKeys(db)
+      : []
   let confirmedContentPlan = null
   let preflightFeishuToken = ''
   if (confirmationRequired) {
@@ -4619,6 +4652,7 @@ async function syncViaMirror(db, adminId, options = {}) {
           ...options,
           ...coordinates,
           baselinePublishedSourceIds,
+          baselinePublishedFoundationIdentityKeys,
           dryRun: true
         })
         preflightFeishuToken = preflight.feishuToken || ''
@@ -4638,7 +4672,11 @@ async function syncViaMirror(db, adminId, options = {}) {
   }
   const run = await runCompanySourceSync({
     db,
-    mirrorSync: () => configuredMirrorTableSync({ ...effectiveOptions, baselinePublishedSourceIds }),
+    mirrorSync: () => configuredMirrorTableSync({
+      ...effectiveOptions,
+      baselinePublishedSourceIds,
+      baselinePublishedFoundationIdentityKeys
+    }),
     applyInventory: async (workingDb, records, mirrorResult) => {
       const rows = validateCanonicalMirrorRecords(records).map(canonicalMirrorRecordToSyncRow)
       const inventory = await applySync(workingDb, rows, mirrorResult.materials || [], adminId, {
@@ -4928,7 +4966,9 @@ module.exports = {
     pairedMirrorBindingsReady,
     loadConfiguredMirrorMaterials,
     semanticFieldsForWrite,
+    assertMirrorDeactivateSafety,
     activeFeishuSourceRecordIds,
+    activeFeishuFoundationIdentityKeys,
     contentPlanConfirmationRequired,
     prepareMirrorContentPlanConfirmation,
     runMirrorContentPlanPreflight,
