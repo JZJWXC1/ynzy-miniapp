@@ -133,8 +133,17 @@ function validRoomNumber(value) {
   return validRoomPart(value) || /^[0-9]+-[0-9]+$/.test(value)
 }
 
-function parseRoomIdentity(value) {
+function stripTrailingChineseRoomAnnotation(value) {
   const text = normalizeText(value).replace(/\s+/g, '')
+  const fullWidth = text.match(/^(.*)（[\u3400-\u4DBF\u4E00-\u9FFF]{1,12}）$/)
+  if (fullWidth && fullWidth[1]) return fullWidth[1]
+  const halfWidth = text.match(/^(.*)\([\u3400-\u4DBF\u4E00-\u9FFF]{1,12}\)$/)
+  if (halfWidth && halfWidth[1]) return halfWidth[1]
+  return text
+}
+
+function parseRoomIdentity(value) {
+  const text = stripTrailingChineseRoomAnnotation(value)
   if (!text) return null
   let parts = null
   const dashed = text.split(/[-－—_/]/).map((item) => item.trim())
@@ -672,10 +681,36 @@ function planMirrorSync({
   // 先完成整批位置归一和校验，再生成任何动作，避免半批计划被误执行。
   const canonicalRows = sourceSnapshot.records.map((sourceRecord) => {
     const location = resolveLocation(locationCatalog, sourceRecord)
+    const sourceFields = mirrorFieldsOf(sourceRecord)
+    const rawRoomLabel = normalizeText(sourceFields.roomLabel)
+    const matchedPrefix = [sourceFields.community, location.community, ...aliasesOf(location)]
+      .map(normalizeText)
+      .filter(Boolean)
+      .sort((left, right) => right.length - left.length)
+      .find((prefix) => identityKey(rawRoomLabel).startsWith(identityKey(prefix)))
+    const roomText = matchedPrefix
+      ? rawRoomLabel.slice(matchedPrefix.length).replace(/^[\s·,，。；;:：/\\_\-－—（）()【】\[\]]+/, '')
+      : ''
     return {
       sourceRecordId: sourceRecordIdOf(sourceRecord),
-      fields: canonicalMirrorFields(sourceRecord, location)
+      fields: canonicalMirrorFields(sourceRecord, location),
+      strippedRoomAnnotation: Boolean(roomText) && stripTrailingChineseRoomAnnotation(roomText) !== normalizeText(roomText).replace(/\s+/g, '')
     }
+  })
+
+  const physicalRoomKeys = new Map()
+  canonicalRows.forEach(({ fields, strippedRoomAnnotation }) => {
+    const physicalRoomKey = [
+      fields.locationId,
+      fields.building,
+      fields.unit,
+      fields.roomNumber
+    ].map(identityKey).join('\u0000')
+    const existing = physicalRoomKeys.get(physicalRoomKey)
+    if (existing && (existing.strippedRoomAnnotation || strippedRoomAnnotation)) {
+      throw new Error('源快照存在重复物理房源身份，请核对小区、楼栋、单元和房号')
+    }
+    if (!existing) physicalRoomKeys.set(physicalRoomKey, { strippedRoomAnnotation })
   })
 
   canonicalRows.sort((left, right) => left.sourceRecordId < right.sourceRecordId ? -1 : left.sourceRecordId > right.sourceRecordId ? 1 : 0)

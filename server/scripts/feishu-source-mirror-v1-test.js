@@ -1362,6 +1362,88 @@ function testRoomLabelCommunityAndUnitNormalization() {
   })
 }
 
+function testTrailingChineseRoomAnnotationIsIgnoredWithoutCollapsingDuplicates() {
+  const catalog = buildLocationCatalog([location()])
+  const plan = planMirrorSync({
+    sourceSnapshot: snapshot([
+      source('src-annotated-no-unit', {
+        roomLabel: '风雅乐府 12-345（状态注）',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      }),
+      source('src-annotated-with-unit', {
+        roomLabel: '风雅乐府 13-2-346(运营注)',
+        building: undefined,
+        unit: undefined,
+        roomNumber: undefined
+      })
+    ]),
+    mirrorSnapshot: snapshot([]),
+    locationCatalog: catalog,
+    runId: 'trailing-chinese-room-annotation'
+  })
+  const noUnit = assertOperation(plan, 'src-annotated-no-unit', 'create', '中文括号尾注无单元房号')
+  assert.deepStrictEqual(
+    [noUnit.fields.building, noUnit.fields.unit, noUnit.fields.roomNumber, noUnit.fields.roomLabel],
+    ['12', '', '345', '风雅乐府 12幢345'],
+    '全角中文括号尾注必须只作为说明剥离，稳定数字房号必须完整保留'
+  )
+  const withUnit = assertOperation(plan, 'src-annotated-with-unit', 'create', '中文括号尾注有单元房号')
+  assert.deepStrictEqual(
+    [withUnit.fields.building, withUnit.fields.unit, withUnit.fields.roomNumber, withUnit.fields.roomLabel],
+    ['13', '2', '346', '风雅乐府 13幢2单元346'],
+    '半角中文括号尾注也必须归一到同一房号身份'
+  )
+
+  ;[
+    '风雅乐府 14-347（状态1）',
+    '风雅乐府 14-347（status）',
+    '风雅乐府 14-347（状态注',
+    '风雅乐府 14-347状态注'
+  ].forEach((roomLabel, index) => {
+    assert.throws(
+      () => planMirrorSync({
+        sourceSnapshot: snapshot([source(`src-unsafe-annotation-${index}`, {
+          roomLabel,
+          building: undefined,
+          unit: undefined,
+          roomNumber: undefined
+        })]),
+        mirrorSnapshot: snapshot([]),
+        locationCatalog: catalog,
+        runId: `unsafe-annotation-${index}`
+      }),
+      /房号|格式|解析/i,
+      '含数字、字母、缺括号或裸尾注不得被宽松剥离'
+    )
+  })
+
+  assert.throws(
+    () => planMirrorSync({
+      sourceSnapshot: snapshot([
+        source('src-duplicate-annotation-a', {
+          roomLabel: '风雅乐府 15-348（状态注）',
+          building: undefined,
+          unit: undefined,
+          roomNumber: undefined
+        }),
+        source('src-duplicate-annotation-b', {
+          roomLabel: '风雅乐府 15-348（运营注）',
+          building: undefined,
+          unit: undefined,
+          roomNumber: undefined
+        })
+      ]),
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: catalog,
+      runId: 'duplicate-annotated-room'
+    }),
+    /重复|物理|房源|房号/i,
+    '两个源行剥离尾注后落到同一物理房号时必须整批熔断，不能静默合并'
+  )
+}
+
 function testFourSegmentRoomIdentityPreservesEverySegmentAndFailsClosed() {
   const catalog = buildLocationCatalog([
     location(),
@@ -1548,6 +1630,7 @@ function main() {
   testCanonicalDerivationAndAttachmentProjection()
   testLocationCoordinatesAreMandatory()
   testRoomLabelCommunityAndUnitNormalization()
+  testTrailingChineseRoomAnnotationIsIgnoredWithoutCollapsingDuplicates()
   testFourSegmentRoomIdentityPreservesEverySegmentAndFailsClosed()
   testReadbackMayOmitOptionalEmptyUnitWithoutRepeatUpdate()
   console.log('feishu-source-mirror-v1-test passed')
