@@ -264,7 +264,13 @@ function looksLikeVideoPath(value = '') {
 const MAX_LISTING_MEDIA_ASSETS = 64
 const LISTING_MEDIA_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/
 const LISTING_MEDIA_SHA256_PATTERN = /^[a-f0-9]{64}$/
-const LISTING_MEDIA_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/x-m4v', 'video/webm'])
+const LISTING_MEDIA_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/x-m4v', 'video/webm'])
+const LISTING_MEDIA_IMAGE_EXTENSIONS_BY_MIME = new Map([
+  ['image/jpeg', new Set(['jpg', 'jpeg'])],
+  ['image/png', new Set(['png'])],
+  ['image/webp', new Set(['webp'])],
+  ['image/gif', new Set(['gif'])]
+])
 
 function listingMediaValidationError(message) {
   const error = new Error(message)
@@ -274,13 +280,13 @@ function listingMediaValidationError(message) {
 
 function normalizePrivateListingMediaAssets(value) {
   if (!Array.isArray(value)) throw listingMediaValidationError('房源多媒体清单必须是数组')
-  if (value.length > MAX_LISTING_MEDIA_ASSETS) throw listingMediaValidationError('单套房源视频素材超过安全上限')
+  if (value.length > MAX_LISTING_MEDIA_ASSETS) throw listingMediaValidationError('单套房源多媒体素材超过安全上限')
   const assetIds = new Set()
   const objectKeys = new Set()
   const displayOrders = new Set()
   const normalized = value.map((asset) => {
     if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {
-      throw listingMediaValidationError('房源视频素材结构无效')
+      throw listingMediaValidationError('房源多媒体素材结构无效')
     }
     const assetId = String(asset.assetId || '').trim()
     const kind = String(asset.kind || '').trim()
@@ -291,35 +297,44 @@ function normalizePrivateListingMediaAssets(value) {
     const mimeType = String(asset.mimeType || '').split(';')[0].trim().toLowerCase()
     const displayOrder = Number(asset.displayOrder)
     const size = Number(asset.size)
-    if (!LISTING_MEDIA_ASSET_ID_PATTERN.test(assetId)) throw listingMediaValidationError('房源视频素材 ID 无效')
-    if (kind !== 'video') throw listingMediaValidationError('房源素材类型暂不支持')
+    if (!LISTING_MEDIA_ASSET_ID_PATTERN.test(assetId)) throw listingMediaValidationError('房源多媒体素材 ID 无效')
+    if (kind !== 'video' && kind !== 'image') throw listingMediaValidationError('房源素材类型暂不支持')
     if (!objectKey || objectKey.length > 512 || /[\\\0\r\n?#]/.test(objectKey) || objectKey.startsWith('/')) {
-      throw listingMediaValidationError('房源视频对象键无效')
+      throw listingMediaValidationError('房源多媒体对象键无效')
     }
     const objectKeySegments = objectKey.split('/')
-    if (objectKeySegments.some((segment) => !segment || segment === '.' || segment === '..') || !looksLikeVideoPath(objectKey)) {
-      throw listingMediaValidationError('房源视频对象键无效')
+    if (objectKeySegments.some((segment) => !segment || segment === '.' || segment === '..')) {
+      throw listingMediaValidationError('房源多媒体对象键无效')
     }
-    if (!LISTING_MEDIA_SHA256_PATTERN.test(contentSha256)) throw listingMediaValidationError('房源视频摘要无效')
+    if (kind === 'video') {
+      if (!looksLikeVideoPath(objectKey)) throw listingMediaValidationError('房源视频对象键无效')
+      if (!LISTING_MEDIA_VIDEO_MIME_TYPES.has(mimeType)) throw listingMediaValidationError('房源视频类型无效')
+    } else {
+      const extension = objectKey.slice(objectKey.lastIndexOf('.') + 1).toLowerCase()
+      const allowedExtensions = LISTING_MEDIA_IMAGE_EXTENSIONS_BY_MIME.get(mimeType)
+      if (!allowedExtensions || !allowedExtensions.has(extension)) {
+        throw listingMediaValidationError('房源图片类型与对象键扩展名不一致')
+      }
+    }
+    if (!LISTING_MEDIA_SHA256_PATTERN.test(contentSha256)) throw listingMediaValidationError('房源多媒体摘要无效')
     if (!LISTING_MEDIA_SHA256_PATTERN.test(sourceFingerprint)) throw listingMediaValidationError('房源素材来源摘要无效')
     if (targetDriveFingerprint && !LISTING_MEDIA_SHA256_PATTERN.test(targetDriveFingerprint)) {
       throw listingMediaValidationError('房源云盘素材摘要无效')
     }
-    if (!LISTING_MEDIA_MIME_TYPES.has(mimeType)) throw listingMediaValidationError('房源视频类型无效')
     if (!Number.isSafeInteger(displayOrder) || displayOrder < 0 || displayOrder >= value.length) {
-      throw listingMediaValidationError('房源视频排序无效')
+      throw listingMediaValidationError('房源多媒体排序无效')
     }
-    if (!Number.isSafeInteger(size) || size <= 0) throw listingMediaValidationError('房源视频大小无效')
-    if (asset.verified !== true) throw listingMediaValidationError('房源视频尚未通过写后回读')
+    if (!Number.isSafeInteger(size) || size <= 0) throw listingMediaValidationError('房源多媒体大小无效')
+    if (asset.verified !== true) throw listingMediaValidationError('房源多媒体尚未通过写后回读')
     if (assetIds.has(assetId) || objectKeys.has(objectKey) || displayOrders.has(displayOrder)) {
-      throw listingMediaValidationError('房源视频素材存在重复身份、对象键或排序')
+      throw listingMediaValidationError('房源多媒体素材存在重复身份、对象键或排序')
     }
     assetIds.add(assetId)
     objectKeys.add(objectKey)
     displayOrders.add(displayOrder)
     return {
       assetId,
-      kind: 'video',
+      kind,
       objectKey,
       contentSha256,
       sourceFingerprint,
@@ -331,7 +346,7 @@ function normalizePrivateListingMediaAssets(value) {
     }
   }).sort((left, right) => left.displayOrder - right.displayOrder || left.assetId.localeCompare(right.assetId))
   normalized.forEach((asset, index) => {
-    if (asset.displayOrder !== index) throw listingMediaValidationError('房源视频排序必须连续且从 0 开始')
+    if (asset.displayOrder !== index) throw listingMediaValidationError('房源多媒体排序必须连续且从 0 开始')
   })
   return normalized
 }
@@ -352,9 +367,9 @@ function publicListingMediaSkeleton(listing = {}) {
   if (!assets) return []
   return assets.map((asset, index) => ({
     assetId: asset.assetId,
-    kind: 'video',
+    kind: asset.kind,
     displayOrder: asset.displayOrder,
-    label: `视频 ${index + 1}`
+    label: `${asset.kind === 'image' ? '照片' : '视频'} ${index + 1}`
   }))
 }
 
@@ -383,7 +398,8 @@ function replaceListingMediaAssets(db, listingId, mediaAssets, options = {}) {
   const normalized = normalizePrivateListingMediaAssets(mediaAssets)
   listing.mediaAssets = normalized
   // 旧单视频字段只作为兼容索引，真正公开能力始终从已校验 mediaAssets 解析。
-  listing.videoKey = normalized.length ? normalized[0].objectKey : ''
+  const firstVideo = normalized.find((asset) => asset.kind === 'video')
+  listing.videoKey = firstVideo ? firstVideo.objectKey : ''
   listing.videoUrl = ''
   listing.updatedAt = options.updatedAt || nowText()
   syncListingRecommendationProfile(listing)
@@ -397,7 +413,7 @@ function replaceListingMediaAssets(db, listingId, mediaAssets, options = {}) {
 
 function hasListingVideo(listing = {}) {
   const mediaAssets = privateListingMediaAssets(listing)
-  if (mediaAssets) return mediaAssets.length > 0
+  if (mediaAssets) return mediaAssets.some((asset) => asset.kind === 'video')
   const videoKey = String(listing.videoKey || '').trim()
   const videoUrl = String(listing.videoUrl || '').trim()
   return looksLikeVideoPath(videoKey) || looksLikeVideoPath(videoUrl)
@@ -8622,6 +8638,7 @@ module.exports = {
   normalizePrivateListingMediaAssets,
   listingMediaAssetsStateKey,
   replaceListingMediaAssets,
+  hasListingVideo,
   isCompanyListing,
   isNoCommissionListing,
   listingLogs,

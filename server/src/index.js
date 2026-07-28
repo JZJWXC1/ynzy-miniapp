@@ -1506,6 +1506,10 @@ function publicListingMediaService() {
       if (!oss.hasReadConfig()) throw Object.assign(new Error('媒体读取配置不完整'), { statusCode: 503 })
       return oss.createSignedReadUrl(objectKey, config.oss.readUrlExpireSeconds, method)
     },
+    signImageUrl(objectKey, method) {
+      if (!oss.hasReadConfig()) throw Object.assign(new Error('媒体读取配置不完整'), { statusCode: 503 })
+      return oss.createSignedReadUrl(objectKey, config.oss.readUrlExpireSeconds, method)
+    },
     signCoverUrl(objectKey, method) {
       if (!oss.hasReadConfig()) throw Object.assign(new Error('媒体读取配置不完整'), { statusCode: 503 })
       return oss.createVideoSnapshotUrl(objectKey, config.oss.readUrlExpireSeconds, method)
@@ -1683,7 +1687,7 @@ async function handleMini(req, res, pathname, searchParams) {
   // 否则畸形、伪造或已撤销 token 会在两个免登录路由被静默忽略，形成同一请求头在不同端点语义分叉。
   const authContext = initialMiniAuthContextFromRequest(req, db)
 
-  const publicMediaMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover)$/)
+  const publicMediaMatch = pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover|image)$/)
   if ((method === 'GET' || method === 'HEAD') && publicMediaMatch) {
     const listingId = publicMediaMatch[1]
     // 媒体本来就是公开素材，登录身份不应获得带宽限流豁免；否则单个被盗账号可无限

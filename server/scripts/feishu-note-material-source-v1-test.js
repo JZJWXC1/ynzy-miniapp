@@ -60,7 +60,8 @@ async function run() {
     ['fldSourceFolder123', [
       { token: 'boxVideoA123456', name: 'A.mp4', type: 'file', modifiedTime: '10', size: 101 },
       { token: 'fldChildFolder123', name: '子目录', type: 'folder', modifiedTime: '11' },
-      { token: 'boxIgnorePdf123', name: '说明.pdf', type: 'file', modifiedTime: '12', size: 12 }
+      { token: 'boxIgnorePdf123', name: '说明.pdf', type: 'file', modifiedTime: '12', size: 12 },
+      { token: 'boxRoomPhoto123', name: '房间照片.jpg', type: 'image/jpeg', modifiedTime: '12', size: 88 }
     ]],
     ['fldChildFolder123', [
       { token: 'boxVideoB123456', name: 'B.mov', type: 'file', modifiedTime: '13', size: 202 }
@@ -96,10 +97,18 @@ async function run() {
   })
   assert.deepStrictEqual(
     folderResolved.assets.map((asset) => asset.sourceToken),
-    ['boxVideoA123456', 'boxVideoB123456'],
-    '文件夹及子目录中的全部视频必须按稳定顺序进入素材集合'
+    ['boxRoomPhoto123', 'boxVideoA123456', 'boxVideoB123456'],
+    '文件夹及子目录中的全部视频和安全图片必须按稳定顺序进入素材集合'
   )
-  assert.strictEqual(folderResolved.counts.nonVideo, 1, '非视频文件必须明确计数，不得伪装成已同步素材')
+  assert.deepStrictEqual(
+    folderResolved.assets.map((asset) => asset.kind),
+    ['image', 'video', 'video'],
+    '图片必须保留独立 kind，不能伪装成视频'
+  )
+  assert.strictEqual(folderResolved.counts.video, 2)
+  assert.strictEqual(folderResolved.counts.image, 1, '安全图片必须进入可同步素材计数')
+  assert.strictEqual(folderResolved.counts.unsupported, 1, 'PDF 等不适合小程序展示的文件必须明确阻断计数')
+  assert.strictEqual(folderResolved.counts.nonVideo, 1, '兼容 nonVideo 计数只代表仍不支持的文件，不得继续包含已支持图片')
   assert.strictEqual(rawLinkFetchCount, 0, '实现不得请求员工填写的原始 URL')
   await assert.rejects(
     () => resolveNoteMaterialVideos({
@@ -125,7 +134,7 @@ async function run() {
     allowedHosts: [ALLOWED_HOST],
     client: folderClient
   })
-  assert.strictEqual(changedFolder.assets.length, 3, '链接不变时也必须重新枚举文件夹内容')
+  assert.strictEqual(changedFolder.assets.length, 4, '链接不变时也必须重新枚举文件夹内容')
   assert.notStrictEqual(changedFolder.digest, beforeDigest, '文件夹内容变化必须改变素材集合摘要')
 
   const docClient = {
@@ -162,10 +171,16 @@ async function run() {
   })
   assert.deepStrictEqual(
     wikiResolved.assets.map((asset) => asset.sourceToken),
-    ['mediaDocVideo123'],
-    'Wiki 指向 Docx 时必须遍历 File Block 取得视频素材'
+    ['mediaDocVideo123', 'mediaDocImage123'],
+    'Wiki 指向 Docx 时必须遍历 File 与 Image Block 取得全部可展示素材'
   )
-  assert.strictEqual(wikiResolved.counts.nonVideo, 1, 'Docx 图片块必须单独计数')
+  assert.deepStrictEqual(
+    wikiResolved.assets.map((asset) => asset.kind),
+    ['video', 'image'],
+    'Docx 图片块必须作为图片素材进入同步集合'
+  )
+  assert.strictEqual(wikiResolved.counts.image, 1)
+  assert.strictEqual(wikiResolved.counts.nonVideo, 0)
 
   const duplicateClient = {
     async listFolder() {

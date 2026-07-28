@@ -266,13 +266,13 @@ function assertProductionProjection() {
     mediaAssets: [
       {
         assetId: 'MAT-11111111111111111111111111111111',
-        kind: 'video',
-        objectKey: 'house-videos/feishu-note-v1/safe/MAT-11111111111111111111111111111111.mp4',
+        kind: 'image',
+        objectKey: 'house-videos/feishu-note-v1/safe/MAT-11111111111111111111111111111111.jpg',
         contentSha256: 'a'.repeat(64),
         sourceFingerprint: 'b'.repeat(64),
         targetDriveFingerprint: 'c'.repeat(64),
         displayOrder: 0,
-        mimeType: 'video/mp4',
+        mimeType: 'image/jpeg',
         size: 1024,
         verified: true
       },
@@ -437,6 +437,12 @@ function assertProductionProjection() {
   assert.strictEqual(legalDetail.videoLabel, '2 rooms', '生产详情必须保留合法英文视频标题')
   const multiMediaDetail = domain.listingDetail(db, multiMedia.id)
   assert.strictEqual(multiMediaDetail.mediaAssets.length, 2, '生产详情必须投影全部已验证素材的安全骨架')
+  assert.deepStrictEqual(
+    multiMediaDetail.mediaAssets.map((asset) => [asset.kind, asset.label]),
+    [['image', '照片 1'], ['video', '视频 2']],
+    '生产详情必须保留媒体类型，并使用不泄露私有信息的照片/视频标签'
+  )
+  assert.strictEqual(multiMediaDetail.hasVideo, true, '混合素材中存在视频时必须保持原有视频能力')
   multiMediaDetail.mediaAssets.forEach((asset, index) => {
     assert.deepStrictEqual(
       Object.keys(asset).sort(),

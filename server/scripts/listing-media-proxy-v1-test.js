@@ -14,6 +14,8 @@ const {
 const SECRET_OBJECT_KEY = 'house-videos/legacy/杭州某小区9栋8单元701室-19900008888.mp4'
 const VIDEO_BODY = Buffer.from('synthetic-public-video-body')
 const COVER_BODY = Buffer.from('synthetic-cover')
+const IMAGE_BODY = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('synthetic-public-image-body')])
+const GIF_BODY = Buffer.concat([Buffer.from('GIF89a', 'ascii'), Buffer.from('synthetic-public-gif-body')])
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -108,7 +110,9 @@ function directMediaService(options = {}) {
 
 function startDirectServe(service, listing, capabilityUrl, options = {}) {
   const parsed = new URL(capabilityUrl)
-  const kind = options.kind || (parsed.pathname.endsWith('/cover') ? 'cover' : 'video')
+  const kind = options.kind || (parsed.pathname.endsWith('/cover')
+    ? 'cover'
+    : (parsed.pathname.endsWith('/image') ? 'image' : 'video'))
   const req = fakeClientRequest(options.method || 'GET', options.headers || {})
   const res = fakeClientResponse()
   const promise = service.serve(req, res, {
@@ -366,7 +370,9 @@ async function run() {
       return
     }
     const kind = url.searchParams.get('kind')
-    const body = kind === 'cover' ? COVER_BODY : VIDEO_BODY
+    const body = kind === 'cover'
+      ? COVER_BODY
+      : (kind === 'image' ? IMAGE_BODY : (kind === 'gif' ? GIF_BODY : VIDEO_BODY))
     const range = rangeSlice(body, req.headers.range)
     if (req.headers.range && !range) {
       res.writeHead(416, { 'Content-Range': `bytes */${body.length}` })
@@ -375,7 +381,9 @@ async function run() {
     }
     const selected = range ? body.subarray(range.start, range.end + 1) : body
     const headers = {
-      'Content-Type': kind === 'cover' ? 'image/jpeg' : (kind === 'octet' ? 'application/octet-stream' : 'video/mp4'),
+      'Content-Type': (kind === 'cover' || kind === 'image')
+        ? 'image/jpeg'
+        : (kind === 'gif' ? 'image/gif' : (kind === 'octet' ? 'application/octet-stream' : 'video/mp4')),
       'Content-Length': String(selected.length),
       'Accept-Ranges': 'bytes',
       'Set-Cookie': 'must-not-leak=1',
@@ -397,7 +405,11 @@ async function run() {
     now: () => now,
     allowHttpUpstreamForTests: true,
     allowedOrigins: [`http://127.0.0.1:${upstreamPort}`],
-    signVideoUrl: (objectKey) => `http://127.0.0.1:${upstreamPort}/object?kind=${String(objectKey).endsWith('.mov') ? 'octet' : 'video'}`,
+    signVideoUrl: (objectKey) => `http://127.0.0.1:${upstreamPort}/object?kind=${
+      String(objectKey).endsWith('.jpg')
+        ? 'image'
+        : (String(objectKey).endsWith('.gif') ? 'gif' : (String(objectKey).endsWith('.mov') ? 'octet' : 'video'))
+    }`,
     signCoverUrl: () => `http://127.0.0.1:${upstreamPort}/object?kind=cover`
   })
   const listing = {
@@ -470,6 +482,56 @@ async function run() {
   const secondMultiUrl = new URL(multiUrls.mediaAssets[1].videoUrl)
   assert.strictEqual(secondMultiUrl.searchParams.get('assetId'), multiListing.mediaAssets[1].assetId, '能力地址必须绑定不透明 assetId')
   const oldFirstUrl = multiUrls.mediaAssets[0].videoUrl
+
+  const mixedListing = {
+    ...listing,
+    id: 'L-MEDIA-MIXED',
+    mediaAssets: [
+      {
+        assetId: 'MAT-imageeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        kind: 'image',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-imageeeeeeeeeeeeeeeeeeeeeeeeeeee.jpg',
+        contentSha256: 'd'.repeat(64),
+        sourceFingerprint: '7'.repeat(64),
+        targetDriveFingerprint: '8'.repeat(64),
+        displayOrder: 0,
+        mimeType: 'image/jpeg',
+        size: IMAGE_BODY.length,
+        verified: true
+      },
+      {
+        ...multiListing.mediaAssets[0],
+        displayOrder: 1
+      }
+    ]
+  }
+  const mixedUrls = service.urlsForListing(mixedListing)
+  assert.deepStrictEqual(mixedUrls.mediaAssets.map((asset) => asset.kind), ['image', 'video'])
+  assert.deepStrictEqual(
+    Object.keys(mixedUrls.mediaAssets[0]).sort(),
+    ['assetId', 'coverUrl', 'displayOrder', 'imageUrl', 'kind', 'label'].sort(),
+    '公开图片只允许安全骨架和不透明图片能力 URL'
+  )
+  assert.ok(/^https:\/\/api\.example\.test\/mini\/listings\/L-MEDIA-MIXED\/media\/image\?token=/.test(mixedUrls.mediaAssets[0].imageUrl))
+  assert.strictEqual(mixedUrls.coverUrl, mixedUrls.mediaAssets[0].imageUrl, '列表封面应优先沿用排在首位的房源照片')
+  assert.strictEqual(mixedUrls.videoUrl, mixedUrls.mediaAssets[1].videoUrl, '顶层兼容视频仍必须指向首个真实视频')
+  assert.ok(!JSON.stringify(mixedUrls).includes(mixedListing.mediaAssets[0].objectKey), '图片公开 DTO 不得泄露 OSS 对象键')
+  const mixedImageCapability = new URL(mixedUrls.mediaAssets[0].imageUrl)
+  const gifListing = {
+    ...mixedListing,
+    id: 'L-MEDIA-GIF',
+    mediaAssets: [{
+      ...mixedListing.mediaAssets[0],
+      assetId: 'MAT-gifggggggggggggggggggggggggggg',
+      objectKey: 'house-videos/feishu-note-v1/a/MAT-gifggggggggggggggggggggggggggg.gif',
+      contentSha256: 'f'.repeat(64),
+      mimeType: 'image/gif',
+      size: GIF_BODY.length
+    }]
+  }
+  const gifUrls = service.urlsForListing(gifListing)
+  assert.strictEqual(gifUrls.mediaAssets[0].kind, 'image', '同步白名单中的 GIF 必须生成受控图片能力')
+  const gifImageCapability = new URL(gifUrls.mediaAssets[0].imageUrl)
 
   const reorderedOtherAssetsListing = {
     ...multiListing,
@@ -607,18 +669,24 @@ async function run() {
   assert.ok(indexSource.includes('if (res.headersSent || res.destroyed)'), '流式响应发头后异常不得二次 writeHead')
   assert.ok(indexSource.includes('clientKey: requestClientKey(req)'), '媒体并发客户端键必须由服务端可信网络键注入')
   assert.ok(indexSource.includes("assetId: searchParams.get('assetId') || ''"), 'HTTP 媒体路由必须把 assetId 交给服务端能力校验')
+  assert.ok(indexSource.includes('(video|cover|image)'), 'HTTP 媒体路由必须显式开放受控图片能力且不扩大到任意文件')
   let currentOwnerAudience = ownerCapabilityOptions.audience
   let currentOwnerStateKey = ownerCapabilityOptions.stateKey
   const mediaServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
-    const matched = url.pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover)$/)
+    const matched = url.pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover|image)$/)
     try {
       if (!matched) throw Object.assign(new Error('not found'), { statusCode: 404 })
+      const requestedListingId = decodeURIComponent(matched[1])
+      const selectedListing = requestedListingId === mixedListing.id
+        ? mixedListing
+        : (requestedListingId === gifListing.id ? gifListing : listing)
       await service.serve(req, res, {
-        listing,
+        listing: selectedListing,
         listingId: decodeURIComponent(matched[1]),
         kind: matched[2],
         token: url.searchParams.get('token') || '',
+        assetId: url.searchParams.get('assetId') || '',
         scope: url.searchParams.get('scope') === 'owner' ? 'owner' : 'public',
         audience: url.searchParams.get('scope') === 'owner' ? currentOwnerAudience : '',
         stateKey: url.searchParams.get('scope') === 'owner' ? currentOwnerStateKey : ''
@@ -664,6 +732,21 @@ async function run() {
     assert.strictEqual(cover.statusCode, 200, '匿名封面能力 URL 必须可读取')
     assert.strictEqual(cover.headers['content-type'], 'image/jpeg')
     assert.deepStrictEqual(cover.body, COVER_BODY)
+
+    const imagePath = `${mixedImageCapability.pathname}${mixedImageCapability.search}`
+    const image = await request(mediaPort, imagePath)
+    assert.strictEqual(image.statusCode, 200, '匿名图片能力 URL 必须可读取')
+    assert.strictEqual(image.headers['content-type'], 'image/jpeg')
+    assert.strictEqual(image.headers['content-disposition'], 'inline; filename="listing-image.jpg"')
+    assert.deepStrictEqual(image.body, IMAGE_BODY)
+    const imageAsVideo = await request(mediaPort, imagePath.replace('/media/image', '/media/video'))
+    assert.strictEqual(imageAsVideo.statusCode, 404, '图片能力不得篡改路径后伪装成视频能力')
+    const gifPath = `${gifImageCapability.pathname}${gifImageCapability.search}`
+    const gif = await request(mediaPort, gifPath)
+    assert.strictEqual(gif.statusCode, 200, '同步白名单中的 GIF 必须可通过受控图片代理读取')
+    assert.strictEqual(gif.headers['content-type'], 'image/gif')
+    assert.strictEqual(gif.headers['content-disposition'], 'inline; filename="listing-image.gif"')
+    assert.deepStrictEqual(gif.body, GIF_BODY)
 
     const ownerVideoPath = `${ownerVideoCapability.pathname}${ownerVideoCapability.search}`
     const ownerBearerRead = await request(mediaPort, ownerVideoPath)

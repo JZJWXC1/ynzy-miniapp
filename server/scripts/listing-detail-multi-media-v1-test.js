@@ -200,6 +200,132 @@ async function run() {
   assert.ok(/wx:for="\{\{listing\.mediaAssets\}\}"/.test(detailWxml), 'WXML 必须渲染服务端返回的全部素材选项')
   assert.ok(/data-asset-id="\{\{item\.assetId\}\}"/.test(detailWxml), '切换事件必须使用不透明 assetId')
   assert.strictEqual((detailWxml.match(/<video\b/g) || []).length, 1, '详情页必须只保留一个视频播放器')
+  assert.ok(/<image\b[^>]*class="listing-media-image"/.test(detailWxml), '详情页必须提供一个受控图片展示位')
+  assert.ok(/bindtap="previewCurrentImage"/.test(detailWxml), '房源图片必须支持微信原生大图预览')
+  assert.ok(/wx:if="\{\{canShareVideo\}\}"/.test(detailWxml), '原视频转发与保存区域只允许在当前选中视频时出现')
+
+  let mixedAssets = [
+    {
+      assetId: 'asset-photo',
+      kind: 'image',
+      displayOrder: 9,
+      label: '照片 1',
+      imageUrl: 'https://api.example.test/media/photo',
+      coverUrl: 'https://api.example.test/media/photo'
+    },
+    {
+      assetId: 'asset-video',
+      kind: 'video',
+      displayOrder: 0,
+      label: '视频 1',
+      videoUrl: 'https://api.example.test/media/video',
+      coverUrl: 'https://api.example.test/media/video-cover'
+    }
+  ]
+  let mixedReadCount = 0
+  const mixedListing = () => ({
+    id: 'L-MIXED',
+    title: '图片视频混合房源',
+    companyListing: true,
+    videoUrl: mixedAssets[1].videoUrl,
+    coverUrl: mixedAssets[0].coverUrl,
+    mediaAssets: mixedAssets,
+    nearby: { listings: [], total: 0, hasMore: false }
+  })
+  const mixedDefinition = loadDefinition(() => {
+    mixedReadCount += 1
+    return mixedListing()
+  })
+  const mixedPage = makePage(mixedDefinition)
+  mixedPage._pageActive = true
+  mixedPage.loadListing('L-MIXED')
+  await settle()
+  await settle()
+  assert.strictEqual(mixedReadCount, 1)
+  assert.strictEqual(mixedPage.data.selectedMediaAssetId, 'asset-photo', '必须保持服务端数组顺序，不得按 displayOrder 在前端重排')
+  assert.strictEqual(mixedPage.data.selectedMediaKind, 'image')
+  assert.strictEqual(mixedPage.data.listing.imageUrl, mixedAssets[0].imageUrl)
+  assert.strictEqual(mixedPage.data.listing.videoUrl, '', '选中照片时不得把图片能力塞进 videoUrl')
+  assert.strictEqual(mixedPage.data.canShareVideo, false, '选中照片时原视频转发/保存门必须关闭')
+
+  let previewOptions = null
+  global.wx.previewImage = (options) => { previewOptions = options }
+  mixedPage.previewCurrentImage()
+  assert.deepStrictEqual(
+    previewOptions,
+    { current: mixedAssets[0].imageUrl, urls: [mixedAssets[0].imageUrl] },
+    '图片预览只允许使用当前公开 DTO 中的受控图片能力地址'
+  )
+
+  mixedPage.selectMediaAsset({ currentTarget: { dataset: { assetId: 'asset-video' } } })
+  assert.strictEqual(mixedPage.data.selectedMediaKind, 'video')
+  assert.strictEqual(mixedPage.data.listing.videoUrl, mixedAssets[1].videoUrl)
+  assert.strictEqual(mixedPage.data.listing.imageUrl, '')
+  assert.strictEqual(mixedPage.data.canShareVideo, true, '切换到视频后原视频转发/保存能力必须恢复')
+  previewOptions = null
+  mixedPage.previewCurrentImage()
+  assert.strictEqual(previewOptions, null, '选中视频时不得误打开图片预览')
+
+  mixedPage.selectMediaAsset({ currentTarget: { dataset: { assetId: 'asset-photo' } } })
+  mixedPage.setData({ showingSubmitting: true })
+  const mixedShowingOperation = mixedPage.beginDetailOperation('showing')
+  mixedPage.selectMediaAsset({ currentTarget: { dataset: { assetId: 'asset-video' } } })
+  mixedPage.selectMediaAsset({ currentTarget: { dataset: { assetId: 'asset-photo' } } })
+  assert.strictEqual(mixedPage.isDetailOperationCurrent(mixedShowingOperation), true, '图片/视频切换不得作废在途带看')
+  mixedPage.setData({ showingSubmitting: false })
+
+  let imageDownloadCalls = 0
+  mixedPage.downloadShareVideo = async () => {
+    imageDownloadCalls += 1
+    return '/tmp/must-not-download.mp4'
+  }
+  await mixedPage.prepareVideoShare()
+  await mixedPage.saveListingVideo()
+  assert.strictEqual(imageDownloadCalls, 0, '选中图片时不得误走视频下载、转发或保存链路')
+
+  const imageToasts = []
+  global.wx.showToast = (options) => imageToasts.push(options)
+  mixedAssets = mixedAssets.map((asset) => (
+    asset.kind === 'image'
+      ? {
+          ...asset,
+          imageUrl: `${asset.imageUrl}-refreshed`,
+          coverUrl: `${asset.coverUrl}-refreshed`
+        }
+      : asset
+  ))
+  mixedPage.onImageLoadError()
+  await settle()
+  await settle()
+  assert.strictEqual(mixedReadCount, 2, '图片能力地址失败后必须重读一次公开详情')
+  assert.strictEqual(mixedPage.data.selectedMediaAssetId, 'asset-photo', '图片能力刷新后必须保持同一素材')
+  assert.strictEqual(mixedPage.data.listing.imageUrl, mixedAssets[0].imageUrl, '刷新后必须使用同一图片素材的新能力地址')
+
+  mixedPage.onImageLoadError()
+  mixedPage.onImageLoadError()
+  await settle()
+  assert.strictEqual(mixedReadCount, 2, '同一轮图片加载失败最多自动刷新一次')
+  assert.deepStrictEqual(
+    imageToasts.filter((item) => item && item.title === '图片加载失败，请重试'),
+    [{ title: '图片加载失败，请重试', icon: 'none' }],
+    '图片刷新后仍失败必须只提示一次'
+  )
+  global.wx.showToast = originalShowToast
+
+  const emptyDefinition = loadDefinition({
+    id: 'L-EMPTY-MEDIA',
+    title: '无素材房源',
+    companyListing: true,
+    nearby: { listings: [], total: 0, hasMore: false }
+  })
+  const emptyPage = makePage(emptyDefinition)
+  emptyPage.loadListing('L-EMPTY-MEDIA')
+  await settle()
+  await settle()
+  assert.deepStrictEqual(emptyPage.data.listing.mediaAssets, [])
+  assert.strictEqual(emptyPage.data.selectedMediaKind, '')
+  assert.strictEqual(emptyPage.data.canShareVideo, false, '无素材房源必须保持旧空态')
+  assert.ok(/暂无房源视频/.test(detailWxml), '无素材房源旧空态文案必须保留')
 
   console.log('listing-detail-multi-media-v1-test passed')
 }

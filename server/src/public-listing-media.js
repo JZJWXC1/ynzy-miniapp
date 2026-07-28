@@ -14,6 +14,7 @@ const DEFAULT_MAX_BYTES = 300 * 1024 * 1024
 const DEFAULT_MAX_CONCURRENT = 24
 const DEFAULT_MAX_CONCURRENT_PER_CLIENT = 6
 const VIDEO_EXTENSION_RE = /\.(mp4|mov|m4v|webm)$/i
+const IMAGE_EXTENSION_RE = /\.(jpg|jpeg|png|webp|gif)$/i
 const MEDIA_ASSET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/
 
 function normalizedOrigin(value) {
@@ -51,14 +52,16 @@ function normalizeUploadDir(value) {
   return String(value || 'house-videos').replace(/^\/+|\/+$/g, '') || 'house-videos'
 }
 
-function normalizeManagedObjectKey(value, uploadDir) {
+function normalizeManagedObjectKey(value, uploadDir, kind = 'video') {
   const key = String(value || '').trim()
   const root = normalizeUploadDir(uploadDir)
   if (!key || key.length > 512) return ''
   if (/[\\\0\r\n?#]/.test(key) || key.startsWith('/') || !key.startsWith(`${root}/`)) return ''
   const segments = key.split('/')
   if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return ''
-  if (!VIDEO_EXTENSION_RE.test(key)) return ''
+  if (kind === 'video' && !VIDEO_EXTENSION_RE.test(key)) return ''
+  if (kind === 'image' && !IMAGE_EXTENSION_RE.test(key)) return ''
+  if (!['video', 'image'].includes(kind)) return ''
   return key
 }
 
@@ -101,9 +104,14 @@ function normalizedListingMediaAssets(listing = {}, options = {}) {
   }
   const managed = assets.map((asset) => ({
     ...asset,
-    objectKey: normalizeManagedObjectKey(asset.objectKey, options.uploadDir)
+    objectKey: normalizeManagedObjectKey(asset.objectKey, options.uploadDir, asset.kind)
   }))
-  return managed.some((asset) => !asset.objectKey) ? [] : managed
+  return managed.some((asset) => {
+    if (!asset.objectKey) return true
+    if (asset.kind !== 'image') return false
+    const metadata = imageMediaMetadata(asset.objectKey)
+    return !metadata || metadata.contentType !== asset.mimeType
+  }) ? [] : managed
 }
 
 function mediaAssetStateKey(asset = {}) {
@@ -136,13 +144,14 @@ function resolveListingMediaSource(listing = {}, assetIdValue = '', options = {}
     if (!asset) return null
     return {
       assetId: asset.assetId,
+      kind: asset.kind,
       objectKey: asset.objectKey,
       mediaStateKey: mediaManifestStateKey(assets)
     }
   }
   if (assetId) return null
   const objectKey = resolveManagedVideoObjectKey(listing, options)
-  return objectKey ? { assetId: '', objectKey, mediaStateKey: '' } : null
+  return objectKey ? { assetId: '', kind: 'video', objectKey, mediaStateKey: '' } : null
 }
 
 function mediaError(statusCode, message) {
@@ -248,9 +257,23 @@ function videoMediaMetadata(objectKey) {
   return { contentType: 'video/mp4', extension: extension === 'm4v' ? 'm4v' : 'mp4' }
 }
 
+function imageMediaMetadata(objectKey) {
+  const matched = String(objectKey || '').toLowerCase().match(/\.(jpg|jpeg|png|webp|gif)$/)
+  if (!matched) return null
+  const extension = matched[1]
+  if (extension === 'jpg' || extension === 'jpeg') return { contentType: 'image/jpeg', extension }
+  if (extension === 'png') return { contentType: 'image/png', extension }
+  if (extension === 'gif') return { contentType: 'image/gif', extension: 'gif' }
+  return { contentType: 'image/webp', extension: 'webp' }
+}
+
 function allowedContentType(kind, value, objectKey) {
   const type = String(value || '').split(';')[0].trim().toLowerCase()
   if (kind === 'cover') return ['image/jpeg', 'image/png', 'image/webp'].includes(type) ? type : ''
+  if (kind === 'image') {
+    const metadata = imageMediaMetadata(objectKey)
+    return metadata && metadata.contentType === type ? type : ''
+  }
   if (!type.startsWith('video/') && type !== 'application/octet-stream') return ''
   // OSS 存量对象可能统一标为 octet-stream；按已白名单的服务端对象键扩展名归一 MIME，
   // 避免 nosniff 下 MOV/WEBM 被微信当未知文件，同时不信任上游自报的任意视频类型。
@@ -360,24 +383,43 @@ function createPublicListingMediaService(options = {}) {
     if (!listing.id) return { videoUrl: '', coverUrl: '', mediaAssets: [] }
     if (assets) {
       const mediaStateKey = mediaManifestStateKey(assets)
-      const mediaAssets = assets.map((asset, index) => {
+      let imageIndex = 0
+      let videoIndex = 0
+      const mediaAssets = assets.map((asset) => {
         const boundOptions = {
           ...capabilityOptions,
           assetId: asset.assetId,
           mediaStateKey
         }
+        if (asset.kind === 'image') {
+          imageIndex += 1
+          const imageUrl = publicUrl(listing.id, 'image', asset.objectKey, boundOptions)
+          return {
+            assetId: asset.assetId,
+            kind: 'image',
+            displayOrder: asset.displayOrder,
+            label: `图片 ${imageIndex}`,
+            imageUrl,
+            coverUrl: imageUrl
+          }
+        }
+        videoIndex += 1
         return {
           assetId: asset.assetId,
           kind: 'video',
           displayOrder: asset.displayOrder,
-          label: `视频 ${index + 1}`,
+          label: `视频 ${videoIndex}`,
           videoUrl: publicUrl(listing.id, 'video', asset.objectKey, boundOptions),
           coverUrl: publicUrl(listing.id, 'cover', asset.objectKey, boundOptions)
         }
-      }).filter((asset) => asset.videoUrl && asset.coverUrl)
+      }).filter((asset) => asset.coverUrl && (
+        (asset.kind === 'image' && asset.imageUrl) ||
+        (asset.kind === 'video' && asset.videoUrl)
+      ))
       const primary = mediaAssets[0] || {}
+      const primaryVideo = mediaAssets.find((asset) => asset.kind === 'video') || {}
       return {
-        videoUrl: primary.videoUrl || '',
+        videoUrl: primaryVideo.videoUrl || '',
         coverUrl: primary.coverUrl || '',
         mediaAssets
       }
@@ -392,7 +434,9 @@ function createPublicListingMediaService(options = {}) {
   }
 
   function upstreamSignedUrl(objectKey, kind, method) {
-    const signer = kind === 'cover' ? options.signCoverUrl : options.signVideoUrl
+    const signer = kind === 'cover'
+      ? options.signCoverUrl
+      : (kind === 'image' ? (options.signImageUrl || options.signVideoUrl) : options.signVideoUrl)
     if (typeof signer !== 'function') throw mediaError(503, '媒体能力未配置')
     return validateUpstreamUrl(signer(objectKey, method), {
       allowedOrigins,
@@ -404,12 +448,16 @@ function createPublicListingMediaService(options = {}) {
     const method = String(req.method || 'GET').toUpperCase()
     const kind = String(input.kind || '')
     if (!['GET', 'HEAD'].includes(method)) return Promise.reject(mediaError(405, '请求方式不支持'))
-    if (!['video', 'cover'].includes(kind)) return Promise.reject(mediaError(404, '媒体不存在'))
+    if (!['video', 'cover', 'image'].includes(kind)) return Promise.reject(mediaError(404, '媒体不存在'))
     const listing = input.listing || {}
     const listingId = String(input.listingId || '')
     if (!listing.id || listingId !== String(listing.id)) return Promise.reject(mediaError(404, '媒体不存在'))
     const source = resolveListingMediaSource(listing, input.assetId, sourceOptions)
-    if (!source || !verifyCapability(listingId, kind, source.objectKey, input.token, {
+    const sourceKindMatches = source && (
+      (source.kind === 'image' && kind === 'image') ||
+      (source.kind === 'video' && (kind === 'video' || kind === 'cover'))
+    )
+    if (!sourceKindMatches || !verifyCapability(listingId, kind, source.objectKey, input.token, {
       scope: input.scope,
       audience: input.audience,
       stateKey: input.stateKey,
@@ -542,6 +590,7 @@ function createPublicListingMediaService(options = {}) {
             }
           }
           const videoMetadata = videoMediaMetadata(objectKey)
+          const imageMetadata = imageMediaMetadata(objectKey)
           const responseHeaders = {
             'Content-Type': contentType,
             'Content-Length': String(contentLength),
@@ -549,7 +598,9 @@ function createPublicListingMediaService(options = {}) {
             'Cache-Control': 'private, no-store, no-transform',
             'Content-Disposition': kind === 'cover'
               ? 'inline; filename="listing-cover.jpg"'
-              : `inline; filename="listing-video.${videoMetadata.extension}"`,
+              : (kind === 'image'
+                  ? `inline; filename="listing-image.${imageMetadata.extension}"`
+                  : `inline; filename="listing-video.${videoMetadata.extension}"`),
             Vary: 'Range',
             'X-Content-Type-Options': 'nosniff',
             'Access-Control-Allow-Origin': '*'

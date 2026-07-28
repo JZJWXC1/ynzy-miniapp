@@ -318,28 +318,68 @@ function readObjectBufferAuthenticated(objectKey, maxBytes) {
   })
 }
 
-function validateDeterministicVideoInput(input = {}) {
+const NOTE_MATERIAL_TYPES = new Map([
+  ['mp4', { kind: 'video', contentType: 'video/mp4' }],
+  ['mov', { kind: 'video', contentType: 'video/quicktime' }],
+  ['m4v', { kind: 'video', contentType: 'video/x-m4v' }],
+  ['webm', { kind: 'video', contentType: 'video/webm' }],
+  ['jpg', { kind: 'image', contentType: 'image/jpeg' }],
+  ['jpeg', { kind: 'image', contentType: 'image/jpeg' }],
+  ['png', { kind: 'image', contentType: 'image/png' }],
+  ['webp', { kind: 'image', contentType: 'image/webp' }],
+  ['gif', { kind: 'image', contentType: 'image/gif' }]
+])
+
+function imageBytesMatch(buffer, extension) {
+  if (!buffer) return true
+  if ((extension === 'jpg' || extension === 'jpeg') &&
+      buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true
+  if (extension === 'png' && buffer.length >= 8 &&
+      buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true
+  if (extension === 'webp' && buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP') return true
+  if (extension === 'gif' && buffer.length >= 6 &&
+      ['GIF87a', 'GIF89a'].includes(buffer.subarray(0, 6).toString('ascii'))) return true
+  return false
+}
+
+function validateDeterministicMaterialInput(input = {}) {
   const objectKey = String(input.objectKey || '').trim()
   const buffer = Buffer.isBuffer(input.buffer) ? input.buffer : (input.buffer == null ? null : Buffer.from(input.buffer))
   const contentSha256 = String(input.contentSha256 || '').trim().toLowerCase()
-  if (!objectKey || !/\/feishu-note-v1\/.+\.(?:mp4|mov|m4v|webm)$/i.test(objectKey) ||
+  const extensionMatch = objectKey.toLowerCase().match(/\.([a-z0-9]+)$/)
+  const extension = extensionMatch ? extensionMatch[1] : ''
+  const metadata = NOTE_MATERIAL_TYPES.get(extension)
+  const kind = String(input.kind || (metadata && metadata.kind) || '').trim().toLowerCase()
+  const contentType = String(input.contentType || input.mimeType || (metadata && metadata.contentType) || '')
+    .split(';')[0].trim().toLowerCase()
+  if (!objectKey || !/\/feishu-note-v1\/.+\.[a-z0-9]+$/i.test(objectKey) ||
       objectKey.split('/').some((part) => !part || part === '.' || part === '..') ||
-      /[\\?#\0\r\n]/.test(objectKey)) {
+      /[\\?#\0\r\n]/.test(objectKey) || !metadata) {
     throw new Error('房源笔记 OSS 对象键无效')
+  }
+  if (kind !== metadata.kind || contentType !== metadata.contentType) {
+    throw new Error('房源笔记 OSS 素材类型与对象键扩展名不一致')
   }
   if (!/^[0-9a-f]{64}$/.test(contentSha256)) throw new Error('房源笔记内容哈希无效')
   if (buffer && (!buffer.length || buffer.length > config.oss.maxVideoSize)) {
-    throw new Error('房源笔记视频大小无效')
+    throw new Error('房源笔记素材大小无效')
   }
   if (buffer && crypto.createHash('sha256').update(buffer).digest('hex') !== contentSha256) {
     throw new Error('房源笔记上传内容与声明哈希不一致')
   }
-  return { objectKey, buffer, contentSha256 }
+  if (kind === 'image' && !imageBytesMatch(buffer, extension)) {
+    throw new Error('房源笔记图片真实字节类型与对象键扩展名不一致')
+  }
+  return { objectKey, buffer, contentSha256, kind, contentType }
 }
 
-async function verifyVideoDeterministic(asset = {}) {
-  const normalized = validateDeterministicVideoInput({
+async function verifyMaterialDeterministic(asset = {}) {
+  const normalized = validateDeterministicMaterialInput({
+    kind: asset.kind,
     objectKey: asset.objectKey,
+    contentType: asset.mimeType || asset.contentType,
     contentSha256: asset.contentSha256
   })
   const readback = await readObjectBufferAuthenticated(normalized.objectKey, config.oss.maxVideoSize)
@@ -353,21 +393,38 @@ async function verifyVideoDeterministic(asset = {}) {
   }
 }
 
-async function putVideoDeterministic(input = {}) {
-  const normalized = validateDeterministicVideoInput(input)
+async function putMaterialDeterministic(input = {}) {
+  const normalized = validateDeterministicMaterialInput(input)
   await putObjectBuffer(
     normalized.objectKey,
     normalized.buffer,
-    input.contentType || 'video/mp4',
+    normalized.contentType,
     { metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 } }
   )
-  const verified = await verifyVideoDeterministic({
+  const verified = await verifyMaterialDeterministic({
+    kind: normalized.kind,
     objectKey: normalized.objectKey,
+    mimeType: normalized.contentType,
     contentSha256: normalized.contentSha256,
     size: normalized.buffer.length
   })
   if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希回读不一致')
   return verified
+}
+
+async function verifyVideoDeterministic(asset = {}) {
+  return verifyMaterialDeterministic({
+    ...asset,
+    kind: 'video',
+    mimeType: asset.mimeType || asset.contentType
+  })
+}
+
+async function putVideoDeterministic(input = {}) {
+  return putMaterialDeterministic({
+    ...input,
+    kind: 'video'
+  })
 }
 
 function createVideoUploadPolicy(input = {}) {
@@ -519,6 +576,8 @@ module.exports = {
   hasReadConfig,
   readSourceOrigins,
   putObjectBuffer,
+  putMaterialDeterministic,
+  verifyMaterialDeterministic,
   putVideoDeterministic,
   verifyVideoDeterministic,
   readObjectBufferAuthenticated,

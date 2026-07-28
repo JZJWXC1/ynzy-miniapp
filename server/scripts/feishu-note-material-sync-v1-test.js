@@ -270,7 +270,7 @@ async function run() {
         targetToken: `target-${input.asset.sourceToken}`,
         targetName: input.targetName,
         buffer,
-        contentType: input.asset.mimeType,
+        contentType: input.sourceEvidence.contentType,
         contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
         size: buffer.length,
         verified: true
@@ -328,6 +328,103 @@ async function run() {
     initialDriveTargetName.includes(result.mediaAssets[0].contentSha256),
     '目标 Drive 文件名必须包含真实内容 SHA-256'
   )
+
+  const mixedAssets = [
+    {
+      sourceToken: 'mediaMixedImage123456',
+      sourceKind: 'docx-image',
+      name: 'image',
+      extension: '',
+      kind: 'image',
+      mimeType: 'image/*',
+      modifiedTime: '',
+      size: null,
+      sourceOrder: 0,
+      sourceFingerprint: 'mixed-image-source'
+    },
+    {
+      ...syntheticAssets()[0],
+      sourceOrder: 1
+    }
+  ]
+  const mixedBodies = new Map([
+    ['mediaMixedImage123456', Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('mixed-image')])],
+    [syntheticAssets()[0].sourceToken, Buffer.from('mixed-video')]
+  ])
+  const mixedDrive = {
+    async downloadToken(sourceToken) {
+      const buffer = Buffer.from(mixedBodies.get(sourceToken))
+      return {
+        buffer,
+        contentType: sourceToken === 'mediaMixedImage123456' ? 'application/octet-stream' : 'video/mp4',
+        contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+        size: buffer.length
+      }
+    },
+    async ensureListingFolder() {
+      return { token: 'mixedTargetFolder123' }
+    },
+    async materializeAsset(input) {
+      return {
+        targetToken: `mixed-target-${input.asset.sourceOrder}`,
+        targetName: input.targetName,
+        buffer: input.sourceEvidence.buffer,
+        contentType: input.sourceEvidence.contentType,
+        contentSha256: input.sourceEvidence.contentSha256,
+        size: input.sourceEvidence.size,
+        verified: true
+      }
+    }
+  }
+  const mixedOss = {
+    async putMaterialDeterministic(input) {
+      return {
+        objectKey: input.objectKey,
+        contentSha256: input.contentSha256,
+        size: input.buffer.length,
+        verified: true
+      }
+    }
+  }
+  const mixedResult = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-record-mixed',
+    assets: mixedAssets,
+    existingMediaAssets: [],
+    uploadDir: 'house-videos',
+    drive: mixedDrive,
+    oss: mixedOss
+  })
+  assert.deepStrictEqual(mixedResult.mediaAssets.map((asset) => asset.kind), ['image', 'video'])
+  assert.deepStrictEqual(mixedResult.mediaAssets.map((asset) => asset.mimeType), ['image/jpeg', 'video/mp4'])
+  assert.ok(mixedResult.mediaAssets[0].objectKey.endsWith('.jpg'), 'Docx 图片必须根据真实字节签名确定安全扩展名')
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      sourceRecordId: 'record-invalid-image-bytes',
+      assets: [{
+        ...mixedAssets[0],
+        sourceToken: 'mediaInvalidImage123',
+        name: 'invalid.jpg',
+        extension: 'jpg',
+        mimeType: 'image/jpeg'
+      }],
+      uploadDir: 'house-videos',
+      dryRun: true,
+      drive: {
+        async downloadToken() {
+          const buffer = Buffer.from('not-an-image')
+          return {
+            buffer,
+            contentType: 'image/jpeg',
+            contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+            size: buffer.length
+          }
+        }
+      }
+    }),
+    /真实字节类型不受支持/,
+    '声明为 JPEG 的普通文档或伪造字节必须在任何 Drive/OSS 写入前 fail-closed'
+  )
+  assert.strictEqual(mixedResult.primaryVideo.assetId, mixedResult.mediaAssets[1].assetId, '兼容主视频必须跳过排在前面的图片')
 
   calls.length = 0
   sourceLifecycle.length = 0
@@ -482,7 +579,7 @@ async function run() {
             targetToken: 'target-first',
             targetName: input.targetName,
             buffer,
-            contentType: input.asset.mimeType,
+            contentType: input.sourceEvidence.contentType,
             contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
             size: buffer.length,
             verified: true

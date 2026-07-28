@@ -180,7 +180,8 @@ async function runInventory(fixture, options = {}) {
     replaceMediaAssets: async (current, mediaAssets) => {
       fixture.calls.dbWrite += 1
       current.mediaAssets = clone(mediaAssets)
-      current.videoKey = mediaAssets[0] ? mediaAssets[0].objectKey : ''
+      const primaryVideo = mediaAssets.find((asset) => asset.kind === 'video')
+      current.videoKey = primaryVideo ? primaryVideo.objectKey : ''
     }
   })
 }
@@ -771,26 +772,39 @@ async function testInventoryConfirmationBehavior() {
   }
 
   {
+    const imageRecord = {
+      sourceRecordId: 'source-record-confirm-image',
+      folderToken: 'folderSourceConfirmImage123',
+      assetToken: 'tokenImageConfirm123456',
+      name: 'room-photo.jpg',
+      body: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('synthetic-jpeg-content')]),
+      mimeType: 'image/jpeg'
+    }
     const fixture = inventoryFixture({
-      records: [{
-        sourceRecordId: 'source-record-confirm-image',
-        folderToken: 'folderSourceConfirmImage123',
-        assetToken: 'tokenImageConfirm123456',
-        name: 'room-photo.jpg',
-        body: Buffer.from('synthetic-image-content'),
-        mimeType: 'image/jpeg'
-      }]
+      records: [imageRecord]
     })
     const result = await runInventory(fixture, { dryRun: true })
-    assert.strictEqual(result.complete, false, '发现小程序尚不支持的非视频素材时 dry-run 必须 fail-closed')
-    assert.strictEqual(result.status, 'unsupported-non-video')
-    assert.strictEqual(result.nonVideo, 1)
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(result, 'contentPlanSha256'),
-      false,
-      '非视频未纳入真实内容计划时不得生成可确认摘要'
-    )
-    assert.strictEqual(writeCount(fixture.calls), 0, '非视频阻断不得写 DB/Drive/OSS')
+    assert.strictEqual(result.complete, true, '安全图片必须与视频一样进入完整 dry-run')
+    assert.strictEqual(result.image, 1)
+    assert.strictEqual(result.nonVideo, 0)
+    assert.strictEqual(result.contentPlanAssetCount, 1, '图片必须纳入同一真实内容计划确认摘要')
+    assert.match(result.contentPlanSha256, /^[0-9a-f]{64}$/)
+    assert.strictEqual(writeCount(fixture.calls), 0, '图片 dry-run 仍不得写 DB/Drive/OSS')
+
+    const imageConfirmation = confirmationFromReport(result)
+    const formalFixture = inventoryFixture({ records: [imageRecord] })
+    const formal = await runInventory(formalFixture, {
+      dryRun: false,
+      contentPlanConfirmationRequired: true,
+      ...imageConfirmation
+    })
+    assert.strictEqual(formal.complete, true, '确认摘要一致后图片正式同步必须完成')
+    assert.strictEqual(formal.published, true)
+    assert.strictEqual(formalFixture.calls.driveWrite, 1, '图片必须真实写入并回读飞书云盘')
+    assert.strictEqual(formalFixture.calls.ossWrite, 1, '图片必须真实写入并回读 OSS')
+    assert.strictEqual(formalFixture.calls.dbWrite, 1, '图片必须原子写入房源私有素材清单')
+    assert.strictEqual(formalFixture.db.listings[0].mediaAssets[0].kind, 'image')
+    assert.strictEqual(formalFixture.db.listings[0].videoKey, '', '图片-only 房源不得生成伪视频兼容索引')
   }
 
   {

@@ -486,7 +486,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     }
   }
 
-  async function materializeVideo({ asset, targetFolderToken, targetName, sourceEvidence }) {
+  async function materializeAsset({ asset, targetFolderToken, targetName, sourceEvidence }) {
     const downloaded = await checkedSourceEvidence(asset, sourceEvidence)
     let target = await targetFileByName(targetFolderToken, targetName)
     if (!target) {
@@ -516,7 +516,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     }
   }
 
-  async function verifyMaterializedVideo({ targetFolderToken, targetName, contentSha256, size }) {
+  async function verifyMaterializedAsset({ targetFolderToken, targetName, contentSha256, size }) {
     const target = await targetFileByName(targetFolderToken, targetName)
     if (!target) return { verified: false }
     const downloaded = await downloadToken(target.token, 'drive-file')
@@ -540,8 +540,11 @@ function createFeishuNoteMaterialClient(options = {}) {
     createFolder,
     uploadFile,
     ensureListingFolder,
-    materializeVideo,
-    verifyMaterializedVideo
+    materializeAsset,
+    verifyMaterializedAsset,
+    // 兼容已审计的旧控制器能力探测；实现本身已按任意受支持素材的已验证 Buffer 工作。
+    materializeVideo: materializeAsset,
+    verifyMaterializedVideo: verifyMaterializedAsset
   }
 }
 

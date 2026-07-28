@@ -6,9 +6,16 @@ const { MAX_LISTING_MEDIA_ASSETS } = require('./domain')
 
 const VIDEO_EXTENSION_RE = /\.(mp4|mov|m4v|webm)$/i
 const VIDEO_MIME_RE = /^video\/(?:mp4|quicktime|x-m4v|webm)(?:;|$)/i
+const IMAGE_EXTENSION_RE = /\.(jpe?g|png|webp|gif)$/i
+const IMAGE_MIME_TO_EXTENSION = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif']
+])
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_MAX_ITEMS = 5000
-const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v1'
+const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v2'
 const CONTENT_PLAN_EVIDENCE = Symbol('contentPlanEvidence')
 
 function normalizeText(value) {
@@ -127,7 +134,7 @@ function normalizeNoteMaterialLinkCell(value, options = {}) {
 
 function videoMetadata(name, type) {
   const safeName = normalizeText(name)
-  const safeType = normalizeText(type).toLowerCase()
+  const safeType = normalizeText(type).split(';')[0].trim().toLowerCase()
   const extensionMatch = safeName.toLowerCase().match(/\.(mp4|mov|m4v|webm)$/)
   if (!extensionMatch && !VIDEO_MIME_RE.test(safeType)) return null
   let extension = extensionMatch ? extensionMatch[1] : 'mp4'
@@ -141,13 +148,53 @@ function videoMetadata(name, type) {
   return { extension, mimeType }
 }
 
+function normalizedImageExtension(value) {
+  const extension = normalizeText(value).toLowerCase()
+  return extension === 'jpeg' ? 'jpg' : extension
+}
+
+function imageMimeForExtension(value) {
+  const extension = normalizedImageExtension(value)
+  if (extension === 'jpg') return 'image/jpeg'
+  if (extension === 'png') return 'image/png'
+  if (extension === 'webp') return 'image/webp'
+  if (extension === 'gif') return 'image/gif'
+  return ''
+}
+
+function imageMetadata(name, type, allowUndeclared = false) {
+  const safeName = normalizeText(name)
+  const extensionMatch = safeName.toLowerCase().match(IMAGE_EXTENSION_RE)
+  const extension = extensionMatch ? normalizedImageExtension(extensionMatch[1]) : ''
+  const safeType = normalizeText(type).split(';')[0].trim().toLowerCase()
+  const mimeExtension = IMAGE_MIME_TO_EXTENSION.get(safeType) || ''
+  if (!extension && !mimeExtension && !(allowUndeclared && (!safeType || safeType === 'image/*'))) return null
+  if (extension && mimeExtension && imageMimeForExtension(extension) !== safeType) {
+    throw new Error('房源笔记图片扩展名与 MIME 类型不一致')
+  }
+  const resolvedExtension = extension || mimeExtension
+  return {
+    kind: 'image',
+    extension: resolvedExtension,
+    mimeType: resolvedExtension ? imageMimeForExtension(resolvedExtension) : 'image/*'
+  }
+}
+
+function sourceAssetMetadata(raw, sourceKind) {
+  const name = normalizeText(raw && (raw.name || raw.file_name || raw.filename))
+  const type = normalizeText(raw && (raw.type || raw.file_type || raw.mime_type))
+  const video = videoMetadata(name, type)
+  if (video) return { kind: 'video', ...video }
+  return imageMetadata(name, type, sourceKind === 'docx-image' || Boolean(raw && raw.image))
+}
+
 function normalizeSourceAsset(raw, sourceKind, sourceOrder) {
   const token = normalizeText(raw && (raw.token || raw.file_token || raw.fileToken))
   if (!/^[A-Za-z0-9_-]{8,160}$/.test(token)) throw new Error('房源笔记素材缺少稳定 token')
   const name = normalizeText(raw.name || raw.file_name || raw.filename)
   const type = normalizeText(raw.type || raw.file_type || raw.mime_type)
-  const video = videoMetadata(name, type)
-  if (!video) return null
+  const metadata = sourceAssetMetadata(raw, sourceKind)
+  if (!metadata) return null
   const size = raw.size === undefined || raw.size === null || raw.size === ''
     ? null
     : Number(raw.size)
@@ -158,14 +205,17 @@ function normalizeSourceAsset(raw, sourceKind, sourceOrder) {
     token,
     modifiedTime,
     size,
-    extension: video.extension
+    kind: metadata.kind,
+    extension: metadata.extension,
+    mimeType: metadata.mimeType
   })
   return {
     sourceToken: token,
     sourceKind,
-    name: name || `material.${video.extension}`,
-    extension: video.extension,
-    mimeType: video.mimeType,
+    name: name || (metadata.extension ? `material.${metadata.extension}` : 'material'),
+    kind: metadata.kind,
+    extension: metadata.extension,
+    mimeType: metadata.mimeType,
     modifiedTime,
     size,
     sourceOrder,
@@ -200,7 +250,7 @@ async function resolveNoteMaterialVideos(input = {}) {
       resource: null,
       assets: [],
       digest: digest([]),
-      counts: { video: 0, nonVideo: 0, duplicateReference: 0 }
+      counts: { video: 0, image: 0, unsupported: 0, nonVideo: 0, duplicateReference: 0 }
     }
   }
   const client = input.client
@@ -213,7 +263,7 @@ async function resolveNoteMaterialVideos(input = {}) {
   const recursionStack = new Set()
   const visitedResourceKeys = new Set()
   const seenAssetTokens = new Set()
-  const counts = { video: 0, nonVideo: 0, duplicateReference: 0 }
+  const counts = { video: 0, image: 0, unsupported: 0, nonVideo: 0, duplicateReference: 0 }
   let inspectedItems = 0
 
   function inspectOne() {
@@ -225,6 +275,7 @@ async function resolveNoteMaterialVideos(input = {}) {
     if (!alreadyInspected) inspectOne()
     const next = normalizeSourceAsset(raw, sourceKind, assets.length)
     if (!next) {
+      counts.unsupported += 1
       counts.nonVideo += 1
       return
     }
@@ -234,7 +285,7 @@ async function resolveNoteMaterialVideos(input = {}) {
     }
     seenAssetTokens.add(next.sourceToken)
     assets.push(next)
-    counts.video += 1
+    counts[next.kind] += 1
   }
 
   async function visit(resource, depth) {
@@ -378,6 +429,9 @@ function normalizeContentPlanEvidence(raw = {}) {
   const sourceRecordFingerprint = contentSha256(raw.sourceRecordFingerprint)
   const assetId = normalizeText(raw.assetId)
   if (!/^MAT-[a-f0-9]{32}$/i.test(assetId)) throw new Error('房源笔记内容计划素材 ID 无效')
+  const rawMimeType = normalizeContentMimeType(raw.mimeType)
+  const kind = normalizeText(raw.kind) || (rawMimeType.startsWith('image/') ? 'image' : 'video')
+  if (!['video', 'image'].includes(kind)) throw new Error('房源笔记内容计划素材类型无效')
   const size = Number(raw.size)
   if (!Number.isSafeInteger(size) || size < 0) throw new Error('房源笔记内容计划素材大小无效')
   const displayOrder = Number(raw.displayOrder)
@@ -387,9 +441,10 @@ function normalizeContentPlanEvidence(raw = {}) {
   return {
     sourceRecordFingerprint,
     assetId,
+    kind,
     contentSha256: contentSha256(raw.contentSha256),
     size,
-    mimeType: normalizeContentMimeType(raw.mimeType),
+    mimeType: rawMimeType,
     displayOrder
   }
 }
@@ -524,11 +579,74 @@ function sourceEvidenceForAsset(asset, evidence) {
       Number(evidence.size) !== buffer.length) {
     throw new Error('房源笔记源素材大小与下载内容不一致')
   }
+  const upstreamContentType = normalizeContentMimeType(
+    evidence.contentType || (asset && asset.mimeType) || 'application/octet-stream'
+  ).split(';')[0].trim().toLowerCase()
+  const kind = normalizeText(asset && asset.kind) || 'video'
+  let extension = normalizeText(asset && asset.extension).toLowerCase()
+  let contentType = ''
+  if (kind === 'image') {
+    let detected = null
+    if (buffer.length >= 4 &&
+        buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      detected = { extension: 'jpg', contentType: 'image/jpeg' }
+    } else if (buffer.length >= 8 &&
+        buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+      detected = { extension: 'png', contentType: 'image/png' }
+    } else if (buffer.length >= 12 &&
+        buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        buffer.subarray(8, 12).toString('ascii') === 'WEBP') {
+      detected = { extension: 'webp', contentType: 'image/webp' }
+    } else if (buffer.length >= 6 &&
+        ['GIF87a', 'GIF89a'].includes(buffer.subarray(0, 6).toString('ascii'))) {
+      detected = { extension: 'gif', contentType: 'image/gif' }
+    }
+    if (!detected) throw new Error('房源笔记图片真实字节类型不受支持')
+    const declaredMime = normalizeText(asset && asset.mimeType).split(';')[0].trim().toLowerCase()
+    if (extension && normalizedImageExtension(extension) !== detected.extension) {
+      throw new Error('房源笔记图片扩展名与真实字节类型不一致')
+    }
+    if (declaredMime && declaredMime !== 'image/*' && declaredMime !== detected.contentType) {
+      throw new Error('房源笔记图片 MIME 与真实字节类型不一致')
+    }
+    if (upstreamContentType !== 'application/octet-stream' &&
+        upstreamContentType !== 'image/*' &&
+        upstreamContentType !== detected.contentType) {
+      throw new Error('房源笔记图片下载响应类型与真实字节不一致')
+    }
+    extension = detected.extension
+    contentType = detected.contentType
+  } else if (kind === 'video') {
+    const declaredMetadata = videoMetadata(
+      normalizeText(asset && asset.name) || `material.${extension || 'mp4'}`,
+      normalizeText(asset && asset.mimeType)
+    )
+    if (!declaredMetadata) throw new Error('房源笔记视频类型不受支持')
+    if (upstreamContentType !== 'application/octet-stream' && !VIDEO_MIME_RE.test(upstreamContentType)) {
+      throw new Error('房源笔记视频下载响应类型无效')
+    }
+    let metadata = declaredMetadata
+    if (upstreamContentType !== 'application/octet-stream') {
+      if (upstreamContentType === 'video/quicktime') metadata = { extension: 'mov', mimeType: upstreamContentType }
+      else if (upstreamContentType === 'video/webm') metadata = { extension: 'webm', mimeType: upstreamContentType }
+      else if (upstreamContentType === 'video/x-m4v') metadata = { extension: 'm4v', mimeType: upstreamContentType }
+      else metadata = {
+        extension: declaredMetadata.extension === 'm4v' ? 'm4v' : 'mp4',
+        mimeType: declaredMetadata.extension === 'm4v' ? 'video/x-m4v' : 'video/mp4'
+      }
+    }
+    extension = metadata.extension
+    contentType = metadata.mimeType
+  } else {
+    throw new Error('房源笔记素材类型不受支持')
+  }
   return {
     buffer,
+    kind,
+    extension,
     contentSha256: actualHash,
     size: buffer.length,
-    contentType: normalizeContentMimeType(evidence.contentType || (asset && asset.mimeType) || 'video/mp4')
+    contentType
   }
 }
 
@@ -546,15 +664,16 @@ function objectKeyForAsset(uploadDir, sourceRecordId, assetId, extension, hash) 
 }
 
 function cloneMediaAsset(asset) {
+  const kind = normalizeText(asset.kind) === 'image' ? 'image' : 'video'
   return {
     assetId: normalizeText(asset.assetId),
-    kind: 'video',
+    kind,
     objectKey: normalizeText(asset.objectKey),
     contentSha256: normalizeText(asset.contentSha256),
     sourceFingerprint: normalizeText(asset.sourceFingerprint),
     targetDriveFingerprint: normalizeText(asset.targetDriveFingerprint),
     displayOrder: Number(asset.displayOrder) || 0,
-    mimeType: normalizeText(asset.mimeType) || 'video/mp4',
+    mimeType: normalizeText(asset.mimeType) || (kind === 'image' ? 'image/jpeg' : 'video/mp4'),
     size: Number(asset.size) || 0,
     verified: asset.verified === true
   }
@@ -592,12 +711,15 @@ async function syncNoteMaterialVideos(input = {}) {
     planned.push({
       asset,
       assetId,
-      targetName: targetNameForAsset(assetId, asset.extension, sourceEvidence.contentSha256),
+      kind: sourceEvidence.kind,
+      extension: sourceEvidence.extension,
+      mimeType: sourceEvidence.contentType,
+      targetName: targetNameForAsset(assetId, sourceEvidence.extension, sourceEvidence.contentSha256),
       objectKey: objectKeyForAsset(
         input.uploadDir,
         sourceRecordId,
         assetId,
-        asset.extension,
+        sourceEvidence.extension,
         sourceEvidence.contentSha256
       ),
       contentSha256: sourceEvidence.contentSha256,
@@ -609,6 +731,7 @@ async function syncNoteMaterialVideos(input = {}) {
   const contentPlanEvidence = planned.map((plan) => normalizeContentPlanEvidence({
     sourceRecordFingerprint: sha256Text(sourceRecordId),
     assetId: plan.assetId,
+    kind: plan.kind,
     contentSha256: plan.contentSha256,
     size: plan.size,
     mimeType: plan.contentType,
@@ -652,7 +775,9 @@ async function syncNoteMaterialVideos(input = {}) {
     )
     if (sourceEvidence.contentSha256 !== plan.contentSha256 ||
         sourceEvidence.size !== plan.size ||
-        sourceEvidence.contentType !== plan.contentType) {
+        sourceEvidence.kind !== plan.kind ||
+        sourceEvidence.extension !== plan.extension ||
+        sourceEvidence.contentType !== plan.mimeType) {
       throw new Error(failureMessage)
     }
     return sourceEvidence
@@ -694,9 +819,10 @@ async function syncNoteMaterialVideos(input = {}) {
           evidence.driveVerified === true && evidence.ossVerified === true) {
         resultAssets.push({
           ...cloneMediaAsset(existing),
+          kind: plan.kind,
           contentSha256: plan.contentSha256,
           sourceFingerprint: plan.asset.sourceFingerprint,
-          mimeType: plan.asset.mimeType,
+          mimeType: plan.mimeType,
           size: plan.size,
           displayOrder: plan.displayOrder
         })
@@ -711,13 +837,13 @@ async function syncNoteMaterialVideos(input = {}) {
     if (input.dryRun === true) {
       resultAssets.push({
         assetId: plan.assetId,
-        kind: 'video',
+        kind: plan.kind,
         objectKey: plan.objectKey,
         contentSha256: plan.contentSha256,
         sourceFingerprint: plan.asset.sourceFingerprint,
         targetDriveFingerprint: '',
         displayOrder: plan.displayOrder,
-        mimeType: plan.asset.mimeType,
+        mimeType: plan.mimeType,
         size: plan.size,
         verified: false
       })
@@ -725,15 +851,25 @@ async function syncNoteMaterialVideos(input = {}) {
       continue
     }
 
+    const materializeAsset = input.drive && (
+      typeof input.drive.materializeAsset === 'function'
+        ? input.drive.materializeAsset
+        : input.drive.materializeVideo
+    )
+    const putMaterialDeterministic = input.oss && (
+      typeof input.oss.putMaterialDeterministic === 'function'
+        ? input.oss.putMaterialDeterministic
+        : input.oss.putVideoDeterministic
+    )
     if (!input.drive || typeof input.drive.ensureListingFolder !== 'function' ||
-        typeof input.drive.materializeVideo !== 'function') {
+        typeof materializeAsset !== 'function') {
       throw new Error('房源笔记素材同步缺少 Drive 写后回读适配器')
     }
-    if (!input.oss || typeof input.oss.putVideoDeterministic !== 'function') {
+    if (!input.oss || typeof putMaterialDeterministic !== 'function') {
       throw new Error('房源笔记素材同步缺少 OSS 写后回读适配器')
     }
     await ensureTargetFolder()
-    const driveResult = await input.drive.materializeVideo({
+    const driveResult = await materializeAsset.call(input.drive, {
       asset: plan.asset,
       targetFolderToken: targetFolder.token,
       targetName: plan.targetName,
@@ -744,14 +880,16 @@ async function syncNoteMaterialVideos(input = {}) {
         normalizeText(driveResult.targetName) !== plan.targetName ||
         contentSha256(driveResult.contentSha256) !== plan.contentSha256 ||
         crypto.createHash('sha256').update(driveResult.buffer).digest('hex') !== plan.contentSha256 ||
-        driveResult.buffer.length !== plan.size) {
+        driveResult.buffer.length !== plan.size ||
+        normalizeContentMimeType(driveResult.contentType || plan.mimeType).split(';')[0] !== plan.mimeType) {
       throw new Error('房源笔记 Drive 素材未通过内容回读')
     }
     driveVerifiedIds.push(plan.assetId)
-    const saved = await input.oss.putVideoDeterministic({
+    const saved = await putMaterialDeterministic.call(input.oss, {
+      kind: plan.kind,
       objectKey: plan.objectKey,
       buffer: driveResult.buffer,
-      contentType: driveResult.contentType || plan.asset.mimeType,
+      contentType: plan.mimeType,
       contentSha256: driveResult.contentSha256
     })
     if (!saved || saved.verified !== true || normalizeText(saved.objectKey) !== plan.objectKey ||
@@ -762,13 +900,13 @@ async function syncNoteMaterialVideos(input = {}) {
     ossVerifiedIds.push(plan.assetId)
     resultAssets.push({
       assetId: plan.assetId,
-      kind: 'video',
+      kind: plan.kind,
       objectKey: plan.objectKey,
       contentSha256: driveResult.contentSha256,
       sourceFingerprint: plan.asset.sourceFingerprint,
       targetDriveFingerprint: sha256Text(driveResult.targetToken),
       displayOrder: plan.displayOrder,
-      mimeType: plan.asset.mimeType,
+      mimeType: plan.mimeType,
       size: driveResult.buffer.length,
       verified: true
     })
@@ -790,7 +928,7 @@ async function syncNoteMaterialVideos(input = {}) {
   const mediaAssets = resultAssets.map(cloneMediaAsset)
   const result = {
     mediaAssets,
-    primaryVideo: mediaAssets[0] || null,
+    primaryVideo: mediaAssets.find((asset) => asset.kind === 'video') || null,
     noop: transferred === 0 && input.dryRun !== true,
     dryRun: input.dryRun === true,
     ...contentPlanSummary,
@@ -866,7 +1004,8 @@ async function replaceNoteManagedMedia(listing, mediaAssets, options = {}) {
     return
   }
   listing.mediaAssets = mediaAssets.map(cloneMediaAsset)
-  listing.videoKey = listing.mediaAssets[0] ? listing.mediaAssets[0].objectKey : ''
+  const primaryVideo = listing.mediaAssets.find((asset) => asset.kind === 'video')
+  listing.videoKey = primaryVideo ? primaryVideo.objectKey : ''
   listing.videoUrl = ''
 }
 
@@ -890,7 +1029,7 @@ async function clearNoteManagedMedia(listing, state, options = {}) {
     physicalUnitFingerprint: normalizeText(state && state.physicalUnitFingerprint),
     digest: '',
     status: 'cleared',
-    counts: { video: 0, nonVideo: 0, duplicateReference: 0 },
+    counts: { video: 0, image: 0, unsupported: 0, nonVideo: 0, duplicateReference: 0 },
     updatedAt: normalizeText(state && state.updatedAt)
   }
   return hadAssets || Boolean(managedPrimary)
@@ -956,6 +1095,8 @@ async function syncNoteMaterialsForInventory(input = {}) {
     retained: 0,
     failed: 0,
     video: 0,
+    image: 0,
+    unsupported: 0,
     nonVideo: 0,
     duplicateReference: 0,
     rows: []
@@ -1003,6 +1144,8 @@ async function syncNoteMaterialsForInventory(input = {}) {
         resolvedRows.push({ sourceRecordId, listing, resolved, linkFingerprint, expectedStateKey })
         report.resolved += 1
         report.video += resolved.counts.video
+        report.image += resolved.counts.image
+        report.unsupported += resolved.counts.unsupported
         report.nonVideo += resolved.counts.nonVideo
         report.duplicateReference += resolved.counts.duplicateReference
       } catch (error) {
@@ -1040,7 +1183,9 @@ async function syncNoteMaterialsForInventory(input = {}) {
       return report
     }
 
-    const unsupportedRows = resolvedRows.filter((row) => Number(row.resolved.counts.nonVideo || 0) > 0)
+    const unsupportedRows = resolvedRows.filter((row) => Number(
+      row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0
+    ) > 0)
     if (unsupportedRows.length) {
       report.failed += unsupportedRows.length
       report.complete = false
@@ -1049,6 +1194,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
       report.rows.push(...unsupportedRows.map((row) => ({
         sourceRecordId: row.sourceRecordId,
         status: 'unsupported-non-video',
+        unsupported: Number(row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0),
         nonVideo: Number(row.resolved.counts.nonVideo || 0)
       })))
       return report
@@ -1199,8 +1345,18 @@ async function syncNoteMaterialsForInventory(input = {}) {
             row.sourceRecordId
           ),
           verifyExisting: async (asset, target) => {
-            if (!input.drive || typeof input.drive.verifyMaterializedVideo !== 'function' ||
-                !input.oss || typeof input.oss.verifyVideoDeterministic !== 'function') {
+            const verifyMaterializedAsset = input.drive && (
+              typeof input.drive.verifyMaterializedAsset === 'function'
+                ? input.drive.verifyMaterializedAsset
+                : input.drive.verifyMaterializedVideo
+            )
+            const verifyMaterialDeterministic = input.oss && (
+              typeof input.oss.verifyMaterialDeterministic === 'function'
+                ? input.oss.verifyMaterialDeterministic
+                : input.oss.verifyVideoDeterministic
+            )
+            if (!input.drive || typeof verifyMaterializedAsset !== 'function' ||
+                !input.oss || typeof verifyMaterialDeterministic !== 'function') {
               return { sourceVerified: false, driveVerified: false, ossVerified: false }
             }
             // syncNoteMaterialVideos 已在任何写入前下载并校验当前源内容；复用校验必须绑定同一份证据，
@@ -1211,12 +1367,12 @@ async function syncNoteMaterialsForInventory(input = {}) {
             if (!sourceVerified) {
               return { sourceVerified: false, driveVerified: false, ossVerified: false }
             }
-            const driveEvidence = await input.drive.verifyMaterializedVideo({
+            const driveEvidence = await verifyMaterializedAsset.call(input.drive, {
               ...target,
               contentSha256: asset.contentSha256,
               size: asset.size
             })
-            const ossEvidence = await input.oss.verifyVideoDeterministic(asset)
+            const ossEvidence = await verifyMaterialDeterministic.call(input.oss, asset)
             return {
               sourceVerified: true,
               driveVerified: driveEvidence && driveEvidence.verified === true,

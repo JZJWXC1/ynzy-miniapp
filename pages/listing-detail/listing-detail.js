@@ -22,55 +22,72 @@ function safeText(value) {
 function normalizePublicMediaAssets(listing = {}) {
   if (!Array.isArray(listing.mediaAssets)) return []
   const assetIds = new Set()
+  let imageNumber = 0
+  let videoNumber = 0
   return listing.mediaAssets
     .map((asset) => ({
       assetId: safeText(asset && asset.assetId),
       kind: safeText(asset && asset.kind),
       displayOrder: Number(asset && asset.displayOrder),
       label: safeText(asset && asset.label),
+      imageUrl: safeText(asset && asset.imageUrl),
       videoUrl: safeText(asset && asset.videoUrl),
       coverUrl: safeText(asset && asset.coverUrl)
     }))
     .filter((asset) => {
+      const hasMatchingCapability = (
+        (asset.kind === 'image' && asset.imageUrl) ||
+        (asset.kind === 'video' && asset.videoUrl)
+      )
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/.test(asset.assetId) ||
-          asset.kind !== 'video' || !asset.videoUrl || assetIds.has(asset.assetId)) return false
+          !hasMatchingCapability || assetIds.has(asset.assetId)) return false
       assetIds.add(asset.assetId)
       return true
     })
-    .sort((left, right) => (
-      (Number.isFinite(left.displayOrder) ? left.displayOrder : Number.MAX_SAFE_INTEGER) -
-        (Number.isFinite(right.displayOrder) ? right.displayOrder : Number.MAX_SAFE_INTEGER) ||
-      left.assetId.localeCompare(right.assetId)
-    ))
-    .map((asset, index) => ({
-      ...asset,
-      displayOrder: index,
-      label: asset.label || `视频 ${index + 1}`
-    }))
+    .map((asset, index) => {
+      if (asset.kind === 'image') imageNumber += 1
+      if (asset.kind === 'video') videoNumber += 1
+      return {
+        ...asset,
+        displayOrder: Number.isFinite(asset.displayOrder) ? asset.displayOrder : index,
+        label: asset.label || (
+          asset.kind === 'image'
+            ? `图片 ${imageNumber}`
+            : `视频 ${videoNumber}`
+        )
+      }
+    })
 }
 
 function listingWithSelectedMedia(listing = {}, preferredAssetId = '') {
   const mediaAssets = normalizePublicMediaAssets(listing)
   if (!mediaAssets.length) {
+    const selectedMediaKind = safeText(listing.videoUrl)
+      ? 'video'
+      : (safeText(listing.imageUrl) ? 'image' : '')
     return {
       listing: {
         ...listing,
         mediaAssets: []
       },
       selectedMediaAssetId: '',
-      canShareVideo: Boolean(safeText(listing.videoUrl))
+      selectedMediaKind,
+      canShareVideo: selectedMediaKind === 'video'
     }
   }
   const selected = mediaAssets.find((asset) => asset.assetId === safeText(preferredAssetId)) || mediaAssets[0]
+  const selectedIsVideo = selected.kind === 'video'
   return {
     listing: {
       ...listing,
       mediaAssets,
-      videoUrl: selected.videoUrl,
-      coverUrl: selected.coverUrl || ''
+      imageUrl: selectedIsVideo ? '' : selected.imageUrl,
+      videoUrl: selectedIsVideo ? selected.videoUrl : '',
+      coverUrl: selected.coverUrl || (selectedIsVideo ? '' : selected.imageUrl)
     },
     selectedMediaAssetId: selected.assetId,
-    canShareVideo: true
+    selectedMediaKind: selected.kind,
+    canShareVideo: selectedIsVideo
   }
 }
 
@@ -203,6 +220,7 @@ Page({
     sensitiveSubmitting: false,
     canShareVideo: false,
     selectedMediaAssetId: '',
+    selectedMediaKind: '',
     shareVideoBusy: false,
     saveVideoBusy: false,
     shareStateText: '原视频可直接播放、转发或保存，不包含具体地址和房东联系方式。',
@@ -300,6 +318,7 @@ Page({
       shareVideoBusy: false,
       saveVideoBusy: false,
       selectedMediaAssetId: '',
+      selectedMediaKind: '',
       phoneCallBusy: false,
       shareStateText: '正在按当前账号重新读取房源'
     })
@@ -389,6 +408,9 @@ Page({
     this.invalidateDetailOperations()
     this._videoPlaybackRefreshCount = 0
     this._videoPlaybackFailureNotified = false
+    this._imageLoadRefreshCount = 0
+    this._imageLoadRefreshPending = false
+    this._imageLoadFailureNotified = false
     this._mediaRefreshPromise = null
     this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
     if (wx.hideLoading) wx.hideLoading()
@@ -428,6 +450,7 @@ Page({
       shareVideoBusy: false,
       saveVideoBusy: false,
       selectedMediaAssetId: '',
+      selectedMediaKind: '',
       showingSubmitting: false,
       showingPhotoPath: '',
       phoneCallBusy: false
@@ -464,6 +487,7 @@ Page({
           ownSensitiveLoadFailed: false,
           canShareVideo: false,
           selectedMediaAssetId: '',
+          selectedMediaKind: '',
           shareBrokerName: '',
           currentUserId: '',
           phoneCallBusy: false,
@@ -514,12 +538,13 @@ Page({
         sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
         selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
+        selectedMediaKind: mediaSelection.selectedMediaKind,
         shareBrokerName: user.name || '',
         currentUserId: user.id || '',
         phoneCallBusy: false,
         shareStateText: canShareVideo
           ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
-          : '这套房源暂无可转发视频。'
+          : (mediaSelection.selectedMediaKind === 'image' ? '点击图片可查看大图。' : '这套房源暂无可转发视频。')
       });
       if (user.id) this.flushPhoneFootprints(user.id)
       // 上传人自查自己上传的房源：直接拉取地址/房东电话填充，后端免留痕且不耗额度。
@@ -541,7 +566,8 @@ Page({
           isVerified: false,
           sensitiveVisible: false,
           canShareVideo: false,
-          selectedMediaAssetId: ''
+          selectedMediaAssetId: '',
+          selectedMediaKind: ''
         })
         return
       }
@@ -558,7 +584,8 @@ Page({
             reasonText: '这套房源不存在或已下架，请返回重新找房。'
           },
           canShareVideo: false,
-          selectedMediaAssetId: ''
+          selectedMediaAssetId: '',
+          selectedMediaKind: ''
         })
         return
       }
@@ -572,7 +599,8 @@ Page({
         listingAccessRequired: false,
         sensitiveVisible: false,
         canShareVideo: false,
-        selectedMediaAssetId: ''
+        selectedMediaAssetId: '',
+        selectedMediaKind: ''
       })
     });
   },
@@ -639,25 +667,33 @@ Page({
     const mediaAssets = normalizePublicMediaAssets(listing)
     const selected = mediaAssets.find((asset) => asset.assetId === assetId)
     if (!selected || assetId === safeText(this.data.selectedMediaAssetId)) return
-    // 切换视频时立即作废旧下载、分享、保存和媒体刷新；迟到回调不得再操作新选中的视频。
+    // 切换素材时只作废旧媒体下载、分享、保存和刷新；带看等非媒体操作继续按自己的序号完成。
     this.invalidateMediaOperations()
     this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
     this._mediaRefreshPromise = null
     this._videoPlaybackRefreshCount = 0
     this._videoPlaybackFailureNotified = false
+    this._imageLoadRefreshCount = 0
+    this._imageLoadRefreshPending = false
+    this._imageLoadFailureNotified = false
     if (wx.hideLoading) wx.hideLoading()
+    const selectedIsVideo = selected.kind === 'video'
     this.setData({
       listing: {
         ...listing,
         mediaAssets,
-        videoUrl: selected.videoUrl,
-        coverUrl: selected.coverUrl || ''
+        imageUrl: selectedIsVideo ? '' : selected.imageUrl,
+        videoUrl: selectedIsVideo ? selected.videoUrl : '',
+        coverUrl: selected.coverUrl || (selectedIsVideo ? '' : selected.imageUrl)
       },
       selectedMediaAssetId: selected.assetId,
-      canShareVideo: true,
+      selectedMediaKind: selected.kind,
+      canShareVideo: selectedIsVideo,
       shareVideoBusy: false,
       saveVideoBusy: false,
-      shareStateText: '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+      shareStateText: selectedIsVideo
+        ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+        : '点击图片可查看大图。'
     })
   },
 
@@ -684,21 +720,29 @@ Page({
         throw error
       }
       const mediaSelection = listingWithSelectedMedia(fresh || {}, selectedMediaAssetId)
-      if (!fresh || fresh.unavailable || !mediaSelection.canShareVideo) {
-        const error = new Error('房源视频不存在或已下架')
+      if (!fresh || fresh.unavailable || !mediaSelection.selectedMediaKind) {
+        const error = new Error('房源素材不存在或已下架')
         error.statusCode = 404
         throw error
       }
       const merged = Object.assign({}, this.data.listing || {}, {
         mediaAssets: mediaSelection.listing.mediaAssets,
+        imageUrl: mediaSelection.listing.imageUrl || '',
         videoUrl: mediaSelection.listing.videoUrl,
         coverUrl: mediaSelection.listing.coverUrl || '',
-        hasVideo: true
+        hasVideo: Boolean(
+          safeText(mediaSelection.listing.videoUrl) ||
+          mediaSelection.listing.mediaAssets.some((asset) => asset.kind === 'video')
+        )
       })
       this.setData({
         listing: merged,
         selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
-        canShareVideo: true
+        selectedMediaKind: mediaSelection.selectedMediaKind,
+        canShareVideo: mediaSelection.canShareVideo,
+        shareStateText: mediaSelection.canShareVideo
+          ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+          : '点击图片可查看大图。'
       })
       return merged
     }).finally(() => {
@@ -727,6 +771,42 @@ Page({
     if (this._pageActive === false || this._videoPlaybackFailureNotified) return
     this._videoPlaybackFailureNotified = true
     wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
+  },
+
+  previewCurrentImage() {
+    const listing = this.data.listing || {}
+    const imageUrl = safeText(listing.imageUrl)
+    if (this.data.selectedMediaKind !== 'image' || !imageUrl || !wx.previewImage) return
+    wx.previewImage({
+      current: imageUrl,
+      urls: [imageUrl]
+    })
+  },
+
+  onImageLoadError() {
+    if (this.data.selectedMediaKind !== 'image') return
+    if (this._imageLoadRefreshPending) return
+    if (Number(this._imageLoadRefreshCount || 0) >= 1) {
+      this.notifyImageLoadFailure()
+      return
+    }
+    this._imageLoadRefreshCount = Number(this._imageLoadRefreshCount || 0) + 1
+    this._imageLoadRefreshPending = true
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    this.refreshListingMedia().catch((error) => {
+      if (error && error.staleMediaRefresh) return
+      if (this._pageActive === false || Number(this.listingLoadGeneration || 0) !== requestGeneration || currentAuthSessionKey() !== requestSessionKey) return
+      this.notifyImageLoadFailure()
+    }).finally(() => {
+      this._imageLoadRefreshPending = false
+    })
+  },
+
+  notifyImageLoadFailure() {
+    if (this._pageActive === false || this._imageLoadFailureNotified) return
+    this._imageLoadFailureNotified = true
+    wx.showToast({ title: '图片加载失败，请重试', icon: 'none' })
   },
 
   downloadVideoFileOnce(videoUrl) {
@@ -862,7 +942,8 @@ Page({
   },
 
   async prepareVideoShare() {
-    if (!this.data.canShareVideo) {
+    // 旧单视频详情没有 selectedMediaKind；只要不是明确选中了图片，仍沿用既有转发能力。
+    if (this.data.selectedMediaKind === 'image' || !this.data.canShareVideo) {
       wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
       return
     }
@@ -920,7 +1001,7 @@ Page({
   async saveListingVideo() {
     if (this.data.saveVideoBusy || this.data.shareVideoBusy) return
     const listing = this.data.listing || {}
-    if (!listing.videoUrl) {
+    if (this.data.selectedMediaKind === 'image' || !this.data.canShareVideo || !listing.videoUrl) {
       wx.showToast({ title: '这套房源暂无可保存视频', icon: 'none' })
       return
     }

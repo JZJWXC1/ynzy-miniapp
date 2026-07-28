@@ -68,7 +68,7 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 - `uploadRecords`：上传记录。
 - `companySheetSnapshot`：飞书公司房源固定十列快照缓存；镜像模式下同时保存
   `sourceMode=feishu-mini-mirror-v1` 与 `schemaVersion=1`，未知来源或未知版本不得被首页渲染。
-- `listings[].mediaAssets`：服务端私有的已验证多视频清单；每项保存稳定素材 ID、受控 OSS
+- `listings[].mediaAssets`：服务端私有的已验证图片/视频清单；每项保存稳定素材 ID、受控 OSS
   对象键、内容摘要、顺序和回读证据。公开接口只投影素材 ID、顺序和 API 域能力地址，不返回
   OSS 对象键、飞书 token、源文件名或源记录 ID。
 - `listings[].noteMaterialState`：员工源表“房源笔记”素材同步的私有状态、集合摘要和失败状态；
@@ -299,13 +299,15 @@ token 还签入账号级 `tokenVersion`：`POST /mini/auth/logout`、用户自�
 - 公司房源免视频，允许无视频进入公司房源列表和详情。
 - 二房东房源、业主房源必须带真实视频，`videoUrl` 或 `videoKey` 至少有一个。
 - 视频文件本体不进 `db.json`；房源只持久化受控目录内的 `videoKey`，并兼容读取可还原为同一受控对象键的历史 OSS 源 URL。
-- 员工“房源笔记”可为同一房源提供多个视频。服务端私有 `mediaAssets` 按稳定
-  `assetId/displayOrder` 保存全部已验证视频，`videoKey` 仅兼容指向第一条；所有视频必须在
+- 员工“房源笔记”可为同一房源提供多张图片和多个视频。服务端私有 `mediaAssets` 按稳定
+  `assetId/displayOrder` 保存全部已验证素材，`videoKey` 仅兼容指向清单中的第一条真实视频；
+  图片只允许 JPEG、PNG、WebP、GIF，并按文件真实字节签名核验扩展名与 MIME。所有素材必须在
   飞书目标目录和 OSS 实际 GET 回读均验证内容摘要与字节数后，才原子替换整套清单。
 - 当前有效房源的公开 DTO 只返回 API 域不透明能力地址，默认有效 6 小时；地址不包含 OSS 对象键、历史文件名、AccessKey 或 OSS 签名参数。`GET /mini/listings/:id/media/:kind` 支持 `GET`、`HEAD` 和单段 `Range`，每次请求都重新核对房源仍为前台有效状态，再由服务端生成默认 900 秒的 OSS 短签名并限长流式转发。媒体源只允许配置中的精确 OSS origin 和受控上传目录，不跟随重定向；重复房源 ID 无法唯一解析时 fail-closed。代理默认全局最多 24 路、同一可信客户端最多 6 路，客户端断开、上游 abort/error、超时及正常结束都必须主动销毁上游并只释放一次名额，避免单个来源占满全局并发。
-- 多视频能力令牌同时绑定房源、`assetId`、对象键指纹和整套媒体状态；视频被替换、删除、
-  调序或房态失效后旧能力立即失效。详情页仍只渲染一个播放器，多素材时显示选择条；切换素材
-  会作废旧播放、保存和转发操作，详情刷新时优先保留仍存在的当前素材，否则回到第一条。
+- 图片/视频能力令牌同时绑定房源、`assetId`、对象键指纹和整套媒体状态；任一素材被替换、删除、
+  调序或房态失效后整套旧能力立即失效。详情页只保留一个当前素材展示位，多素材时显示选择条；
+  图片可用微信原生大图预览，只有当前选中视频时才显示并开放原视频保存/转发。切换素材会作废
+  旧媒体刷新、保存和转发操作，详情刷新时优先保留仍存在的当前素材，否则回到第一条。
 - 上传人通过受保护的“我的房源”接口查看本人待审核/暂不可公开房源时，服务端签发独立 `owner` scope 的短时能力 URL。该令牌同时绑定服务端验签账号、房源、媒体对象和当前审核/维护状态；URL 不明文携带账号或状态，不能跨账号、降级成公共令牌或在房态/媒体变化后继续使用。微信原生 `image/video` 读取已签 URL 时无需再附 Authorization，但 URL 只能由可信本人接口取得。
 - 当前有效合作房源视频属于公开推广素材，游客可直接播放、转发或保存。播放器 `binderror`、保存视频收到 `401/403/404` 时只允许匿名刷新详情并重试一次，禁止循环；保存下载超时为 300 秒。转发留痕仍只接受已登录账号，留痕失败不得造成视频重复发送。含能力地址的列表/详情 JSON 与媒体响应均禁止共享缓存。
 - 小程序 `request` 与 `downloadFile` 域名必须同时配置为合法 HTTPS 且与 API 严格同源（不得含 URL 用户名/密码），并在微信后台将同一 API 域加入 request、downloadFile 与 video 媒体合法域名。发布前在目标数据环境运行 `node scripts/listing-media-readiness-audit.js`；脚本只输出计数和不可逆短指纹，任一前台视频无法解析为受控对象键时退出 `2` 并阻止发布。该脚本只验证“当前仍声明有视频”的行，发布/同步巡检还必须比较前后 `withVideo` 汇总数；无业务解释的减少要停止推进并核对同步对账，不能把“剩余视频都可解析”误当成数量守恒。
@@ -751,8 +753,10 @@ node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-p
 端口、重定向、编码路径分隔符和非白名单主机。文件夹、文档和 Wiki 会完整分页并递归展开；
 默认最大深度 8、最多检查 5000 项，重复引用会去重，循环、跨房源复用同一源 token、分页异常或
 超过上限都会在首个目标写入前阻断。飞书客户端在分页累计超过 `maxItems` 的当页立即停止，不会
-先读完最多数万条元数据再由解析层拒绝。当前进入小程序的素材只支持 `.mp4/.mov/.m4v/.webm` 视频；
-图片和普通文件只计入 `nonVideo` 对账，不复制、不公开，验收时必须单独报告，不能声称已经同步。
+先读完最多数万条元数据再由解析层拒绝。当前进入小程序的素材支持 `.mp4/.mov/.m4v/.webm` 视频
+以及 `.jpg/.jpeg/.png/.webp/.gif` 图片；图片必须通过真实字节签名、MIME 和扩展名三方校验。
+PDF、Office 文档等普通文件继续计入 `unsupported/nonVideo` 并使整批 fail-closed，不复制、不公开，
+不能通过改后缀伪装成图片。
 
 每套房的规范飞书目录固定为：
 
@@ -821,10 +825,10 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 不会只凭易失元数据假绿；但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有两次完整预演的
 `contentPlanSha256/contentPlanAssetCount` 与外层计划摘要都一致后，才允许执行一次正式同步。
 
-同一房源的全部视频成功后，服务端才通过领域层原子替换 `mediaAssets`。空链接只清除
-`feishu-note-v1` 管理的视频，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或
-链接指纹变化会清除笔记管理视频。只有相同链接指纹、相同且非空物理房间、房源仍在架、已有
-视频且错误属于网络、限流、临时权限或 5xx 时，才允许保留上轮已验证清单。库存同步失败时素材
+同一房源的全部图片和视频成功后，服务端才通过领域层原子替换 `mediaAssets`。空链接只清除
+`feishu-note-v1` 管理的素材，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或
+链接指纹变化会清除笔记管理素材。只有相同链接指纹、相同且非空物理房间、房源仍在架、已有
+已验证素材且错误属于网络、限流、临时权限或 5xx 时，才允许保留上轮清单。库存同步失败时素材
 阶段完全不启动；素材失败不会回滚已经成功的库存字段，但本轮 `noteMaterials.published=false`，
 必须单独处理后才能声称素材同步完成。服务端明确拆分两个状态：`inventoryCommittable=true`
 表示库存与首页快照可原子提交；只有素材也完整成功时顶层 `success=true`。库存提交后素材失败时
@@ -857,7 +861,7 @@ FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
 才可恢复自动同步。
 dry-run 允许解析源集合但不得创建目录、上传云盘、写 OSS 或替换媒体。正式同步后必须同时回读
 顶层 `success=true`、`noteMaterials.complete=true`、
-`noteMaterials.published=true`，并对账 `video/nonVideo/duplicateReference/failed/retained/cleared`
+`noteMaterials.published=true`，并对账 `video/image/unsupported/nonVideo/duplicateReference/failed/retained/cleared`
 等汇总，同时核对 `contentPlanSha256/contentPlanAssetCount` 与已确认计划一致。公开响应只允许
 `assetId/kind/displayOrder/label` 和 API 能力地址，不得出现原始链接、
 飞书 token、云盘路径、OSS key、源文件名、源记录 ID 或私有同步状态。

@@ -3,16 +3,19 @@
 const assert = require('assert')
 const domain = require('../src/domain')
 
-function asset(id, order, sha) {
+function asset(id, order, sha, options = {}) {
+  const kind = options.kind || 'video'
+  const extension = options.extension || (kind === 'image' ? 'jpg' : 'mp4')
+  const mimeType = options.mimeType || (kind === 'image' ? 'image/jpeg' : 'video/mp4')
   return {
     assetId: id,
-    kind: 'video',
-    objectKey: `house-videos/feishu-note-v1/record/${id}.mp4`,
+    kind,
+    objectKey: `house-videos/feishu-note-v1/record/${id}.${extension}`,
     contentSha256: sha.repeat(64),
     sourceFingerprint: String(order + 1).repeat(64),
     targetDriveFingerprint: String(order + 3).repeat(64),
     displayOrder: order,
-    mimeType: 'video/mp4',
+    mimeType,
     size: 1024 + order,
     verified: true
   }
@@ -47,7 +50,7 @@ const db = {
 }
 
 const incoming = [
-  asset('MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 'a'),
+  asset('MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 'a', { kind: 'image' }),
   asset('MAT-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 1, 'b')
 ]
 
@@ -70,12 +73,14 @@ const result = domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', incoming,
   updatedAt: '2026-07-26 03:00:00'
 })
 assert.strictEqual(result.mediaAssetCount, 2)
-assert.strictEqual(db.listings[0].videoKey, incoming[0].objectKey, '旧单视频索引必须指向第一项，兼容已有管理链路')
+assert.strictEqual(db.listings[0].videoKey, incoming[1].objectKey, '旧单视频索引必须只指向首个视频，不能把排在前面的图片伪装成视频')
 assert.strictEqual(db.listings[0].videoUrl, '', '新清单落库后不得保留绕过代理的旧直链')
 assert.deepStrictEqual(db.listings[0].mediaAssets, incoming, '私有清单必须完整持久化已校验摘要和对象键')
 
 const detail = domain.listingDetail(db, 'L-MEDIA-PERSIST')
 assert.strictEqual(detail.mediaAssets.length, 2)
+assert.deepStrictEqual(detail.mediaAssets.map((item) => item.kind), ['image', 'video'], '公共安全骨架必须保留图片/视频类型')
+assert.strictEqual(detail.hasVideo, true, '混合清单中存在视频时仍必须识别为有视频')
 assert.ok(!JSON.stringify(detail).includes('objectKey'), '公共详情不得泄露对象键')
 assert.ok(!JSON.stringify(detail).includes('contentSha256'), '公共详情不得泄露内容摘要')
 assert.ok(!JSON.stringify(detail).includes('sourceFingerprint'), '公共详情不得泄露来源摘要')
@@ -86,6 +91,53 @@ assert.throws(
   '未完成 Drive/OSS 写后回读的素材不得落库'
 )
 assert.strictEqual(db.listings[0].mediaAssets.length, 2, '非法替换必须保持原清单不变')
+assert.throws(
+  () => domain.normalizePrivateListingMediaAssets([
+    asset('MAT-cccccccccccccccccccccccccccccccc', 0, 'c', {
+      kind: 'image',
+      extension: 'jpg',
+      mimeType: 'image/png'
+    })
+  ]),
+  /类型|对象键|扩展名/,
+  '图片 MIME 与对象扩展名不一致时必须 fail-closed'
+)
+;[
+  ['jpg', 'image/jpeg', 'e'],
+  ['jpeg', 'image/jpeg', 'f'],
+  ['png', 'image/png', 'a'],
+  ['webp', 'image/webp', 'b'],
+  ['gif', 'image/gif', 'c']
+].forEach(([extension, mimeType, sha], index) => {
+  const normalized = domain.normalizePrivateListingMediaAssets([
+    asset(`MAT-IMAGE-${String(index).padStart(28, '0')}`, 0, sha, {
+      kind: 'image',
+      extension,
+      mimeType
+    })
+  ])
+  assert.strictEqual(normalized[0].kind, 'image', `受支持图片 ${extension} 必须保留图片类型`)
+  assert.strictEqual(normalized[0].mimeType, mimeType, `受支持图片 ${extension} 必须保留规范 MIME`)
+})
+assert.throws(
+  () => domain.normalizePrivateListingMediaAssets([
+    asset('MAT-svgsvgsvgsvgsvgsvgsvgsvgsvgsvgsv', 0, 'd', {
+      kind: 'image',
+      extension: 'svg',
+      mimeType: 'image/svg+xml'
+    })
+  ]),
+  /图片类型|扩展名/,
+  '可执行或超出白名单的图片类型必须 fail-closed'
+)
+const imageOnly = {
+  ...db.listings[0],
+  mediaAssets: [asset('MAT-dddddddddddddddddddddddddddddddd', 0, 'd', { kind: 'image' })],
+  videoKey: ''
+}
+assert.strictEqual(domain.hasListingVideo(imageOnly), false, '只有图片的清单不得被 hasListingVideo 误判为视频')
+domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', imageOnly.mediaAssets)
+assert.strictEqual(db.listings[0].videoKey, '', '纯图片清单不得把图片对象键写进旧单视频索引')
 assert.throws(
   () => domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', incoming, { expectedStateKey: 'stale-state' }),
   /最新状态重试/,
