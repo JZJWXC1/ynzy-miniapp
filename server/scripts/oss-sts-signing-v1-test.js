@@ -52,8 +52,14 @@ function assertSignedUrl(urlText, objectKey, expectedSubresources) {
 async function assertPutObjectUsesSts() {
   const originalRequest = https.request
   let captured = null
+  let requestTimeoutMs = 0
   https.request = (options, onResponse) => {
     const req = new EventEmitter()
+    req.setTimeout = (timeoutMs) => {
+      requestTimeoutMs = timeoutMs
+      return req
+    }
+    req.destroy = () => {}
     req.end = (body) => {
       captured = { options, body }
       process.nextTick(() => {
@@ -74,6 +80,7 @@ async function assertPutObjectUsesSts() {
     assert.strictEqual(result.statusCode, 200, '拦截的 PUT 成功响应应正常返回')
     assert.ok(captured, 'putObjectBuffer 必须发起 HTTPS PUT')
     assert.strictEqual(captured.options.method, 'PUT')
+    assert.strictEqual(requestTimeoutMs, 30000, 'STS PUT 必须安装 30 秒空闲超时')
     assert.strictEqual(captured.options.headers['x-oss-security-token'], TOKEN, 'STS PUT 必须发送 x-oss-security-token 头')
     assert.deepStrictEqual(captured.body, body, 'STS 加固不得改变上传二进制正文')
     assert.ok(captured.options.path.includes('%E5%B8%A6%E7%A9%BA%E6%A0%BC'), '对象路径仍应按段 URL 编码')
@@ -109,6 +116,8 @@ async function assertPutErrorRedactsSts() {
   const originalRequest = https.request
   https.request = (options, onResponse) => {
     const req = new EventEmitter()
+    req.setTimeout = () => req
+    req.destroy = () => {}
     req.end = () => {
       process.nextTick(() => {
         const response = new EventEmitter()

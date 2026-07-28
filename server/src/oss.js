@@ -179,6 +179,9 @@ function readSourceOrigins() {
     .filter(Boolean)
 }
 
+const OSS_OBJECT_REQUEST_TIMEOUT_MS = 30000
+const OSS_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
+
 function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
   const missing = missingConfigKeys()
   if (missing.length) {
@@ -207,6 +210,9 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
     }
     headers[normalizedKey] = value
   })
+  if (options.forbidOverwrite === true) {
+    headers['x-oss-forbid-overwrite'] = 'true'
+  }
   if (config.oss.securityToken) {
     headers['x-oss-security-token'] = config.oss.securityToken
   }
@@ -222,6 +228,19 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
   const encodedPath = `/${encodeObjectPath(objectKey)}`
 
   return new Promise((resolve, reject) => {
+    let settled = false
+    const resolveOnce = (value) => {
+      if (settled) return false
+      settled = true
+      resolve(value)
+      return true
+    }
+    const rejectOnce = (error) => {
+      if (settled) return false
+      settled = true
+      reject(error)
+      return true
+    }
     const req = https.request({
       method: 'PUT',
       hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
@@ -229,21 +248,43 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
       headers
     }, (res) => {
       let raw = ''
+      let responseBytes = 0
+      const rejectResponseFailure = () => {
+        const error = new Error('OSS 上传响应中断')
+        error.statusCode = 502
+        rejectOnce(error)
+      }
+      res.on('aborted', rejectResponseFailure)
+      res.on('error', rejectResponseFailure)
       res.setEncoding('utf8')
       res.on('data', (chunk) => {
+        if (settled) return
+        responseBytes += Buffer.byteLength(chunk)
+        if (responseBytes > OSS_ERROR_RESPONSE_MAX_BYTES) {
+          const error = new Error('OSS 上传响应超过允许大小')
+          error.statusCode = 502
+          if (rejectOnce(error)) req.destroy()
+          return
+        }
         raw += chunk
       })
       res.on('end', () => {
+        if (settled) return
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ objectKey, fileUrl: publicFileUrl(objectKey), statusCode: res.statusCode })
+          resolveOnce({ objectKey, fileUrl: publicFileUrl(objectKey), statusCode: res.statusCode })
           return
         }
         const error = new Error(sanitizeOssErrorText(raw) || `OSS 上传失败：${res.statusCode}`)
         error.statusCode = res.statusCode || 502
-        reject(error)
+        rejectOnce(error)
       })
     })
-    req.on('error', reject)
+    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+      const error = new Error('OSS 上传请求超时')
+      error.statusCode = 504
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    req.on('error', rejectOnce)
     req.end(body)
   })
 }
@@ -270,50 +311,193 @@ function readObjectBufferAuthenticated(objectKey, maxBytes) {
   ].join('\n')
   headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
   return new Promise((resolve, reject) => {
+    let settled = false
+    const resolveOnce = (value) => {
+      if (settled) return false
+      settled = true
+      resolve(value)
+      return true
+    }
+    const rejectOnce = (error) => {
+      if (settled) return false
+      settled = true
+      reject(error)
+      return true
+    }
     const req = https.request({
       method: 'GET',
       hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
       path: `/${encodeObjectPath(objectKey)}`,
       headers
     }, (res) => {
+      const rejectResponseFailure = () => {
+        const error = new Error('OSS 回读素材响应中断')
+        error.statusCode = 502
+        rejectOnce(error)
+      }
+      res.on('aborted', rejectResponseFailure)
+      res.on('error', rejectResponseFailure)
       const declaredLength = Number(res.headers && res.headers['content-length'])
       if (Number.isFinite(declaredLength) && declaredLength > safeMaxBytes) {
-        res.resume()
         const error = new Error('OSS 回读素材超过允许大小')
         error.statusCode = 413
-        reject(error)
+        if (rejectOnce(error)) {
+          res.resume()
+          req.destroy()
+        }
         return
       }
       const chunks = []
       let size = 0
       res.on('data', (chunk) => {
+        if (settled) return
         size += chunk.length
         if (size > safeMaxBytes) {
-          req.destroy()
           const error = new Error('OSS 回读素材超过允许大小')
           error.statusCode = 413
-          reject(error)
+          if (rejectOnce(error)) req.destroy()
           return
         }
-        chunks.push(chunk)
+        chunks.push(Buffer.from(chunk))
       })
       res.on('end', () => {
+        if (settled) return
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const error = new Error(`OSS 回读素材失败：${res.statusCode}`)
           error.statusCode = res.statusCode || 502
-          reject(error)
+          rejectOnce(error)
           return
         }
         const buffer = Buffer.concat(chunks, size)
-        resolve({
+        resolveOnce({
           buffer,
           size,
           contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
-          metadataSha256: String(res.headers && res.headers['x-oss-meta-content-sha256'] || '').trim()
+          metadataSha256: String(res.headers && res.headers['x-oss-meta-content-sha256'] || '').trim(),
+          contentType: String(res.headers && res.headers['content-type'] || '')
+            .split(';')[0]
+            .trim()
+            .toLowerCase()
         })
       })
     })
-    req.on('error', reject)
+    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+      const error = new Error('OSS 回读素材请求超时')
+      error.statusCode = 504
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    req.on('error', rejectOnce)
+    req.end()
+  })
+}
+
+const OSS_CONTROL_REQUEST_TIMEOUT_MS = 30000
+const OSS_CONTROL_RESPONSE_MAX_BYTES = 64 * 1024
+
+function parseBucketVersioningXml(value) {
+  const xml = String(value || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/^\s*<\?xml\s+[^?]*\?>\s*/i, '')
+    .trim()
+  const namespace = 'http:\\/\\/doc\\.oss-cn-[a-z0-9-]+\\.aliyuncs\\.com'
+  const attributes = `(?:\\s+xmlns=(?:"${namespace}"|'${namespace}'))?`
+  const statusPattern = new RegExp(
+    `^<VersioningConfiguration${attributes}\\s*>\\s*` +
+    '<Status>\\s*(Enabled|Suspended)\\s*</Status>\\s*' +
+    '</VersioningConfiguration>$'
+  )
+  const statusMatch = xml.match(statusPattern)
+  if (statusMatch) return statusMatch[1]
+  const emptyPattern = new RegExp(
+    `^(?:<VersioningConfiguration${attributes}\\s*/>|` +
+    `<VersioningConfiguration${attributes}\\s*>\\s*</VersioningConfiguration>)$`
+  )
+  if (emptyPattern.test(xml)) return 'Disabled'
+  throw new Error('OSS Bucket 版本状态响应无效')
+}
+
+function readBucketVersioningState() {
+  const missing = missingConfigKeys()
+  if (missing.length) {
+    const error = new Error(`OSS 配置缺少 ${missing.join('、')}，无法确认禁止覆盖能力`)
+    error.statusCode = 503
+    throw error
+  }
+  const date = new Date().toUTCString()
+  const headers = { Date: date }
+  if (config.oss.securityToken) headers['x-oss-security-token'] = config.oss.securityToken
+  const resourcePath = `/${config.oss.bucket}/?versioning`
+  const stringToSign = [
+    'GET',
+    '',
+    '',
+    date,
+    `${canonicalizedOssHeaders(headers)}${resourcePath}`
+  ].join('\n')
+  headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const resolveOnce = (value) => {
+      if (settled) return false
+      settled = true
+      resolve(value)
+      return true
+    }
+    const rejectOnce = (error) => {
+      if (settled) return false
+      settled = true
+      reject(error)
+      return true
+    }
+    const req = https.request({
+      method: 'GET',
+      hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
+      path: '/?versioning',
+      headers
+    }, (res) => {
+      const rejectResponseFailure = () => {
+        const error = new Error('OSS Bucket 版本状态响应中断')
+        error.statusCode = 502
+        rejectOnce(error)
+      }
+      res.on('aborted', rejectResponseFailure)
+      res.on('error', rejectResponseFailure)
+      const chunks = []
+      let size = 0
+      res.on('data', (chunk) => {
+        if (settled) return
+        size += chunk.length
+        if (size > OSS_CONTROL_RESPONSE_MAX_BYTES) {
+          const error = new Error('OSS Bucket 版本状态响应过大')
+          error.statusCode = 502
+          if (rejectOnce(error)) req.destroy()
+          return
+        }
+        chunks.push(Buffer.from(chunk))
+      })
+      res.on('end', () => {
+        if (settled) return
+        if (res.statusCode !== 200) {
+          const error = new Error(`OSS Bucket 版本状态读取失败：${res.statusCode}`)
+          error.statusCode = res.statusCode || 502
+          rejectOnce(error)
+          return
+        }
+        try {
+          resolveOnce(parseBucketVersioningXml(Buffer.concat(chunks, size).toString('utf8')))
+        } catch (error) {
+          error.statusCode = 502
+          rejectOnce(error)
+        }
+      })
+    })
+    req.setTimeout(OSS_CONTROL_REQUEST_TIMEOUT_MS, () => {
+      const error = new Error('OSS Bucket 版本状态读取超时')
+      error.statusCode = 504
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    req.on('error', rejectOnce)
     req.end()
   })
 }
@@ -387,29 +571,68 @@ async function verifyMaterialDeterministic(asset = {}) {
     objectKey: normalized.objectKey,
     contentSha256: readback.contentSha256,
     size: readback.size,
+    contentType: readback.contentType,
     verified: readback.contentSha256 === normalized.contentSha256 &&
       (!readback.metadataSha256 || readback.metadataSha256 === normalized.contentSha256) &&
-      (!Number(asset.size) || readback.size === Number(asset.size))
+      (!Number(asset.size) || readback.size === Number(asset.size)) &&
+      readback.contentType === normalized.contentType
   }
 }
 
 async function putMaterialDeterministic(input = {}) {
   const normalized = validateDeterministicMaterialInput(input)
-  await putObjectBuffer(
-    normalized.objectKey,
-    normalized.buffer,
-    normalized.contentType,
-    { metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 } }
-  )
-  const verified = await verifyMaterialDeterministic({
+  const expected = {
     kind: normalized.kind,
     objectKey: normalized.objectKey,
     mimeType: normalized.contentType,
     contentSha256: normalized.contentSha256,
     size: normalized.buffer.length
-  })
-  if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希回读不一致')
-  return verified
+  }
+  try {
+    const existing = await verifyMaterialDeterministic(expected)
+    if (existing.verified !== true) {
+      const conflict = new Error('房源笔记 OSS 已有对象与确定性内容不一致，禁止覆盖')
+      conflict.statusCode = 409
+      throw conflict
+    }
+    return { ...existing, reused: true }
+  } catch (error) {
+    if (Number(error && error.statusCode) !== 404) throw error
+  }
+
+  const versioning = await readBucketVersioningState()
+  if (versioning !== 'Disabled') {
+    const error = new Error('OSS Bucket 版本控制已开启或暂停，禁止覆盖保护不可用')
+    error.statusCode = 503
+    throw error
+  }
+
+  try {
+    await putObjectBuffer(
+      normalized.objectKey,
+      normalized.buffer,
+      normalized.contentType,
+      {
+        metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 },
+        forbidOverwrite: true
+      }
+    )
+  } catch (error) {
+    if (Number(error && error.statusCode) !== 409) throw error
+    try {
+      const raced = await verifyMaterialDeterministic(expected)
+      if (raced.verified === true) return { ...raced, reused: true }
+    } catch (_) {
+      // 409 后只允许精确回读复用；任何读取异常都统一拒绝，不泄露上游正文。
+    }
+    const conflict = new Error('房源笔记 OSS 并发目标未通过确定性回读，禁止覆盖')
+    conflict.statusCode = 409
+    throw conflict
+  }
+
+  const verified = await verifyMaterialDeterministic(expected)
+  if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希、大小或类型回读不一致')
+  return { ...verified, reused: false }
 }
 
 async function verifyVideoDeterministic(asset = {}) {
