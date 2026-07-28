@@ -751,8 +751,10 @@ node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-p
 
 单元格只接受白名单租户 HTTPS 下的 `folder/file/docx/wiki` 路径，禁止用户名、密码、非 443
 端口、重定向、编码路径分隔符和非白名单主机。文件夹、文档和 Wiki 会完整分页并递归展开；
-默认最大深度 8、最多检查 5000 项，重复引用会去重，循环、跨房源复用同一源 token、分页异常或
-超过上限都会在首个目标写入前阻断。飞书客户端在分页累计超过 `maxItems` 的当页立即停止，不会
+默认最大深度 8、最多检查 5000 项，同一房源内的重复引用会去重，循环、分页异常或
+超过上限都会在首个目标写入前阻断。员工在多条房源记录中明确引用同一源素材时，每条记录都按
+自身 `sourceRecordId` 生成独立素材 ID、目标目录、OSS 对象键和公开能力地址；源文件字节可以相同，
+但目标身份、清单和访问凭证不得跨房源复用。飞书客户端在分页累计超过 `maxItems` 的当页立即停止，不会
 先读完最多数万条元数据再由解析层拒绝。当前进入小程序的素材支持 `.mp4/.mov/.m4v/.webm` 视频
 以及 `.jpg/.jpeg/.png/.webp/.gif` 图片；图片必须通过真实字节签名、MIME 和扩展名三方校验。
 PDF、Office 文档等普通文件继续计入 `unsupported/nonVideo` 并使整批 fail-closed，不复制、不公开，

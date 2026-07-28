@@ -973,7 +973,7 @@ async function testAtomicInventoryState() {
   assert.strictEqual(db.listings[1].videoKey, '')
 }
 
-async function testCrossRecordConflictBeforeWrites() {
+async function testSharedSourceTokenCreatesListingScopedCopies() {
   const db = { listings: [listing('rec-1'), listing('rec-2')] }
   const adapters = materialAdapters({ sharedToken: 'boxSharedVideo123' })
   const result = await syncNoteMaterialsForInventory({
@@ -988,10 +988,27 @@ async function testCrossRecordConflictBeforeWrites() {
     drive: adapters.drive,
     oss: adapters.oss
   })
-  assert.strictEqual(result.complete, false)
-  assert.ok(result.rows.some((row) => row.status === 'cross-record-token-conflict'))
-  assert.strictEqual(adapters.writes.length, 0, '跨记录 token 冲突必须在任何 Drive/OSS/清单写入前阻断')
-  assert.ok(db.listings.every((item) => item.mediaAssets.length === 0))
+  assert.strictEqual(result.complete, true, '员工在两条房源记录中明确引用同一素材时必须完整同步')
+  assert.strictEqual(result.published, true)
+  assert.strictEqual(result.failed, 0)
+  assert.deepStrictEqual(
+    adapters.writes.filter(([kind]) => kind === 'folder').map(([, sourceRecordId]) => sourceRecordId).sort(),
+    ['rec-1', 'rec-2'],
+    '共享源素材仍必须分别进入两套房源的独立飞书目录'
+  )
+  assert.strictEqual(adapters.writes.filter(([kind]) => kind === 'drive').length, 2)
+  assert.strictEqual(adapters.writes.filter(([kind]) => kind === 'oss').length, 2)
+  assert.ok(db.listings.every((item) => item.mediaAssets.length === 1))
+  assert.notStrictEqual(
+    db.listings[0].mediaAssets[0].assetId,
+    db.listings[1].mediaAssets[0].assetId,
+    '同一源 token 跨房源同步后必须生成不同的房源级素材身份'
+  )
+  assert.notStrictEqual(
+    db.listings[0].mediaAssets[0].objectKey,
+    db.listings[1].mediaAssets[0].objectKey,
+    '同一源 token 跨房源同步后不得复用 OSS 对象键'
+  )
 }
 
 async function testMediaCountLimitBeforeExternalWrites() {
@@ -1362,7 +1379,7 @@ async function run() {
   await testBoundedDownload()
   await testConcurrentStateConflictPreservesNewestListingState()
   await testAtomicInventoryState()
-  await testCrossRecordConflictBeforeWrites()
+  await testSharedSourceTokenCreatesListingScopedCopies()
   await testMediaCountLimitBeforeExternalWrites()
   await testMaterialTargetMustBeIndependentFromLegacySource()
   testInventoryCommitAndWholeRunStatusAreSeparated()

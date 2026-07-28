@@ -944,22 +944,6 @@ async function syncNoteMaterialVideos(input = {}) {
   return attachContentPlanEvidence(result, contentPlanEvidence)
 }
 
-function findCrossRecordTokenConflicts(rows) {
-  const owners = new Map()
-  const conflicts = []
-  ;(rows || []).forEach((row) => {
-    const recordId = normalizeText(row && row.sourceRecordId)
-    ;(row && Array.isArray(row.assets) ? row.assets : []).forEach((asset) => {
-      const token = normalizeText(asset && asset.sourceToken)
-      if (!recordId || !token) return
-      const existing = owners.get(token)
-      if (existing && existing !== recordId) conflicts.push({ sourceTokenFingerprint: sha256Text(token), owners: [existing, recordId].sort() })
-      else owners.set(token, recordId)
-    })
-  })
-  return conflicts
-}
-
 const runningInventoryDatabases = new WeakSet()
 
 function physicalUnitFingerprint(listing = {}) {
@@ -1151,22 +1135,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
       } catch (error) {
         pendingFailures.push({ sourceRecordId, listing, linkFingerprint, expectedStateKey, error })
       }
-    }
-
-    const conflicts = findCrossRecordTokenConflicts(resolvedRows.map((row) => ({
-      sourceRecordId: row.sourceRecordId,
-      assets: row.resolved.assets
-    })))
-    if (conflicts.length) {
-      report.failed += resolvedRows.length
-      report.complete = false
-      report.published = false
-      report.rows.push({
-        status: 'cross-record-token-conflict',
-        conflictCount: conflicts.length,
-        conflicts
-      })
-      return report
     }
 
     const overLimitRows = resolvedRows.filter((row) => row.resolved.assets.length > MAX_LISTING_MEDIA_ASSETS)
@@ -1485,7 +1453,6 @@ module.exports = {
   syncNoteMaterialVideos,
   assertMaterialSetEquality,
   assertIsolatedStatePaths,
-  findCrossRecordTokenConflicts,
   syncNoteMaterialsForInventory,
   _internal: {
     cellLink,
