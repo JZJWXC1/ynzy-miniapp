@@ -1351,6 +1351,81 @@ async function testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRot
     12,
     '线上库存第二基线必须为每个物理房间生成一个稳定身份'
   )
+  const legacyIdentityClients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf(currentSourceRecords),
+    miniRecords: currentRecords.map((record, index) => ({
+      ...clone(record),
+      fields: {
+        ...clone(record.fields),
+        foundationListingId: '',
+        temporaryListingId: '',
+        identityType: '',
+        physicalUnitKey: `UNIT-LEGACY-${String(index + 1).padStart(4, '0')}`
+      }
+    })),
+    historyRecords: clone(clients.tableRecords['tbl-history'])
+  })
+  const legacyIdentityUpgrade = await feishuSync._internal.executeMirrorTableSync(
+    executeOptions(legacyIdentityClients, {
+      dryRun: true,
+      baselinePublishedSourceIds: baselineListings.map((listing) => listing.feishuRecordId),
+      baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+    })
+  )
+  assert.strictEqual(
+    legacyIdentityUpgrade.counts.deactivate,
+    0,
+    '旧主档缺少底座 ID 时，规范化身份升级不得误算为批量撤下'
+  )
+  assert.strictEqual(
+    legacyIdentityUpgrade.counts.update,
+    12,
+    '旧主档补齐底座 ID 与新版物理键必须形成持久化更新，不能只在内存中规范化'
+  )
+  assert.strictEqual(
+    new Set(legacyIdentityUpgrade.records.map((record) => (
+      record.fields.foundationListingId
+    ))).size,
+    12,
+    '旧主档身份升级后必须得到十二个唯一且稳定的底座房源 ID'
+  )
+  assertNoWrites(
+    legacyIdentityClients.calls,
+    '旧主档身份升级预演必须保持员工源和三张目标业务表零写'
+  )
+  const legacyIdentityApplied = await feishuSync._internal.executeMirrorTableSync(
+    executeOptions(legacyIdentityClients, {
+      dryRun: false,
+      baselinePublishedSourceIds: baselineListings.map((listing) => listing.feishuRecordId),
+      baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+    })
+  )
+  assert.strictEqual(legacyIdentityApplied.status, 'success', '旧主档身份升级必须完整写回并通过回读')
+  const persistedLegacyFields = legacyIdentityClients.tableRecords['tbl-mini']
+    .map((record) => record.fields)
+  assert.strictEqual(
+    new Set(persistedLegacyFields.map((fields) => fields.foundationListingId)).size,
+    12,
+    '正式升级后目标主档必须持久化十二个唯一底座房源 ID'
+  )
+  assert.ok(
+    persistedLegacyFields.every((fields) => (
+      fields.physicalUnitKey.startsWith('UNIT-') &&
+      !fields.physicalUnitKey.startsWith('UNIT-LEGACY-')
+    )),
+    '正式升级后目标主档必须持久化新版物理键'
+  )
+  legacyIdentityClients.calls.length = 0
+  const legacyIdentityReadback = await feishuSync._internal.executeMirrorTableSync(
+    executeOptions(legacyIdentityClients, {
+      dryRun: true,
+      baselinePublishedSourceIds: baselineListings.map((listing) => listing.feishuRecordId),
+      baselinePublishedFoundationIdentityKeys: baselineIdentityKeys
+    })
+  )
+  assert.strictEqual(legacyIdentityReadback.counts.update, 0, '身份升级回读后不得重复更新')
+  assert.strictEqual(legacyIdentityReadback.counts.noop, 12, '身份升级回读后十二条主档必须全部幂等')
+  assertNoWrites(legacyIdentityClients.calls, '身份升级回读预演必须保持四表零写')
   const retaggedBaselineIdentityKeys = feishuSync._internal.activeFeishuFoundationIdentityKeys({
     listings: baselineListings.map((listing) => ({
       ...listing,

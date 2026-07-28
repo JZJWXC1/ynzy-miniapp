@@ -3041,6 +3041,10 @@ function buildFoundationMirrorPlan({
   const preliminaryPlan = planMirrorSync({ sourceSnapshot, mirrorSnapshot, locationCatalog, runId })
   const preliminaryRecords = plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, preliminaryPlan)
   const normalizedCurrent = normalizedFoundationCurrentSnapshot(mirrorSnapshot, nowMs)
+  const persistedCurrentByRecordId = new Map((mirrorSnapshot.records || []).map((record) => [
+    normalizeText(record && record.recordId),
+    record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+  ]))
   const lifecycleSource = canonicalLifecycleSourceSnapshot(sourceSnapshot, preliminaryRecords)
   const lifecyclePlan = planListingLifecycle({
     sourceSnapshot: lifecycleSource,
@@ -3066,6 +3070,9 @@ function buildFoundationMirrorPlan({
 
   lifecyclePlan.desiredStates.forEach((state) => {
     const existing = currentByFoundationId.get(normalizeText(state.foundationListingId))
+    const persistedFields = existing
+      ? (persistedCurrentByRecordId.get(normalizeText(existing.recordId)) || existing.fields)
+      : null
     const canonicalFields = canonicalBySourceId.get(normalizeText(state.sourceRecordId))
     if (!canonicalFields) throw new Error(`AI 数据底座缺少 canonical 房源：${state.sourceRecordId}`)
     const fields = {
@@ -3098,7 +3105,7 @@ function buildFoundationMirrorPlan({
         fields
       })
       counts.restore += 1
-    } else if (!equalManagedMirrorFields(existing.fields, fields)) {
+    } else if (!equalManagedMirrorFields(persistedFields, fields)) {
       operations.push({
         type: 'update',
         recordId: existing.recordId,
@@ -3796,7 +3803,9 @@ async function executeAiFoundationSync({
     }
   )
   validateCanonicalMirrorRecords(plan.plannedRecords)
-  assertMirrorDeactivateSafety(mirrorSnapshot, plan.plannedRecords, {
+  // 旧专用表可能尚未持久化底座 ID。熔断必须比较同一轮规范化后的稳定实体身份，
+  // 否则会把 UNIT 物理键升级为 TMP/寓小二 ID 误判成整批撤下。
+  assertMirrorDeactivateSafety(normalizedCurrent, plan.plannedRecords, {
     foundationIdentityMode: true,
     baselinePublishedSourceIds: options.baselinePublishedSourceIds,
     baselinePublishedFoundationIdentityKeys: options.baselinePublishedFoundationIdentityKeys,
