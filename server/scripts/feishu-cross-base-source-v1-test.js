@@ -929,6 +929,66 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
   }
 }
 
+async function testEmployeeUnknownCommunityStopsAfterLocationRead() {
+  const previous = JSON.parse(JSON.stringify(config.feishu))
+  const bindings = validBindings()
+  const sourceBindings = employeeSourceBindings()
+  const clients = makeClients({
+    sourceSnapshot: sourceSnapshot({
+      community: '未收录新小区'
+    })
+  })
+  try {
+    Object.assign(config.feishu, {
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      sourceBitableAppToken: 'source-base',
+      targetBitableAppToken: 'target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: 'tbl-source',
+      miniTableId: 'tbl-mini',
+      locationTableId: 'tbl-location',
+      sourceFieldBindings: sourceBindings,
+      miniFieldBindings: bindings.mini,
+      locationFieldBindings: bindings.location,
+      sourceCompatibilityProfile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+      folderToken: 'folder-token'
+    })
+
+    await assert.rejects(
+      feishuSync._internal.configuredMirrorTableSync({
+        feishuToken: 'tenant-token-for-test',
+        dryRun: true,
+        materials: [],
+        sourceClient: clients.sourceClient,
+        targetClient: clients.targetClient
+      }),
+      (error) => (
+        error &&
+        error.code === 'SOURCE_COMMUNITY_UNMAPPED' &&
+        error.message === '员工源存在未收录位置字典的小区，已在来源校验阶段阻断'
+      ),
+      '员工源出现未收录小区时必须在来源契约阶段明确阻断'
+    )
+    assert.deepStrictEqual(
+      clients.calls
+        .filter((call) => call.action === 'read')
+        .map((call) => call.tableId),
+      ['tbl-source', 'tbl-location'],
+      '未知小区只允许读取员工源与位置字典，不得继续读取专用表或其他业务表'
+    )
+    assert.strictEqual(
+      clients.calls.filter((call) => (
+        ['create', 'update', 'delete'].includes(call.action)
+      )).length,
+      0,
+      '未知小区阻断期间源 Base 与目标 Base 必须保持零写入'
+    )
+  } finally {
+    restore(config.feishu, previous)
+  }
+}
+
 async function testEmployeeInvalidFourSegmentStopsBeforeAnyTargetWrite() {
   const previous = JSON.parse(JSON.stringify(config.feishu))
   const bindings = validBindings()
@@ -1196,6 +1256,7 @@ async function main() {
   await testConfiguredSyncCreatesSeparateBaseClients()
   await testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget()
   await testEmployeeCurrentStockProfileDryRunIsReadOnly()
+  await testEmployeeUnknownCommunityStopsAfterLocationRead()
   await testEmployeeInvalidFourSegmentStopsBeforeAnyTargetWrite()
   await testEmployeeProfileExplicitPasswordConflictsStopBeforeTargetWrite()
   await testDeactivateWritesOnlyMiniTableAndAllThreeFields()

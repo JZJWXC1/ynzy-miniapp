@@ -415,7 +415,24 @@ function normalizeEmployeeCurrentStockRoomLabel(fields) {
 }
 
 function normalizeEmployeeCurrentStockCommunity(fields, locationCatalog, sourceRecordId) {
-  if (normalizeText(fields.community)) return
+  const sourceCommunity = normalizeText(fields.community)
+  if (sourceCommunity) {
+    // 生产镜像始终会传入本轮完整、已校验的位置字典。非空小区也必须在这里
+    // 命中并归一，避免未知新小区绕过来源契约、拖到计划阶段才变成模糊失败。
+    if (!locationCatalog || !(locationCatalog.byName instanceof Map)) {
+      const error = new Error('本轮缺少已校验位置字典，禁止处理员工源小区')
+      error.code = 'SOURCE_LOCATION_CATALOG_REQUIRED'
+      throw error
+    }
+    const location = locationCatalog.byName.get(identityKey(sourceCommunity))
+    if (!location) {
+      const error = new Error('员工源存在未收录位置字典的小区，已在来源校验阶段阻断')
+      error.code = 'SOURCE_COMMUNITY_UNMAPPED'
+      throw error
+    }
+    fields.community = location.community
+    return
+  }
   if (!locationCatalog || !(locationCatalog.byName instanceof Map)) {
     throw new Error(`源记录 ${sourceRecordId} 的小区列为空且缺少已校验位置字典`)
   }

@@ -193,7 +193,11 @@ function profileBindings(overrides = {}) {
   }
 }
 
-function prepareEmployeeSnapshot(records, sourceBindings = profileBindings(), locationCatalog) {
+function prepareEmployeeSnapshot(
+  records,
+  sourceBindings = profileBindings(),
+  locationCatalog = buildLocationCatalog([location()])
+) {
   return prepareSourceSnapshotForCompatibility(snapshot(records), {
     profile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
     sourceBindings,
@@ -628,7 +632,7 @@ function testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog() 
         rentMode: undefined,
         listingStatus: undefined
       })
-    ]),
+    ], profileBindings(), null),
     /位置字典|小区|前缀/i,
     '员工旧表空小区列缺少本轮位置字典时必须阻断'
   )
@@ -680,6 +684,108 @@ function testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog() 
     '风雅乐府',
     '短前缀和长前缀同时命中时必须选择唯一最长位置，不能取字典遍历到的首项'
   )
+}
+
+function testEmployeeProfilesValidateAndNormalizeNonEmptyCommunityBeforePlanning() {
+  const catalog = buildLocationCatalog([
+    location({
+      recordId: 'loc-record-xingqiao',
+      locationId: 'LOC-XINGQIAO',
+      district: '临平区',
+      block: '星桥',
+      community: '星桥花苑',
+      aliases: ['星桥花苑一期']
+    })
+  ])
+
+  ;[
+    EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+    EMPLOYEE_AI_FOUNDATION_PROFILE
+  ].forEach((profile) => {
+    const inputSnapshot = snapshot([
+      source(`${profile}-non-empty-alias`, {
+        community: ' 星桥花苑一期 ',
+        roomLabel: '星桥花苑一期 1幢1单元101',
+        layoutDescription: '两室一厅整租',
+        layoutCategory: '两室',
+        rentMode: undefined,
+        listingStatus: undefined
+      }),
+      source(`${profile}-non-empty-standard`, {
+        community: '星桥花苑',
+        roomLabel: '星桥花苑 1幢1单元102',
+        layoutDescription: '两室一厅整租',
+        layoutCategory: '两室',
+        rentMode: undefined,
+        listingStatus: undefined
+      })
+    ])
+    const prepared = prepareSourceSnapshotForCompatibility(inputSnapshot, {
+      profile,
+      sourceBindings: profileBindings(),
+      locationCatalog: catalog
+    })
+    assert.strictEqual(
+      prepared.records[0].fields.community,
+      '星桥花苑',
+      `${profile} 必须在兼容预处理阶段把非空别名归一为位置字典标准小区`
+    )
+    assert.strictEqual(
+      prepared.records[1].fields.community,
+      '星桥花苑',
+      `${profile} 的非空标准名必须原样通过位置字典校验`
+    )
+    assert.strictEqual(
+      inputSnapshot.records[0].fields.community,
+      ' 星桥花苑一期 ',
+      `${profile} 的位置归一不得修改输入快照`
+    )
+
+    assert.throws(
+      () => prepareSourceSnapshotForCompatibility(snapshot([
+        source(`${profile}-non-empty-unknown`, {
+          community: '未收录新小区',
+          roomLabel: '星桥花苑 1幢1单元103',
+          layoutDescription: '两室一厅整租',
+          layoutCategory: '两室',
+          rentMode: undefined,
+          listingStatus: undefined
+        })
+      ]), {
+        profile,
+        sourceBindings: profileBindings(),
+        locationCatalog: catalog
+      }),
+      (error) => (
+        error &&
+        error.code === 'SOURCE_COMMUNITY_UNMAPPED' &&
+        error.message === '员工源存在未收录位置字典的小区，已在来源校验阶段阻断'
+      ),
+      `${profile} 的非空未知小区即使房号前缀命中其他小区，也必须在计划前 fail-closed`
+    )
+
+    assert.throws(
+      () => prepareSourceSnapshotForCompatibility(snapshot([
+        source(`${profile}-non-empty-without-catalog`, {
+          community: '星桥花苑',
+          roomLabel: '星桥花苑 1幢1单元102',
+          layoutDescription: '两室一厅整租',
+          layoutCategory: '两室',
+          rentMode: undefined,
+          listingStatus: undefined
+        })
+      ]), {
+        profile,
+        sourceBindings: profileBindings()
+      }),
+      (error) => (
+        error &&
+        error.code === 'SOURCE_LOCATION_CATALOG_REQUIRED' &&
+        error.message === '本轮缺少已校验位置字典，禁止处理员工源小区'
+      ),
+      `${profile} 的非空小区缺少本轮完整位置字典时也必须 fail-closed`
+    )
+  })
 }
 
 function testEmployeeProfileExplicitBindingsTakePriorityAndNeverFallback() {
@@ -1710,6 +1816,7 @@ function main() {
   testEmployeeProfileStripsOnlyLegacyCommissionRoomSuffix()
   testEmployeeProfilesDeriveRentModeAfterStrictChineseRoomAnnotation()
   testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog()
+  testEmployeeProfilesValidateAndNormalizeNonEmptyCommunityBeforePlanning()
   testEmployeeProfileExplicitBindingsTakePriorityAndNeverFallback()
   testEmployeeProfileNormalizesViewingAccessWithoutLeakingSourceNotes()
   testEmployeeProfileNeverOverridesExplicitViewingPasswordBinding()
