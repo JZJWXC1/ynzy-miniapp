@@ -395,8 +395,7 @@ function hasBusinessValue(value) {
 function deriveEmployeeCurrentStockRentMode(fields, sourceRecordId) {
   const layoutDescription = normalizeText(fields.layoutDescription)
   const layoutCategory = normalizeText(fields.layoutCategory)
-  const roomTail = normalizeText(fields.roomNumber || fields.roomLabel)
-    .replace(/\s+/g, '')
+  const roomTail = stripTrailingChineseRoomAnnotation(fields.roomNumber || fields.roomLabel)
     .replace(/(?:房间|房|室)$/g, '')
   if (/整租|\(整\)/.test(layoutDescription)) return '整租'
   if (/单间/.test(layoutCategory) || /[A-Za-z]$/.test(roomTail)) return '合租'

@@ -9,6 +9,7 @@ const {
 } = require('../src/feishu-source-mirror')
 
 const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
+const EMPLOYEE_AI_FOUNDATION_PROFILE = 'employee-ai-foundation-v1'
 
 function location(overrides = {}) {
   return {
@@ -490,6 +491,98 @@ function testEmployeeProfileStripsOnlyLegacyCommissionRoomSuffix() {
     /房号|格式|解析/i,
     '未启用员工兼容 profile 时不得放宽带运营尾注的房号'
   )
+}
+
+function testEmployeeProfilesDeriveRentModeAfterStrictChineseRoomAnnotation() {
+  const catalog = buildLocationCatalog([location()])
+  const cases = [
+    {
+      key: 'numeric-full-width',
+      roomLabel: '风雅乐府 12-345（状态注）',
+      layoutDescription: '两室一厅',
+      layoutCategory: '两室',
+      expectedRentMode: '整租',
+      expectedRoomNumber: '345'
+    },
+    {
+      key: 'letter-half-width',
+      roomLabel: '风雅乐府 13-346A(运营注)',
+      layoutDescription: '一室',
+      layoutCategory: '一室',
+      expectedRentMode: '合租',
+      expectedRoomNumber: '346A'
+    }
+  ]
+
+  ;[
+    EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+    EMPLOYEE_AI_FOUNDATION_PROFILE
+  ].forEach((profile) => {
+    const records = cases.map((item) => source(`${profile}-${item.key}`, {
+      roomLabel: item.roomLabel,
+      building: undefined,
+      unit: undefined,
+      roomNumber: undefined,
+      layoutDescription: item.layoutDescription,
+      layoutCategory: item.layoutCategory,
+      rentMode: undefined,
+      listingStatus: undefined
+    }))
+    const prepared = prepareSourceSnapshotForCompatibility(snapshot(records), {
+      profile,
+      sourceBindings: profileBindings(),
+      locationCatalog: catalog
+    })
+
+    cases.forEach((item, index) => {
+      assert.strictEqual(
+        prepared.records[index].fields.rentMode,
+        item.expectedRentMode,
+        `${profile} 必须先按严格中文尾注规则还原房号，再派生${item.expectedRentMode}`
+      )
+    })
+
+    const plan = planMirrorSync({
+      sourceSnapshot: prepared,
+      mirrorSnapshot: snapshot([]),
+      locationCatalog: catalog,
+      runId: `${profile}-annotated-rent-mode`
+    })
+    cases.forEach((item) => {
+      const operation = assertOperation(
+        plan,
+        `${profile}-${item.key}`,
+        'create',
+        `${profile} 中文尾注房号`
+      )
+      assert.strictEqual(operation.fields.rentMode, item.expectedRentMode, '专用表计划不得丢失派生出租方式')
+      assert.strictEqual(operation.fields.roomNumber, item.expectedRoomNumber, '中文尾注不得进入规范房号身份')
+    })
+  })
+
+  ;[
+    '风雅乐府 14-347（状态1）',
+    '风雅乐府 14-347（status）',
+    '风雅乐府 14-347（状态注',
+    '风雅乐府 14-347状态注'
+  ].forEach((roomLabel, index) => {
+    assert.throws(
+      () => prepareEmployeeSnapshot([
+        source(`employee-unsafe-rent-annotation-${index}`, {
+          roomLabel,
+          building: undefined,
+          unit: undefined,
+          roomNumber: undefined,
+          layoutDescription: '两室一厅',
+          layoutCategory: '两室',
+          rentMode: undefined,
+          listingStatus: undefined
+        })
+      ], profileBindings(), catalog),
+      /出租方式|房号|员工现表规则/i,
+      '出租方式派生不得剥离含数字、字母、缺括号或裸尾注'
+    )
+  })
 }
 
 function testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog() {
@@ -1615,6 +1708,7 @@ function main() {
   testEmployeeProfileClassifiesAllThirtyFourVerifiedShapes()
   testEmployeeProfileNormalizesLegacyLayoutGranularitySafely()
   testEmployeeProfileStripsOnlyLegacyCommissionRoomSuffix()
+  testEmployeeProfilesDeriveRentModeAfterStrictChineseRoomAnnotation()
   testEmployeeProfileDerivesBlankCommunityFromValidatedLocationCatalog()
   testEmployeeProfileExplicitBindingsTakePriorityAndNeverFallback()
   testEmployeeProfileNormalizesViewingAccessWithoutLeakingSourceNotes()
