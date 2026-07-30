@@ -332,7 +332,12 @@ function makeLifecycleClients(options = {}) {
 
   const sourceClient = {
     async readValidatedTableSnapshot(readOptions) {
-      calls.push({ client: 'source', action: 'read', tableId: readOptions.tableId })
+      calls.push({
+        client: 'source',
+        action: 'read',
+        tableId: readOptions.tableId,
+        readOptions: clone(readOptions)
+      })
       assert.strictEqual(readOptions.tableId, tableIds.source, '员工源客户端只能读取员工源表')
       return clone(currentSourceSnapshot)
     },
@@ -948,6 +953,35 @@ async function testDryRunReadsAllLifecycleTablesAndWritesNone() {
   )
 }
 
+async function testSourceSnapshotSeparatesCutoffFromLiveValidationClock() {
+  const clients = makeLifecycleClients()
+  const cutoffMs = FIXED_NOW_MS + 1234
+  await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    nowMs: cutoffMs
+  }))
+  const sourceReads = clients.calls.filter((call) => (
+    call.client === 'source' &&
+    call.action === 'read'
+  ))
+  assert.strictEqual(sourceReads.length, 1, '每轮只能读取一次员工源完整快照')
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(sourceReads[0].readOptions, 'nowMs'),
+    false,
+    '冻结批次时间不得冒充员工源表读取时的实时未来校验时钟'
+  )
+  assert.strictEqual(
+    sourceReads[0].readOptions.requireCreatedTime,
+    true,
+    'AI 数据底座必须强制读取 created_time，才能安全应用本轮批次截止'
+  )
+  assert.strictEqual(
+    sourceReads[0].readOptions.createdTimeCutoffMs,
+    cutoffMs,
+    '员工源表必须单独携带本轮冻结的 created_time 截止时间'
+  )
+}
+
 async function testEmptyTemplateCannotPoisonNoteMaterialSync() {
   const noteSourceBindings = sourceBindings({ includeNoteMaterial: true })
   const emptyBoundFields = Object.keys(noteSourceBindings).reduce((fields, semantic) => {
@@ -1085,6 +1119,24 @@ async function testLegacyProfileCannotEraseFoundationFields() {
     sourceCompatibilityProfile: 'employee-current-stock-v1',
     dryRun: false
   }))
+  const legacySourceReads = clients.calls.filter((call) => (
+    call.client === 'source' &&
+    call.action === 'read'
+  ))
+  assert.strictEqual(legacySourceReads.length, 1, '旧 profile 每轮只能读取一次员工源完整快照')
+  assert.strictEqual(
+    legacySourceReads[0].readOptions.requireCreatedTime,
+    false,
+    '旧 profile 不依赖 created_time，不得擅自升级员工源契约'
+  )
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(
+      legacySourceReads[0].readOptions,
+      'createdTimeCutoffMs'
+    ),
+    false,
+    '批次 created_time 截止只属于 AI 数据底座，旧 profile 不得携带'
+  )
   assert.strictEqual(
     legacyNoop.noop,
     true,
@@ -2247,6 +2299,7 @@ async function main() {
     ['三张目标业务表资源独立', testLifecycleTableResourcesMustBeDistinct],
     ['负责人部门与内部 ID 不进入公开投影', testInternalFoundationFieldsStayOutOfPublicProjection],
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
+    ['源表实时校验时钟与批次截止分离', testSourceSnapshotSeparatesCutoffFromLiveValidationClock],
     ['全空模板不污染房源笔记素材同步', testEmptyTemplateCannotPoisonNoteMaterialSync],
     ['正式写只走目标客户端', testApplyWritesOnlyTargetClient],
     ['旧 profile 回退不清空底座字段', testLegacyProfileCannotEraseFoundationFields],

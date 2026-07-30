@@ -594,6 +594,263 @@ async function testRecordCreatedTimeContract() {
   }
 }
 
+async function testCreatedTimeCutoffSeparatesLiveValidationClock() {
+  const callStartedAt = 1784822400000
+  const recordCreatedAt = callStartedAt + 1000
+  let liveNowMs = callStartedAt
+  const originalDateNow = Date.now
+  const liveClockFetch = makePagedFetch(() => {
+    liveNowMs = recordCreatedAt + 1000
+    return success({
+      items: [createdTimeRecord('rec-created-during-read', {
+        created_time: String(recordCreatedAt)
+      })],
+      has_more: false
+    })
+  })
+  Date.now = () => liveNowMs
+  try {
+    const snapshot = await makeClient(liveClockFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true
+    })
+    assert.strictEqual(
+      snapshot.records[0].createdTimeMs,
+      recordCreatedAt,
+      '默认实时校验时钟必须在完整读取后采样，读取期间合法新增的记录不得被误判为未来'
+    )
+  } finally {
+    Date.now = originalDateNow
+  }
+
+  const cutoffMs = 1784822400000
+  const validationNowMs = cutoffMs + 10_000
+  const earlyRecord = createdTimeRecord('rec-before-cutoff', {
+    created_time: String(cutoffMs - 1000)
+  })
+  const boundaryRecord = createdTimeRecord('rec-at-cutoff', {
+    created_time: String(cutoffMs)
+  })
+  const deferredRecord = createdTimeRecord('rec-after-cutoff', {
+    created_time: String(cutoffMs + 1000)
+  })
+  const cutoffFetch = makePagedFetch(() => success({
+    items: [earlyRecord, boundaryRecord, deferredRecord],
+    has_more: false
+  }))
+  const cutoffSnapshot = await makeClient(cutoffFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: validationNowMs,
+    createdTimeCutoffMs: cutoffMs
+  })
+  assert.strictEqual(cutoffSnapshot.recordCount, 2, '批次截止时间之后的合法新增行必须延后到下一批')
+  assert.strictEqual(
+    cutoffSnapshot.deferredRecordCount,
+    1,
+    '快照必须只暴露脱敏的延后记录计数，供同步证据核对'
+  )
+  assert.deepStrictEqual(
+    cutoffSnapshot.records.map((record) => record.recordId),
+    ['rec-before-cutoff', 'rec-at-cutoff'],
+    '截止时刻等于 created_time 的记录必须纳入，有效快照只排除严格晚于截止的记录'
+  )
+
+  const futureCutoffFetch = makePagedFetch(() => success({
+    items: [earlyRecord],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(futureCutoffFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      nowMs: validationNowMs,
+      createdTimeCutoffMs: validationNowMs + 1
+    }),
+    /createdTimeCutoffMs|截止|实时校验时间|未来/i,
+    '批次截止时间不得晚于实时校验时钟，避免未来 observedAt 污染生命周期'
+  )
+
+  const earlyOnlyFetch = makePagedFetch(() => success({
+    items: [earlyRecord, boundaryRecord],
+    has_more: false
+  }))
+  const earlyOnlySnapshot = await makeClient(earlyOnlyFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: validationNowMs
+  })
+  assert.strictEqual(
+    cutoffSnapshot.digest,
+    earlyOnlySnapshot.digest,
+    '批次截止过滤后必须按有效记录重算摘要，保证双预演与正式提交使用同一输入'
+  )
+
+  const repeatedCutoffFetch = makePagedFetch(() => success({
+    items: [earlyRecord, boundaryRecord, deferredRecord],
+    has_more: false
+  }))
+  const repeatedCutoffSnapshot = await makeClient(repeatedCutoffFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: validationNowMs,
+    createdTimeCutoffMs: cutoffMs
+  })
+  assert.deepStrictEqual(
+    {
+      records: repeatedCutoffSnapshot.records,
+      recordCount: repeatedCutoffSnapshot.recordCount,
+      digest: repeatedCutoffSnapshot.digest
+    },
+    {
+      records: cutoffSnapshot.records,
+      recordCount: cutoffSnapshot.recordCount,
+      digest: cutoffSnapshot.digest
+    },
+    '同一批次 cutoff 下，后来出现的合法新行不得改变 dry-run 与 apply 的有效快照'
+  )
+
+  const nextRunFetch = makePagedFetch(() => success({
+    items: [earlyRecord, boundaryRecord, deferredRecord],
+    has_more: false
+  }))
+  const nextRunSnapshot = await makeClient(nextRunFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: validationNowMs,
+    createdTimeCutoffMs: cutoffMs + 1000
+  })
+  assert.strictEqual(nextRunSnapshot.recordCount, 3, '下一批提高 cutoff 后必须接住上一批延后的合法新增行')
+  assert.notStrictEqual(nextRunSnapshot.digest, cutoffSnapshot.digest, '下一批纳入新行后摘要必须变化')
+
+  const changedOldRecordFetch = makePagedFetch(() => success({
+    items: [
+      {
+        ...earlyRecord,
+        fields: { ...earlyRecord.fields, 月租金: 3200 }
+      },
+      boundaryRecord,
+      deferredRecord
+    ],
+    has_more: false
+  }))
+  const changedOldRecordSnapshot = await makeClient(changedOldRecordFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    requireCreatedTime: true,
+    nowMs: validationNowMs,
+    createdTimeCutoffMs: cutoffMs
+  })
+  assert.notStrictEqual(
+    changedOldRecordSnapshot.digest,
+    cutoffSnapshot.digest,
+    'cutoff 只能延后新行，不能掩盖截止前既有行的字段修改'
+  )
+
+  const invalidDeferredFetch = makePagedFetch(() => success({
+    items: [
+      earlyRecord,
+      {
+        ...deferredRecord,
+        fields: { ...deferredRecord.fields, 小区: '' }
+      }
+    ],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(invalidDeferredFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      nowMs: validationNowMs,
+      createdTimeCutoffMs: cutoffMs
+    }),
+    /必填|为空|小区|community/i,
+    'cutoff 后准备延后的行也必须先完成字段契约校验'
+  )
+
+  const trulyFutureFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-truly-future-after-cutoff', {
+      created_time: String(validationNowMs + 1)
+    })],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(trulyFutureFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      nowMs: validationNowMs,
+      createdTimeCutoffMs: cutoffMs
+    }),
+    /创建时间|未来|当前时间/i,
+    '截止时间之后的记录也必须先完成真实未来校验，不得被过滤逻辑藏掉'
+  )
+
+  const missingCreatedTimeFetch = makePagedFetch(() => success({
+    items: [createdTimeRecord('rec-cutoff-without-created-time')],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(missingCreatedTimeFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      createdTimeCutoffMs: cutoffMs
+    }),
+    /截止|创建时间|requireCreatedTime/i,
+    '没有强制 created_time 的快照不得启用批次截止过滤'
+  )
+
+  const nullCutoffFetch = makePagedFetch(() => success({
+    items: [earlyRecord],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(nullCutoffFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      createdTimeCutoffMs: null
+    }),
+    /createdTimeCutoffMs|正整数|毫秒/i,
+    '显式 null 截止时间不得被当成“未提供”而绕过严格类型门'
+  )
+
+  const allDeferredFetch = makePagedFetch(() => success({
+    items: [deferredRecord],
+    has_more: false
+  }))
+  await expectReject(
+    () => makeClient(allDeferredFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      requireCreatedTime: true,
+      nowMs: validationNowMs,
+      createdTimeCutoffMs: cutoffMs
+    }),
+    /为空|截止|有效快照/i,
+    '原表非空但本批有效快照为空时仍必须 fail-closed，不能误触发批量撤下'
+  )
+}
+
 async function testPaginationMustBeComplete() {
   {
     const fetchImpl = makePagedFetch(({ callNumber, pageToken }) => {
@@ -805,6 +1062,7 @@ async function main() {
   await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()
   await testRecordCreatedTimeContract()
+  await testCreatedTimeCutoffSeparatesLiveValidationClock()
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()
   await testBatchWriteRequestContract()

@@ -373,21 +373,43 @@ function createBitableClient(options) {
     bindings,
     allowEmpty = false,
     requireCreatedTime = false,
-    nowMs = Date.now()
+    nowMs,
+    createdTimeCutoffMs
   }) {
     if (typeof requireCreatedTime !== 'boolean') {
       throw new Error('飞书快照 requireCreatedTime 必须是布尔值')
     }
-    const snapshotNowMs = normalizePositiveIntegerMillis(nowMs, '飞书快照 nowMs')
+    if (createdTimeCutoffMs !== undefined && requireCreatedTime !== true) {
+      throw new Error('飞书快照 createdTimeCutoffMs 只能与 requireCreatedTime=true 同时使用')
+    }
+    const explicitSnapshotNowMs = nowMs === undefined
+      ? null
+      : normalizePositiveIntegerMillis(nowMs, '飞书快照 nowMs')
+    const normalizedCreatedTimeCutoffMs = createdTimeCutoffMs === undefined
+      ? null
+      : normalizePositiveIntegerMillis(
+          createdTimeCutoffMs,
+          '飞书快照 createdTimeCutoffMs'
+        )
     const fields = await readAllPages(tableId, 'fields')
     const contract = validateFieldContract({ fields, bindings })
     const rawRecords = await readAllPages(tableId, 'records', {
       automaticFields: requireCreatedTime
     })
-    if (!allowEmpty && rawRecords.length === 0) throw new Error('飞书源表为空，已阻断同步')
+    // 默认实时校验时钟必须在 fields/records 全部分页读取完成后采样。否则读取期间
+    // 刚创建的合法记录会因为早于网络请求完成、晚于请求开始而被误判为“未来”。
+    const snapshotNowMs = explicitSnapshotNowMs == null
+      ? normalizePositiveIntegerMillis(Date.now(), '飞书快照 nowMs')
+      : explicitSnapshotNowMs
+    if (
+      normalizedCreatedTimeCutoffMs != null &&
+      normalizedCreatedTimeCutoffMs > snapshotNowMs
+    ) {
+      throw new Error('飞书快照 createdTimeCutoffMs 不得晚于实时校验时间')
+    }
 
     const seenRecordIds = new Set()
-    const records = rawRecords.map((record) => {
+    const validatedRecords = rawRecords.map((record) => {
       const recordId = normalizeFieldId(record && (record.record_id || record.recordId))
       if (!recordId) throw new Error('飞书记录缺少 record_id')
       if (seenRecordIds.has(recordId)) throw new Error('飞书完整快照存在重复 record_id')
@@ -412,6 +434,19 @@ function createBitableClient(options) {
       if (createdTimeMs !== undefined) normalizedRecord.createdTimeMs = createdTimeMs
       return normalizedRecord
     })
+    // 批次截止只负责稳定本轮输入，不得绕过任何源记录校验。所有原始记录先完成
+    // record_id、字段类型、附件和真实未来校验，再延后本轮开始后新增的合法记录。
+    const records = normalizedCreatedTimeCutoffMs == null
+      ? validatedRecords
+      : validatedRecords.filter((record) => (
+          record.createdTimeMs <= normalizedCreatedTimeCutoffMs
+        ))
+    if (!allowEmpty && records.length === 0) {
+      if (rawRecords.length > 0 && normalizedCreatedTimeCutoffMs != null) {
+        throw new Error('飞书批次截止时间内的有效源表快照为空，已阻断同步')
+      }
+      throw new Error('飞书源表为空，已阻断同步')
+    }
 
     const digestRecords = records.map((record) => {
       const digestRecord = {
@@ -434,6 +469,9 @@ function createBitableClient(options) {
       recordCount: records.length,
       digest: sha256(digestRecords),
       schemaFingerprint: contract.schemaFingerprint,
+      ...(normalizedCreatedTimeCutoffMs == null
+        ? {}
+        : { deferredRecordCount: validatedRecords.length - records.length }),
       // 飞书记录写接口仍以当前显示名为 fields 键；该映射每轮由稳定 field_id
       // 重新解析，员工改列名不会让镜像写回绑到同名诱饵列。
       fieldNames

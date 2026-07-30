@@ -4015,12 +4015,16 @@ async function executeMirrorTableSync(options = {}) {
   if (!targetClient || typeof targetClient.readValidatedTableSnapshot !== 'function') {
     throw new Error('飞书镜像同步缺少小程序目标 Base 只读客户端')
   }
+  const nowMs = options.nowMs == null ? Date.now() : Number(options.nowMs)
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('飞书同步 nowMs 必须是正整数毫秒时间戳')
+  const runId = normalizeText(options.runId) || `mirror-${nowMs}-${Math.floor(Math.random() * 100000)}`
+  const foundationProfile = aiFoundationProfileEnabled(options.sourceCompatibilityProfile)
   const rawSourceSnapshot = await sourceClient.readValidatedTableSnapshot({
     tableId: options.sourceTableId,
     bindings: options.sourceBindings,
     allowEmpty: false,
-    requireCreatedTime: aiFoundationProfileEnabled(options.sourceCompatibilityProfile),
-    nowMs: options.nowMs
+    requireCreatedTime: foundationProfile,
+    ...(foundationProfile ? { createdTimeCutoffMs: nowMs } : {})
   })
   const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
@@ -4041,10 +4045,7 @@ async function executeMirrorTableSync(options = {}) {
     bindings: options.miniBindings,
     allowEmpty: true
   })
-  const nowMs = options.nowMs == null ? Date.now() : Number(options.nowMs)
-  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('飞书同步 nowMs 必须是正整数毫秒时间戳')
-  const runId = normalizeText(options.runId) || `mirror-${nowMs}-${Math.floor(Math.random() * 100000)}`
-  if (aiFoundationProfileEnabled(options.sourceCompatibilityProfile)) {
+  if (foundationProfile) {
     const rentedSnapshot = await targetClient.readValidatedTableSnapshot({
       tableId: options.rentedTableId,
       bindings: options.rentedBindings,
