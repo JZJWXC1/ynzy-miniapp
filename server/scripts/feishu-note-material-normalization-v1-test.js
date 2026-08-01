@@ -9,6 +9,7 @@ const { EventEmitter } = require('events')
 const { PassThrough, Readable } = require('stream')
 const {
   PROFILE_ID,
+  buildProbeArgs,
   createFeishuNoteMaterialNormalizer
 } = require('../src/feishu-note-material-normalizer')
 
@@ -283,6 +284,11 @@ async function assertRejectsCode(promise, expectedCode) {
 
 async function main() {
   assert.strictEqual(PROFILE_ID, 'feishu-note-serving-v2')
+  assert.strictEqual(
+    buildProbeArgs({ kind: 'image', demuxer: 'image2pipe' }).includes('-nostdin'),
+    false,
+    'ffprobe 不支持 ffmpeg 的 -nostdin 参数；stdin 已由子进程层固定为 ignore'
+  )
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-note-normalizer-test-'))
   // 未完成的 Promise 本身不会阻止 Node 退出；保持事件循环可观察，避免异步测试假绿。
   const keepAlive = setInterval(() => {}, 100)
@@ -387,7 +393,7 @@ async function main() {
       assert.match(profile.transformProfileSha256, /^[a-f0-9]{64}$/)
       assert.strictEqual(
         profile.transformProfileSha256,
-        'c4a137f02ba49bd0b331f26ae47c4e3b5349078a4449e10952ad5c60eca09e75',
+        '25ca53badd591947f9a94ed6d7e5f9fa67527c775da36376601db07a304e5046',
         '任何探测/转码/压缩参数变化都必须显式更新转换档案摘要，防止内容计划静默复用旧规则'
       )
       assert.match(profile.transformToolFingerprint, /^[a-f0-9]{64}$/)

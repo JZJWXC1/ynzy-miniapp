@@ -278,7 +278,6 @@ function buildProbeArgs(format) {
     : 'mjpeg,png,webp,gif'
   return [
     '-v', 'error',
-    '-nostdin',
     '-max_alloc', String(256 * MEBIBYTE),
     '-protocol_whitelist', 'fd,pipe',
     '-probesize', String(10 * MEBIBYTE),
