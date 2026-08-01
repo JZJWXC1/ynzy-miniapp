@@ -363,18 +363,56 @@ async function main() {
     }
 
     for (const scenario of [
-      { name: 'animated.png', mimeType: 'image/png', bytes: animatedPngBytes() },
-      { name: 'animated.webp', mimeType: 'image/webp', bytes: animatedWebpBytes() }
+      {
+        name: 'animated.gif',
+        mimeType: 'image/gif',
+        bytes: gifBytes(80),
+        sourceFormat: 'gif',
+        outputFormat: 'webp',
+        outputBytes: webpBytes(80)
+      },
+      {
+        name: 'animated.png',
+        mimeType: 'image/png',
+        bytes: animatedPngBytes(),
+        sourceFormat: 'png',
+        outputFormat: 'png',
+        outputBytes: pngBytes(80)
+      },
+      {
+        name: 'animated.webp',
+        mimeType: 'image/webp',
+        bytes: animatedWebpBytes(),
+        sourceFormat: 'webp',
+        outputFormat: 'webp',
+        outputBytes: webpBytes(80)
+      }
     ]) {
       const tools = createToolFixture(tempRoot, { ffmpegTool: `fake-ffmpeg-${scenario.name}`, ffprobeTool: `fake-ffprobe-${scenario.name}` })
-      const processes = fakeProcessFactory({ ...tools })
+      const processes = fakeProcessFactory({
+        ...tools,
+        probes: [
+          imageProbe(scenario.sourceFormat, 1200, 900, { frameCount: 3 }),
+          imageProbe(scenario.outputFormat, 1200, 900, { frameCount: 1 })
+        ],
+        outputs: [scenario.outputBytes]
+      })
       const normalizer = createNormalizer(tempRoot, tools, processes)
-      await assertRejectsCode(normalizer.prepareMaterial({
+      const prepared = await normalizer.prepareMaterial({
         asset: { name: scenario.name, kind: 'image' },
         mimeType: scenario.mimeType,
         sourceEvidence: { buffer: scenario.bytes, contentType: scenario.mimeType }
-      }), 'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED')
-      assert.strictEqual(processes.calls.length, 0, '动画容器必须由真实 chunk 结构在 ffprobe/ffmpeg 前识别并拒绝')
+      })
+      assert.strictEqual(prepared.transformAction, 'compress', '动图必须通过受控图片重编码生成静态预览')
+      assert.strictEqual(prepared.probe.frameCount, 1, '动图成品必须只有一帧')
+      assert.strictEqual(prepared.sourceContentSha256, sha256(scenario.bytes), '源证据必须继续绑定员工源原始字节')
+      assert.strictEqual(prepared.contentSha256, sha256(scenario.outputBytes), '发布摘要必须绑定单帧静态成品')
+      assert.strictEqual(prepared.contentType, `image/${scenario.outputFormat}`)
+      const ffmpegCalls = processes.calls.filter((call) => call.command === tools.ffmpegPath)
+      assert.strictEqual(ffmpegCalls.length, 1, '每个动图只允许执行一次首帧转换')
+      const frameLimitIndex = ffmpegCalls[0].args.indexOf('-frames:v')
+      assert.ok(frameLimitIndex >= 0 && ffmpegCalls[0].args[frameLimitIndex + 1] === '1', '动图必须显式只取首帧')
+      assert.ok(ffmpegCalls[0].args.includes('-map_metadata') && ffmpegCalls[0].args.includes('-1'), '动图静态预览必须清除元数据')
       assertNoMaterialTempDirectories(tempRoot)
     }
 
@@ -393,7 +431,7 @@ async function main() {
       assert.match(profile.transformProfileSha256, /^[a-f0-9]{64}$/)
       assert.strictEqual(
         profile.transformProfileSha256,
-        '25ca53badd591947f9a94ed6d7e5f9fa67527c775da36376601db07a304e5046',
+        'ccd20c92dc59ba88f0933e5688cbb99513c3784e542f3d308315570ca22beb70',
         '任何探测/转码/压缩参数变化都必须显式更新转换档案摘要，防止内容计划静默复用旧规则'
       )
       assert.match(profile.transformToolFingerprint, /^[a-f0-9]{64}$/)
@@ -699,51 +737,6 @@ async function main() {
       const preparedFile = await normalizer.openPreparedFile(prepared)
       assert.deepStrictEqual(fs.readFileSync(preparedFile.filePath), output, '保留模式必须打开已复验的转码成品，不得退回源文件或完整 Buffer')
       assert.strictEqual(await normalizer.disposePreparedMaterial(prepared), true)
-      assertNoMaterialTempDirectories(tempRoot)
-    }
-
-    {
-      const tools = createToolFixture(tempRoot, { ffmpegTool: 'fake-ffmpeg-gif', ffprobeTool: 'fake-ffprobe-gif' })
-      const source = gifBytes(80)
-      const processes = fakeProcessFactory({ ...tools, probes: [imageProbe('gif', 1200, 900, { frameCount: 2 })] })
-      const normalizer = createNormalizer(tempRoot, tools, processes, { maxImageOutputBytes: 32 })
-      await assertRejectsCode(normalizer.prepareMaterial({
-        asset: { kind: 'image', name: 'animated.gif' },
-        sourceEvidence: { buffer: source, contentType: 'image/gif' }
-      }), 'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED')
-      assert.strictEqual(processes.calls.filter((call) => call.command === tools.ffmpegPath).length, 0, '超标 GIF 不得被静默压成静态图')
-      assertNoMaterialTempDirectories(tempRoot)
-    }
-
-    {
-      const tools = createToolFixture(tempRoot, { ffmpegTool: 'fake-ffmpeg-animated-webp', ffprobeTool: 'fake-ffprobe-animated-webp' })
-      const source = webpBytes(80)
-      const processes = fakeProcessFactory({
-        ...tools,
-        probes: [imageProbe('webp', 1200, 900, { frameCount: 3 })]
-      })
-      const normalizer = createNormalizer(tempRoot, tools, processes, { maxImageOutputBytes: 32 })
-      await assertRejectsCode(normalizer.prepareMaterial({
-        asset: { kind: 'image', name: 'animated.webp' },
-        sourceEvidence: { buffer: source, contentType: 'image/webp' }
-      }), 'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED')
-      assert.strictEqual(processes.calls.filter((call) => call.command === tools.ffmpegPath).length, 0, '超标多帧 WebP 不得被静默压成单帧')
-      assertNoMaterialTempDirectories(tempRoot)
-    }
-
-    {
-      const tools = createToolFixture(tempRoot, { ffmpegTool: 'fake-ffmpeg-apng', ffprobeTool: 'fake-ffprobe-apng' })
-      const source = pngBytes(80)
-      const processes = fakeProcessFactory({
-        ...tools,
-        probes: [imageProbe('png', 1200, 900, { frameCount: 2 })]
-      })
-      const normalizer = createNormalizer(tempRoot, tools, processes, { maxImageOutputBytes: 32 })
-      await assertRejectsCode(normalizer.prepareMaterial({
-        asset: { kind: 'image', name: 'animated.png' },
-        sourceEvidence: { buffer: source, contentType: 'image/png' }
-      }), 'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED')
-      assert.strictEqual(processes.calls.filter((call) => call.command === tools.ffmpegPath).length, 0, '超标 APNG 不得被静默压成静态 PNG 或 WebP')
       assertNoMaterialTempDirectories(tempRoot)
     }
 

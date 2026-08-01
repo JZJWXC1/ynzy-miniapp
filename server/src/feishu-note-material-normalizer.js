@@ -560,15 +560,10 @@ async function inspectPngContainer(filePath, fileSize) {
   if (!seenIhdr || !seenIdat || !seenIend || position !== fileSize) {
     throw normalizationError('MATERIAL_IMAGE_CONTAINER_INVALID', 422, 'PNG 容器结构不完整')
   }
-  if (animationControl || frameControlCount || frameDataCount) {
-    if (!animationControl || frameControlCount !== animationFrames || (animationFrames > 1 && frameDataCount < 1)) {
-      throw normalizationError('MATERIAL_IMAGE_CONTAINER_INVALID', 422, 'APNG 帧结构不一致')
-    }
-    throw normalizationError(
-      'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED',
-      413,
-      '暂不支持动态图素材，请先转换为静态图片后重新上传'
-    )
+  // 动画结构只负责严格验真；后续受控重编码固定 `-frames:v 1`，仅发布首帧静态预览。
+  if ((animationControl || frameControlCount || frameDataCount)
+    && (!animationControl || frameControlCount !== animationFrames || (animationFrames > 1 && frameDataCount < 1))) {
+    throw normalizationError('MATERIAL_IMAGE_CONTAINER_INVALID', 422, 'APNG 帧结构不一致')
   }
 }
 
@@ -639,13 +634,7 @@ async function inspectWebpContainer(filePath, fileSize) {
     || (hasAnimationChunks && (animationHeaderCount !== 1 || animationFrameCount < 1))) {
     throw normalizationError('MATERIAL_IMAGE_CONTAINER_INVALID', 422, 'WebP 动画标志与帧结构不一致')
   }
-  if (hasAnimationChunks) {
-    throw normalizationError(
-      'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED',
-      413,
-      '暂不支持动态图素材，请先转换为静态图片后重新上传'
-    )
-  }
+  // 合法动画继续交给固定 `-frames:v 1` 的受控重编码，只发布首帧静态预览。
 }
 
 async function inspectImageContainer(filePath, format, fileSize) {
@@ -1348,8 +1337,8 @@ function createFeishuNoteMaterialNormalizer(options = {}) {
           },
           rules: {
             concurrency: maxConcurrent,
-            gif: 'single-frame-convert-webp-strip-metadata-animated-reject',
-            image: 'all-static-images-reencode-strip-metadata-max-edge-2048-png-overflow-fallback-webp-preserve-alpha-container-detected-animation-reject',
+            gif: 'all-images-first-frame-convert-webp-strip-metadata',
+            image: 'all-images-first-frame-reencode-strip-metadata-max-edge-2048-png-overflow-fallback-webp-preserve-alpha-container-animation-validated',
             video: {
               audioBitsPerSecond: VIDEO_AUDIO_BITRATE,
               bufferRatio: VIDEO_BUFFER_RATIO,
@@ -1507,13 +1496,6 @@ function createFeishuNoteMaterialNormalizer(options = {}) {
           throw normalizationError('MATERIAL_OUTPUT_INVALID', 422, '处理后的视频格式无效')
         }
       } else {
-        if (sourceProbe.frameCount !== 1) {
-          throw normalizationError(
-            'MATERIAL_ANIMATED_IMAGE_UNSUPPORTED',
-            413,
-            '暂不支持动态图素材，请先转换为静态图片后重新上传'
-          )
-        }
         action = 'compress'
         const initialOutputFormat = sourceFormat.format === 'gif' ? 'webp' : sourceFormat.format
         try {
