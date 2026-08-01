@@ -129,6 +129,9 @@ const criticalScripts = [
   'server/scripts/feishu-note-material-sync-v1-test.js',
   'server/scripts/feishu-note-material-oss-v1-test.js',
   'server/scripts/feishu-note-material-pipeline-v1-test.js',
+  'server/scripts/feishu-note-material-normalization-v1-test.js',
+  'server/scripts/feishu-note-material-content-plan-v1-test.js',
+  'server/scripts/feishu-note-material-confirmation-v1-test.js',
   // 素材迁移默认只读预演，三根目录隔离，真实复制必须绑定同一份计划摘要且不提供移动/删除能力。
   'server/scripts/feishu-material-copy-v1-test.js',
   // 多视频私有清单只经服务端安全骨架与 assetId 能力公开；调包、素材更新/删除和旧 token 必须失效，
@@ -627,6 +630,56 @@ function checkRunnableV1Scripts() {
   return criticalScripts.map((script) => `${script} => ${runNodeScript(script)}`).join('；')
 }
 
+function checkFeishuNoteMaterialNormalizationContract() {
+  const integrationSource = readText('server/src/feishu-sync.js')
+  const syncSource = readText('server/src/feishu-note-material-sync.js')
+  const clientSource = readText('server/src/feishu-note-material-client.js')
+  const normalizerSource = readText('server/src/feishu-note-material-normalizer.js')
+  const sandboxSource = readText('server/src/ffmpeg-sandbox.js')
+  const configSource = readText('server/src/config.js')
+
+  assertOk(integrationSource.includes("require('./feishu-note-material-normalizer')"), '正式同步必须接入房源笔记素材标准化处理器')
+  assertOk(integrationSource.includes('openPreparedFile: options.openPreparedFile || (normalizer && normalizer.openPreparedFile)') &&
+    integrationSource.includes('requireStreamingSource: Boolean(normalizer)'), '正式同步必须使用单文件磁盘暂存和流式源下载')
+  assertOk(clientSource.includes('async function downloadTokenToFile') &&
+    clientSource.includes("crypto.createHash('sha256')"), '飞书素材客户端必须边下载边落盘并计算摘要')
+  assertOk(syncSource.includes('sourcesGloballyVerified') &&
+    syncSource.includes('ossWriteInput.filePath = writeEvidence.filePath'), '正式同步必须复用已确认计划并把同一成品文件流式交给 Drive 与 OSS')
+  assertOk(syncSource.includes("CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v3'"), '素材内容计划必须使用含源/输出身份的 v3 契约')
+  ;[
+    'sourceContentSha256',
+    'sourceSize',
+    'sourceMimeType',
+    'contentSha256',
+    'transformProfileVersion',
+    'transformProfileSha256',
+    'transformToolFingerprint',
+    'transformAction'
+  ].forEach((field) => {
+    assertOk(syncSource.includes(field), `素材内容计划缺少 ${field}`)
+  })
+  assertOk(normalizerSource.includes("PROFILE_ID = 'feishu-note-serving-v2'"), '素材压缩规则必须有固定版本')
+  assertOk(normalizerSource.includes("action = compatible ? 'sanitize' : 'transcode'") &&
+    normalizerSource.includes("'-map_metadata', '-1'") &&
+    normalizerSource.includes('maxVideoOutputBytes') &&
+    normalizerSource.includes('maxImageOutputBytes') &&
+    normalizerSource.includes('minFreeBytes') &&
+    normalizerSource.includes('maxVideoDurationSeconds'), '素材标准化必须清除元数据并限制输出大小、视频时长和临时盘空间')
+  assertOk(sandboxSource.includes('buildFfmpegSpawnOptions') &&
+    normalizerSource.includes('disposePreparedMaterial'), 'FFmpeg 必须经受限沙箱执行并清理临时文件')
+  ;[
+    'NOTE_MATERIAL_FFMPEG_PATH',
+    'NOTE_MATERIAL_FFPROBE_PATH',
+    'NOTE_MATERIAL_TEMP_ROOT',
+    'NOTE_MATERIAL_MAX_VIDEO_OUTPUT_MB',
+    'NOTE_MATERIAL_MAX_IMAGE_OUTPUT_MB',
+    'NOTE_MATERIAL_MIN_FREE_MB'
+  ].forEach((name) => {
+    assertOk(configSource.includes(name), `素材标准化配置缺少 ${name}`)
+  })
+  return '房源笔记素材先流式落盘，再按固定版本压缩/转码；源摘要、输出摘要和处理身份共同锁定正式写入'
+}
+
 const checks = [
   ['app.json 与自定义 tabBar 固定为找房/房源/地图/我的', checkTabBar],
   ['server/scripts/smoke-test.js 凭据仅来自环境变量', checkSmokeTestEnvOnly],
@@ -644,6 +697,7 @@ const checks = [
   ['我的页面退出登录存在', checkProfileLogout],
   ['小程序登录已接账号密码校验', checkMiniLoginPassword],
   ['30 天滑动登录与公开 FAQ', checkSlidingAuthAndPublicFaq],
+  ['房源笔记素材压缩与内容身份契约', checkFeishuNoteMaterialNormalizationContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]
 

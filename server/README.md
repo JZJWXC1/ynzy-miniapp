@@ -774,14 +774,29 @@ PDF、Office 文档等普通文件继续计入 `unsupported/nonVideo` 并使整�
 ```
 
 目录和文件都在写后按同名全量回读验证；同名异类型或多项冲突立即失败。素材 ID 只由员工源
-`sourceRecordId + 资源类型 + 源 token` 生成，因此文件改版不会改变素材身份；每次同步都先受限
-下载当前源文件并计算完整 SHA-256，完整内容摘要进入目标文件名与 OSS 对象键。相同 token 即使
-文件名、大小和修改时间都未变化，只要实际内容变化，也会生成新的 Drive 文件名与 OSS 对象键，
-旧版本不会被覆盖；同一内容重跑则复用同名同键且零重复写。计划阶段逐项下载后只保留摘要、
-大小和类型，不在内存计划中保存视频 Buffer；正式阶段先逐项完成全批第二遍内容预检，全部通过后
-再第三遍逐项重下并核对计划摘要。Drive 不再按可变源 token 调服务端复制，而是上传第三遍刚校验的
-同一 Buffer，随后把目标文件下载回读，再把回读一致的内容写 OSS 并释放。因此内存上界由单个视频
-而不是 64 个视频总和决定。每个视频验证目标云盘内容摘要后，确定性写入
+`sourceRecordId + 资源类型 + 源 token` 生成，因此文件改版不会改变素材身份。源文件不再整块读入
+Node 内存：客户端按流写入权限为 `0600` 的随机私有临时文件，写入过程中同步计算 SHA-256、核对
+声明/实际字节数并执行超时和源大小上限。视频、图片都要经固定规则
+`feishu-note-serving-v2` 检测真实格式与尺寸。满足 H.264/yuv420p/AAC、1920×1080、30fps 和
+80 MiB 门槛的 MP4 也必须重编码，清除容器元数据以及 H.264/AAC 码流中的私有数据；其余
+受支持视频统一压缩为 H.264/yuv420p/AAC MP4。所有静态 JPEG/PNG/WebP 都重新编码，清除
+EXIF/GPS/XMP 等隐藏元数据并把最长边限制为 2048 像素；PNG 仍超过 8 MiB 时转为保留透明度的
+WebP，单帧 GIF 转为 WebP。多帧 GIF/WebP/APNG 一律明确拒绝，绝不静默截取第一帧。
+默认源视频最多 1 GiB、源图片 50 MiB、视频最长 15 分钟；最终视频最多 80 MiB、图片最多 8 MiB，
+且开始处理前必须在源文件与成品预算之外额外保留至少 256 MiB 临时盘空间。
+处理后仍超限、转码失败、格式伪装、时长/像素异常或服务器缺少处理工具都会在首个目标写入前
+fail-closed。处理过程单并发、总时限默认 15 分钟；成功、失败、中止和校验异常都会清理私有临时目录。
+进程异常退出遗留的目录只在同时满足“本链路专用前缀、当前用户所有、权限 `0700`、超过 24 小时、
+原进程已不存在”时回收；当前活跃目录和其他目录一律不动。
+
+相同 token 即使文件名、大小和修改时间都未变化，只要源字节或压缩规则/工具身份变化，内容计划
+都会变化；输出变化会生成新的 Drive 文件名与 OSS 对象键，旧版本不会被覆盖。计划阶段只保留源
+摘要/大小/MIME、输出摘要/大小/MIME 和处理规则身份，不保留原始或成品 Buffer。正式阶段先按
+已确认计划对全批源文件做一次只读复验；真正缺少目标的素材才在写入前下载并压缩一次，已精确存在
+的目标不重复压缩。任一时刻最多保留一个压缩成品临时文件；Drive 和 OSS 以同一
+`filePath + size + SHA-256` 描述符流式读取，分别回读核验后立即删除，因此内存和临时盘占用都不会
+随一套房的素材数量累加。超过飞书单次上传上限的成品由 Drive 客户端自动走分片上传，
+不再因原文件较大直接丢素材。每个素材验证目标云盘内容摘要后，确定性写入
 `ALI_OSS_UPLOAD_DIR/feishu-note-v1/...`，并通过 OSS 鉴权 GET 回读实际字节数和 SHA-256。
 确定性 OSS 对象实行不可覆盖续传：每次正式写入前先用服务端签名 GET 回读；同键对象只有在
 内容 SHA-256、实际字节数和规范 MIME 全部一致时才只读复用，任一项不同都以冲突失败且不得 PUT。
@@ -793,21 +808,26 @@ PDF、Office 文档等普通文件继续计入 `unsupported/nonVideo` 并使整�
 素材 GET、PUT 和版本状态读取都设置 30 秒空闲超时；PUT 响应正文最多接收 64 KiB，超时、超限、
 连接异常或写后回读不一致统一失败关闭，避免单个对象让整轮同步无界挂起或吞入无界错误正文。
 源发现集合、目标云盘集合、OSS 集合、私有清单集合不完全相等时，整套房视频不得发布。
-复用已有目标前仍必须按相同源 token 重新下载当前源内容；即使文件名、大小、修改时间均未变化，
-内容摘要不同也必须重新物化。单套房最多 64 个视频；第 65 个视频会在创建目录、上传 Drive 或写
-OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回。
+复用已有目标前仍必须按相同源 token 重新下载核验当前源内容；即使文件名、大小、修改时间均未
+变化，只要源摘要与已确认计划不同就必须停止，输出摘要或处理规则身份不同也必须重新物化。单套房最多 64 个图片/视频素材；第 65
+个素材会在创建目录、上传 Drive 或写 OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回。
 
 每次完整的素材 dry-run 和正式 apply 还会返回私有聚合字段
 `contentPlanSha256`（64 位小写十六进制）与 `contentPlanAssetCount`。摘要使用固定
-`feishu-note-content-plan-v1` 版本，按源记录不可逆 SHA-256 指纹、`assetId`、本次受限下载得到的
-真实内容 SHA-256、真实字节数、规范 MIME 类型和 `displayOrder` 排序后计算；输入记录或素材数组
-换序不会漂移，但任一归属、内容、大小、类型或展示顺序变化都会改变摘要。摘要响应不包含员工源
+`feishu-note-content-plan-v3` 版本，按源记录不可逆 SHA-256 指纹、`assetId`、源文件摘要/大小/MIME、
+标准化成品摘要/大小/MIME、处理规则版本、处理工具指纹、处理动作和 `displayOrder` 排序后计算；
+输入记录或素材数组换序不会漂移，但任一归属、源内容、成品内容、处理身份、类型或展示顺序变化
+都会改变摘要。摘要响应不包含员工源
 记录 ID、源/目标 Drive token、链接、目录、Buffer、OSS 对象键或源文件名；这些计划字段也不写入
 房源、公开投影或普通同步日志。零视频有固定的空计划摘要。只要任一记录失败、状态冲突或最终
 `complete=false`，两个字段都省略，禁止把部分摘要用于确认正式同步。正式 apply 会返回本轮实际
-内容的同一聚合摘要；第二遍全批预检和第三遍写前下载继续核对内容 SHA-256、字节数与 MIME 类型，
+内容的同一聚合摘要；全批源复验和单次写前压缩继续核对内容 SHA-256、字节数与 MIME 类型，
 任一变化都在对应写入前失败。需要双次 dry-run 确认的运维控制器必须把这两个字段纳入外层
 `PLAN_SHA`，不能只比较链接、token、文件数量或易失元数据。
+成功 dry-run 的私有行级计划仅保留在当前服务进程内，最多 15 分钟且最多 16 份；不会写数据库、
+日志或响应。服务重启、超时或缓存未命中时，正式 apply 必须失败并重新完成两次 dry-run。正式请求
+内部预检复用该私有计划验证工具档案和当前源内容，不再对整批素材重复执行 FFmpeg；实际正式阶段
+仍会再次全批核源，防止预检与写入之间源文件被原位替换。
 
 当镜像与房源笔记素材两项开关同时开启时，正式同步入口会先固定本轮 `runId/nowMs`，用正式
 working DB 的隔离 clone、同一源/目标表只读适配器和同一素材只读适配器完整重跑
@@ -822,15 +842,15 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 写入前阻断。预检私下还保留仅由不可逆记录指纹、素材 ID、内容摘要、大小、MIME 和顺序组成的
 行级计划，不进入 JSON 响应、日志、房源或公开投影。
 
-正式素材阶段再次先为全部 `resolvedRows` 做只读计划并与上述私有行级计划聚合比对，早于任一
-素材目录、Drive、OSS 或媒体清单写入；随后逐行正式处理时还会在该行首个 Drive/OSS 写入前重新
-下载并逐项比对同一行计划，之后继续保留原有全批复核和单素材写前下载门。若任一层变化，错误按
+正式素材阶段直接复用上述已确认的私有行级计划，并在任一素材目录、Drive、OSS 或媒体清单写入前
+对全部源文件做一次只读复验；随后只为确实缺少目标的素材在写入前下载、标准化并逐项比对一次。
+若任一层变化，错误按
 内容计划确认失败分类，失败响应不生成可复用摘要；最终正式响应的
 `contentPlanSha256/contentPlanAssetCount` 也必须与 expected 完全一致，否则顶层强制
 `inventoryCommittable=false`，数据库不得提交。
 
-全批第二遍预检保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
-若后序素材在全批预检通过后、第三遍逐项写入期间才发生变化，任务会在该素材写入前失败关闭，
+全批源复验保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
+若后序素材在全批复验通过后、逐项写入期间才发生变化，任务会在该素材写入前失败关闭，
 不会发布私有清单或公开能力，但此前已写的内容寻址目录/对象可能暂留并供后续同内容重跑复用。
 遇到该状态只允许先只读对账后重跑，禁止按名称盲删、覆盖或跳过摘要门禁。
 
@@ -862,6 +882,17 @@ FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
 FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
 FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
 FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
+NOTE_MATERIAL_FFMPEG_PATH=/usr/bin/ffmpeg
+NOTE_MATERIAL_FFPROBE_PATH=/usr/bin/ffprobe
+NOTE_MATERIAL_TEMP_ROOT=/var/tmp/ynzy-note-material
+NOTE_MATERIAL_NORMALIZATION_TIMEOUT_SECONDS=900
+NOTE_MATERIAL_MAX_VIDEO_SOURCE_MB=1024
+NOTE_MATERIAL_MAX_IMAGE_SOURCE_MB=50
+NOTE_MATERIAL_MAX_VIDEO_PASSTHROUGH_MB=80
+NOTE_MATERIAL_MAX_VIDEO_OUTPUT_MB=80
+NOTE_MATERIAL_MAX_IMAGE_OUTPUT_MB=8
+NOTE_MATERIAL_MAX_VIDEO_DURATION_SECONDS=900
+NOTE_MATERIAL_MIN_FREE_MB=256
 ```
 
 新链路默认关闭，且目标根目录必须显式配置，不能回退或等于旧
@@ -872,6 +903,15 @@ FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
 原样放入一次性正式请求 → 人工正式同步一次并完整对账。当前内置定时任务没有两阶段确认能力，
 所以笔记素材开关保持开启期间自动同步必须继续关闭；只有未来独立实现并审计自动两阶段控制器后
 才可恢复自动同步。
+
+生产启用前还必须在目标服务器只读确认上述绝对路径可执行，`ffprobe` 可用，`ffmpeg` 同时具备
+`libx264`、`libwebp`、AAC 编码器以及 `fd`/`pipe` 输入输出能力，临时目录存在且当前服务用户可写。
+随后必须用合成的非兼容视频、JPEG、PNG 和 WebP 各跑一次本项目完整处理命令，确认最终视频为
+H.264/yuv420p/AAC MP4、图片和视频均不超过配置上限；任一能力或真转换失败就停止发布，不得自动安装
+或升级服务器组件，也不得只用模拟测试代替。
+发布前还必须在目标服务器只读验证绝对路径的 ffmpeg/ffprobe 可执行、临时盘空间充足，并用明显
+需要压缩的合成图片和非兼容视频各跑一次真实标准化；不得自动安装/升级工具，也不得用假进程测试
+代替生产能力门禁。原文件只读，压缩的是小程序专用云盘和 OSS 的展示副本。
 dry-run 允许解析源集合但不得创建目录、上传云盘、写 OSS 或替换媒体。正式同步后必须同时回读
 顶层 `success=true`、`noteMaterials.complete=true`、
 `noteMaterials.published=true`，并对账 `video/image/unsupported/nonVideo/duplicateReference/failed/retained/cleared`
@@ -919,6 +959,17 @@ FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
 FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
 FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
 FEISHU_NOTE_MATERIAL_MAX_ITEMS=5000
+NOTE_MATERIAL_FFMPEG_PATH=/usr/bin/ffmpeg
+NOTE_MATERIAL_FFPROBE_PATH=/usr/bin/ffprobe
+NOTE_MATERIAL_TEMP_ROOT=/var/tmp/ynzy-note-material
+NOTE_MATERIAL_NORMALIZATION_TIMEOUT_SECONDS=900
+NOTE_MATERIAL_MAX_VIDEO_SOURCE_MB=1024
+NOTE_MATERIAL_MAX_IMAGE_SOURCE_MB=50
+NOTE_MATERIAL_MAX_VIDEO_PASSTHROUGH_MB=80
+NOTE_MATERIAL_MAX_VIDEO_OUTPUT_MB=80
+NOTE_MATERIAL_MAX_IMAGE_OUTPUT_MB=8
+NOTE_MATERIAL_MAX_VIDEO_DURATION_SECONDS=900
+NOTE_MATERIAL_MIN_FREE_MB=256
 FEISHU_UPLOAD_TO_OSS=true
 FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000
 FEISHU_MATERIAL_TRANSFER_RETRY_COUNT=2

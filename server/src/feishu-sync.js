@@ -10,10 +10,12 @@ const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
 const { createBitableClient } = require('./feishu-bitable-client')
 const { createFeishuNoteMaterialClient } = require('./feishu-note-material-client')
+const { createFeishuNoteMaterialNormalizer } = require('./feishu-note-material-normalizer')
 const noteMaterialSync = require('./feishu-note-material-sync')
 const { syncNoteMaterialsForInventory } = noteMaterialSync
 const {
-  contentPlanConfirmationFromReport,
+  rememberContentPlanConfirmation,
+  recallContentPlanConfirmation,
   isContentPlanConfirmationError
 } = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
@@ -4359,13 +4361,30 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
   if (typeof input.runPreflight !== 'function') {
     throw contentPlanConfirmationError('正式飞书同步缺少素材内容只读预检器', 500)
   }
+  const cachedConfirmation = typeof input.loadCachedConfirmation === 'function'
+    ? await input.loadCachedConfirmation(expected)
+    : recallContentPlanConfirmation(
+        expected.expectedContentPlanSha256,
+        expected.expectedContentAssetCount
+      )
+  if (!cachedConfirmation ||
+      cachedConfirmation.expectedContentPlanSha256 !== expected.expectedContentPlanSha256 ||
+      cachedConfirmation.expectedContentAssetCount !== expected.expectedContentAssetCount ||
+      !Array.isArray(cachedConfirmation.expectedContentPlanEvidence)) {
+    throw contentPlanConfirmationError('素材内容计划的私有确认已过期，请重新完成两次 dry-run 后再正式同步', 409)
+  }
   const preflight = await input.runPreflight({
     db: input.db,
     adminId: input.adminId,
     runId: input.runId,
-    nowMs: input.nowMs
+    nowMs: input.nowMs,
+    expectedContentPlanSha256: expected.expectedContentPlanSha256,
+    expectedContentAssetCount: expected.expectedContentAssetCount,
+    expectedContentPlanEvidence: cachedConfirmation.expectedContentPlanEvidence,
+    verifyExpectedContentPlan: true
   })
   if (!preflight || preflight.complete !== true || preflight.dryRun !== true ||
+      preflight.sourcesGloballyVerified !== true ||
       Number(preflight.failed || 0) !== 0 ||
       preflight.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
       preflight.contentPlanAssetCount !== expected.expectedContentAssetCount) {
@@ -4380,7 +4399,8 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
   }
   return {
     ...expected,
-    expectedContentPlanEvidence: privateConfirmation.expectedContentPlanEvidence
+    expectedContentPlanEvidence: privateConfirmation.expectedContentPlanEvidence,
+    sourcesGloballyVerified: true
   }
 }
 
@@ -4463,6 +4483,8 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       sourceRows: [],
       dryRun: options.dryRun === true,
       contentPlanConfirmationRequired: options.contentPlanConfirmationRequired === true,
+      verifyExpectedContentPlan: options.verifyExpectedContentPlan === true,
+      sourcesGloballyVerified: options.sourcesGloballyVerified === true,
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence
@@ -4485,6 +4507,23 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
     }
   }
   try {
+    const normalizer = options.noteMaterialNormalizer || (
+      typeof options.prepareMaterial !== 'function'
+        ? createFeishuNoteMaterialNormalizer({
+            ffmpegPath: config.feishu.noteMaterialFfmpegPath,
+            ffprobePath: config.feishu.noteMaterialFfprobePath,
+            tempRoot: config.feishu.noteMaterialTempRoot,
+            timeoutMs: config.feishu.noteMaterialNormalizationTimeoutMs,
+            maxVideoSourceBytes: config.feishu.noteMaterialMaxVideoSourceBytes,
+            maxImageSourceBytes: config.feishu.noteMaterialMaxImageSourceBytes,
+            maxVideoPassthroughBytes: config.feishu.noteMaterialMaxVideoPassthroughBytes,
+            maxVideoOutputBytes: config.feishu.noteMaterialMaxVideoOutputBytes,
+            maxImageOutputBytes: config.feishu.noteMaterialMaxImageOutputBytes,
+            maxVideoDurationSeconds: config.feishu.noteMaterialMaxVideoDurationSeconds,
+            minFreeBytes: config.feishu.noteMaterialMinFreeBytes
+          })
+        : null
+    )
     const drive = options.noteMaterialDrive || createFeishuNoteMaterialClient({
       fetchImpl: options.fetchImpl || fetch,
       accessToken: mirrorResult.feishuToken || options.feishuToken,
@@ -4492,7 +4531,11 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       pageSize: config.feishu.pageSize,
       maxItems: config.feishu.noteMaterialMaxItems,
       timeoutMs: config.feishu.materialTransferTimeoutMs,
-      maxBytes: config.oss.maxVideoSize,
+      downloadTimeoutMs: config.feishu.noteMaterialNormalizationTimeoutMs,
+      maxBytes: Math.max(
+        config.feishu.noteMaterialMaxVideoSourceBytes,
+        config.feishu.noteMaterialMaxImageSourceBytes
+      ),
       targetRootFolderToken: config.feishu.noteMaterialTargetRootFolderToken
     })
     return await syncNoteMaterialsForInventory({
@@ -4505,9 +4548,18 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       uploadDir: config.oss.uploadDir,
       drive,
       oss: options.noteMaterialOss || oss,
+      prepareMaterial: options.prepareMaterial || (normalizer && normalizer.prepareMaterial),
+      verifyPreparedMaterial: options.verifyPreparedMaterial || (normalizer && normalizer.verifyPreparedMaterial),
+      openPreparedFile: options.openPreparedFile || (normalizer && normalizer.openPreparedFile),
+      disposePreparedMaterial: options.disposePreparedMaterial || (normalizer && normalizer.disposePreparedMaterial),
+      verifySource: options.verifySource || (normalizer && normalizer.verifySource),
+      describeProfile: options.describeProfile || (normalizer && normalizer.describeProfile),
+      requireStreamingSource: Boolean(normalizer),
       dryRun: options.dryRun === true,
       nowText: noteMaterialRunTime(options),
       contentPlanConfirmationRequired: options.contentPlanConfirmationRequired === true,
+      verifyExpectedContentPlan: options.verifyExpectedContentPlan === true,
+      sourcesGloballyVerified: options.sourcesGloballyVerified === true,
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
@@ -4643,6 +4695,10 @@ function recordMirrorSyncOutcome(db, result = {}) {
 }
 
 async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
+  if (options.verifyExpectedContentPlan !== true ||
+      !Array.isArray(options.expectedContentPlanEvidence)) {
+    throw contentPlanConfirmationError('正式飞书同步的只读预检缺少受信私有内容计划', 500)
+  }
   const previewDb = clone(db)
   let captured = null
   const previewResult = await syncViaMirror(previewDb, adminId, {
@@ -4650,7 +4706,12 @@ async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
     dryRun: true,
     runId: options.runId,
     nowMs: options.nowMs,
-    contentPlanConfirmationRequired: false,
+    contentPlanConfirmationRequired: true,
+    verifyExpectedContentPlan: true,
+    sourcesGloballyVerified: false,
+    expectedContentPlanSha256: options.expectedContentPlanSha256,
+    expectedContentAssetCount: options.expectedContentAssetCount,
+    expectedContentPlanEvidence: options.expectedContentPlanEvidence,
     _captureContentPlanConfirmation(value) {
       captured = value
     }
@@ -4665,6 +4726,7 @@ async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
   return {
     ...noteMaterials,
     privateConfirmation: captured.privateConfirmation,
+    sourcesGloballyVerified: true,
     feishuToken: captured.feishuToken || options.feishuToken || ''
   }
 }
@@ -4691,7 +4753,9 @@ function enforceFormalContentPlanResult(result, expected) {
 
 async function syncViaMirror(db, adminId, options = {}) {
   const coordinates = fixedMirrorRunCoordinates(options)
-  const confirmationRequired = contentPlanConfirmationRequired() && options.dryRun !== true
+  const formalConfirmationRequired = contentPlanConfirmationRequired() && options.dryRun !== true
+  const verificationDryRun = contentPlanConfirmationRequired() &&
+    options.dryRun === true && options.verifyExpectedContentPlan === true
   const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
   const baselinePublishedFoundationIdentityKeys =
     aiFoundationProfileEnabled(config.feishu.sourceCompatibilityProfile)
@@ -4699,7 +4763,7 @@ async function syncViaMirror(db, adminId, options = {}) {
       : []
   let confirmedContentPlan = null
   let preflightFeishuToken = ''
-  if (confirmationRequired) {
+  if (formalConfirmationRequired) {
     confirmedContentPlan = await prepareMirrorContentPlanConfirmation({
       db,
       adminId,
@@ -4707,7 +4771,7 @@ async function syncViaMirror(db, adminId, options = {}) {
       nowMs: coordinates.nowMs,
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
-      runPreflight: async () => {
+      runPreflight: async (confirmationContext) => {
         // 确定性正式配置必须在完整 dry 预检和正式镜像的首个 Base 读取/写入前成立；
         // dry-run 本身允许用于诊断配置，但其成功不能替代正式配置门。
         assertFormalNoteMaterialConfiguration(options)
@@ -4716,7 +4780,11 @@ async function syncViaMirror(db, adminId, options = {}) {
           ...coordinates,
           baselinePublishedSourceIds,
           baselinePublishedFoundationIdentityKeys,
-          dryRun: true
+          dryRun: true,
+          expectedContentPlanSha256: confirmationContext.expectedContentPlanSha256,
+          expectedContentAssetCount: confirmationContext.expectedContentAssetCount,
+          expectedContentPlanEvidence: confirmationContext.expectedContentPlanEvidence,
+          verifyExpectedContentPlan: confirmationContext.verifyExpectedContentPlan === true
         })
         preflightFeishuToken = preflight.feishuToken || ''
         return preflight
@@ -4727,12 +4795,17 @@ async function syncViaMirror(db, adminId, options = {}) {
     ...options,
     ...coordinates,
     ...(confirmedContentPlan || {}),
-    contentPlanConfirmationRequired: confirmationRequired,
+    contentPlanConfirmationRequired: formalConfirmationRequired || verificationDryRun,
+    verifyExpectedContentPlan: verificationDryRun,
+    // 内部预检与正式写入之间仍可能发生源文件原位替换；正式阶段必须再次核源，
+    // 只复用人类确认的输出计划，不复用较早的源文件校验结论。
+    sourcesGloballyVerified: false,
     expectedContentPlanEvidence: confirmedContentPlan
       ? confirmedContentPlan.expectedContentPlanEvidence
-      : undefined,
+      : (verificationDryRun ? options.expectedContentPlanEvidence : undefined),
     feishuToken: options.feishuToken || preflightFeishuToken || ''
   }
+  let pendingDryContentPlan = null
   const run = await runCompanySourceSync({
     db,
     mirrorSync: () => configuredMirrorTableSync({
@@ -4756,15 +4829,13 @@ async function syncViaMirror(db, adminId, options = {}) {
         mirrorResult,
         effectiveOptions
       )
-      if (effectiveOptions.dryRun === true &&
-          typeof effectiveOptions._captureContentPlanConfirmation === 'function' &&
+      if (effectiveOptions.dryRun === true && contentPlanConfirmationRequired() &&
           noteMaterials && noteMaterials.complete === true &&
           Number(noteMaterials.failed || 0) === 0) {
-        effectiveOptions._captureContentPlanConfirmation({
+        pendingDryContentPlan = {
           report: noteMaterials,
-          privateConfirmation: contentPlanConfirmationFromReport(noteMaterials),
           feishuToken: mirrorResult.feishuToken || effectiveOptions.feishuToken || ''
-        })
+        }
       }
       return {
         ...inventory,
@@ -4804,6 +4875,17 @@ async function syncViaMirror(db, adminId, options = {}) {
     finalizeMirrorSyncResult(run),
     confirmedContentPlan
   )
+  if (result.dryRun === true && result.complete === true &&
+      result.success === true && Number(result.failed || 0) === 0 &&
+      pendingDryContentPlan) {
+    const privateConfirmation = rememberContentPlanConfirmation(pendingDryContentPlan.report)
+    if (typeof effectiveOptions._captureContentPlanConfirmation === 'function') {
+      effectiveOptions._captureContentPlanConfirmation({
+        ...pendingDryContentPlan,
+        privateConfirmation
+      })
+    }
+  }
   recordMirrorSyncOutcome(db, result)
   return result
 }

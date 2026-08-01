@@ -66,6 +66,52 @@ function downloadEvidence(body, mimeType = 'video/mp4') {
   }
 }
 
+function createFakePrepareMaterial(options = {}) {
+  const transformProfileVersion = options.transformProfileVersion || 'feishu-note-serving-v1'
+  const transformProfileSha256 = Object.prototype.hasOwnProperty.call(options, 'transformProfileSha256')
+    ? options.transformProfileSha256
+    : sha256('fake-transform-profile-v1')
+  const transformToolFingerprint = options.transformToolFingerprint || sha256('fake-ffmpeg-tool-v1')
+  const prepareMaterial = async ({ asset, sourceEvidence }) => {
+    const outputBuffer = typeof options.outputForSource === 'function'
+      ? Buffer.from(options.outputForSource(sourceEvidence, asset))
+      : Buffer.concat([Buffer.from('normalized:'), sourceEvidence.buffer])
+    const kind = asset && asset.kind === 'image' ? 'image' : 'video'
+    const contentType = kind === 'image' ? sourceEvidence.contentType : 'video/mp4'
+    const extension = kind === 'image'
+      ? (contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg')
+      : 'mp4'
+    const prepared = {
+      buffer: outputBuffer,
+      kind,
+      extension,
+      sourceContentSha256: sourceEvidence.contentSha256,
+      sourceSize: sourceEvidence.size,
+      sourceMimeType: sourceEvidence.contentType,
+      contentSha256: sha256(outputBuffer),
+      size: outputBuffer.length,
+      contentType,
+      mimeType: contentType,
+      transformProfileVersion,
+      transformProfileSha256,
+      transformToolFingerprint,
+      transformAction: options.transformAction || (kind === 'image' ? 'compress' : 'transcode')
+    }
+    if (options.state) {
+      options.state.calls = Number(options.state.calls || 0) + 1
+      if (!Array.isArray(options.state.preparedBuffers)) options.state.preparedBuffers = []
+      options.state.preparedBuffers.push(outputBuffer)
+    }
+    return prepared
+  }
+  prepareMaterial.profile = {
+    transformProfileVersion,
+    transformProfileSha256,
+    transformToolFingerprint
+  }
+  return prepareMaterial
+}
+
 function inventoryFixture(options = {}) {
   const records = options.records || [{
     sourceRecordId: 'source-record-confirm-alpha',
@@ -83,7 +129,9 @@ function inventoryFixture(options = {}) {
     folderWrite: 0,
     driveWrite: 0,
     ossWrite: 0,
-    dbWrite: 0
+    dbWrite: 0,
+    driveBuffers: [],
+    ossBuffers: []
   }
   const downloadCounts = new Map()
   const drive = {
@@ -116,6 +164,7 @@ function inventoryFixture(options = {}) {
     },
     async materializeVideo(input) {
       calls.driveWrite += 1
+      calls.driveBuffers.push(input.sourceEvidence.buffer)
       return {
         targetToken: `target-file-${sha256(input.asset.sourceToken).slice(0, 12)}`,
         targetName: input.targetName,
@@ -133,6 +182,7 @@ function inventoryFixture(options = {}) {
   const oss = {
     async putVideoDeterministic(input) {
       calls.ossWrite += 1
+      calls.ossBuffers.push(input.buffer)
       return {
         objectKey: input.objectKey,
         contentSha256: input.contentSha256,
@@ -144,12 +194,15 @@ function inventoryFixture(options = {}) {
       return { verified: true }
     }
   }
+  const prepareMaterial = options.prepareMaterial || createFakePrepareMaterial()
   return {
     records,
     db,
     calls,
     drive,
     oss,
+    prepareMaterial,
+    transformProfile: prepareMaterial.profile,
     sourceRows: records.map((record) => ({
       sourceRecordId: record.sourceRecordId,
       value: `https://${HOST}/drive/folder/${record.folderToken}`
@@ -170,6 +223,8 @@ async function runInventory(fixture, options = {}) {
     uploadDir: 'house-videos',
     drive: fixture.drive,
     oss: fixture.oss,
+    prepareMaterial: options.prepareMaterial || fixture.prepareMaterial,
+    describeProfile: options.describeProfile || (async () => fixture.transformProfile),
     dryRun: options.dryRun === true,
     nowText: '2026-07-27T01:02:03.000Z',
     contentPlanConfirmationRequired: options.contentPlanConfirmationRequired === true,
@@ -188,6 +243,15 @@ async function runInventory(fixture, options = {}) {
 
 function confirmationFromReport(report) {
   return noteMaterial._internal.contentPlanConfirmationFromReport(report)
+}
+
+function confirmationForEvidence(evidence) {
+  const summary = noteMaterial._internal.buildContentPlanSummary(evidence)
+  return {
+    expectedContentPlanSha256: summary.contentPlanSha256,
+    expectedContentAssetCount: summary.contentPlanAssetCount,
+    expectedContentPlanEvidence: evidence
+  }
 }
 
 function assertConfirmationError(error, message) {
@@ -430,6 +494,8 @@ function e2eSyncOptions(fixture, options = {}) {
     targetClient: fixture.targetClient,
     noteMaterialDrive: fixture.drive,
     noteMaterialOss: fixture.oss,
+    prepareMaterial: fixture.prepareMaterial,
+    describeProfile: async () => fixture.transformProfile,
     materials: [],
     feishuToken: 'synthetic-confirmation-tenant-token',
     runId: options.runId || FIXED_RUN_ID,
@@ -818,6 +884,196 @@ async function testInventoryConfirmationBehavior() {
   }
 }
 
+async function testNormalizedContentConfirmationBehavior() {
+  const rawBody = Buffer.from('confirmation-normalized-source-v1')
+  const dryState = { calls: 0, preparedBuffers: [] }
+  const dryFixture = inventoryFixture({
+    records: [{
+      sourceRecordId: 'source-record-confirm-alpha',
+      folderToken: 'folderSourceConfirmAlpha123',
+      assetToken: 'tokenVideoConfirmAlpha123',
+      name: 'source.mov',
+      body: rawBody,
+      mimeType: 'video/quicktime'
+    }],
+    prepareMaterial: createFakePrepareMaterial({ state: dryState })
+  })
+  const dry = await runInventory(dryFixture, { dryRun: true })
+  const confirmation = confirmationFromReport(dry)
+  const evidence = confirmation.expectedContentPlanEvidence[0]
+  const normalizedBody = Buffer.concat([Buffer.from('normalized:'), rawBody])
+  assert.deepStrictEqual({
+    prepareCalls: dryState.calls,
+    sourceContentSha256: evidence.sourceContentSha256,
+    sourceSize: evidence.sourceSize,
+    sourceMimeType: evidence.sourceMimeType,
+    contentSha256: evidence.contentSha256,
+    size: evidence.size,
+    mimeType: evidence.mimeType,
+    transformProfileVersion: evidence.transformProfileVersion,
+    transformProfileSha256: evidence.transformProfileSha256,
+    transformToolFingerprint: evidence.transformToolFingerprint,
+    transformAction: evidence.transformAction,
+    writes: writeCount(dryFixture.calls)
+  }, {
+    prepareCalls: 1,
+    sourceContentSha256: sha256(rawBody),
+    sourceSize: rawBody.length,
+    sourceMimeType: 'video/quicktime',
+    contentSha256: sha256(normalizedBody),
+    size: normalizedBody.length,
+    mimeType: 'video/mp4',
+    transformProfileVersion: 'feishu-note-serving-v1',
+    transformProfileSha256: sha256('fake-transform-profile-v1'),
+    transformToolFingerprint: sha256('fake-ffmpeg-tool-v1'),
+    transformAction: 'transcode',
+    writes: 0
+  }, '人类 dry-run 必须调用 prepareMaterial，并把源证据、输出证据和转换身份一并纳入私有确认计划')
+
+  const mutationCases = [
+    ['sourceContentSha256', sha256('tampered-source-content')],
+    ['contentSha256', sha256('tampered-normalized-content')],
+    ['size', normalizedBody.length + 1],
+    ['transformProfileVersion', 'feishu-note-serving-v2'],
+    ['transformProfileSha256', sha256('fake-transform-profile-v2')],
+    ['transformToolFingerprint', sha256('fake-ffmpeg-tool-v2')],
+    ['transformAction', 'compress']
+  ]
+  for (const [field, value] of mutationCases) {
+    const tamperedEvidence = confirmation.expectedContentPlanEvidence.map((item, index) => (
+      index === 0 ? { ...item, [field]: value } : { ...item }
+    ))
+    const tamperedConfirmation = confirmationForEvidence(tamperedEvidence)
+    const state = { calls: 0, preparedBuffers: [] }
+    const fixture = inventoryFixture({
+      records: dryFixture.records,
+      prepareMaterial: createFakePrepareMaterial({ state })
+    })
+    const before = JSON.stringify(fixture.db)
+    let rejected = null
+    try {
+      await runInventory(fixture, {
+        dryRun: false,
+        contentPlanConfirmationRequired: true,
+        ...tamperedConfirmation
+      })
+    } catch (error) {
+      rejected = error
+      assertConfirmationError(error, `${field} 被篡改`)
+    }
+    assert.deepStrictEqual({
+      rejected: Boolean(rejected),
+      businessWrites: writeCount(fixture.calls),
+      dbUnchanged: JSON.stringify(fixture.db) === before
+    }, {
+      rejected: true,
+      businessWrites: 0,
+      dbUnchanged: true
+    }, `${field} 被篡改时必须在 Drive/OSS/DB 写入前拒绝`)
+  }
+
+  {
+    const missingEvidence = confirmation.expectedContentPlanEvidence.map((item, index) => {
+      const next = { ...item }
+      if (index === 0) delete next.transformProfileSha256
+      return next
+    })
+    const fixture = inventoryFixture({
+      records: dryFixture.records,
+      prepareMaterial: createFakePrepareMaterial()
+    })
+    const before = JSON.stringify(fixture.db)
+    await assert.rejects(
+      () => runInventory(fixture, {
+        dryRun: false,
+        contentPlanConfirmationRequired: true,
+        ...confirmation,
+        expectedContentPlanEvidence: missingEvidence
+      }),
+      '删除 transformProfileSha256 必须让正式确认 fail-closed'
+    )
+    assert.strictEqual(writeCount(fixture.calls), 0, '删除 transformProfileSha256 时 Drive/OSS/DB 写入必须为 0')
+    assert.strictEqual(JSON.stringify(fixture.db), before, '删除 transformProfileSha256 不得改变数据库')
+  }
+
+  for (const invalidDigest of ['', 'g'.repeat(64), 'A'.repeat(64), 'a'.repeat(63)]) {
+    const fixture = inventoryFixture({
+      records: dryFixture.records,
+      prepareMaterial: createFakePrepareMaterial({ transformProfileSha256: invalidDigest })
+    })
+    const before = JSON.stringify(fixture.db)
+    const failedReport = await runInventory(fixture, { dryRun: true })
+    assert.strictEqual(failedReport.complete, false, '无效 transformProfileSha256 必须形成失败报告')
+    assert.ok(failedReport.failed > 0, '无效 transformProfileSha256 必须计入失败素材')
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(failedReport, 'contentPlanSha256'),
+      false,
+      '无效 transformProfileSha256 不得返回可复用内容计划摘要'
+    )
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(failedReport, 'contentPlanAssetCount'),
+      false,
+      '无效 transformProfileSha256 不得返回可复用素材数量'
+    )
+    assert.strictEqual(writeCount(fixture.calls), 0, '无效 transformProfileSha256 不得写 Drive/OSS/DB')
+    assert.strictEqual(JSON.stringify(fixture.db), before, '无效 transformProfileSha256 不得改变数据库')
+  }
+
+  {
+    const state = { calls: 0, preparedBuffers: [] }
+    const fixture = inventoryFixture({
+      records: dryFixture.records,
+      bodyForDownload(record, count) {
+        return count === 1 ? record.body : Buffer.from('source-changed-before-target-write')
+      },
+      prepareMaterial: createFakePrepareMaterial({ state })
+    })
+    const before = JSON.stringify(fixture.db)
+    await assert.rejects(
+      () => runInventory(fixture, {
+        dryRun: false,
+        contentPlanConfirmationRequired: true,
+        ...confirmation
+      }),
+      (error) => assertConfirmationError(error, 'apply 再次取得的源内容变化'),
+      'apply 再次取得源内容变化时必须在首个目标写入前拒绝'
+    )
+    assert.ok(state.calls >= 1, '源内容变化门必须建立在已调用 prepareMaterial 的归一化计划之上')
+    assert.strictEqual(writeCount(fixture.calls), 0, '源内容变化不得产生 Drive/OSS/DB 写入')
+    assert.strictEqual(JSON.stringify(fixture.db), before, '源内容变化不得改变工作数据库')
+  }
+
+  {
+    const state = { calls: 0, preparedBuffers: [] }
+    const fixture = inventoryFixture({
+      records: dryFixture.records,
+      prepareMaterial: createFakePrepareMaterial({ state })
+    })
+    const applied = await runInventory(fixture, {
+      dryRun: false,
+      contentPlanConfirmationRequired: true,
+      ...confirmation
+    })
+    const driveBuffer = fixture.calls.driveBuffers[0]
+    const ossBuffer = fixture.calls.ossBuffers[0]
+    assert.deepStrictEqual({
+      complete: applied.complete,
+      published: applied.published,
+      prepareCalled: state.calls > 0,
+      driveUsesPreparedBuffer: state.preparedBuffers.includes(driveBuffer),
+      ossUsesExactDriveBuffer: ossBuffer === driveBuffer,
+      finalContentSha256: driveBuffer && sha256(driveBuffer)
+    }, {
+      complete: true,
+      published: true,
+      prepareCalled: true,
+      driveUsesPreparedBuffer: true,
+      ossUsesExactDriveBuffer: true,
+      finalContentSha256: sha256(normalizedBody)
+    }, '确认一致后 Drive 与 OSS 必须消费 prepareMaterial 生成的同一份最终归一化 Buffer')
+  }
+}
+
 async function testActualFeishuSyncEndToEndGate() {
   const previous = clone(config.feishu)
   try {
@@ -830,6 +1086,11 @@ async function testActualFeishuSyncEndToEndGate() {
 
     {
       const fixture = e2eSyncFixture()
+      assert.strictEqual(
+        feishuSync._internal.contentPlanConfirmationRequired(),
+        true,
+        '端到端确认夹具必须启用正式内容计划门'
+      )
       const humanDry = await feishuSync.sync(
         clone(fixture.db),
         'A-CONFIRM',
@@ -869,6 +1130,13 @@ async function testActualFeishuSyncEndToEndGate() {
         e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-config-human` })
       )
       assert.strictEqual(humanDry.success, true, '配置漂移场景的人类 dry-run 必须先生成合法确认摘要')
+      assert.ok(
+        noteMaterial._internal.recallContentPlanConfirmation(
+          humanDry.noteMaterials.contentPlanSha256,
+          humanDry.noteMaterials.contentPlanAssetCount
+        ),
+        '成功的人类 dry-run 必须把私有行级内容计划留在进程内短期确认缓存'
+      )
       const beforeDb = JSON.stringify(fixture.db)
       const beforeBaseCallCount = fixture.baseCalls.length
       const previousTargetRoot = config.feishu.noteMaterialTargetRootFolderToken
@@ -1033,12 +1301,19 @@ async function testActualFeishuSyncEndToEndGate() {
     }
 
     {
-      const fixture = e2eSyncFixture()
+      const prepareState = { calls: 0, preparedBuffers: [] }
+      const fixture = e2eSyncFixture({
+        prepareMaterial: createFakePrepareMaterial({ state: prepareState })
+      })
       const humanDry = await feishuSync.sync(
         clone(fixture.db),
         'A-CONFIRM',
         e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-success-human` })
       )
+      assert.strictEqual(prepareState.calls, 1, '人类 dry-run 必须真实生成一次压缩内容计划')
+      prepareState.calls = 0
+      prepareState.preparedBuffers = []
+      fixture.calls.download = 0
       const formal = await feishuSync.sync(
         fixture.db,
         'A-CONFIRM',
@@ -1066,6 +1341,11 @@ async function testActualFeishuSyncEndToEndGate() {
       assert.strictEqual(fixture.calls.folderWrite, 1, '确认一致后目标 Drive 房源目录必须真实创建')
       assert.strictEqual(fixture.calls.driveWrite, 1, '确认一致后目标 Drive 素材必须真实写入')
       assert.strictEqual(fixture.calls.ossWrite, 1, '确认一致后 OSS 素材必须真实写入')
+      assert.deepStrictEqual(
+        [prepareState.calls, fixture.calls.download],
+        [1, 3],
+        '真实正式入口必须只压缩缺失素材一次，同时保留预检核源、正式写前核源与压缩读取三道安全门'
+      )
       assert.strictEqual(fixture.db.listings.length, 1, '确认一致后工作 DB 必须得到一套公司房源')
       assert.strictEqual(fixture.db.listings[0].mediaAssets.length, 1, '确认一致后工作 DB 必须原子替换素材清单')
     }
@@ -1178,6 +1458,24 @@ async function testReadOnlyPreflightOrder() {
     expectedContentPlanSha256: 'c'.repeat(64),
     expectedContentAssetCount: 2
   }
+  const cachedConfirmation = {
+    ...expected,
+    expectedContentPlanEvidence: [{
+      sourceRecordFingerprint: 'd'.repeat(64),
+      assetId: 'MAT-11111111111111111111111111111111',
+      contentSha256: 'e'.repeat(64),
+      size: 1,
+      mimeType: 'video/mp4',
+      displayOrder: 0
+    }, {
+      sourceRecordFingerprint: 'f'.repeat(64),
+      assetId: 'MAT-22222222222222222222222222222222',
+      contentSha256: '1'.repeat(64),
+      size: 2,
+      mimeType: 'video/mp4',
+      displayOrder: 0
+    }]
+  }
   const order = []
   const db = { marker: 'working-db', listings: [] }
   const prepared = await feishuSync._internal.prepareMirrorContentPlanConfirmation({
@@ -1186,6 +1484,7 @@ async function testReadOnlyPreflightOrder() {
     runId: FIXED_RUN_ID,
     nowMs: FIXED_NOW_MS,
     ...expected,
+    loadCachedConfirmation: async () => cachedConfirmation,
     runPreflight: async (context) => {
       order.push('read-only-preflight')
       assert.strictEqual(context.db, db, '协调器必须绑定同一 working DB 快照')
@@ -1195,26 +1494,10 @@ async function testReadOnlyPreflightOrder() {
         complete: true,
         failed: 0,
         dryRun: true,
+        sourcesGloballyVerified: true,
         contentPlanSha256: expected.expectedContentPlanSha256,
         contentPlanAssetCount: expected.expectedContentAssetCount,
-        privateConfirmation: {
-          ...expected,
-          expectedContentPlanEvidence: [{
-            sourceRecordFingerprint: 'd'.repeat(64),
-            assetId: 'MAT-11111111111111111111111111111111',
-            contentSha256: 'e'.repeat(64),
-            size: 1,
-            mimeType: 'video/mp4',
-            displayOrder: 0
-          }, {
-            sourceRecordFingerprint: 'f'.repeat(64),
-            assetId: 'MAT-22222222222222222222222222222222',
-            contentSha256: '1'.repeat(64),
-            size: 2,
-            mimeType: 'video/mp4',
-            displayOrder: 0
-          }]
-        }
+        privateConfirmation: cachedConfirmation
       }
     }
   })
@@ -1230,10 +1513,12 @@ async function testReadOnlyPreflightOrder() {
       runId: FIXED_RUN_ID,
       nowMs: FIXED_NOW_MS,
       ...expected,
+      loadCachedConfirmation: async () => cachedConfirmation,
       runPreflight: async () => ({
         complete: true,
         failed: 0,
         dryRun: true,
+        sourcesGloballyVerified: true,
         contentPlanSha256: '9'.repeat(64),
         contentPlanAssetCount: 2
       }),
@@ -1303,19 +1588,69 @@ function request(baseUrl, method, targetPath, body, headers = {}) {
   })
 }
 
-async function waitForServer(baseUrl) {
+function observeChildExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({
+      code: child.exitCode,
+      signal: child.signalCode,
+      event: 'already-exited'
+    })
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+    child.once('error', (error) => finish({ error, event: 'error' }))
+    child.once('exit', (code, signal) => finish({ code, signal, event: 'exit' }))
+  })
+}
+
+function childExitDescription(result) {
+  if (result && result.error) return result.error.message || String(result.error)
+  const code = result && result.code
+  const signal = result && result.signal
+  return `code=${code === null || code === undefined ? 'null' : code}, signal=${signal || 'none'}`
+}
+
+async function waitForServer(baseUrl, childExit) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 12000) {
-    try {
-      const response = await request(baseUrl, 'GET', '/healthz')
-      if (response.statusCode === 200) return true
-    } catch (_error) {}
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    const attempt = await Promise.race([
+      request(baseUrl, 'GET', '/healthz')
+        .then((response) => ({ type: 'health', response }))
+        .catch(() => ({ type: 'retry' })),
+      childExit.then((result) => ({ type: 'exit', result }))
+    ])
+    if (attempt.type === 'exit') {
+      throw new Error(`后台确认门 HTTP 测试服务在就绪前退出：${childExitDescription(attempt.result)}`)
+    }
+    if (attempt.type === 'health' && attempt.response.statusCode === 200) return true
+    const delay = await Promise.race([
+      new Promise((resolve) => setTimeout(() => resolve({ type: 'retry' }), 120)),
+      childExit.then((result) => ({ type: 'exit', result }))
+    ])
+    if (delay.type === 'exit') {
+      throw new Error(`后台确认门 HTTP 测试服务在就绪前退出：${childExitDescription(delay.result)}`)
+    }
   }
   return false
 }
 
-async function testAdminHttp400() {
+async function stopChild(child, childExit) {
+  if (child.exitCode === null && child.signalCode === null) child.kill()
+  let timer = null
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ event: 'timeout' }), 5000)
+  })
+  const result = await Promise.race([childExit, timeout])
+  if (timer) clearTimeout(timer)
+  assert.notStrictEqual(result.event, 'timeout', '后台确认门 HTTP 测试服务必须在清理阶段退出')
+}
+
+async function testAdminHttp400(options = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-note-confirm-http-'))
   const dataFile = path.join(tempDir, 'db.json')
   const port = 43000 + Math.floor(Math.random() * 1000)
@@ -1334,7 +1669,7 @@ async function testAdminHttp400() {
     }]
   }), 'utf8')
   const serverDir = path.resolve(__dirname, '..')
-  const server = spawn(process.execPath, ['src/index.js'], {
+  const server = spawn(process.execPath, options.serverArgs || ['src/index.js'], {
     cwd: serverDir,
     env: {
       ...process.env,
@@ -1352,11 +1687,12 @@ async function testAdminHttp400() {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   })
+  const serverExit = observeChildExit(server)
   let output = ''
   server.stdout.on('data', (chunk) => { output += chunk.toString() })
   server.stderr.on('data', (chunk) => { output += chunk.toString() })
   try {
-    assert.ok(await waitForServer(baseUrl), `后台确认门 HTTP 测试服务未启动：${output}`)
+    assert.ok(await waitForServer(baseUrl, serverExit), `后台确认门 HTTP 测试服务未启动：${output}`)
     const login = await request(baseUrl, 'POST', '/admin/auth/login', {
       account: 'admin',
       password: 'admin123'
@@ -1438,10 +1774,49 @@ async function testAdminHttp400() {
       '全部非法 HTTP 注入必须在任何数据库写入前 400'
     )
   } finally {
-    server.kill()
-    await new Promise((resolve) => server.once('exit', resolve))
+    await stopChild(server, serverExit)
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
+}
+
+function runConfirmationScope(scope) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [__filename], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        FEISHU_NOTE_CONFIRM_TEST_SCOPE: scope
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function testHttpHarnessLifecycleBehavior() {
+  const earlyExit = await runConfirmationScope('http-server-exit-probe')
+  assert.notStrictEqual(earlyExit.code, 0, 'HTTP 入口子服务立即 exit(1) 时测试进程必须非 0')
+  assert.ok(
+    /在就绪前退出|code=1/.test(`${earlyExit.stdout}\n${earlyExit.stderr}`),
+    'HTTP 入口子服务立即退出时必须输出可诊断的失败原因'
+  )
+
+  const healthy = await runConfirmationScope('http')
+  assert.strictEqual(
+    healthy.code,
+    0,
+    `HTTP 入口正常服务必须完整成功：${healthy.stdout}\n${healthy.stderr}`
+  )
+  assert.ok(
+    healthy.stdout.includes('feishu-note-material-confirmation-v1-test http scope passed'),
+    'HTTP 入口正常服务必须完整输出 passed'
+  )
 }
 
 async function main() {
@@ -1455,11 +1830,16 @@ async function main() {
     console.log('feishu-note-material-confirmation-v1-test http scope passed')
     return
   }
+  if (process.env.FEISHU_NOTE_CONFIRM_TEST_SCOPE === 'http-server-exit-probe') {
+    await testAdminHttp400({ serverArgs: ['-e', 'process.exit(1)'] })
+    throw new Error('HTTP 子服务立即退出探针不得到达成功分支')
+  }
   await testParserAndScheduledGate()
   await testInventoryConfirmationBehavior()
+  await testNormalizedContentConfirmationBehavior()
   await testActualFeishuSyncEndToEndGate()
   await testReadOnlyPreflightOrder()
-  await testAdminHttp400()
+  await testHttpHarnessLifecycleBehavior()
   console.log('feishu-note-material-confirmation-v1-test passed')
 }
 

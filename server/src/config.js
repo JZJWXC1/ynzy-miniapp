@@ -284,6 +284,27 @@ module.exports = {
     ).trim(),
     noteMaterialMaxDepth: numberFromEnv('FEISHU_NOTE_MATERIAL_MAX_DEPTH', 8),
     noteMaterialMaxItems: numberFromEnv('FEISHU_NOTE_MATERIAL_MAX_ITEMS', 5000),
+    // 员工房源笔记中的原文件可以较大，但写入飞书专用云盘和 OSS 前必须先形成统一、可核验的展示产物。
+    // 原始上限与最终上限必须分开：前者保护临时磁盘，后者控制小程序加载与两端上传成本。
+    noteMaterialFfmpegPath: String(process.env.NOTE_MATERIAL_FFMPEG_PATH || '').trim(),
+    noteMaterialFfprobePath: String(process.env.NOTE_MATERIAL_FFPROBE_PATH || '').trim(),
+    noteMaterialTempRoot: String(process.env.NOTE_MATERIAL_TEMP_ROOT || '').trim(),
+    noteMaterialNormalizationTimeoutMs:
+      numberFromEnv('NOTE_MATERIAL_NORMALIZATION_TIMEOUT_SECONDS', 900) * 1000,
+    noteMaterialMaxVideoSourceBytes:
+      numberFromEnv('NOTE_MATERIAL_MAX_VIDEO_SOURCE_MB', 1024) * 1024 * 1024,
+    noteMaterialMaxImageSourceBytes:
+      numberFromEnv('NOTE_MATERIAL_MAX_IMAGE_SOURCE_MB', 50) * 1024 * 1024,
+    noteMaterialMaxVideoPassthroughBytes:
+      numberFromEnv('NOTE_MATERIAL_MAX_VIDEO_PASSTHROUGH_MB', 80) * 1024 * 1024,
+    noteMaterialMaxVideoOutputBytes:
+      numberFromEnv('NOTE_MATERIAL_MAX_VIDEO_OUTPUT_MB', 80) * 1024 * 1024,
+    noteMaterialMaxImageOutputBytes:
+      numberFromEnv('NOTE_MATERIAL_MAX_IMAGE_OUTPUT_MB', 8) * 1024 * 1024,
+    noteMaterialMaxVideoDurationSeconds:
+      numberFromEnv('NOTE_MATERIAL_MAX_VIDEO_DURATION_SECONDS', 900),
+    noteMaterialMinFreeBytes:
+      numberFromEnv('NOTE_MATERIAL_MIN_FREE_MB', 256) * 1024 * 1024,
     pageSize: numberFromEnv('FEISHU_PAGE_SIZE', 50),
     requestTimeoutMs: numberFromEnv('FEISHU_REQUEST_TIMEOUT_MS', 30000),
     requestMaxRetries: numberFromEnv('FEISHU_REQUEST_MAX_RETRIES', 2),

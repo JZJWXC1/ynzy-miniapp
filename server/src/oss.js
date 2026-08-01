@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const fs = require('fs')
 const https = require('https')
 const path = require('path')
 const { URL } = require('url')
@@ -289,6 +290,176 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
   })
 }
 
+function putObjectFile(objectKey, file, contentType, options = {}) {
+  const missing = missingConfigKeys()
+  if (missing.length) {
+    const error = new Error(`OSS 配置缺少 ${missing.join('、')}，无法保存飞书素材`)
+    error.statusCode = 503
+    throw error
+  }
+  if (!file || !file.handle || !Number.isSafeInteger(file.size) || file.size < 1) {
+    throw new Error('OSS 流式上传文件凭据无效')
+  }
+
+  const type = contentType || 'application/octet-stream'
+  const date = new Date().toUTCString()
+  const resourcePath = `/${config.oss.bucket}/${objectKey}`
+  const headers = {
+    Date: date,
+    'Content-Type': type,
+    'Content-Length': file.size
+  }
+  const metadata = options.metadata && typeof options.metadata === 'object' && !Array.isArray(options.metadata)
+    ? options.metadata
+    : {}
+  Object.keys(metadata).sort().forEach((key) => {
+    const normalizedKey = String(key || '').trim().toLowerCase()
+    const value = String(metadata[key] || '').trim()
+    if (!/^x-oss-meta-[a-z0-9-]+$/.test(normalizedKey) || !value || /[\r\n]/.test(value)) {
+      throw new Error('OSS 自定义元数据无效')
+    }
+    headers[normalizedKey] = value
+  })
+  if (options.forbidOverwrite === true) headers['x-oss-forbid-overwrite'] = 'true'
+  if (config.oss.securityToken) headers['x-oss-security-token'] = config.oss.securityToken
+  const stringToSign = [
+    'PUT',
+    '',
+    type,
+    date,
+    `${canonicalizedOssHeaders(headers)}${resourcePath}`
+  ].join('\n')
+  headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let source = null
+    let streamedBytes = 0
+    let sourceEnded = false
+    let streamedSha256 = ''
+    const sourceHash = crypto.createHash('sha256')
+    const stopSource = () => {
+      if (source && typeof source.destroy === 'function' && !source.destroyed) source.destroy()
+    }
+    const resolveOnce = (value) => {
+      if (settled) return false
+      settled = true
+      stopSource()
+      resolve(value)
+      return true
+    }
+    const rejectOnce = (error) => {
+      if (settled) return false
+      settled = true
+      stopSource()
+      reject(error)
+      return true
+    }
+    const req = https.request({
+      method: 'PUT',
+      hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
+      path: `/${encodeObjectPath(objectKey)}`,
+      headers
+    }, (res) => {
+      let raw = ''
+      let responseBytes = 0
+      const rejectResponseFailure = () => {
+        const error = new Error('OSS 上传响应中断')
+        error.statusCode = 502
+        rejectOnce(error)
+      }
+      res.on('aborted', rejectResponseFailure)
+      res.on('error', rejectResponseFailure)
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => {
+        if (settled) return
+        responseBytes += Buffer.byteLength(chunk)
+        if (responseBytes > OSS_ERROR_RESPONSE_MAX_BYTES) {
+          const error = new Error('OSS 上传响应超过允许大小')
+          error.statusCode = 502
+          if (rejectOnce(error)) req.destroy()
+          return
+        }
+        raw += chunk
+      })
+      res.on('end', () => {
+        if (settled) return
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          if (!sourceEnded || streamedBytes !== file.size) {
+            const error = new Error('OSS 流式上传字节数与受信文件大小不一致')
+            error.statusCode = 422
+            if (rejectOnce(error)) req.destroy(error)
+            return
+          }
+          if (options.expectedSha256 && streamedSha256 !== options.expectedSha256) {
+            const error = new Error('OSS 流式上传期间本地文件内容发生变化')
+            error.statusCode = 422
+            if (rejectOnce(error)) req.destroy(error)
+            return
+          }
+          resolveOnce({ objectKey, fileUrl: publicFileUrl(objectKey), statusCode: res.statusCode })
+          return
+        }
+        const error = new Error(sanitizeOssErrorText(raw) || `OSS 上传失败：${res.statusCode}`)
+        error.statusCode = res.statusCode || 502
+        if (rejectOnce(error)) req.destroy()
+      })
+    })
+    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+      const error = new Error('OSS 上传请求超时')
+      error.statusCode = 504
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    req.on('error', rejectOnce)
+    try {
+      source = fs.createReadStream(file.filePath, {
+        fd: file.handle.fd,
+        autoClose: false,
+        start: 0,
+        end: file.size - 1,
+        highWaterMark: 64 * 1024
+      })
+    } catch (error) {
+      const failure = new Error('OSS 流式上传无法打开受信文件')
+      failure.statusCode = 422
+      rejectOnce(failure)
+      req.destroy()
+      return
+    }
+    source.on('data', (chunk) => {
+      streamedBytes += chunk.length
+      sourceHash.update(chunk)
+      if (streamedBytes > file.size) {
+        const error = new Error('OSS 流式上传超过受信文件大小')
+        error.statusCode = 422
+        if (rejectOnce(error)) req.destroy(error)
+      }
+    })
+    source.once('error', () => {
+      const error = new Error('OSS 流式上传读取受信文件失败')
+      error.statusCode = 422
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    source.once('end', () => {
+      sourceEnded = true
+      streamedSha256 = sourceHash.digest('hex')
+      if (settled) return
+      if (streamedBytes !== file.size) {
+        const error = new Error('OSS 流式上传字节数与受信文件大小不一致')
+        error.statusCode = 422
+        if (rejectOnce(error)) req.destroy(error)
+        return
+      }
+      if (options.expectedSha256 && streamedSha256 !== options.expectedSha256) {
+        const error = new Error('OSS 流式上传期间本地文件内容发生变化')
+        error.statusCode = 422
+        if (rejectOnce(error)) req.destroy(error)
+      }
+    })
+    source.pipe(req)
+  })
+}
+
 function readObjectBufferAuthenticated(objectKey, maxBytes) {
   const missing = missingConfigKeys()
   if (missing.length) {
@@ -373,6 +544,139 @@ function readObjectBufferAuthenticated(objectKey, maxBytes) {
           buffer,
           size,
           contentSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+          metadataSha256: String(res.headers && res.headers['x-oss-meta-content-sha256'] || '').trim(),
+          contentType: String(res.headers && res.headers['content-type'] || '')
+            .split(';')[0]
+            .trim()
+            .toLowerCase()
+        })
+      })
+    })
+    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+      const error = new Error('OSS 回读素材请求超时')
+      error.statusCode = 504
+      if (rejectOnce(error)) req.destroy(error)
+    })
+    req.on('error', rejectOnce)
+    req.end()
+  })
+}
+
+function readObjectEvidenceAuthenticated(objectKey, expectedSize) {
+  const missing = missingConfigKeys()
+  if (missing.length) {
+    const error = new Error(`OSS 配置缺少 ${missing.join('、')}，无法回读素材`)
+    error.statusCode = 503
+    throw error
+  }
+  const safeExpectedSize = Number(expectedSize)
+  if (!Number.isSafeInteger(safeExpectedSize) || safeExpectedSize < 1 || safeExpectedSize > config.oss.maxVideoSize) {
+    throw new Error('房源笔记素材大小无效')
+  }
+  const date = new Date().toUTCString()
+  const resourcePath = `/${config.oss.bucket}/${objectKey}`
+  const headers = { Date: date }
+  if (config.oss.securityToken) headers['x-oss-security-token'] = config.oss.securityToken
+  const stringToSign = [
+    'GET',
+    '',
+    '',
+    date,
+    `${canonicalizedOssHeaders(headers)}${resourcePath}`
+  ].join('\n')
+  headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const resolveOnce = (value) => {
+      if (settled) return false
+      settled = true
+      resolve(value)
+      return true
+    }
+    const rejectOnce = (error) => {
+      if (settled) return false
+      settled = true
+      reject(error)
+      return true
+    }
+    const req = https.request({
+      method: 'GET',
+      hostname: `${config.oss.bucket}.${config.oss.region}.aliyuncs.com`,
+      path: `/${encodeObjectPath(objectKey)}`,
+      headers
+    }, (res) => {
+      const rejectResponseFailure = () => {
+        const error = new Error('OSS 回读素材响应中断')
+        error.statusCode = 502
+        rejectOnce(error)
+      }
+      res.on('aborted', rejectResponseFailure)
+      res.on('error', rejectResponseFailure)
+
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        let responseBytes = 0
+        res.on('data', (chunk) => {
+          if (settled) return
+          responseBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk))
+          if (responseBytes > OSS_ERROR_RESPONSE_MAX_BYTES) {
+            const error = new Error('OSS 回读失败响应超过允许大小')
+            error.statusCode = 502
+            if (rejectOnce(error)) {
+              if (typeof res.destroy === 'function') res.destroy(error)
+              req.destroy(error)
+            }
+          }
+        })
+        res.on('end', () => {
+          if (settled) return
+          const error = new Error(`OSS 回读素材失败：${res.statusCode}`)
+          error.statusCode = res.statusCode || 502
+          rejectOnce(error)
+        })
+        return
+      }
+
+      const rawDeclaredLength = res.headers && res.headers['content-length']
+      const declaredLength = rawDeclaredLength === undefined || rawDeclaredLength === ''
+        ? null
+        : Number(rawDeclaredLength)
+      if (declaredLength !== null &&
+          (!Number.isSafeInteger(declaredLength) || declaredLength < 0)) {
+        const error = new Error('OSS 回读素材 Content-Length 无效')
+        error.statusCode = 502
+        if (rejectOnce(error)) req.destroy(error)
+        return
+      }
+      if (declaredLength !== null && declaredLength > safeExpectedSize) {
+        const error = new Error('OSS 回读素材超过允许大小')
+        error.statusCode = 413
+        if (rejectOnce(error)) {
+          if (typeof res.destroy === 'function') res.destroy(error)
+          req.destroy(error)
+        }
+        return
+      }
+
+      let size = 0
+      const hash = crypto.createHash('sha256')
+      res.on('data', (chunk) => {
+        if (settled) return
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        size += bytes.length
+        if (size > safeExpectedSize) {
+          const error = new Error('OSS 回读素材超过允许大小')
+          error.statusCode = 413
+          if (rejectOnce(error)) req.destroy(error)
+          return
+        }
+        hash.update(bytes)
+      })
+      res.on('end', () => {
+        if (settled) return
+        resolveOnce({
+          size,
+          contentSha256: hash.digest('hex'),
           metadataSha256: String(res.headers && res.headers['x-oss-meta-content-sha256'] || '').trim(),
           contentType: String(res.headers && res.headers['content-type'] || '')
             .split(';')[0]
@@ -528,9 +832,10 @@ function imageBytesMatch(buffer, extension) {
   return false
 }
 
-function validateDeterministicMaterialInput(input = {}) {
+function validateDeterministicMaterialInput(input = {}, options = {}) {
   const objectKey = String(input.objectKey || '').trim()
-  const buffer = Buffer.isBuffer(input.buffer) ? input.buffer : (input.buffer == null ? null : Buffer.from(input.buffer))
+  const size = Number(input.size)
+  const filePath = String(input.filePath || '').trim()
   const contentSha256 = String(input.contentSha256 || '').trim().toLowerCase()
   const extensionMatch = objectKey.toLowerCase().match(/\.([a-z0-9]+)$/)
   const extension = extensionMatch ? extensionMatch[1] : ''
@@ -547,16 +852,124 @@ function validateDeterministicMaterialInput(input = {}) {
     throw new Error('房源笔记 OSS 素材类型与对象键扩展名不一致')
   }
   if (!/^[0-9a-f]{64}$/.test(contentSha256)) throw new Error('房源笔记内容哈希无效')
-  if (buffer && (!buffer.length || buffer.length > config.oss.maxVideoSize)) {
+  if (!Number.isSafeInteger(size) || size < 1 || size > config.oss.maxVideoSize) {
     throw new Error('房源笔记素材大小无效')
   }
-  if (buffer && crypto.createHash('sha256').update(buffer).digest('hex') !== contentSha256) {
-    throw new Error('房源笔记上传内容与声明哈希不一致')
+  if (options.requireFile === true) {
+    if (input.buffer !== undefined && input.buffer !== null) {
+      throw new Error('房源笔记 OSS 上传必须使用受信本地文件，禁止整块 Buffer')
+    }
+    if (!filePath || !path.isAbsolute(filePath) || /[\0\r\n]/.test(filePath)) {
+      throw new Error('房源笔记 OSS 受信本地文件路径无效')
+    }
   }
-  if (kind === 'image' && !imageBytesMatch(buffer, extension)) {
-    throw new Error('房源笔记图片真实字节类型与对象键扩展名不一致')
+  return { objectKey, filePath, size, contentSha256, extension, kind, contentType }
+}
+
+function sameLocalPath(left, right) {
+  const normalize = (value) => {
+    const resolved = path.resolve(String(value || ''))
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
   }
-  return { objectKey, buffer, contentSha256, kind, contentType }
+  return normalize(left) === normalize(right)
+}
+
+function sameOpenedFile(left, right) {
+  if (!left || !right || left.size !== right.size) return false
+  if (Number.isFinite(left.dev) && Number.isFinite(right.dev) && left.dev !== right.dev) return false
+  if (Number.isFinite(left.ino) && Number.isFinite(right.ino) && left.ino !== right.ino) return false
+  return true
+}
+
+function hashOpenedFile(filePath, handle, expectedSize) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let size = 0
+    const hash = crypto.createHash('sha256')
+    const source = fs.createReadStream(filePath, {
+      fd: handle.fd,
+      autoClose: false,
+      start: 0,
+      end: expectedSize - 1,
+      highWaterMark: 64 * 1024
+    })
+    const rejectOnce = (error) => {
+      if (settled) return
+      settled = true
+      source.destroy()
+      reject(error)
+    }
+    source.on('data', (chunk) => {
+      if (settled) return
+      size += chunk.length
+      if (size > expectedSize) {
+        const error = new Error('房源笔记受信本地文件超过声明大小')
+        error.statusCode = 422
+        rejectOnce(error)
+        return
+      }
+      hash.update(chunk)
+    })
+    source.once('error', () => {
+      const error = new Error('房源笔记受信本地文件读取失败')
+      error.statusCode = 422
+      rejectOnce(error)
+    })
+    source.once('end', () => {
+      if (settled) return
+      if (size !== expectedSize) {
+        const error = new Error('房源笔记受信本地文件大小与声明不一致')
+        error.statusCode = 422
+        rejectOnce(error)
+        return
+      }
+      settled = true
+      resolve({ size, contentSha256: hash.digest('hex') })
+    })
+  })
+}
+
+async function openVerifiedDeterministicMaterialFile(normalized) {
+  let handle = null
+  try {
+    const pathStat = await fs.promises.lstat(normalized.filePath)
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+      throw new Error('房源笔记 OSS 受信本地文件必须是普通文件')
+    }
+    const realPath = await fs.promises.realpath(normalized.filePath)
+    if (!sameLocalPath(realPath, normalized.filePath)) {
+      throw new Error('房源笔记 OSS 受信本地文件不得经过链接跳转')
+    }
+    handle = await fs.promises.open(realPath, 'r')
+    const openedStat = await handle.stat()
+    if (!openedStat.isFile() || !sameOpenedFile(pathStat, openedStat) || openedStat.size !== normalized.size) {
+      throw new Error('房源笔记 OSS 受信本地文件大小或身份与声明不一致')
+    }
+
+    if (normalized.kind === 'image') {
+      const header = Buffer.alloc(Math.min(16, normalized.size))
+      const { bytesRead } = await handle.read(header, 0, header.length, 0)
+      if (!imageBytesMatch(header.subarray(0, bytesRead), normalized.extension)) {
+        throw new Error('房源笔记图片真实字节类型与对象键扩展名不一致')
+      }
+    }
+
+    const evidence = await hashOpenedFile(realPath, handle, normalized.size)
+    if (evidence.contentSha256 !== normalized.contentSha256) {
+      throw new Error('房源笔记上传内容与声明哈希不一致')
+    }
+    const stableStat = await handle.stat()
+    if (!sameOpenedFile(openedStat, stableStat) ||
+        stableStat.mtimeMs !== openedStat.mtimeMs ||
+        stableStat.ctimeMs !== openedStat.ctimeMs) {
+      throw new Error('房源笔记 OSS 受信本地文件在校验期间发生变化')
+    }
+    return { filePath: realPath, size: normalized.size, handle }
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {})
+    if (!error.statusCode) error.statusCode = 422
+    throw error
+  }
 }
 
 async function verifyMaterialDeterministic(asset = {}) {
@@ -564,9 +977,10 @@ async function verifyMaterialDeterministic(asset = {}) {
     kind: asset.kind,
     objectKey: asset.objectKey,
     contentType: asset.mimeType || asset.contentType,
-    contentSha256: asset.contentSha256
+    contentSha256: asset.contentSha256,
+    size: asset.size
   })
-  const readback = await readObjectBufferAuthenticated(normalized.objectKey, config.oss.maxVideoSize)
+  const readback = await readObjectEvidenceAuthenticated(normalized.objectKey, normalized.size)
   return {
     objectKey: normalized.objectKey,
     contentSha256: readback.contentSha256,
@@ -574,19 +988,19 @@ async function verifyMaterialDeterministic(asset = {}) {
     contentType: readback.contentType,
     verified: readback.contentSha256 === normalized.contentSha256 &&
       (!readback.metadataSha256 || readback.metadataSha256 === normalized.contentSha256) &&
-      (!Number(asset.size) || readback.size === Number(asset.size)) &&
+      readback.size === normalized.size &&
       readback.contentType === normalized.contentType
   }
 }
 
 async function putMaterialDeterministic(input = {}) {
-  const normalized = validateDeterministicMaterialInput(input)
+  const normalized = validateDeterministicMaterialInput(input, { requireFile: true })
   const expected = {
     kind: normalized.kind,
     objectKey: normalized.objectKey,
     mimeType: normalized.contentType,
     contentSha256: normalized.contentSha256,
-    size: normalized.buffer.length
+    size: normalized.size
   }
   try {
     const existing = await verifyMaterialDeterministic(expected)
@@ -600,39 +1014,45 @@ async function putMaterialDeterministic(input = {}) {
     if (Number(error && error.statusCode) !== 404) throw error
   }
 
-  const versioning = await readBucketVersioningState()
-  if (versioning !== 'Disabled') {
-    const error = new Error('OSS Bucket 版本控制已开启或暂停，禁止覆盖保护不可用')
-    error.statusCode = 503
-    throw error
-  }
-
+  const file = await openVerifiedDeterministicMaterialFile(normalized)
   try {
-    await putObjectBuffer(
-      normalized.objectKey,
-      normalized.buffer,
-      normalized.contentType,
-      {
-        metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 },
-        forbidOverwrite: true
-      }
-    )
-  } catch (error) {
-    if (Number(error && error.statusCode) !== 409) throw error
-    try {
-      const raced = await verifyMaterialDeterministic(expected)
-      if (raced.verified === true) return { ...raced, reused: true }
-    } catch (_) {
-      // 409 后只允许精确回读复用；任何读取异常都统一拒绝，不泄露上游正文。
+    const versioning = await readBucketVersioningState()
+    if (versioning !== 'Disabled') {
+      const error = new Error('OSS Bucket 版本控制已开启或暂停，禁止覆盖保护不可用')
+      error.statusCode = 503
+      throw error
     }
-    const conflict = new Error('房源笔记 OSS 并发目标未通过确定性回读，禁止覆盖')
-    conflict.statusCode = 409
-    throw conflict
-  }
 
-  const verified = await verifyMaterialDeterministic(expected)
-  if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希、大小或类型回读不一致')
-  return { ...verified, reused: false }
+    try {
+      await putObjectFile(
+        normalized.objectKey,
+        file,
+        normalized.contentType,
+        {
+          metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 },
+          forbidOverwrite: true,
+          expectedSha256: normalized.contentSha256
+        }
+      )
+    } catch (error) {
+      if (Number(error && error.statusCode) !== 409) throw error
+      try {
+        const raced = await verifyMaterialDeterministic(expected)
+        if (raced.verified === true) return { ...raced, reused: true }
+      } catch (_) {
+        // 409 后只允许精确回读复用；任何读取异常都统一拒绝，不泄露上游正文。
+      }
+      const conflict = new Error('房源笔记 OSS 并发目标未通过确定性回读，禁止覆盖')
+      conflict.statusCode = 409
+      throw conflict
+    }
+
+    const verified = await verifyMaterialDeterministic(expected)
+    if (verified.verified !== true) throw new Error('房源笔记 OSS 写后 GET 内容哈希、大小或类型回读不一致')
+    return { ...verified, reused: false }
+  } finally {
+    await file.handle.close().catch(() => {})
+  }
 }
 
 async function verifyVideoDeterministic(asset = {}) {

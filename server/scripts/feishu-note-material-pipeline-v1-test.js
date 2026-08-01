@@ -4,8 +4,14 @@ const assert = require('assert')
 const { spawnSync } = require('child_process')
 const path = require('path')
 const crypto = require('crypto')
+const fs = require('fs')
+const os = require('os')
 const { createBitableClient } = require('../src/feishu-bitable-client')
-const { createFeishuNoteMaterialClient } = require('../src/feishu-note-material-client')
+const {
+  createFeishuNoteMaterialClient,
+  adler32,
+  SMALL_UPLOAD_LIMIT
+} = require('../src/feishu-note-material-client')
 const config = require('../src/config')
 const domain = require('../src/domain')
 const feishuSync = require('../src/feishu-sync')
@@ -110,6 +116,32 @@ function bufferResponse(value) {
             return { done: false, value: buffer }
           },
           async cancel() {}
+        }
+      }
+    }
+  }
+}
+
+function fileStreamResponse(filePath, contentType = 'video/mp4') {
+  const size = fs.statSync(filePath).size
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get(name) {
+        if (String(name).toLowerCase() === 'content-length') return String(size)
+        if (String(name).toLowerCase() === 'content-type') return contentType
+        return ''
+      }
+    },
+    body: {
+      getReader() {
+        const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 })
+        const iterator = stream[Symbol.asyncIterator]()
+        return {
+          read() { return iterator.next() },
+          async cancel() { stream.destroy() },
+          releaseLock() {}
         }
       }
     }
@@ -347,7 +379,7 @@ async function testDriveMaterializeRequiresTargetHashReadback() {
         contentType: 'video/mp4'
       }
     }),
-    /目标文件内容回读不一致/,
+    /目标文件内容回读不一致|目标素材.*(?:超过|不一致)/,
     '目标云盘文件必须重新下载并按内容 SHA 校验，不能只相信复制接口成功'
   )
   assert.strictEqual(copyCalls, 0, 'Drive 源文件也不得在校验后再次按可变 token 发起服务端复制')
@@ -374,7 +406,7 @@ async function testDriveMaterializeRequiresTargetHashReadback() {
   )
 }
 
-async function testClientReusesSuppliedEvidenceBuffer() {
+async function testMaterializeDoesNotReturnSuppliedEvidenceBuffer() {
   const sourceToken = 'docxSourceBuffer123'
   const targetToken = 'targetBufferReuse123'
   const targetFolderToken = 'folderBufferReuse123'
@@ -413,10 +445,11 @@ async function testClientReusesSuppliedEvidenceBuffer() {
       contentType: 'video/mp4'
     }
   })
+  assert.strictEqual(result.verified, true)
   assert.strictEqual(
-    result.buffer,
-    sourceBuffer,
-    '真实客户端必须只读复核并沿用上层独占 Buffer，不得在适配器内部再次复制整段视频'
+    Object.prototype.hasOwnProperty.call(result, 'buffer'),
+    false,
+    '物化结果不得再向上层返回整段视频 Buffer'
   )
 }
 
@@ -616,6 +649,270 @@ async function testBoundedDownload() {
     (error) => error && error.statusCode === 413
   )
   assert.strictEqual(cancelled, 1, '超过上限时必须立即取消响应流')
+}
+
+async function testMaterializedReadbackUsesExpectedSizeAsHardLimit() {
+  const targetToken = 'fileTargetHugeReadback123'
+  const targetFolderToken = 'fldTargetHugeReadback123'
+  const targetName = 'MAT-strict-readback.mp4'
+  const expectedBody = Buffer.from([0])
+  const expectedHash = crypto.createHash('sha256').update(expectedBody).digest('hex')
+  const giantSize = 16 * 1024 * 1024
+  let deliveredBytes = 0
+  let cancelled = 0
+  let fetchCalls = 0
+  const client = createFeishuNoteMaterialClient({
+    accessToken: 'tenantToken123',
+    maxBytes: giantSize * 2,
+    fetchImpl: async (url, options) => {
+      fetchCalls += 1
+      const parsed = new URL(url)
+      if (parsed.pathname.endsWith('/drive/v1/files') && options.method === 'GET') {
+        return jsonResponse({
+          files: [{ token: targetToken, name: targetName, type: 'file' }],
+          has_more: false,
+          total: 1
+        })
+      }
+      if (parsed.pathname.endsWith(`/drive/v1/files/${targetToken}/download`) && options.method === 'GET') {
+        const chunks = [Buffer.alloc(2), Buffer.alloc(giantSize - 2)]
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => '' },
+          body: {
+            getReader() {
+              let index = 0
+              return {
+                async read() {
+                  if (index >= chunks.length) return { done: true }
+                  const value = chunks[index++]
+                  deliveredBytes += value.length
+                  return { done: false, value }
+                },
+                async cancel() { cancelled += 1 }
+              }
+            }
+          }
+        }
+      }
+      throw new Error(`unexpected request: ${options.method} ${parsed.pathname}`)
+    }
+  })
+
+  await assert.rejects(
+    () => client.verifyMaterializedAsset({
+      targetFolderToken,
+      targetName,
+      contentSha256: expectedHash,
+      size: expectedBody.length
+    }),
+    /大小|超过|不一致/,
+    '同名远端巨物必须按 expected size 硬上限拒绝，不能沿用源素材 maxBytes'
+  )
+  assert.ok(deliveredBytes <= expectedBody.length + 1, '回读超过 expected size 一字节时必须立即停止消费')
+  assert.strictEqual(cancelled, 1, '严格回读超限时必须取消远端响应流')
+  const callsAfterOversize = fetchCalls
+  await assert.rejects(
+    () => client.verifyMaterializedAsset({
+      targetFolderToken,
+      targetName,
+      contentSha256: expectedHash
+    }),
+    /大小/,
+    '目标素材复验缺少 expected size 时必须在联网前关闭'
+  )
+  assert.strictEqual(fetchCalls, callsAfterOversize, '严格大小凭据缺失时不得先列举或下载远端文件')
+}
+
+async function testMaterializeStreamsPreparedFileWithoutWholeBufferBody() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-drive-stream-test-'))
+  const filePath = path.join(tempRoot, 'normalized-material.mp4')
+  const body = Buffer.alloc((512 * 1024) + 37, 0x5a)
+  body.writeUInt32BE(24, 0)
+  body.write('ftypisom', 4, 'ascii')
+  fs.writeFileSync(filePath, body, { mode: 0o600 })
+  const contentSha256 = crypto.createHash('sha256').update(body).digest('hex')
+  const targetToken = 'fileTargetStreamed123'
+  const targetFolderToken = 'fldTargetStreamed123'
+  const targetName = `MAT-${contentSha256}.mp4`
+  let created = false
+  let uploadBodyKind = ''
+  let uploadBodyBytes = 0
+  let largestUploadChunk = 0
+  let wholeFileReadAttempts = 0
+  const client = createFeishuNoteMaterialClient({
+    accessToken: 'tenantToken123',
+    fetchImpl: async (url, options) => {
+      const parsed = new URL(url)
+      if (parsed.pathname.endsWith('/drive/v1/files') && options.method === 'GET') {
+        return jsonResponse({
+          files: created ? [{ token: targetToken, name: targetName, type: 'file', size: body.length }] : [],
+          has_more: false,
+          total: created ? 1 : 0
+        })
+      }
+      if (parsed.pathname.endsWith('/drive/v1/files/upload_all') && options.method === 'POST') {
+        assert.ok(!Buffer.isBuffer(options.body), '上传请求体不得是整份 Buffer')
+        assert.ok(!(typeof Blob === 'function' && options.body instanceof Blob), '上传请求体不得是整份 Blob')
+        assert.ok(options.body && typeof options.body[Symbol.asyncIterator] === 'function', '上传请求体必须是可流式消费的正文')
+        uploadBodyKind = options.body.constructor && options.body.constructor.name
+        for await (const chunkValue of options.body) {
+          const chunk = Buffer.from(chunkValue)
+          uploadBodyBytes += chunk.length
+          largestUploadChunk = Math.max(largestUploadChunk, chunk.length)
+        }
+        assert.strictEqual(uploadBodyBytes, Number(options.headers['Content-Length']), '流式 multipart 声明长度必须等于实际正文')
+        created = true
+        return jsonResponse({ file_token: targetToken })
+      }
+      if (parsed.pathname.endsWith(`/drive/v1/files/${targetToken}/download`) && options.method === 'GET') {
+        return bufferResponse(body)
+      }
+      throw new Error(`unexpected request: ${options.method} ${parsed.pathname}`)
+    }
+  })
+
+  const originalReadFile = fs.promises.readFile
+  fs.promises.readFile = async (target, ...args) => {
+    if (path.resolve(String(target)) === path.resolve(filePath)) {
+      wholeFileReadAttempts += 1
+      throw new Error('测试禁止把成品素材整文件读入内存')
+    }
+    return originalReadFile.call(fs.promises, target, ...args)
+  }
+  try {
+    const result = await client.materializeAsset({
+      asset: { sourceToken: 'sourcePreparedFile123', sourceKind: 'drive-file', mimeType: 'video/mp4' },
+      targetFolderToken,
+      targetName,
+      sourceEvidence: {
+        filePath,
+        size: body.length,
+        contentType: 'video/mp4',
+        contentSha256
+      }
+    })
+    assert.strictEqual(result.verified, true)
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(result, 'buffer'), false, '物化结果不得把整份素材 Buffer 带回上层')
+    assert.ok(uploadBodyKind, '必须真实消费流式上传正文')
+    assert.ok(uploadBodyBytes > body.length, 'multipart 正文必须包含字段与文件流')
+    assert.ok(largestUploadChunk < body.length, '上传不得把整份文件作为单个正文块')
+    assert.strictEqual(wholeFileReadAttempts, 0, '正式成品路径不得调用 readFile 整体载入')
+  } finally {
+    fs.promises.readFile = originalReadFile
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function testLargeMaterialUsesRangeStreamsForEveryDrivePart() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-drive-parts-test-'))
+  const filePath = path.join(tempRoot, 'normalized-large-material.mp4')
+  const fileSize = SMALL_UPLOAD_LIMIT + 37
+  const blockSize = 5 * 1024 * 1024
+  const blockNum = Math.ceil(fileSize / blockSize)
+  const fileHandle = fs.openSync(filePath, 'wx', 0o600)
+  const hash = crypto.createHash('sha256')
+  try {
+    let remaining = fileSize
+    let first = true
+    while (remaining > 0) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, remaining), 0x6b)
+      if (first) {
+        chunk.writeUInt32BE(24, 0)
+        chunk.write('ftypisom', 4, 'ascii')
+        first = false
+      }
+      fs.writeSync(fileHandle, chunk)
+      hash.update(chunk)
+      remaining -= chunk.length
+    }
+    fs.fsyncSync(fileHandle)
+  } finally {
+    fs.closeSync(fileHandle)
+  }
+  const contentSha256 = hash.digest('hex')
+  const targetToken = 'fileTargetMultipart123'
+  const targetFolderToken = 'fldTargetMultipart123'
+  const targetName = `MAT-${contentSha256}.mp4`
+  const uploadId = 'uploadMultipartStream123'
+  let created = false
+  let partCalls = 0
+  let largestBodyChunk = 0
+  const seenSequences = []
+  const client = createFeishuNoteMaterialClient({
+    accessToken: 'tenantToken123',
+    fetchImpl: async (url, options) => {
+      const parsed = new URL(url)
+      if (parsed.pathname.endsWith('/drive/v1/files') && options.method === 'GET') {
+        return jsonResponse({
+          files: created ? [{ token: targetToken, name: targetName, type: 'file', size: fileSize }] : [],
+          has_more: false,
+          total: created ? 1 : 0
+        })
+      }
+      if (parsed.pathname.endsWith('/drive/v1/files/upload_prepare') && options.method === 'POST') {
+        const body = JSON.parse(options.body)
+        assert.strictEqual(body.size, fileSize)
+        return jsonResponse({ upload_id: uploadId, block_size: blockSize, block_num: blockNum })
+      }
+      if (parsed.pathname.endsWith('/drive/v1/files/upload_part') && options.method === 'POST') {
+        assert.ok(!Buffer.isBuffer(options.body), '每个分片上传请求都不得是整块 Buffer')
+        assert.ok(options.body && typeof options.body[Symbol.asyncIterator] === 'function')
+        partCalls += 1
+        let prefix = Buffer.alloc(0)
+        let requestBodyBytes = 0
+        for await (const chunkValue of options.body) {
+          const chunk = Buffer.from(chunkValue)
+          requestBodyBytes += chunk.length
+          largestBodyChunk = Math.max(largestBodyChunk, chunk.length)
+          if (prefix.length < 4096) {
+            prefix = Buffer.concat([prefix, chunk.subarray(0, 4096 - prefix.length)])
+          }
+        }
+        assert.strictEqual(requestBodyBytes, Number(options.headers['Content-Length']), '每个分片 multipart 长度必须精确')
+        const prefixText = prefix.toString('utf8')
+        const seqMatch = prefixText.match(/name="seq"\r\n\r\n([0-9]+)/)
+        const checksumMatch = prefixText.match(/name="checksum"\r\n\r\n([0-9]+)/)
+        assert.ok(seqMatch && checksumMatch, '每个流式分片必须携带序号和 Adler32')
+        const seq = Number(seqMatch[1])
+        const start = seq * blockSize
+        const endExclusive = Math.min(fileSize, (seq + 1) * blockSize)
+        const expectedPart = Buffer.alloc(endExclusive - start, 0x6b)
+        if (seq === 0) {
+          expectedPart.writeUInt32BE(24, 0)
+          expectedPart.write('ftypisom', 4, 'ascii')
+        }
+        assert.strictEqual(checksumMatch[1], adler32(expectedPart), 'Adler32 必须与该文件范围完全一致')
+        seenSequences.push(seq)
+        return jsonResponse({})
+      }
+      if (parsed.pathname.endsWith('/drive/v1/files/upload_finish') && options.method === 'POST') {
+        assert.strictEqual(partCalls, blockNum)
+        created = true
+        return jsonResponse({ file_token: targetToken })
+      }
+      if (parsed.pathname.endsWith(`/drive/v1/files/${targetToken}/download`) && options.method === 'GET') {
+        return fileStreamResponse(filePath)
+      }
+      throw new Error(`unexpected request: ${options.method} ${parsed.pathname}`)
+    }
+  })
+
+  try {
+    const result = await client.materializeAsset({
+      asset: { sourceToken: 'sourceLargePrepared123', sourceKind: 'drive-file', mimeType: 'video/mp4' },
+      targetFolderToken,
+      targetName,
+      sourceEvidence: { filePath, size: fileSize, contentType: 'video/mp4', contentSha256 }
+    })
+    assert.strictEqual(result.verified, true)
+    assert.deepStrictEqual(seenSequences, Array.from({ length: blockNum }, (_, index) => index))
+    assert.ok(largestBodyChunk <= 64 * 1024, '分片上传正文必须按 64KiB 以内的小块流动')
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(result, 'buffer'), false)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
 }
 
 function listing(sourceRecordId) {
@@ -852,6 +1149,71 @@ async function testConcurrentStateConflictPreservesNewestListingState() {
   assert.strictEqual(result.rows[0].status, 'state-conflict')
   assert.deepStrictEqual(item.mediaAssets, beforeAssets, '任何 409 状态冲突都不得触发失败清理')
   assert.deepStrictEqual(item.noteMaterialState, beforeState, '任何 409 状态冲突都不得改写素材状态')
+}
+
+async function testOversizeSourceRetainsExistingMaterialWithoutBusinessWrites() {
+  const item = listing('rec-1')
+  const db = { listings: [item] }
+  const sourceRow = {
+    sourceRecordId: 'rec-1',
+    value: `https://${HOST}/drive/folder/fldOversizeSource123`
+  }
+  const initialAdapters = materialAdapters()
+  const initial = await syncNoteMaterialsForInventory({
+    db,
+    sourceRows: [sourceRow],
+    allowedHosts: [HOST],
+    targetRootFolderToken: ROOT,
+    uploadDir: 'house-videos',
+    drive: initialAdapters.drive,
+    oss: initialAdapters.oss,
+    nowText: '2026-07-26T10:06:30.000Z'
+  })
+  assert.strictEqual(initial.failed, 0, '红测夹具必须先建立已验证的既有素材')
+  assert.strictEqual(item.status, '上架', '红测夹具必须保持房源仍在架')
+  assert.strictEqual(item.noteMaterialState.status, 'verified', '红测夹具必须已有同链接素材状态')
+
+  const previousAssets = JSON.parse(JSON.stringify(item.mediaAssets))
+  const previousVideoKey = item.videoKey
+  const adapters = materialAdapters()
+  const businessWrites = []
+  adapters.drive.downloadToken = async () => {
+    const error = new Error('源素材超过允许处理大小')
+    error.statusCode = 413
+    throw error
+  }
+
+  const result = await syncNoteMaterialsForInventory({
+    db,
+    sourceRows: [sourceRow],
+    allowedHosts: [HOST],
+    targetRootFolderToken: ROOT,
+    uploadDir: 'house-videos',
+    drive: adapters.drive,
+    oss: adapters.oss,
+    mediaAssetsStateKey: (current) => domain.listingMediaAssetsStateKey(current),
+    replaceMediaAssets: (current, mediaAssets, context) => {
+      businessWrites.push(['db-replace-media-assets', mediaAssets.length])
+      return domain.replaceListingMediaAssets(db, current.id, mediaAssets, context)
+    },
+    nowText: '2026-07-26T10:06:31.000Z'
+  })
+
+  assert.deepStrictEqual({
+    retained: result.retained,
+    rowStatus: result.rows[0] && result.rows[0].status,
+    mediaAssets: item.mediaAssets,
+    videoKey: item.videoKey,
+    driveOrOssWrites: adapters.writes,
+    dbBusinessWrites: businessWrites
+  }, {
+    retained: 1,
+    rowStatus: 'retained-temporary-failure',
+    mediaAssets: previousAssets,
+    videoKey: previousVideoKey,
+    driveOrOssWrites: [],
+    dbBusinessWrites: []
+  }, '同链接、同物理房源、仍在架且已有素材时，413 必须原样保留旧素材且不得触发任何业务写')
 }
 
 async function testAtomicInventoryState() {
@@ -1253,6 +1615,26 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
       return { ...asset, verified: true }
     }
   }
+  async function prepareMaterial({ sourceEvidence }) {
+    const buffer = Buffer.from(sourceEvidence.buffer)
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex')
+    return {
+      buffer,
+      sourceContentSha256: hash,
+      sourceSize: buffer.length,
+      sourceMimeType: 'video/mp4',
+      kind: 'video',
+      extension: 'mp4',
+      contentSha256: hash,
+      size: buffer.length,
+      contentType: 'video/mp4',
+      mimeType: 'video/mp4',
+      transformProfileVersion: 'pipeline-test-v1',
+      transformProfileSha256: 'a'.repeat(64),
+      transformToolFingerprint: 'b'.repeat(64),
+      transformAction: 'passthrough'
+    }
+  }
   config.feishu.noteMaterialSyncEnabled = true
   config.feishu.noteMaterialAllowedHosts = [HOST]
   config.feishu.noteMaterialTargetRootFolderToken = ROOT
@@ -1268,7 +1650,8 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     const first = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
       dryRun: false,
       noteMaterialDrive: drive,
-      noteMaterialOss: ossAdapter
+      noteMaterialOss: ossAdapter,
+      prepareMaterial
     })
     assert.strictEqual(first.published, true)
     const oldHash = item.mediaAssets[0].contentSha256
@@ -1277,7 +1660,8 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     const second = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
       dryRun: false,
       noteMaterialDrive: drive,
-      noteMaterialOss: ossAdapter
+      noteMaterialOss: ossAdapter,
+      prepareMaterial
     })
     assert.strictEqual(second.published, true)
     assert.ok(sourceReadbacks >= 1, '同 token 元数据不变时也必须重新读取源内容')
@@ -1374,10 +1758,14 @@ async function run() {
   await testDriveHierarchyAndRedirectPolicy()
   await testDrivePaginationContract()
   await testDriveMaterializeRequiresTargetHashReadback()
-  await testClientReusesSuppliedEvidenceBuffer()
-  await testRealDriveClientSameTokenContentReplacement()
+  await testMaterializeDoesNotReturnSuppliedEvidenceBuffer()
   await testBoundedDownload()
+  await testMaterializedReadbackUsesExpectedSizeAsHardLimit()
+  await testMaterializeStreamsPreparedFileWithoutWholeBufferBody()
+  await testLargeMaterialUsesRangeStreamsForEveryDrivePart()
+  await testRealDriveClientSameTokenContentReplacement()
   await testConcurrentStateConflictPreservesNewestListingState()
+  await testOversizeSourceRetainsExistingMaterialWithoutBusinessWrites()
   await testAtomicInventoryState()
   await testSharedSourceTokenCreatesListingScopedCopies()
   await testMediaCountLimitBeforeExternalWrites()

@@ -37,6 +37,40 @@ function downloadEvidence(body, mimeType = 'video/mp4') {
   }
 }
 
+function createFakePrepareMaterial(options = {}) {
+  return async ({ asset, sourceEvidence }) => {
+    if (Array.isArray(options.calls)) {
+      options.calls.push({
+        sourceToken: asset && asset.sourceToken,
+        sourceContentSha256: sourceEvidence && sourceEvidence.contentSha256
+      })
+    }
+    const outputBuffer = Buffer.isBuffer(options.outputBuffer)
+      ? Buffer.from(options.outputBuffer)
+      : Buffer.concat([Buffer.from('normalized:'), sourceEvidence.buffer])
+    const outputMimeType = options.outputMimeType || 'video/mp4'
+    const transformProfileSha256 = Object.prototype.hasOwnProperty.call(options, 'transformProfileSha256')
+      ? options.transformProfileSha256
+      : sha256('fake-transform-profile-v1')
+    return {
+      buffer: outputBuffer,
+      kind: 'video',
+      extension: 'mp4',
+      sourceContentSha256: sourceEvidence.contentSha256,
+      sourceSize: sourceEvidence.size,
+      sourceMimeType: sourceEvidence.contentType,
+      contentSha256: sha256(outputBuffer),
+      size: outputBuffer.length,
+      contentType: outputMimeType,
+      mimeType: outputMimeType,
+      transformProfileVersion: options.transformProfileVersion || 'feishu-note-serving-v1',
+      transformProfileSha256,
+      transformToolFingerprint: options.transformToolFingerprint || sha256('fake-ffmpeg-tool-v1'),
+      transformAction: options.transformAction || 'transcode'
+    }
+  }
+}
+
 async function directPlan(options = {}) {
   const bodies = options.bodies || new Map([
     ['tokenVideoAlpha123', Buffer.from('alpha-content-v1')],
@@ -83,6 +117,7 @@ async function directPlan(options = {}) {
     uploadDir: 'house-videos',
     drive,
     oss,
+    prepareMaterial: options.prepareMaterial,
     dryRun: options.dryRun !== false
   })
 }
@@ -214,6 +249,7 @@ async function inventoryPlan(options = {}) {
     uploadDir: 'house-videos',
     drive: fixture.drive,
     oss: fixture.oss,
+    prepareMaterial: options.prepareMaterial,
     dryRun: options.dryRun !== false,
     nowText: '2026-07-27T00:00:00.000Z'
   })
@@ -282,16 +318,30 @@ async function run() {
   const evidence = [{
     sourceRecordFingerprint: sha256('private-owner-a'),
     assetId: 'MAT-11111111111111111111111111111111',
+    sourceContentSha256: sha256('source-content'),
+    sourceSize: 18,
+    sourceMimeType: 'video/quicktime',
     contentSha256: sha256('same-content'),
     size: 12,
     mimeType: 'video/mp4',
+    transformProfileVersion: 'feishu-note-serving-v1',
+    transformProfileSha256: sha256('fake-transform-profile-v1'),
+    transformToolFingerprint: sha256('fake-ffmpeg-tool-v1'),
+    transformAction: 'transcode',
     displayOrder: 0
   }]
   const baseEvidenceSummary = buildSummary(evidence)
   const dimensions = [
+    ['sourceContentSha256', sha256('changed-source-content')],
+    ['sourceSize', 19],
+    ['sourceMimeType', 'video/webm'],
     ['contentSha256', sha256('changed-content')],
     ['size', 13],
     ['mimeType', 'video/quicktime'],
+    ['transformProfileVersion', 'feishu-note-serving-v2'],
+    ['transformProfileSha256', sha256('fake-transform-profile-v2')],
+    ['transformToolFingerprint', sha256('fake-ffmpeg-tool-v2')],
+    ['transformAction', 'compress'],
     ['displayOrder', 1],
     ['sourceRecordFingerprint', sha256('private-owner-b')],
     ['assetId', 'MAT-22222222222222222222222222222222']
@@ -304,6 +354,127 @@ async function run() {
     buildSummary([evidence[0], { ...evidence[0], assetId: 'MAT-33333333333333333333333333333333', displayOrder: 1 }]).contentPlanSha256,
     buildSummary([{ ...evidence[0], assetId: 'MAT-33333333333333333333333333333333', displayOrder: 1 }, evidence[0]]).contentPlanSha256,
     '内容证据输入顺序不得影响排序摘要'
+  )
+
+  const prepareCalls = []
+  const normalizedPlan = await inventoryPlan({
+    records: [{
+      sourceRecordId: 'source-record-private-alpha',
+      folderToken: 'folderSourceAlpha123',
+      assetToken: 'tokenVideoAlpha123',
+      name: 'A.mov',
+      body: Buffer.from('raw-source-before-normalization'),
+      mimeType: 'video/quicktime'
+    }],
+    prepareMaterial: createFakePrepareMaterial({ calls: prepareCalls })
+  })
+  const missingProfileDigestEvidence = { ...evidence[0] }
+  delete missingProfileDigestEvidence.transformProfileSha256
+  for (const [label, invalidEvidence] of [
+    ['缺失', missingProfileDigestEvidence],
+    ['空值', { ...evidence[0], transformProfileSha256: '' }],
+    ['非十六进制', { ...evidence[0], transformProfileSha256: 'g'.repeat(64) }],
+    ['大写十六进制', { ...evidence[0], transformProfileSha256: 'A'.repeat(64) }],
+    ['错误长度', { ...evidence[0], transformProfileSha256: 'a'.repeat(63) }]
+  ]) {
+    assert.throws(
+      () => buildSummary([invalidEvidence]),
+      `${label} transformProfileSha256 必须 fail-closed`
+    )
+  }
+  const normalizedConfirmation = noteMaterial._internal.contentPlanConfirmationFromReport(
+    normalizedPlan.result
+  )
+  const normalizedEvidence = normalizedConfirmation.expectedContentPlanEvidence[0]
+  const expectedSource = downloadEvidence(
+    Buffer.from('raw-source-before-normalization'),
+    'video/quicktime'
+  )
+  const expectedOutput = Buffer.concat([Buffer.from('normalized:'), expectedSource.buffer])
+  assert.deepStrictEqual({
+    prepareCalls: prepareCalls.length,
+    sourceContentSha256: normalizedEvidence.sourceContentSha256,
+    sourceSize: normalizedEvidence.sourceSize,
+    sourceMimeType: normalizedEvidence.sourceMimeType,
+    contentSha256: normalizedEvidence.contentSha256,
+    size: normalizedEvidence.size,
+    mimeType: normalizedEvidence.mimeType,
+    transformProfileVersion: normalizedEvidence.transformProfileVersion,
+    transformProfileSha256: normalizedEvidence.transformProfileSha256,
+    transformToolFingerprint: normalizedEvidence.transformToolFingerprint,
+    transformAction: normalizedEvidence.transformAction
+  }, {
+    prepareCalls: 1,
+    sourceContentSha256: expectedSource.contentSha256,
+    sourceSize: expectedSource.size,
+    sourceMimeType: expectedSource.contentType,
+    contentSha256: sha256(expectedOutput),
+    size: expectedOutput.length,
+    mimeType: 'video/mp4',
+    transformProfileVersion: 'feishu-note-serving-v1',
+    transformProfileSha256: sha256('fake-transform-profile-v1'),
+    transformToolFingerprint: sha256('fake-ffmpeg-tool-v1'),
+    transformAction: 'transcode'
+  }, 'dry-run 的私有内容计划必须同时绑定源文件、最终归一化产物及转换身份')
+
+  const normalizedDirectBase = await directPlan({
+    assets: [sourceAsset('tokenVideoAlpha123', 0)],
+    prepareMaterial: createFakePrepareMaterial()
+  })
+  const normalizedOutputChanged = await directPlan({
+    assets: [sourceAsset('tokenVideoAlpha123', 0)],
+    prepareMaterial: createFakePrepareMaterial({ outputBuffer: Buffer.from('normalized-output-v2') })
+  })
+  const normalizedProfileChanged = await directPlan({
+    assets: [sourceAsset('tokenVideoAlpha123', 0)],
+    prepareMaterial: createFakePrepareMaterial({ transformProfileVersion: 'feishu-note-serving-v2' })
+  })
+  const normalizedProfileDigestChanged = await directPlan({
+    assets: [sourceAsset('tokenVideoAlpha123', 0)],
+    prepareMaterial: createFakePrepareMaterial({ transformProfileSha256: sha256('fake-transform-profile-v2') })
+  })
+  assert.notStrictEqual(
+    normalizedOutputChanged.contentPlanSha256,
+    normalizedDirectBase.contentPlanSha256,
+    '归一化输出字节变化必须改变内容计划摘要'
+  )
+  assert.notStrictEqual(
+    normalizedProfileChanged.contentPlanSha256,
+    normalizedDirectBase.contentPlanSha256,
+    '归一化 profile 变化必须改变内容计划摘要'
+  )
+  assert.notStrictEqual(
+    normalizedProfileDigestChanged.contentPlanSha256,
+    normalizedDirectBase.contentPlanSha256,
+    '完整转换参数规则摘要变化必须改变私有内容计划摘要'
+  )
+
+  const normalizedAggregateBase = await inventoryPlan({
+    records: [{
+      sourceRecordId: 'source-record-private-alpha',
+      folderToken: 'folderSourceAlpha123',
+      assetToken: 'tokenVideoAlpha123',
+      name: 'A.mov',
+      body: Buffer.from('raw-source-before-normalization'),
+      mimeType: 'video/quicktime'
+    }],
+    prepareMaterial: createFakePrepareMaterial()
+  })
+  const normalizedAggregateProfileChanged = await inventoryPlan({
+    records: [{
+      sourceRecordId: 'source-record-private-alpha',
+      folderToken: 'folderSourceAlpha123',
+      assetToken: 'tokenVideoAlpha123',
+      name: 'A.mov',
+      body: Buffer.from('raw-source-before-normalization'),
+      mimeType: 'video/quicktime'
+    }],
+    prepareMaterial: createFakePrepareMaterial({ transformProfileSha256: sha256('fake-transform-profile-v2') })
+  })
+  assert.notStrictEqual(
+    normalizedAggregateProfileChanged.result.contentPlanSha256,
+    normalizedAggregateBase.result.contentPlanSha256,
+    '完整转换参数规则摘要变化必须改变多房源聚合内容计划摘要'
   )
 
   const aggregate = await inventoryPlan()

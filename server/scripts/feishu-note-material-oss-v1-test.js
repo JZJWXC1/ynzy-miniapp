@@ -3,15 +3,20 @@
 const assert = require('assert')
 const crypto = require('crypto')
 const { EventEmitter } = require('events')
+const fs = require('fs')
 const https = require('https')
+const os = require('os')
+const path = require('path')
 
 process.env.ALI_OSS_BUCKET = 'synthetic-private-bucket'
 process.env.ALI_OSS_REGION = 'oss-cn-hangzhou'
 process.env.ALI_OSS_ACCESS_KEY_ID = 'synthetic-access-key'
 process.env.ALI_OSS_ACCESS_KEY_SECRET = 'synthetic-secret'
+process.env.ALI_OSS_SECURITY_TOKEN = 'synthetic-sts-token'
 process.env.ALI_OSS_MAX_VIDEO_MB = '1'
 
 const originalRequest = https.request
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-oss-v12-test-'))
 const calls = []
 const objects = new Map()
 let versioning = 'Disabled'
@@ -61,6 +66,8 @@ function versioningXml() {
 
 https.request = (options, callback) => {
   const request = new EventEmitter()
+  const bodyChunks = []
+  let bodyBytes = 0
   request.callRecord = null
   request.response = null
   request.timeoutMs = 0
@@ -83,8 +90,15 @@ https.request = (options, callback) => {
     }
     if (error) process.nextTick(() => request.emit('error', error))
   }
+  request.write = (chunk) => {
+    const bodyChunk = Buffer.from(chunk)
+    bodyChunks.push(bodyChunk)
+    bodyBytes += bodyChunk.length
+    return true
+  }
   request.end = (body) => {
-    const requestBody = Buffer.from(body || '')
+    if (body !== undefined && body !== null) request.write(body)
+    const requestBody = Buffer.concat(bodyChunks, bodyBytes)
     request.callRecord = {
       method: options.method,
       path: options.path,
@@ -168,28 +182,36 @@ https.request = (options, callback) => {
 
 function videoInput(index, body = Buffer.from(`video-${index}`)) {
   const contentSha256 = sha256(body)
+  const filePath = path.join(tempRoot, `video-${index}.mp4`)
+  fs.writeFileSync(filePath, body, { flag: 'wx', mode: 0o600 })
   return {
     kind: 'video',
     objectKey: `house-videos/feishu-note-v1/source-${index}/MAT-${String(index).padStart(8, '0')}-${contentSha256}.mp4`,
-    buffer: body,
+    filePath,
+    size: body.length,
     contentType: 'video/mp4',
-    contentSha256
+    contentSha256,
+    _body: Buffer.from(body)
   }
 }
 
 function imageInput(index, body) {
   const contentSha256 = sha256(body)
+  const filePath = path.join(tempRoot, `image-${index}.jpg`)
+  fs.writeFileSync(filePath, body, { flag: 'wx', mode: 0o600 })
   return {
     kind: 'image',
     objectKey: `house-videos/feishu-note-v1/source-${index}/MAT-${String(index).padStart(8, '0')}-${contentSha256}.jpg`,
-    buffer: body,
+    filePath,
+    size: body.length,
     contentType: 'image/jpeg',
-    contentSha256
+    contentSha256,
+    _body: Buffer.from(body)
   }
 }
 
 function storedObject(input, overrides = {}) {
-  const body = overrides.body || Buffer.from(input.buffer)
+  const body = overrides.body || Buffer.from(input._body)
   return {
     body,
     metadataSha256: overrides.metadataSha256 || sha256(body),
@@ -243,7 +265,7 @@ async function testExistingExactReuse(oss) {
 async function testExistingConflictNeverOverwrites(oss) {
   const input = videoInput(2)
   const conflicting = Buffer.from('changed')
-  assert.strictEqual(conflicting.length, input.buffer.length, '哈希门夹具必须保持相同字节数')
+  assert.strictEqual(conflicting.length, input.size, '哈希门夹具必须保持相同字节数')
   objects.set(input.objectKey, storedObject(input, {
     body: conflicting,
     metadataSha256: input.contentSha256
@@ -263,7 +285,7 @@ async function testExistingConflictNeverOverwrites(oss) {
     objectKey: input.objectKey,
     mimeType: input.contentType,
     contentSha256: input.contentSha256,
-    size: input.buffer.length + 1
+    size: input.size + 1
   })
   assert.strictEqual(wrongSize.verified, false, '声明大小与实际回读不一致必须独立判失败')
   assert.deepStrictEqual(requestMethods(), ['GET'])
@@ -289,7 +311,17 @@ async function testMissingCreatesWithoutOverwrite(oss) {
   assert.deepStrictEqual(requestMethods(), ['GET', 'GET', 'PUT', 'GET'])
   assert.strictEqual(versioningCalls().length, 1)
   assert.strictEqual(putCalls().length, 1)
+  assert.strictEqual(calls[0].headers['x-oss-security-token'], 'synthetic-sts-token')
+  assert.strictEqual(
+    calls[0].headers.Authorization,
+    expectedAuthorization(
+      calls[0],
+      `/${process.env.ALI_OSS_BUCKET}/${input.objectKey}`
+    ),
+    '确定性素材 GET 的 STS 请求头必须参与签名'
+  )
   assert.strictEqual(putCalls()[0].headers['x-oss-forbid-overwrite'], 'true')
+  assert.strictEqual(putCalls()[0].headers['x-oss-security-token'], 'synthetic-sts-token')
   assert.strictEqual(
     putCalls()[0].headers['x-oss-meta-content-sha256'],
     input.contentSha256
@@ -365,7 +397,7 @@ async function testWriteReadbackAndTransportFailClosed(oss) {
   const corrupted = videoInput(12)
   objects.delete(corrupted.objectKey)
   versioning = 'Disabled'
-  const corruptedBody = Buffer.alloc(corrupted.buffer.length, 0x7a)
+  const corruptedBody = Buffer.alloc(corrupted.size, 0x7a)
   corruptNextPut = storedObject(corrupted, {
     body: corruptedBody,
     metadataSha256: corrupted.contentSha256
@@ -508,7 +540,7 @@ async function testImageBytesRemainFailClosed(oss) {
     () => oss.putMaterialDeterministic(fake),
     /真实字节类型/
   )
-  assert.strictEqual(calls.length, 0, '伪图片必须在任何 OSS 请求前阻断')
+  assert.deepStrictEqual(requestMethods(), ['GET'], '伪图片只允许先做确定性 GET，不得读取版本状态或发起 PUT')
 }
 
 async function run() {
@@ -524,12 +556,14 @@ async function run() {
     await testImageBytesRemainFailClosed(oss)
   } finally {
     https.request = originalRequest
+    fs.rmSync(tempRoot, { recursive: true, force: true })
   }
   console.log('feishu-note-material-oss-v1-test passed')
 }
 
 run().catch((error) => {
   https.request = originalRequest
+  fs.rmSync(tempRoot, { recursive: true, force: true })
   console.error(error)
   process.exit(1)
 })

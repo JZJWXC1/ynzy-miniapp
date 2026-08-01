@@ -13,6 +13,7 @@ const { hashPassword } = require('../src/auth-util')
 const root = path.resolve(__dirname, '..', '..')
 const adminSource = fs.readFileSync(path.join(root, 'admin-web', 'index.html'), 'utf8')
 const indexSource = fs.readFileSync(path.join(root, 'server', 'src', 'index.js'), 'utf8')
+const previewSource = fs.readFileSync(path.join(root, 'server', 'src', 'admin-video-preview.js'), 'utf8')
 
 function extractFunction(source, marker) {
   const start = source.indexOf(marker)
@@ -229,6 +230,18 @@ async function main() {
     isManagedVideoObjectKey,
     createAdminVideoPreviewStreamer
   } = require('../src/admin-video-preview')
+  const ffmpegSandbox = require('../src/ffmpeg-sandbox')
+
+  assert.strictEqual(
+    buildFfmpegSpawnOptions,
+    ffmpegSandbox.buildFfmpegSpawnOptions,
+    '审核预览与同步素材标准化必须共用同一套 ffmpeg 子进程沙箱'
+  )
+  assert.strictEqual(
+    previewSource.includes('function buildFfmpegSpawnOptions('),
+    false,
+    '审核预览不得复制一份可能漂移的 ffmpeg 子进程沙箱'
+  )
 
   const args = buildFfmpegArgs({ maxDurationSeconds: 300, maxOutputBytes: 8 * 1024 * 1024 })
   assert.ok(args.includes('fd:') && args.includes('pipe:1'), '输入必须走受控可寻址 fd，输出走管道，不把签名 URL 或临时路径放进参数')

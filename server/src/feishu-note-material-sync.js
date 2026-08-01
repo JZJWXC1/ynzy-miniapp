@@ -15,8 +15,14 @@ const IMAGE_MIME_TO_EXTENSION = new Map([
 ])
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_MAX_ITEMS = 5000
-const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v2'
+const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v3'
 const CONTENT_PLAN_EVIDENCE = Symbol('contentPlanEvidence')
+const CONTENT_PLAN_CONFIRMATION_CACHE_TTL_MS = 15 * 60 * 1000
+const CONTENT_PLAN_CONFIRMATION_CACHE_LIMIT = 16
+const contentPlanConfirmationCache = new Map()
+const LEGACY_TRANSFORM_PROFILE_VERSION = 'legacy-source-passthrough-v1'
+const LEGACY_TRANSFORM_PROFILE_SHA256 = sha256Text('ynzy-legacy-source-passthrough-profile-v1')
+const LEGACY_TRANSFORM_TOOL_FINGERPRINT = sha256Text('ynzy-legacy-source-validator-v1')
 
 function normalizeText(value) {
   return value === undefined || value === null ? '' : String(value).normalize('NFKC').trim()
@@ -417,6 +423,12 @@ function contentSha256(value) {
   return hash
 }
 
+function strictLowercaseSha256(value, label) {
+  const hash = normalizeText(value)
+  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error(`${label} SHA-256 无效`)
+  return hash
+}
+
 function normalizeContentMimeType(value) {
   const mimeType = normalizeText(value).toLowerCase()
   if (!mimeType || mimeType.length > 256 || /[\0\r\n]/.test(mimeType)) {
@@ -429,6 +441,12 @@ function normalizeContentPlanEvidence(raw = {}) {
   const sourceRecordFingerprint = contentSha256(raw.sourceRecordFingerprint)
   const assetId = normalizeText(raw.assetId)
   if (!/^MAT-[a-f0-9]{32}$/i.test(assetId)) throw new Error('房源笔记内容计划素材 ID 无效')
+  const sourceContentSha256 = contentSha256(raw.sourceContentSha256)
+  const sourceSize = Number(raw.sourceSize)
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 1) {
+    throw new Error('房源笔记内容计划源素材大小无效')
+  }
+  const sourceMimeType = normalizeContentMimeType(raw.sourceMimeType)
   const rawMimeType = normalizeContentMimeType(raw.mimeType)
   const kind = normalizeText(raw.kind) || (rawMimeType.startsWith('image/') ? 'image' : 'video')
   if (!['video', 'image'].includes(kind)) throw new Error('房源笔记内容计划素材类型无效')
@@ -438,13 +456,30 @@ function normalizeContentPlanEvidence(raw = {}) {
   if (!Number.isSafeInteger(displayOrder) || displayOrder < 0) {
     throw new Error('房源笔记内容计划展示顺序无效')
   }
+  const transformProfileVersion = normalizeText(raw.transformProfileVersion)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(transformProfileVersion)) {
+    throw new Error('房源笔记内容计划转换规则版本无效')
+  }
+  const transformProfileSha256 = strictLowercaseSha256(raw.transformProfileSha256, '房源笔记内容计划转换规则')
+  const transformToolFingerprint = contentSha256(raw.transformToolFingerprint)
+  const transformAction = normalizeText(raw.transformAction).toLowerCase()
+  if (!['passthrough', 'sanitize', 'transcode', 'compress'].includes(transformAction)) {
+    throw new Error('房源笔记内容计划转换动作无效')
+  }
   return {
     sourceRecordFingerprint,
     assetId,
     kind,
+    sourceContentSha256,
+    sourceSize,
+    sourceMimeType,
     contentSha256: contentSha256(raw.contentSha256),
     size,
     mimeType: rawMimeType,
+    transformProfileVersion,
+    transformProfileSha256,
+    transformToolFingerprint,
+    transformAction,
     displayOrder
   }
 }
@@ -488,7 +523,9 @@ function isContentPlanConfirmationError(error) {
 }
 
 function expectedContentPlanFromInput(input = {}) {
-  if (input.contentPlanConfirmationRequired !== true || input.dryRun === true) return null
+  const verificationDryRun = input.dryRun === true && input.verifyExpectedContentPlan === true
+  if (input.contentPlanConfirmationRequired !== true ||
+      (input.dryRun === true && !verificationDryRun)) return null
   const hash = input.expectedContentPlanSha256
   const count = input.expectedContentAssetCount
   if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) {
@@ -650,6 +687,280 @@ function sourceEvidenceForAsset(asset, evidence) {
   }
 }
 
+function cloneContentPlanConfirmation(confirmation) {
+  if (!confirmation || typeof confirmation !== 'object') return null
+  const evidence = normalizedContentPlanEvidence(
+    Array.isArray(confirmation.expectedContentPlanEvidence)
+      ? confirmation.expectedContentPlanEvidence.map((item) => ({ ...item }))
+      : []
+  )
+  const summary = buildContentPlanSummary(evidence)
+  if (summary.contentPlanSha256 !== confirmation.expectedContentPlanSha256 ||
+      summary.contentPlanAssetCount !== confirmation.expectedContentAssetCount) {
+    throw contentPlanConfirmationError('房源笔记素材缓存确认与私有内容计划不一致')
+  }
+  return {
+    expectedContentPlanSha256: summary.contentPlanSha256,
+    expectedContentAssetCount: summary.contentPlanAssetCount,
+    expectedContentPlanEvidence: evidence
+  }
+}
+
+function contentPlanConfirmationCacheKey(hash, count) {
+  return `${normalizeText(hash)}:${Number(count)}`
+}
+
+function pruneContentPlanConfirmationCache(nowMs = Date.now()) {
+  for (const [key, entry] of contentPlanConfirmationCache.entries()) {
+    if (!entry || !Number.isSafeInteger(entry.expiresAt) || entry.expiresAt <= nowMs) {
+      contentPlanConfirmationCache.delete(key)
+    }
+  }
+}
+
+function rememberContentPlanConfirmation(report, nowMs = Date.now()) {
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) {
+    throw new Error('房源笔记素材确认缓存时间无效')
+  }
+  const confirmation = contentPlanConfirmationFromReport(report)
+  pruneContentPlanConfirmationCache(nowMs)
+  const key = contentPlanConfirmationCacheKey(
+    confirmation.expectedContentPlanSha256,
+    confirmation.expectedContentAssetCount
+  )
+  contentPlanConfirmationCache.delete(key)
+  while (contentPlanConfirmationCache.size >= CONTENT_PLAN_CONFIRMATION_CACHE_LIMIT) {
+    const oldestKey = contentPlanConfirmationCache.keys().next().value
+    if (oldestKey === undefined) break
+    contentPlanConfirmationCache.delete(oldestKey)
+  }
+  contentPlanConfirmationCache.set(key, {
+    confirmation: cloneContentPlanConfirmation(confirmation),
+    expiresAt: nowMs + CONTENT_PLAN_CONFIRMATION_CACHE_TTL_MS
+  })
+  return cloneContentPlanConfirmation(confirmation)
+}
+
+function recallContentPlanConfirmation(hash, count, nowMs = Date.now()) {
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) return null
+  pruneContentPlanConfirmationCache(nowMs)
+  const key = contentPlanConfirmationCacheKey(hash, count)
+  const entry = contentPlanConfirmationCache.get(key)
+  if (!entry) return null
+  return cloneContentPlanConfirmation(entry.confirmation)
+}
+
+function legacyPreparedMaterial(asset, evidence) {
+  const source = sourceEvidenceForAsset(asset, evidence)
+  return {
+    ...source,
+    sourceContentSha256: source.contentSha256,
+    sourceSize: source.size,
+    sourceMimeType: source.contentType,
+    transformProfileVersion: LEGACY_TRANSFORM_PROFILE_VERSION,
+    transformProfileSha256: LEGACY_TRANSFORM_PROFILE_SHA256,
+    transformToolFingerprint: LEGACY_TRANSFORM_TOOL_FINGERPRINT,
+    transformAction: 'passthrough'
+  }
+}
+
+function normalizedPreparedMaterial(asset, prepared) {
+  if (!prepared || typeof prepared !== 'object' || Array.isArray(prepared)) {
+    throw new Error('房源笔记处理后素材缺少受信内容')
+  }
+  const sourceContentSha256 = contentSha256(prepared.sourceContentSha256)
+  const sourceSize = Number(prepared.sourceSize)
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 1) throw new Error('房源笔记源素材大小凭据无效')
+  const sourceMimeType = normalizeContentMimeType(prepared.sourceMimeType)
+  const kind = normalizeText(prepared.kind || (asset && asset.kind)).toLowerCase()
+  const declaredKind = normalizeText(asset && asset.kind).toLowerCase()
+  if (!['video', 'image'].includes(kind) || (declaredKind && kind !== declaredKind)) {
+    throw new Error('房源笔记处理后素材类型无效')
+  }
+  const extension = normalizeText(prepared.extension).toLowerCase().replace(/^\./, '')
+  if (!/^[a-z0-9]{1,8}$/.test(extension)) throw new Error('房源笔记处理后素材扩展名无效')
+  const contentType = normalizeContentMimeType(prepared.contentType || prepared.mimeType)
+  if (kind === 'image' && imageMimeForExtension(extension) !== contentType) {
+    throw new Error('房源笔记处理后图片扩展名与 MIME 不一致')
+  }
+  if (kind === 'video' && !videoMetadata(`material.${extension}`, contentType)) {
+    throw new Error('房源笔记处理后视频扩展名与 MIME 不一致')
+  }
+  const expectedHash = contentSha256(prepared.contentSha256)
+  const expectedSize = Number(prepared.size)
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 1) {
+    throw new Error('房源笔记处理后素材摘要或大小无效')
+  }
+  if (prepared.buffer !== undefined && prepared.buffer !== null) {
+    if (!Buffer.isBuffer(prepared.buffer) || !prepared.buffer.length) {
+      throw new Error('房源笔记处理后素材内容无效')
+    }
+    const actualHash = crypto.createHash('sha256').update(prepared.buffer).digest('hex')
+    if (expectedHash !== actualHash || expectedSize !== prepared.buffer.length) {
+      throw new Error('房源笔记处理后素材摘要或大小无效')
+    }
+  }
+  const transformProfileVersion = normalizeText(prepared.transformProfileVersion)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(transformProfileVersion)) {
+    throw new Error('房源笔记处理规则版本无效')
+  }
+  const transformProfileSha256 = strictLowercaseSha256(prepared.transformProfileSha256, '房源笔记处理规则')
+  const transformToolFingerprint = contentSha256(prepared.transformToolFingerprint)
+  const transformAction = normalizeText(prepared.transformAction).toLowerCase()
+  if (!['passthrough', 'sanitize', 'transcode', 'compress'].includes(transformAction)) {
+    throw new Error('房源笔记处理动作无效')
+  }
+  return {
+    ...prepared,
+    sourceContentSha256,
+    sourceSize,
+    sourceMimeType,
+    kind,
+    extension,
+    contentSha256: expectedHash,
+    size: expectedSize,
+    contentType,
+    mimeType: contentType,
+    transformProfileVersion,
+    transformProfileSha256,
+    transformToolFingerprint,
+    transformAction
+  }
+}
+
+function validatedPreparedWriteEvidence(writeEvidence, plan, requireStreamingSource) {
+  if (!writeEvidence || typeof writeEvidence !== 'object' || Array.isArray(writeEvidence)) {
+    throw contentPlanConfirmationError('房源笔记处理后素材缺少受信写入凭据')
+  }
+  const hasBuffer = Object.prototype.hasOwnProperty.call(writeEvidence, 'buffer')
+  const filePath = typeof writeEvidence.filePath === 'string'
+    ? writeEvidence.filePath.trim()
+    : ''
+  const usesPreparedFile = Boolean(filePath)
+  if (requireStreamingSource === true && (!usesPreparedFile || hasBuffer)) {
+    throw contentPlanConfirmationError('房源笔记处理后素材缺少纯流式文件凭据')
+  }
+  if (usesPreparedFile && !path.isAbsolute(filePath)) {
+    throw contentPlanConfirmationError('房源笔记处理后素材文件路径无效')
+  }
+  if (!usesPreparedFile && !Buffer.isBuffer(writeEvidence.buffer)) {
+    throw contentPlanConfirmationError('房源笔记处理后素材缺少受信读取内容')
+  }
+
+  let descriptorHash = ''
+  try {
+    descriptorHash = contentSha256(writeEvidence.contentSha256)
+  } catch (_error) {
+    throw contentPlanConfirmationError('房源笔记处理后素材写入摘要无效')
+  }
+  const descriptorSize = Number(writeEvidence.size)
+  const descriptorMimeType = normalizeContentMimeType(
+    writeEvidence.contentType || writeEvidence.mimeType
+  ).split(';')[0]
+  const descriptorKind = normalizeText(writeEvidence.kind).toLowerCase()
+  const descriptorExtension = normalizeText(writeEvidence.extension).toLowerCase().replace(/^\./, '')
+  if (!Number.isSafeInteger(descriptorSize) || descriptorSize < 1 ||
+      descriptorHash !== plan.contentSha256 ||
+      descriptorSize !== plan.size ||
+      descriptorMimeType !== plan.mimeType ||
+      descriptorKind !== plan.kind ||
+      descriptorExtension !== plan.extension) {
+    throw contentPlanConfirmationError('房源笔记处理后素材写入凭据与已确认内容计划不一致')
+  }
+  return {
+    writeEvidence: usesPreparedFile
+      ? { ...writeEvidence, filePath }
+      : writeEvidence,
+    usesPreparedFile
+  }
+}
+
+function streamingSourceEvidence(input, asset) {
+  if (!input.drive || typeof input.drive.downloadTokenToFile !== 'function') return null
+  return {
+    downloadToFile: ({ fileHandle, maxBytes, signal }) => input.drive.downloadTokenToFile(
+      asset.sourceToken,
+      asset.sourceKind,
+      { fileHandle, maxBytes, signal }
+    )
+  }
+}
+
+async function downloadedSourceEvidence(input, asset) {
+  const streamed = streamingSourceEvidence(input, asset)
+  if (streamed) return streamed
+  if (input.requireStreamingSource === true) {
+    throw new Error('房源笔记素材正式同步缺少流式下载适配器')
+  }
+  if (!input.drive || typeof input.drive.downloadToken !== 'function') {
+    throw new Error('房源笔记素材同步缺少源内容受限下载适配器')
+  }
+  return input.drive.downloadToken(asset.sourceToken, asset.sourceKind)
+}
+
+async function prepareMaterialForAsset(input, asset, options = {}) {
+  const sourceEvidence = await downloadedSourceEvidence(input, asset)
+  if (typeof input.prepareMaterial !== 'function') {
+    if (!Buffer.isBuffer(sourceEvidence && sourceEvidence.buffer)) {
+      throw new Error('房源笔记素材正式同步缺少标准化处理器')
+    }
+    return legacyPreparedMaterial(asset, sourceEvidence)
+  }
+  let prepared = null
+  try {
+    prepared = await input.prepareMaterial({
+      asset,
+      sourceEvidence,
+      keepPreparedFile: options.keepPreparedFile === true
+    })
+    if (options.keepPreparedFile === true && typeof input.verifyPreparedMaterial === 'function') {
+      await input.verifyPreparedMaterial(prepared)
+    }
+    return normalizedPreparedMaterial(asset, prepared)
+  } catch (err) {
+    if (prepared && typeof input.disposePreparedMaterial === 'function') {
+      try {
+        await input.disposePreparedMaterial(prepared)
+      } catch (_cleanupErr) {
+        try {
+          await input.disposePreparedMaterial(prepared)
+        } catch (cleanupRetryError) {
+          throw cleanupRetryError
+        }
+      }
+    }
+    throw err
+  }
+}
+
+async function verifyPreparedSource(input, asset, prepared, failureMessage) {
+  const sourceEvidence = await downloadedSourceEvidence(input, asset)
+  if (typeof input.verifySource === 'function') {
+    const verified = await input.verifySource({ asset, prepared, sourceEvidence })
+    if (!verified || verified.verified !== true ||
+        contentSha256(verified.sourceContentSha256) !== prepared.sourceContentSha256 ||
+        Number(verified.sourceSize) !== prepared.sourceSize ||
+        normalizeContentMimeType(verified.sourceMimeType) !== prepared.sourceMimeType) {
+      throw contentPlanConfirmationError(failureMessage)
+    }
+    return verified
+  }
+  if (!Buffer.isBuffer(sourceEvidence && sourceEvidence.buffer)) {
+    throw new Error('房源笔记源素材复验缺少可读取内容')
+  }
+  const source = sourceEvidenceForAsset(asset, sourceEvidence)
+  if (source.contentSha256 !== prepared.sourceContentSha256 ||
+      source.size !== prepared.sourceSize || source.contentType !== prepared.sourceMimeType) {
+    throw contentPlanConfirmationError(failureMessage)
+  }
+  return {
+    verified: true,
+    sourceContentSha256: source.contentSha256,
+    sourceSize: source.size,
+    sourceMimeType: source.contentType
+  }
+}
+
 function targetNameForAsset(assetId, extension, hash) {
   return `${normalizeText(assetId)}-${contentSha256(hash)}.${normalizeText(extension)}`
 }
@@ -661,6 +972,66 @@ function objectKeyForAsset(uploadDir, sourceRecordId, assetId, extension, hash) 
   }
   const sourceRecordFingerprint = sha256Text(normalizeText(sourceRecordId)).slice(0, 24)
   return `${root}/feishu-note-v1/${sourceRecordFingerprint}/${assetId}-${contentSha256(hash)}.${extension}`
+}
+
+function extensionForPlannedMaterial(kind, mimeType) {
+  const normalizedKind = normalizeText(kind).toLowerCase()
+  const normalizedMimeType = normalizeContentMimeType(mimeType)
+  if (normalizedKind === 'video' && normalizedMimeType === 'video/mp4') return 'mp4'
+  if (normalizedKind === 'image') {
+    const extension = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp'
+    }[normalizedMimeType]
+    if (extension) return extension
+  }
+  throw contentPlanConfirmationError('房源笔记已确认内容计划的成品类型无效')
+}
+
+function confirmedPlansForAssets(input, sourceRecordId, orderedAssets) {
+  const expectedEvidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
+  const sourceRecordFingerprint = sha256Text(sourceRecordId)
+  if (expectedEvidence.length !== orderedAssets.length ||
+      expectedEvidence.some((item) => item.sourceRecordFingerprint !== sourceRecordFingerprint)) {
+    throw contentPlanConfirmationError('房源笔记已确认内容计划与当前素材数量不一致')
+  }
+  return orderedAssets.map((asset, index) => {
+    const expected = expectedEvidence[index]
+    const assetId = stableAssetId(sourceRecordId, asset)
+    const kind = normalizeText(asset.kind).toLowerCase()
+    if (expected.assetId !== assetId || expected.displayOrder !== index || expected.kind !== kind) {
+      throw contentPlanConfirmationError('房源笔记已确认内容计划与当前素材身份或顺序不一致')
+    }
+    const extension = extensionForPlannedMaterial(expected.kind, expected.mimeType)
+    return {
+      asset,
+      assetId,
+      prepared: expected,
+      sourceContentSha256: expected.sourceContentSha256,
+      sourceSize: expected.sourceSize,
+      sourceMimeType: expected.sourceMimeType,
+      kind: expected.kind,
+      extension,
+      mimeType: expected.mimeType,
+      targetName: targetNameForAsset(assetId, extension, expected.contentSha256),
+      objectKey: objectKeyForAsset(
+        input.uploadDir,
+        sourceRecordId,
+        assetId,
+        extension,
+        expected.contentSha256
+      ),
+      contentSha256: expected.contentSha256,
+      size: expected.size,
+      contentType: expected.mimeType,
+      transformProfileVersion: expected.transformProfileVersion,
+      transformProfileSha256: expected.transformProfileSha256,
+      transformToolFingerprint: expected.transformToolFingerprint,
+      transformAction: expected.transformAction,
+      displayOrder: index
+    }
+  })
 }
 
 function cloneMediaAsset(asset) {
@@ -694,47 +1065,84 @@ async function syncNoteMaterialVideos(input = {}) {
   if (sourceTokens.some((token) => !token) || new Set(sourceTokens).size !== sourceTokens.length) {
     throw new Error('房源笔记素材 token 缺失或重复')
   }
-  if (orderedAssets.length && (!input.drive || typeof input.drive.downloadToken !== 'function')) {
+  if (orderedAssets.length && (!input.drive || (
+    typeof input.drive.downloadToken !== 'function' &&
+    typeof input.drive.downloadTokenToFile !== 'function'
+  ))) {
     throw new Error('房源笔记素材同步缺少源内容受限下载适配器')
   }
-  // 数量、token 和上层跨记录冲突门禁全部通过后，先逐个只读下载源文件并计算真实内容摘要，
-  // 计划中只保留摘要、大小和类型，不保留 Buffer。这样既能在首个外部写入前验证全部源文件，
-  // 又不会把最多 64 个大视频同时常驻内存。
-  const planned = []
-  for (let index = 0; index < orderedAssets.length; index += 1) {
-    const asset = orderedAssets[index]
-    const assetId = stableAssetId(sourceRecordId, asset)
-    const sourceEvidence = sourceEvidenceForAsset(
-      asset,
-      await input.drive.downloadToken(asset.sourceToken, asset.sourceKind)
-    )
-    planned.push({
-      asset,
-      assetId,
-      kind: sourceEvidence.kind,
-      extension: sourceEvidence.extension,
-      mimeType: sourceEvidence.contentType,
-      targetName: targetNameForAsset(assetId, sourceEvidence.extension, sourceEvidence.contentSha256),
-      objectKey: objectKeyForAsset(
-        input.uploadDir,
-        sourceRecordId,
+  const preparedMaterials = []
+  try {
+  // dry-run 逐件压缩、立即清理，只留下摘要计划；正式同步直接使用人类已确认的同次计划，
+  // 先全局复验源文件，真正需要写入的素材才在写前压缩一次并只保留一个临时成品。
+  const useConfirmedPlan = Array.isArray(input.expectedContentPlanEvidence) &&
+    (input.dryRun !== true || input.verifyExpectedContentPlan === true)
+  const planned = useConfirmedPlan
+    ? confirmedPlansForAssets(input, sourceRecordId, orderedAssets)
+    : []
+  if (!useConfirmedPlan) {
+    for (let index = 0; index < orderedAssets.length; index += 1) {
+      const asset = orderedAssets[index]
+      const assetId = stableAssetId(sourceRecordId, asset)
+      const prepared = await prepareMaterialForAsset(input, asset, { keepPreparedFile: false })
+      const plannedPrepared = {
+        sourceContentSha256: prepared.sourceContentSha256,
+        sourceSize: prepared.sourceSize,
+        sourceMimeType: prepared.sourceMimeType,
+        kind: prepared.kind,
+        extension: prepared.extension,
+        contentSha256: prepared.contentSha256,
+        size: prepared.size,
+        contentType: prepared.contentType,
+        mimeType: prepared.mimeType,
+        transformProfileVersion: prepared.transformProfileVersion,
+        transformProfileSha256: prepared.transformProfileSha256,
+        transformToolFingerprint: prepared.transformToolFingerprint,
+        transformAction: prepared.transformAction
+      }
+      planned.push({
+        asset,
         assetId,
-        sourceEvidence.extension,
-        sourceEvidence.contentSha256
-      ),
-      contentSha256: sourceEvidence.contentSha256,
-      size: sourceEvidence.size,
-      contentType: sourceEvidence.contentType,
-      displayOrder: index
-    })
+        prepared: plannedPrepared,
+        sourceContentSha256: prepared.sourceContentSha256,
+        sourceSize: prepared.sourceSize,
+        sourceMimeType: prepared.sourceMimeType,
+        kind: prepared.kind,
+        extension: prepared.extension,
+        mimeType: prepared.contentType,
+        targetName: targetNameForAsset(assetId, prepared.extension, prepared.contentSha256),
+        objectKey: objectKeyForAsset(
+          input.uploadDir,
+          sourceRecordId,
+          assetId,
+          prepared.extension,
+          prepared.contentSha256
+        ),
+        contentSha256: prepared.contentSha256,
+        size: prepared.size,
+        contentType: prepared.contentType,
+        transformProfileVersion: prepared.transformProfileVersion,
+        transformProfileSha256: prepared.transformProfileSha256,
+        transformToolFingerprint: prepared.transformToolFingerprint,
+        transformAction: prepared.transformAction,
+        displayOrder: index
+      })
+    }
   }
   const contentPlanEvidence = planned.map((plan) => normalizeContentPlanEvidence({
     sourceRecordFingerprint: sha256Text(sourceRecordId),
     assetId: plan.assetId,
     kind: plan.kind,
+    sourceContentSha256: plan.sourceContentSha256,
+    sourceSize: plan.sourceSize,
+    sourceMimeType: plan.sourceMimeType,
     contentSha256: plan.contentSha256,
     size: plan.size,
     mimeType: plan.contentType,
+    transformProfileVersion: plan.transformProfileVersion,
+    transformProfileSha256: plan.transformProfileSha256,
+    transformToolFingerprint: plan.transformToolFingerprint,
+    transformAction: plan.transformAction,
     displayOrder: plan.displayOrder
   }))
   const contentPlanSummary = buildContentPlanSummary(contentPlanEvidence)
@@ -768,38 +1176,44 @@ async function syncNoteMaterialVideos(input = {}) {
     return targetFolder
   }
 
-  async function downloadMatchingPlannedSource(plan, failureMessage) {
-    const sourceEvidence = sourceEvidenceForAsset(
-      plan.asset,
-      await input.drive.downloadToken(plan.asset.sourceToken, plan.asset.sourceKind)
-    )
-    if (sourceEvidence.contentSha256 !== plan.contentSha256 ||
-        sourceEvidence.size !== plan.size ||
-        sourceEvidence.kind !== plan.kind ||
-        sourceEvidence.extension !== plan.extension ||
-        sourceEvidence.contentType !== plan.mimeType) {
-      throw new Error(failureMessage)
-    }
-    return sourceEvidence
+  async function verifyMatchingPlannedSource(plan, failureMessage) {
+    return verifyPreparedSource(input, plan.asset, plan.prepared, failureMessage)
   }
 
-  // 正式写入前先对整批素材再做一次无 Buffer 留存的全局预检。
-  // 只有所有素材都与计划一致，才允许创建目录或写入任一 Drive/OSS 对象。
-  if (input.dryRun !== true) {
+  async function releasePreparedMaterial(prepared) {
+    if (!prepared || typeof input.disposePreparedMaterial !== 'function') return
+    const index = preparedMaterials.indexOf(prepared)
+    if (index >= 0) preparedMaterials.splice(index, 1)
+    try {
+      await input.disposePreparedMaterial(prepared)
+    } catch (_cleanupError) {
+      await input.disposePreparedMaterial(prepared)
+    }
+  }
+
+  const sourceVerifications = new Map()
+  // 独立调用时仍在首个写入前复验整批源文件；库存级正式同步已在所有房源之间完成同一门禁，
+  // 通过 sourcesGloballyVerified 复用该结论，避免同一素材在写前无意义地重复下载。
+  if (input.dryRun !== true && input.sourcesGloballyVerified !== true) {
     for (const plan of planned) {
-      await downloadMatchingPlannedSource(plan, '房源笔记源素材在同步计划执行前发生变化')
+      sourceVerifications.set(
+        plan.assetId,
+        await verifyMatchingPlannedSource(plan, '房源笔记源素材在同步计划执行前发生变化')
+      )
     }
   }
 
   for (const plan of planned) {
-    let sourceEvidence = null
+    let sourceVerification = null
     if (input.dryRun !== true) {
-      // 全批预检与首个外部写之间仍可能发生源内容变化，因此写每个素材前重新下载，
-      // 并把这份刚校验的独占 Buffer 直接交给 Drive 与 OSS，避免按可变 token 再复制。
-      sourceEvidence = await downloadMatchingPlannedSource(
-        plan,
-        '房源笔记源素材在同步写入前发生变化'
-      )
+      sourceVerification = input.sourcesGloballyVerified === true
+        ? {
+            verified: true,
+            sourceContentSha256: plan.sourceContentSha256,
+            sourceSize: plan.sourceSize,
+            sourceMimeType: plan.sourceMimeType
+          }
+        : sourceVerifications.get(plan.assetId)
     }
     const existing = existingById.get(plan.assetId)
     if (existing &&
@@ -813,7 +1227,13 @@ async function syncNoteMaterialVideos(input = {}) {
         targetName: plan.targetName,
         sourceToken: plan.asset.sourceToken,
         sourceKind: plan.asset.sourceKind,
-        sourceEvidence
+        sourceEvidence: sourceVerification,
+        sourceContentSha256: plan.sourceContentSha256,
+        sourceSize: plan.sourceSize,
+        sourceMimeType: plan.sourceMimeType,
+        outputContentSha256: plan.contentSha256,
+        outputSize: plan.size,
+        outputMimeType: plan.mimeType
       })
       if (evidence && evidence.sourceVerified === true &&
           evidence.driveVerified === true && evidence.ossVerified === true) {
@@ -868,50 +1288,89 @@ async function syncNoteMaterialVideos(input = {}) {
     if (!input.oss || typeof putMaterialDeterministic !== 'function') {
       throw new Error('房源笔记素材同步缺少 OSS 写后回读适配器')
     }
-    await ensureTargetFolder()
-    const driveResult = await materializeAsset.call(input.drive, {
-      asset: plan.asset,
-      targetFolderToken: targetFolder.token,
-      targetName: plan.targetName,
-      sourceEvidence
-    })
-    if (!driveResult || driveResult.verified !== true || !Buffer.isBuffer(driveResult.buffer) ||
-        !normalizeText(driveResult.contentSha256) || !normalizeText(driveResult.targetToken) ||
-        normalizeText(driveResult.targetName) !== plan.targetName ||
-        contentSha256(driveResult.contentSha256) !== plan.contentSha256 ||
-        crypto.createHash('sha256').update(driveResult.buffer).digest('hex') !== plan.contentSha256 ||
-        driveResult.buffer.length !== plan.size ||
-        normalizeContentMimeType(driveResult.contentType || plan.mimeType).split(';')[0] !== plan.mimeType) {
-      throw new Error('房源笔记 Drive 素材未通过内容回读')
+    let retainedForWrite = null
+    try {
+      let preparedForWrite = plan.prepared
+      if (typeof input.prepareMaterial === 'function') {
+        preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: true })
+        retainedForWrite = preparedForWrite
+        preparedMaterials.push(preparedForWrite)
+      } else {
+        preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: false })
+      }
+      const outputEvidence = normalizedPreparedMaterial(plan.asset, preparedForWrite)
+      if (outputEvidence.sourceContentSha256 !== plan.sourceContentSha256 ||
+          outputEvidence.sourceSize !== plan.sourceSize ||
+          outputEvidence.sourceMimeType !== plan.sourceMimeType ||
+          outputEvidence.contentSha256 !== plan.contentSha256 ||
+          outputEvidence.size !== plan.size || outputEvidence.contentType !== plan.mimeType ||
+          outputEvidence.extension !== plan.extension || outputEvidence.kind !== plan.kind ||
+          outputEvidence.transformProfileVersion !== plan.transformProfileVersion ||
+          outputEvidence.transformProfileSha256 !== plan.transformProfileSha256 ||
+          outputEvidence.transformToolFingerprint !== plan.transformToolFingerprint ||
+          outputEvidence.transformAction !== plan.transformAction) {
+        throw contentPlanConfirmationError('房源笔记处理后素材与已确认内容计划不一致')
+      }
+      let writeEvidence = outputEvidence
+      if (typeof input.openPreparedFile === 'function') {
+        writeEvidence = await input.openPreparedFile(preparedForWrite)
+      }
+      const validatedWriteEvidence = validatedPreparedWriteEvidence(
+        writeEvidence,
+        plan,
+        input.requireStreamingSource === true
+      )
+      writeEvidence = validatedWriteEvidence.writeEvidence
+      const usesPreparedFile = validatedWriteEvidence.usesPreparedFile
+      await ensureTargetFolder()
+      const driveResult = await materializeAsset.call(input.drive, {
+        asset: plan.asset,
+        targetFolderToken: targetFolder.token,
+        targetName: plan.targetName,
+        sourceEvidence: writeEvidence
+      })
+      if (!driveResult || driveResult.verified !== true ||
+          !normalizeText(driveResult.contentSha256) || !normalizeText(driveResult.targetToken) ||
+          normalizeText(driveResult.targetName) !== plan.targetName ||
+          contentSha256(driveResult.contentSha256) !== plan.contentSha256 ||
+          Number(driveResult.size) !== plan.size ||
+          normalizeContentMimeType(driveResult.contentType || plan.mimeType).split(';')[0] !== plan.mimeType) {
+        throw new Error('房源笔记 Drive 素材未通过内容回读')
+      }
+      driveVerifiedIds.push(plan.assetId)
+      const ossWriteInput = {
+        kind: plan.kind,
+        objectKey: plan.objectKey,
+        size: plan.size,
+        contentType: plan.mimeType,
+        contentSha256: driveResult.contentSha256
+      }
+      if (usesPreparedFile) ossWriteInput.filePath = writeEvidence.filePath
+      else ossWriteInput.buffer = writeEvidence.buffer
+      const saved = await putMaterialDeterministic.call(input.oss, ossWriteInput)
+      if (!saved || saved.verified !== true || normalizeText(saved.objectKey) !== plan.objectKey ||
+          normalizeText(saved.contentSha256) !== normalizeText(driveResult.contentSha256) ||
+          Number(saved.size) !== plan.size) {
+        throw new Error('房源笔记 OSS 素材未通过写后回读')
+      }
+      ossVerifiedIds.push(plan.assetId)
+      resultAssets.push({
+        assetId: plan.assetId,
+        kind: plan.kind,
+        objectKey: plan.objectKey,
+        contentSha256: driveResult.contentSha256,
+        sourceFingerprint: plan.asset.sourceFingerprint,
+        targetDriveFingerprint: sha256Text(driveResult.targetToken),
+        displayOrder: plan.displayOrder,
+        mimeType: plan.mimeType,
+        size: plan.size,
+        verified: true
+      })
+      manifestIds.push(plan.assetId)
+      transferred += 1
+    } finally {
+      await releasePreparedMaterial(retainedForWrite)
     }
-    driveVerifiedIds.push(plan.assetId)
-    const saved = await putMaterialDeterministic.call(input.oss, {
-      kind: plan.kind,
-      objectKey: plan.objectKey,
-      buffer: driveResult.buffer,
-      contentType: plan.mimeType,
-      contentSha256: driveResult.contentSha256
-    })
-    if (!saved || saved.verified !== true || normalizeText(saved.objectKey) !== plan.objectKey ||
-        normalizeText(saved.contentSha256) !== normalizeText(driveResult.contentSha256) ||
-        Number(saved.size) !== driveResult.buffer.length) {
-      throw new Error('房源笔记 OSS 素材未通过写后回读')
-    }
-    ossVerifiedIds.push(plan.assetId)
-    resultAssets.push({
-      assetId: plan.assetId,
-      kind: plan.kind,
-      objectKey: plan.objectKey,
-      contentSha256: driveResult.contentSha256,
-      sourceFingerprint: plan.asset.sourceFingerprint,
-      targetDriveFingerprint: sha256Text(driveResult.targetToken),
-      displayOrder: plan.displayOrder,
-      mimeType: plan.mimeType,
-      size: driveResult.buffer.length,
-      verified: true
-    })
-    manifestIds.push(plan.assetId)
-    transferred += 1
   }
 
   const sourceIds = planned.map((item) => item.assetId)
@@ -932,6 +1391,15 @@ async function syncNoteMaterialVideos(input = {}) {
     noop: transferred === 0 && input.dryRun !== true,
     dryRun: input.dryRun === true,
     ...contentPlanSummary,
+    normalization: {
+      passthrough: planned.filter((item) => item.transformAction === 'passthrough').length,
+      sanitized: planned.filter((item) => item.transformAction === 'sanitize').length,
+      transcoded: planned.filter((item) => item.transformAction === 'transcode').length,
+      compressed: planned.filter((item) => item.transformAction === 'compress').length,
+      sourceBytes: planned.reduce((total, item) => total + item.sourceSize, 0),
+      outputBytes: planned.reduce((total, item) => total + item.size, 0),
+      bytesSaved: planned.reduce((total, item) => total + Math.max(0, item.sourceSize - item.size), 0)
+    },
     counts: {
       source: planned.length,
       driveVerified: driveVerifiedIds.length,
@@ -942,6 +1410,23 @@ async function syncNoteMaterialVideos(input = {}) {
     }
   }
   return attachContentPlanEvidence(result, contentPlanEvidence)
+  } finally {
+    if (typeof input.disposePreparedMaterial === 'function') {
+      let cleanupError = null
+      for (const prepared of preparedMaterials) {
+        try {
+          await input.disposePreparedMaterial(prepared)
+        } catch (error) {
+          try {
+            await input.disposePreparedMaterial(prepared)
+          } catch (cleanupRetryError) {
+            if (!cleanupError) cleanupError = cleanupRetryError
+          }
+        }
+      }
+      if (cleanupError) throw cleanupError
+    }
+  }
 }
 
 const runningInventoryDatabases = new WeakSet()
@@ -1027,8 +1512,9 @@ function safeFailureMessage(error) {
 
 function temporaryNoteMaterialFailure(error) {
   const statusCode = Number(error && (error.statusCode || error.status))
-  if ([401, 403, 408, 425, 429].includes(statusCode) || (statusCode >= 500 && statusCode <= 599)) return true
+  if ([401, 403, 408, 413, 425, 429].includes(statusCode) || (statusCode >= 500 && statusCode <= 599)) return true
   const code = normalizeText(error && error.code).toUpperCase()
+  if (/^(?:MATERIAL_|FEISHU_MATERIAL_)/.test(code)) return true
   if (/^(?:ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|UND_ERR_[A-Z_]+)$/.test(code)) return true
   return Boolean(error && error.name === 'AbortError')
 }
@@ -1083,6 +1569,13 @@ async function syncNoteMaterialsForInventory(input = {}) {
     unsupported: 0,
     nonVideo: 0,
     duplicateReference: 0,
+    passthrough: 0,
+    sanitized: 0,
+    transcoded: 0,
+    compressed: 0,
+    sourceBytes: 0,
+    outputBytes: 0,
+    bytesSaved: 0,
     rows: []
   }
   const contentPlanEvidence = []
@@ -1168,35 +1661,45 @@ async function syncNoteMaterialsForInventory(input = {}) {
       return report
     }
 
-    // 正式同步先对全部可解析行执行一次完整只读计划，聚合结果与人类确认的同次预检
-    // 精确一致后，才允许清理 DB、创建 Drive 目录或写入任一素材。计划只保留摘要，
-    // 不持有 Buffer、token、URL、路径或对象 key。
+    // 正式同步不再重复转码整批素材：先验证当前工具档案，再对全部源文件做一次流式摘要复验。
+    // 只有所有房源、素材身份、顺序和源字节都与人类确认的 dry-run 计划一致，才允许任何写入；
+    // 后续仅对确需上传的单件素材压缩一次并立即释放临时文件。
     if (expectedContentPlan) {
+      if (typeof input.describeProfile !== 'function') {
+        throw contentPlanConfirmationError('房源笔记素材正式同步缺少当前压缩规则校验器', 500)
+      }
+      const currentProfile = await input.describeProfile()
+      const profileVersion = normalizeText(currentProfile && currentProfile.transformProfileVersion)
+      const profileSha256 = normalizeText(currentProfile && currentProfile.transformProfileSha256)
+      const toolFingerprint = normalizeText(currentProfile && currentProfile.transformToolFingerprint)
+      if (!profileVersion || !/^[a-f0-9]{64}$/.test(profileSha256) || !/^[a-f0-9]{64}$/.test(toolFingerprint) ||
+          expectedContentPlan.expectedContentPlanEvidence.some((item) => (
+            item.transformProfileVersion !== profileVersion ||
+            item.transformProfileSha256 !== profileSha256 ||
+            item.transformToolFingerprint !== toolFingerprint
+          ))) {
+        throw contentPlanConfirmationError('房源笔记素材压缩规则或处理工具在确认后发生变化')
+      }
       const inventoryPlanEvidence = []
       for (const row of resolvedRows) {
-        const planned = await syncNoteMaterialVideos({
-          sourceRecordId: row.sourceRecordId,
-          assets: row.resolved.assets,
-          existingMediaAssets: row.listing.mediaAssets,
-          uploadDir: input.uploadDir,
-          targetRootFolderToken: input.targetRootFolderToken,
-          folderContext: {
-            district: row.listing.district,
-            block: row.listing.block || row.listing.area,
-            locationId: row.listing.locationId,
-            community: row.listing.community,
-            building: row.listing.building,
-            unit: row.listing.unit,
-            roomNumber: row.listing.roomNumber
-          },
-          drive: input.drive,
-          oss: input.oss,
-          dryRun: true
-        })
-        const evidence = planned[CONTENT_PLAN_EVIDENCE]
-        if (!Array.isArray(evidence) ||
-            evidence.length !== Number(planned.counts && planned.counts.source)) {
-          throw contentPlanConfirmationError('房源笔记素材正式全局预检缺少完整行级内容计划')
+        const evidence = expectedEvidenceForSourceRecord(expectedContentPlan, row.sourceRecordId)
+        const orderedAssets = row.resolved.assets.slice().sort((left, right) => (
+          Number(left.sourceOrder || 0) - Number(right.sourceOrder || 0) ||
+          normalizeText(left.sourceToken).localeCompare(normalizeText(right.sourceToken))
+        ))
+        const plans = confirmedPlansForAssets({
+          ...input,
+          expectedContentPlanEvidence: evidence
+        }, row.sourceRecordId, orderedAssets)
+        if (input.sourcesGloballyVerified !== true) {
+          for (const plan of plans) {
+            await verifyPreparedSource(
+              input,
+              plan.asset,
+              plan.prepared,
+              '房源笔记源素材与已确认内容计划不一致'
+            )
+          }
         }
         inventoryPlanEvidence.push(...evidence)
       }
@@ -1307,11 +1810,19 @@ async function syncNoteMaterialsForInventory(input = {}) {
           },
           drive: input.drive,
           oss: input.oss,
+          prepareMaterial: input.prepareMaterial,
+          verifyPreparedMaterial: input.verifyPreparedMaterial,
+          openPreparedFile: input.openPreparedFile,
+          disposePreparedMaterial: input.disposePreparedMaterial,
+          verifySource: input.verifySource,
+          requireStreamingSource: input.requireStreamingSource === true,
           dryRun: input.dryRun === true,
+          verifyExpectedContentPlan: input.verifyExpectedContentPlan === true,
           expectedContentPlanEvidence: expectedEvidenceForSourceRecord(
             expectedContentPlan,
             row.sourceRecordId
           ),
+          sourcesGloballyVerified: Boolean(expectedContentPlan),
           verifyExisting: async (asset, target) => {
             const verifyMaterializedAsset = input.drive && (
               typeof input.drive.verifyMaterializedAsset === 'function'
@@ -1329,9 +1840,13 @@ async function syncNoteMaterialsForInventory(input = {}) {
             }
             // syncNoteMaterialVideos 已在任何写入前下载并校验当前源内容；复用校验必须绑定同一份证据，
             // 避免第二次下载期间源文件再次变化，也避免同 token 原位替换继续命中旧版本。
-            const sourceVerified = target.sourceEvidence &&
-              normalizeText(target.sourceEvidence.contentSha256) === normalizeText(asset.contentSha256) &&
-              Number(target.sourceEvidence.size) === Number(asset.size)
+            const sourceVerified = target.sourceEvidence && target.sourceEvidence.verified === true &&
+              normalizeText(target.sourceEvidence.sourceContentSha256) === normalizeText(target.sourceContentSha256) &&
+              Number(target.sourceEvidence.sourceSize) === Number(target.sourceSize) &&
+              normalizeText(target.sourceEvidence.sourceMimeType) === normalizeText(target.sourceMimeType) &&
+              normalizeText(asset.contentSha256) === normalizeText(target.outputContentSha256) &&
+              Number(asset.size) === Number(target.outputSize) &&
+              normalizeText(asset.mimeType) === normalizeText(target.outputMimeType)
             if (!sourceVerified) {
               return { sourceVerified: false, driveVerified: false, ossVerified: false }
             }
@@ -1354,6 +1869,13 @@ async function syncNoteMaterialsForInventory(input = {}) {
           throw new Error('房源笔记内容计划证据不完整')
         }
         contentPlanEvidence.push(...rowContentPlanEvidence)
+        report.passthrough += Number(result.normalization && result.normalization.passthrough || 0)
+        report.sanitized += Number(result.normalization && result.normalization.sanitized || 0)
+        report.transcoded += Number(result.normalization && result.normalization.transcoded || 0)
+        report.compressed += Number(result.normalization && result.normalization.compressed || 0)
+        report.sourceBytes += Number(result.normalization && result.normalization.sourceBytes || 0)
+        report.outputBytes += Number(result.normalization && result.normalization.outputBytes || 0)
+        report.bytesSaved += Number(result.normalization && result.normalization.bytesSaved || 0)
         if (input.dryRun !== true) {
           assertMediaAssetsStateUnchanged(row.listing, row.expectedStateKey, input.mediaAssetsStateKey)
           const nextAssets = result.mediaAssets.map(cloneMediaAsset)
@@ -1463,6 +1985,8 @@ module.exports = {
     temporaryNoteMaterialFailure,
     buildContentPlanSummary,
     contentPlanConfirmationFromReport,
+    rememberContentPlanConfirmation,
+    recallContentPlanConfirmation,
     isContentPlanConfirmationError
   }
 }
