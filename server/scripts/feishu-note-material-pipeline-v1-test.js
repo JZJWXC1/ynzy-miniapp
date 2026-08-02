@@ -15,6 +15,7 @@ const {
 const config = require('../src/config')
 const domain = require('../src/domain')
 const feishuSync = require('../src/feishu-sync')
+const { runCompanySourceSync } = require('../src/feishu-source-mirror')
 const {
   syncNoteMaterialVideos,
   syncNoteMaterialsForInventory
@@ -66,15 +67,15 @@ const HOST = 'ccn9urs7d60k.feishu.cn'
 const ROOT = 'fldTargetRoot123'
 
 function testStableSourceFieldContract() {
-  assert.strictEqual(config.feishu.noteMaterialFieldId, 'fldyeAGJHV')
+  const customFieldId = 'fldCustomNoteMaterial987'
   const bindings = feishuSync._internal.sourceBindingsWithNoteMaterial({
     community: { fieldId: 'fldCommunity123' }
   }, {
     enabled: true,
-    fieldId: config.feishu.noteMaterialFieldId
+    fieldId: customFieldId
   })
   assert.deepStrictEqual(bindings.noteMaterialLink, {
-    fieldId: 'fldyeAGJHV',
+    fieldId: customFieldId,
     type: 15,
     required: false
   })
@@ -82,6 +83,430 @@ function testStableSourceFieldContract() {
     feishuSync._internal.sourceBindingsWithNoteMaterial({}, { enabled: false }).noteMaterialLink,
     undefined
   )
+  assert.throws(
+    () => feishuSync._internal.sourceBindingsWithNoteMaterial({}, { enabled: true, fieldId: '   ' }),
+    /field_id|配置|素材/i,
+    '开启房源笔记素材后必须显式配置稳定 field_id'
+  )
+  const previousFieldId = config.feishu.noteMaterialFieldId
+  try {
+    config.feishu.noteMaterialFieldId = customFieldId
+    assert.strictEqual(feishuSync._internal.noteMaterialFieldContractReady(), true, '任意显式合法 field_id 必须可通过 type=15 契约门')
+    config.feishu.noteMaterialFieldId = ''
+    assert.strictEqual(feishuSync._internal.noteMaterialFieldContractReady(), false, '空 field_id 必须 fail-closed')
+  } finally {
+    config.feishu.noteMaterialFieldId = previousFieldId
+  }
+}
+
+function testMirrorSafetyDigestsAndAdminContract() {
+  const snapshot = (schemaFingerprint, digest, records = []) => ({
+    complete: true,
+    schemaFingerprint,
+    digest,
+    recordCount: records.length,
+    fieldNames: {},
+    records
+  })
+  const input = {
+    sourceSnapshot: snapshot('1'.repeat(64), '2'.repeat(64), [{ recordId: 'source-1', fields: { community: '风雅乐府' } }]),
+    locationSnapshot: snapshot('3'.repeat(64), '4'.repeat(64)),
+    mirrorSnapshot: snapshot('5'.repeat(64), '6'.repeat(64)),
+    rentedSnapshot: snapshot('7'.repeat(64), '8'.repeat(64)),
+    historySnapshot: snapshot('9'.repeat(64), 'a'.repeat(64)),
+    resources: {
+      sourceBaseToken: 'source-base-secret-token',
+      targetBaseToken: 'target-base-secret-token',
+      sourceTableId: 'tbl-source',
+      locationTableId: 'tbl-location',
+      miniTableId: 'tbl-mini',
+      rentedTableId: 'tbl-rented',
+      historyTableId: 'tbl-history',
+      feishuApiBaseUrl: 'https://open.feishu.test/open-apis',
+      legacyMaterialFolderToken: 'legacy-material-root-secret',
+      noteMaterialSyncEnabled: true,
+      noteMaterialTargetRootFolderToken: 'note-target-root-secret',
+      noteMaterialAllowedHosts: ['tenant-a.feishu.cn'],
+      uploadToOss: true,
+      ossBucket: 'private-bucket-name',
+      ossRegion: 'oss-cn-example',
+      ossUploadDir: 'company-note-assets',
+      ossPublicBaseUrl: 'https://media.example.test'
+    },
+    legacyMaterialEvidence: {
+      enabled: false,
+      count: 0,
+      manifestSha256: 'b'.repeat(64)
+    },
+    operations: [{ type: 'create', sourceRecordId: 'source-1', fields: { published: true } }],
+    archiveOperations: [],
+    historyOperations: [],
+    plannedRecords: [{
+      recordId: 'planned-1',
+      fields: {
+        enabled: true,
+        published: true,
+        canonical: true,
+        district: '余杭区',
+        block: '城北万象城',
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 1幢101',
+        layoutDescription: '两室一厅',
+        layoutCategory: '两室',
+        monthlyRent: 3200,
+        rentMode: '整租',
+        remark: '',
+        listingStatus: '待出租'
+      }
+    }]
+  }
+  const digests = feishuSync._internal.buildMirrorSafetyDigests(input)
+  for (const name of ['schemaSha256', 'resourceIdentitySha256', 'mirrorPlanSha256']) {
+    assert.match(digests[name], /^[0-9a-f]{64}$/, `${name} 必须是可传递的 64 位小写安全摘要`)
+  }
+  assert.doesNotMatch(
+    JSON.stringify(digests),
+    /source-base-secret-token|target-base-secret-token|note-target-root-secret|tenant-a\.feishu\.cn|private-bucket-name|company-note-assets|media\.example\.test/,
+    '公开安全摘要不得泄漏 Base、Drive 或 OSS 资源标识'
+  )
+
+  const swapped = feishuSync._internal.buildMirrorSafetyDigests({
+    ...input,
+    sourceSnapshot: snapshot('b'.repeat(64), '2'.repeat(64), input.sourceSnapshot.records)
+  })
+  assert.notStrictEqual(swapped.schemaSha256, digests.schemaSha256, '同类型字段互换导致 schemaFingerprint 变化时 schemaSha256 必须变化')
+  assert.notStrictEqual(swapped.mirrorPlanSha256, digests.mirrorPlanSha256, 'schema 漂移必须同时改变最终镜像计划摘要')
+
+  const changedPlan = feishuSync._internal.buildMirrorSafetyDigests({
+    ...input,
+    operations: [{ type: 'create', sourceRecordId: 'source-1', fields: { published: false } }]
+  })
+  assert.notStrictEqual(changedPlan.mirrorPlanSha256, digests.mirrorPlanSha256, '镜像操作变化必须改变 mirrorPlanSha256')
+
+  const changedResource = feishuSync._internal.buildMirrorSafetyDigests({
+    ...input,
+    resources: {
+      ...input.resources,
+      miniTableId: 'tbl-mini-replaced'
+    }
+  })
+  assert.notStrictEqual(
+    changedResource.resourceIdentitySha256,
+    digests.resourceIdentitySha256,
+    '目标表身份变化必须改变 resourceIdentitySha256'
+  )
+  assert.notStrictEqual(
+    changedResource.mirrorPlanSha256,
+    digests.mirrorPlanSha256,
+    '目标表身份变化必须同时改变最终 mirrorPlanSha256'
+  )
+  for (const [field, value] of [
+    ['noteMaterialTargetRootFolderToken', 'note-target-root-replaced'],
+    ['noteMaterialAllowedHosts', ['tenant-b.feishu.cn']],
+    ['ossBucket', 'private-bucket-replaced'],
+    ['ossRegion', 'oss-cn-replaced'],
+    ['ossUploadDir', 'company-note-assets-replaced'],
+    ['ossPublicBaseUrl', 'https://media-replaced.example.test']
+  ]) {
+    const changedDelivery = feishuSync._internal.buildMirrorSafetyDigests({
+      ...input,
+      resources: { ...input.resources, [field]: value }
+    })
+    assert.notStrictEqual(
+      changedDelivery.resourceIdentitySha256,
+      digests.resourceIdentitySha256,
+      `素材目的地 ${field} 变化必须改变 resourceIdentitySha256`
+    )
+    assert.notStrictEqual(
+      changedDelivery.mirrorPlanSha256,
+      digests.mirrorPlanSha256,
+      `素材目的地 ${field} 变化必须同时改变 mirrorPlanSha256`
+    )
+  }
+
+  const legacyOssFlagOff = feishuSync._internal.buildMirrorSafetyDigests({
+    ...input,
+    resources: { ...input.resources, uploadToOss: false }
+  })
+  assert.strictEqual(
+    legacyOssFlagOff.resourceIdentitySha256,
+    digests.resourceIdentitySha256,
+    '房源笔记启用时旧 OSS 开关不得改变实际双目标发布身份'
+  )
+
+  const legacyInput = {
+    ...input,
+    resources: {
+      ...input.resources,
+      noteMaterialSyncEnabled: false,
+      uploadToOss: false
+    },
+    legacyMaterialEvidence: {
+      enabled: true,
+      count: 1,
+      manifestSha256: 'c'.repeat(64)
+    }
+  }
+  const legacyDirectUrl = feishuSync._internal.buildMirrorSafetyDigests(legacyInput)
+  const legacyOssUpload = feishuSync._internal.buildMirrorSafetyDigests({
+    ...legacyInput,
+    resources: { ...legacyInput.resources, uploadToOss: true }
+  })
+  assert.notStrictEqual(
+    legacyOssUpload.resourceIdentitySha256,
+    legacyDirectUrl.resourceIdentitySha256,
+    '旧素材链的 OSS 开关会改变外部写和视频地址，必须改变资源身份摘要'
+  )
+  const legacyManifestChanged = feishuSync._internal.buildMirrorSafetyDigests({
+    ...legacyInput,
+    legacyMaterialEvidence: {
+      enabled: true,
+      count: 1,
+      manifestSha256: 'd'.repeat(64)
+    }
+  })
+  assert.notStrictEqual(
+    legacyManifestChanged.mirrorPlanSha256,
+    legacyDirectUrl.mirrorPlanSha256,
+    '旧素材清单内容变化必须改变镜像计划摘要'
+  )
+  for (const [field, value] of [
+    ['ossBucket', 'private-bucket-even-when-legacy-flag-off'],
+    ['ossRegion', 'oss-cn-even-when-legacy-flag-off'],
+    ['ossUploadDir', 'note-assets-even-when-legacy-flag-off']
+  ]) {
+    const changedActualOss = feishuSync._internal.buildMirrorSafetyDigests({
+      ...input,
+      resources: {
+        ...input.resources,
+        uploadToOss: false,
+        [field]: value
+      }
+    })
+    assert.notStrictEqual(
+      changedActualOss.resourceIdentitySha256,
+      legacyOssFlagOff.resourceIdentitySha256,
+      `房源笔记启用且旧 OSS 开关关闭时，真实目的地 ${field} 变化仍必须改变资源摘要`
+    )
+  }
+
+  assert.doesNotThrow(() => feishuSync._internal.assertMirrorSafetyDigestConfirmation({
+    expectedSchemaSha256: digests.schemaSha256,
+    expectedResourceIdentitySha256: digests.resourceIdentitySha256,
+    expectedMirrorPlanSha256: digests.mirrorPlanSha256
+  }, digests))
+  for (const [field, code] of [
+    ['expectedSchemaSha256', 'MIRROR_SCHEMA_CHANGED'],
+    ['expectedResourceIdentitySha256', 'MIRROR_RESOURCE_CHANGED'],
+    ['expectedMirrorPlanSha256', 'MIRROR_PLAN_CHANGED']
+  ]) {
+    let error = null
+    try {
+      feishuSync._internal.assertMirrorSafetyDigestConfirmation({
+        expectedSchemaSha256: digests.schemaSha256,
+        expectedResourceIdentitySha256: digests.resourceIdentitySha256,
+        expectedMirrorPlanSha256: digests.mirrorPlanSha256,
+        [field]: 'f'.repeat(64)
+      }, digests)
+    } catch (caught) {
+      error = caught
+    }
+    assert.ok(error, `${field} 不一致必须拒绝`)
+    assert.strictEqual(error.code, code, `${field} 不一致必须返回稳定错误 code`)
+    assert.strictEqual(error.safeBeforeWrite, true, `${field} 不一致必须标记写前安全失败`)
+  }
+
+  const parsed = feishuSync.parseAdminSyncRequest({
+    dryRun: false,
+    runId: 'mirror-safe-run-001',
+    expectedSchemaSha256: digests.schemaSha256,
+    expectedResourceIdentitySha256: digests.resourceIdentitySha256,
+    expectedMirrorPlanSha256: digests.mirrorPlanSha256
+  }, { contentPlanConfirmationRequired: false })
+  assert.strictEqual(parsed.expectedSchemaSha256, digests.schemaSha256)
+  assert.strictEqual(parsed.expectedResourceIdentitySha256, digests.resourceIdentitySha256)
+  assert.strictEqual(parsed.expectedMirrorPlanSha256, digests.mirrorPlanSha256)
+  for (const [field, value] of [
+    ['expectedSchemaSha256', 'A'.repeat(64)],
+    ['expectedResourceIdentitySha256', 'g'.repeat(64)],
+    ['expectedMirrorPlanSha256', 'a'.repeat(63)],
+    ['expectedMirrorPlanSha256', 123]
+  ]) {
+    assert.throws(
+      () => feishuSync.parseAdminSyncRequest({ dryRun: true, [field]: value }, { contentPlanConfirmationRequired: false }),
+      /64 位小写|摘要|sha256/i,
+      `${field} 必须严格校验 64 位小写摘要`
+    )
+  }
+}
+
+async function testPublicMirrorSummaryCarriesOnlySafeDigestEvidence() {
+  const schemaSha256 = '1'.repeat(64)
+  const resourceIdentitySha256 = '2'.repeat(64)
+  const mirrorPlanSha256 = '3'.repeat(64)
+  const result = await runCompanySourceSync({
+    db: {},
+    mirrorSync: async () => ({
+      complete: true,
+      published: false,
+      validated: true,
+      planned: true,
+      failed: 0,
+      schemaInvalid: false,
+      mirrorIncomplete: false,
+      dryRun: true,
+      noop: true,
+      status: 'success-dry-run',
+      records: [],
+      schemaSha256,
+      resourceIdentitySha256,
+      mirrorPlanSha256,
+      schemaBindings: [{
+        role: 'source',
+        bindings: [{ semantic: 'community', fieldName: '小区（当前显示名）', type: '1', fieldId: 'never-expose-field-id' }]
+      }],
+      sourceBaseToken: 'never-expose-source-token'
+    }),
+    applyInventory: async () => ({ complete: true, published: true, failed: 0, noop: true }),
+    publishSnapshot: async () => ({ complete: true, published: true, failed: 0, noop: true }),
+    commit: async () => ({ complete: true, noop: true })
+  })
+  assert.deepStrictEqual(
+    {
+      schemaSha256: result.mirror.schemaSha256,
+      resourceIdentitySha256: result.mirror.resourceIdentitySha256,
+      mirrorPlanSha256: result.mirror.mirrorPlanSha256
+    },
+    { schemaSha256, resourceIdentitySha256, mirrorPlanSha256 },
+    '三项安全摘要必须通过 publicStageSummary 到达最终 result.mirror'
+  )
+  assert.deepStrictEqual(result.mirror.schemaBindings, [{
+    role: 'source',
+    bindings: [{ semantic: 'community', fieldName: '小区（当前显示名）', type: '1' }]
+  }], 'dry-run 必须携带可人工核对的脱敏字段证据')
+  assert.doesNotMatch(JSON.stringify(result.mirror), /never-expose-source-token|never-expose-field-id|fieldId|tableId/, '公开镜像摘要不得泄漏 token、fieldId 或 tableId')
+}
+
+async function testMirrorPlanMismatchStopsLegacyApplyBeforeTargetWrite() {
+  const snapshot = (schemaFingerprint, digest, records, fieldNames = {}) => ({
+    complete: true,
+    schemaFingerprint,
+    digest,
+    recordCount: records.length,
+    records,
+    fieldNames,
+    schemaBindings: []
+  })
+  const sourceSnapshot = snapshot('1'.repeat(64), '2'.repeat(64), [{
+    recordId: 'source-record-1',
+    fields: {
+      community: '风雅乐府',
+      roomLabel: '风雅乐府 1幢1单元101',
+      building: '1',
+      unit: '1',
+      roomNumber: '101',
+      layoutDescription: '2室1厅',
+      layoutCategory: '两室',
+      monthlyRent: 3200,
+      rentMode: '整租',
+      viewingMethod: '',
+      remark: '',
+      listingStatus: '可租'
+    }
+  }])
+  const locationSnapshot = snapshot('3'.repeat(64), '4'.repeat(64), [{
+    recordId: 'location-record-1',
+    fields: {
+      locationId: 'LOC-FENGYA',
+      city: '杭州市',
+      district: '余杭区',
+      block: '城北万象城',
+      community: '风雅乐府',
+      aliases: [],
+      latitude: 30.345286,
+      longitude: 120.121984,
+      enabled: true
+    }
+  }])
+  const mirrorSnapshot = snapshot('5'.repeat(64), '6'.repeat(64), [])
+  let targetWrites = 0
+  const sourceClient = {
+    async readValidatedTableSnapshot() {
+      return sourceSnapshot
+    }
+  }
+  const targetClient = {
+    async readValidatedTableSnapshot({ tableId }) {
+      if (tableId === 'tbl-location') return locationSnapshot
+      if (tableId === 'tbl-mini') return mirrorSnapshot
+      throw new Error(`非预期读取：${tableId}`)
+    },
+    async batchCreateRecords() {
+      targetWrites += 1
+      throw new Error('摘要不一致时不得进入创建')
+    },
+    async batchUpdateRecords() {
+      targetWrites += 1
+      throw new Error('摘要不一致时不得进入更新')
+    }
+  }
+  const common = {
+    sourceClient,
+    targetClient,
+    sourceTableId: 'tbl-source',
+    locationTableId: 'tbl-location',
+    miniTableId: 'tbl-mini',
+    sourceBindings: {},
+    locationBindings: {},
+    miniBindings: {},
+    runId: 'mirror-safety-legacy-001',
+    nowMs: 1700000000000
+  }
+  const dryRun = await feishuSync._internal.executeMirrorTableSync({ ...common, dryRun: true })
+  assert.match(dryRun.schemaSha256, /^[0-9a-f]{64}$/)
+  assert.match(dryRun.resourceIdentitySha256, /^[0-9a-f]{64}$/)
+  assert.match(dryRun.mirrorPlanSha256, /^[0-9a-f]{64}$/)
+
+  for (const scenario of [
+    {
+      label: '字段契约',
+      expectedSchemaSha256: 'f'.repeat(64),
+      expectedResourceIdentitySha256: dryRun.resourceIdentitySha256,
+      expectedMirrorPlanSha256: dryRun.mirrorPlanSha256,
+      code: 'MIRROR_SCHEMA_CHANGED'
+    },
+    {
+      label: '飞书资源身份',
+      expectedSchemaSha256: dryRun.schemaSha256,
+      expectedResourceIdentitySha256: 'f'.repeat(64),
+      expectedMirrorPlanSha256: dryRun.mirrorPlanSha256,
+      code: 'MIRROR_RESOURCE_CHANGED'
+    },
+    {
+      label: '镜像计划',
+      expectedSchemaSha256: dryRun.schemaSha256,
+      expectedResourceIdentitySha256: dryRun.resourceIdentitySha256,
+      expectedMirrorPlanSha256: 'f'.repeat(64),
+      code: 'MIRROR_PLAN_CHANGED'
+    }
+  ]) {
+    let error = null
+    try {
+      await feishuSync._internal.executeMirrorTableSync({
+        ...common,
+        dryRun: false,
+        expectedSchemaSha256: scenario.expectedSchemaSha256,
+        expectedResourceIdentitySha256: scenario.expectedResourceIdentitySha256,
+        expectedMirrorPlanSha256: scenario.expectedMirrorPlanSha256
+      })
+    } catch (caught) {
+      error = caught
+    }
+    assert.ok(error, `${scenario.label}摘要不一致必须拒绝正式写入`)
+    assert.strictEqual(error.code, scenario.code)
+    assert.strictEqual(error.safeBeforeWrite, true)
+    assert.strictEqual(targetWrites, 0, `${scenario.label}摘要不一致时目标 Base 写调用必须为 0`)
+  }
 }
 
 function jsonResponse(data) {
@@ -92,6 +517,161 @@ function jsonResponse(data) {
       return { code: 0, data }
     }
   }
+}
+
+async function testLegacyMaterialEvidenceBindsLocalBytes() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-legacy-material-evidence-'))
+  const filePath = path.join(tempRoot, 'synthetic.mp4')
+  try {
+    fs.writeFileSync(filePath, Buffer.from('AAAA'))
+    const first = await feishuSync._internal.buildLegacyMaterialEvidence([{
+      name: 'synthetic.mp4',
+      localFilePath: filePath,
+      sourcePath: 'synthetic/source'
+    }], { enabled: true })
+    fs.writeFileSync(filePath, Buffer.from('BBBB'))
+    const second = await feishuSync._internal.buildLegacyMaterialEvidence([{
+      name: 'synthetic.mp4',
+      localFilePath: filePath,
+      sourcePath: 'synthetic/source'
+    }], { enabled: true })
+    assert.match(first.manifestSha256, /^[0-9a-f]{64}$/)
+    assert.notStrictEqual(
+      first.manifestSha256,
+      second.manifestSha256,
+      '同路径同大小的旧本地素材换字节后必须改变清单摘要'
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function testLegacyDrivePaginationAndJsonDeadline() {
+  const previousFetch = global.fetch
+  const previousMaxItems = config.feishu.noteMaterialMaxItems
+  try {
+    const requestedTokens = []
+    global.fetch = async (url) => {
+      const parsed = new URL(url)
+      const pageToken = parsed.searchParams.get('page_token') || ''
+      requestedTokens.push(pageToken)
+      return jsonResponse(pageToken
+        ? {
+            files: [{ token: 'legacyFilePageTwo123', name: '第二页.mp4', type: 'file' }],
+            has_more: false
+          }
+        : {
+            files: [{ token: 'legacyFilePageOne123', name: '第一页.mp4', type: 'file' }],
+            has_more: true,
+            next_page_token: 'legacyNextPage123'
+          })
+    }
+    const materials = await feishuSync._internal.loadFolderMaterials(
+      'syntheticTenantToken123',
+      'syntheticLegacyRoot123'
+    )
+    assert.deepStrictEqual(
+      materials.map((item) => item.token),
+      ['legacyFilePageOne123', 'legacyFilePageTwo123'],
+      '旧素材目录必须合并全部分页并兼容 next_page_token'
+    )
+    assert.deepStrictEqual(requestedTokens, ['', 'legacyNextPage123'])
+
+    global.fetch = async () => jsonResponse({
+      files: [{ token: 'legacyMissingCursor123', name: '缺游标.mp4', type: 'file' }],
+      has_more: true
+    })
+    await assert.rejects(
+      () => feishuSync._internal.loadFolderMaterials('syntheticTenantToken123', 'syntheticLegacyRoot123'),
+      /has_more.*page_token|缺少.*page_token/,
+      '旧素材目录声明有下一页却缺游标时必须失败关闭'
+    )
+
+    let repeatedCalls = 0
+    global.fetch = async () => {
+      repeatedCalls += 1
+      return jsonResponse({
+        files: [{ token: `legacyLoopFile${repeatedCalls}23`, name: `循环-${repeatedCalls}.mp4`, type: 'file' }],
+        has_more: true,
+        next_page_token: 'legacyRepeatedPage123'
+      })
+    }
+    await assert.rejects(
+      () => feishuSync._internal.loadFolderMaterials('syntheticTenantToken123', 'syntheticLegacyRoot123'),
+      /token.*循环|循环/,
+      '旧素材目录重复分页游标时必须失败关闭'
+    )
+    assert.strictEqual(repeatedCalls, 2)
+
+    config.feishu.noteMaterialMaxItems = 1
+    global.fetch = async () => jsonResponse({
+      files: [
+        { token: 'legacyOverLimitA123', name: 'A.mp4', type: 'file' },
+        { token: 'legacyOverLimitB123', name: 'B.mp4', type: 'file' }
+      ],
+      has_more: false
+    })
+    await assert.rejects(
+      () => feishuSync._internal.loadFolderMaterials('syntheticTenantToken123', 'syntheticLegacyRoot123'),
+      /数量.*安全上限|超过.*上限/
+    )
+
+    let bodyStarted = false
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json() {
+        bodyStarted = true
+        return new Promise(() => {})
+      }
+    })
+    const startedAt = Date.now()
+    await assert.rejects(
+      () => feishuSync._internal.feishuJson('/drive/v1/files', 'syntheticTenantToken123', {
+        timeoutMs: 100,
+        maxRetries: 0
+      }),
+      (error) => error && error.code === 'FEISHU_REQUEST_TIMEOUT'
+    )
+    assert.strictEqual(bodyStarted, true, '总时限测试必须真实进入 JSON 响应体读取')
+    assert.ok(Date.now() - startedAt < 1500, '飞书旧 JSON 响应体不得无限等待')
+
+    await assert.rejects(
+      () => feishuSync._internal.loadFolderMaterials(
+        'syntheticTenantToken123',
+        'syntheticLegacyRoot123',
+        '',
+        Number(config.feishu.maxFolderDepth) + 1
+      ),
+      /层级.*安全上限|超过.*层级/
+    )
+  } finally {
+    global.fetch = previousFetch
+    config.feishu.noteMaterialMaxItems = previousMaxItems
+  }
+}
+
+async function testNoteMaterialJsonBodyDeadline() {
+  let bodyStarted = false
+  const client = createFeishuNoteMaterialClient({
+    accessToken: 'syntheticTenantToken123',
+    timeoutMs: 100,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json() {
+        bodyStarted = true
+        return new Promise(() => {})
+      }
+    })
+  })
+  const startedAt = Date.now()
+  await assert.rejects(
+    () => client.listFolder('syntheticFolderToken123'),
+    (error) => error && error.code === 'FEISHU_MATERIAL_REQUEST_TIMEOUT'
+  )
+  assert.strictEqual(bodyStarted, true, '新素材客户端总时限测试必须真实进入 JSON 响应体读取')
+  assert.ok(Date.now() - startedAt < 1500, '新素材 Drive JSON 响应体不得无限等待')
 }
 
 function bufferResponse(value) {
@@ -175,6 +755,7 @@ async function testSourceClientHardReadOnly() {
 async function testDriveHierarchyAndRedirectPolicy() {
   const children = new Map([[ROOT, []]])
   const createNames = []
+  let writeDispatches = 0
   let sequence = 1
   let redirectPolicy = ''
   const fetchImpl = async (url, options) => {
@@ -216,9 +797,16 @@ async function testDriveHierarchyAndRedirectPolicy() {
     unit: '2单元',
     roomNumber: '301'
   }
-  const first = await client.ensureListingFolder(context)
-  const second = await client.ensureListingFolder(context)
+  const first = await client.ensureListingFolder({
+    ...context,
+    onWriteDispatched() { writeDispatches += 1 }
+  })
+  const second = await client.ensureListingFolder({
+    ...context,
+    onWriteDispatched() { writeDispatches += 1 }
+  })
   assert.strictEqual(first.token, second.token)
+  assert.strictEqual(writeDispatches, 5, '仅五次真实创建目录 POST 可以标记外部写派发，第二次纯读取复用不得标记')
   assert.deepStrictEqual(createNames, [
     '房源笔记导入-v1',
     '拱墅区',
@@ -741,6 +1329,7 @@ async function testMaterializeStreamsPreparedFileWithoutWholeBufferBody() {
   let uploadBodyBytes = 0
   let largestUploadChunk = 0
   let wholeFileReadAttempts = 0
+  let writeDispatches = 0
   const client = createFeishuNoteMaterialClient({
     accessToken: 'tenantToken123',
     fetchImpl: async (url, options) => {
@@ -791,9 +1380,11 @@ async function testMaterializeStreamsPreparedFileWithoutWholeBufferBody() {
         size: body.length,
         contentType: 'video/mp4',
         contentSha256
-      }
+      },
+      onWriteDispatched() { writeDispatches += 1 }
     })
     assert.strictEqual(result.verified, true)
+    assert.strictEqual(writeDispatches, 1, '流式素材只在 upload_all POST 真正派发时标记一次外部写')
     assert.strictEqual(Object.prototype.hasOwnProperty.call(result, 'buffer'), false, '物化结果不得把整份素材 Buffer 带回上层')
     assert.ok(uploadBodyKind, '必须真实消费流式上传正文')
     assert.ok(uploadBodyBytes > body.length, 'multipart 正文必须包含字段与文件流')
@@ -1067,29 +1658,30 @@ async function runConcurrentStateScenario(mode) {
     }
     return originalMaterializeVideo(input)
   }
-  const result = await syncNoteMaterialsForInventory({
-    db,
-    sourceRows: [{
-      sourceRecordId: 'rec-1',
-      value: `https://${HOST}/drive/folder/fldConcurrentSource123`
-    }],
-    allowedHosts: [HOST],
-    targetRootFolderToken: ROOT,
-    uploadDir: 'house-videos',
-    drive: adapters.drive,
-    oss: adapters.oss,
-    mediaAssetsStateKey: (current) => domain.listingMediaAssetsStateKey(current),
-    replaceMediaAssets: (current, mediaAssets, context) => domain.replaceListingMediaAssets(
+  await assert.rejects(
+    () => syncNoteMaterialsForInventory({
       db,
-      current.id,
-      mediaAssets,
-      context
-    ),
-    nowText: '2026-07-26T10:05:00.000Z'
-  })
-  assert.strictEqual(result.failed, 1)
-  assert.strictEqual(result.published, false)
-  assert.strictEqual(result.rows[0].status, 'state-conflict')
+      sourceRows: [{
+        sourceRecordId: 'rec-1',
+        value: `https://${HOST}/drive/folder/fldConcurrentSource123`
+      }],
+      allowedHosts: [HOST],
+      targetRootFolderToken: ROOT,
+      uploadDir: 'house-videos',
+      drive: adapters.drive,
+      oss: adapters.oss,
+      mediaAssetsStateKey: (current) => domain.listingMediaAssetsStateKey(current),
+      replaceMediaAssets: (current, mediaAssets, context) => domain.replaceListingMediaAssets(
+        db,
+        current.id,
+        mediaAssets,
+        context
+      ),
+      nowText: '2026-07-26T10:05:00.000Z'
+    }),
+    (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+    '正式阶段状态冲突必须整轮进入外部写入状态未知'
+  )
   assert.deepStrictEqual(
     item.mediaAssets,
     [concurrentAsset],
@@ -1127,32 +1719,39 @@ async function testConcurrentStateConflictPreservesNewestListingState() {
     error.statusCode = 409
     throw error
   }
-  const result = await syncNoteMaterialsForInventory({
-    db,
-    sourceRows: [{
-      sourceRecordId: 'rec-1',
-      value: `https://${HOST}/drive/folder/fldReportedConflict123`
-    }],
-    allowedHosts: [HOST],
-    targetRootFolderToken: ROOT,
-    uploadDir: 'house-videos',
-    drive: adapters.drive,
-    oss: adapters.oss,
-    mediaAssetsStateKey: (current) => domain.listingMediaAssetsStateKey(current),
-    replaceMediaAssets: (current, mediaAssets, context) => domain.replaceListingMediaAssets(
+  await assert.rejects(
+    () => syncNoteMaterialsForInventory({
       db,
-      current.id,
-      mediaAssets,
-      context
-    )
-  })
-  assert.strictEqual(result.rows[0].status, 'state-conflict')
+      sourceRows: [{
+        sourceRecordId: 'rec-1',
+        value: `https://${HOST}/drive/folder/fldReportedConflict123`
+      }],
+      allowedHosts: [HOST],
+      targetRootFolderToken: ROOT,
+      uploadDir: 'house-videos',
+      drive: adapters.drive,
+      oss: adapters.oss,
+      mediaAssetsStateKey: (current) => domain.listingMediaAssetsStateKey(current),
+      replaceMediaAssets: (current, mediaAssets, context) => domain.replaceListingMediaAssets(
+        db,
+        current.id,
+        mediaAssets,
+        context
+      )
+    }),
+    (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+    '正式阶段上游 409 状态冲突不得降级为可延期报告'
+  )
   assert.deepStrictEqual(item.mediaAssets, beforeAssets, '任何 409 状态冲突都不得触发失败清理')
   assert.deepStrictEqual(item.noteMaterialState, beforeState, '任何 409 状态冲突都不得改写素材状态')
 }
 
 async function testOversizeSourceRetainsExistingMaterialWithoutBusinessWrites() {
   const item = listing('rec-1')
+  item.missingVideoMaterial = true
+  item.videoMaterialStatus = '缺视频素材'
+  item.syncStatus = '缺视频素材'
+  item.videoMaterialFailureReason = 'synthetic-old-failure'
   const db = { listings: [item] }
   const sourceRow = {
     sourceRecordId: 'rec-1',
@@ -1425,6 +2024,7 @@ async function testMediaCountLimitBeforeExternalWrites() {
 async function testMaterialTargetMustBeIndependentFromLegacySource() {
   const previous = {
     enabled: config.feishu.noteMaterialSyncEnabled,
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     hosts: config.feishu.noteMaterialAllowedHosts,
     root: config.feishu.noteMaterialTargetRootFolderToken,
     legacyRoot: config.feishu.folderToken
@@ -1432,6 +2032,7 @@ async function testMaterialTargetMustBeIndependentFromLegacySource() {
   const sharedRoot = 'sharedLegacyAndTarget123'
   const adapters = materialAdapters()
   config.feishu.noteMaterialSyncEnabled = true
+  config.feishu.sourceCompatibilityProfile = 'employee-current-stock-v1'
   config.feishu.noteMaterialAllowedHosts = [HOST]
   config.feishu.noteMaterialTargetRootFolderToken = sharedRoot
   config.feishu.folderToken = sharedRoot
@@ -1457,6 +2058,7 @@ async function testMaterialTargetMustBeIndependentFromLegacySource() {
     assert.strictEqual(adapters.writes.length, 0, '新素材目标根与旧素材源根相同时必须在任何外部写入前拒绝')
   } finally {
     config.feishu.noteMaterialSyncEnabled = previous.enabled
+    config.feishu.sourceCompatibilityProfile = previous.sourceCompatibilityProfile
     config.feishu.noteMaterialAllowedHosts = previous.hosts
     config.feishu.noteMaterialTargetRootFolderToken = previous.root
     config.feishu.folderToken = previous.legacyRoot
@@ -1501,8 +2103,8 @@ function testInventoryCommitAndWholeRunStatusAreSeparated() {
   assert.strictEqual(result.published, false)
   assert.strictEqual(result.status, 'inventory-published-materials-failed')
   assert.strictEqual(result.failed, 1)
-  assert.strictEqual(result.inventoryCommittable, true, '素材失败不得回滚已经完整校验的库存变更')
-  assert.strictEqual(result.inventoryPublished, true)
+  assert.strictEqual(result.inventoryCommittable, false, '全局素材管线失败缺少受信逐行延期证据时不得提交库存')
+  assert.strictEqual(result.inventoryPublished, false)
   assert.strictEqual(result.noop, false, '嵌套素材失败不得伪装为 success-noop')
 
   assert.strictEqual(
@@ -1529,7 +2131,7 @@ function testInventoryCommitAndWholeRunStatusAreSeparated() {
     status: 'pipeline-failed'
   })
   assert.strictEqual(logDb.feishuSyncLogs[0].success, false)
-  assert.strictEqual(logDb.feishuSyncLogs[0].inventoryCommittable, true)
+  assert.strictEqual(logDb.feishuSyncLogs[0].inventoryCommittable, false)
   assert.strictEqual(
     Object.prototype.hasOwnProperty.call(logDb.feishuSyncLogs[0].noteMaterials, 'rows'),
     false,
@@ -1541,9 +2143,47 @@ function testInventoryCommitAndWholeRunStatusAreSeparated() {
   try {
     assert.strictEqual(
       feishuSync.isCommittableSyncResult(result),
-      true,
-      '数据库提交门禁必须只消费 inventoryCommittable，不得把整轮素材失败误当作库存回滚条件'
+      false,
+      '全局素材管线失败没有受信延期证据时，数据库提交门禁必须保持关闭'
     )
+    const partialResult = feishuSync._internal.finalizeMirrorSyncResult({
+      complete: true,
+      published: true,
+      validated: true,
+      planned: true,
+      failed: 0,
+      schemaInvalid: false,
+      mirrorIncomplete: false,
+      success: true,
+      status: 'success',
+      noop: false,
+      dryRun: false,
+      inventory: {
+        complete: true,
+        published: true,
+        failed: 0,
+        noop: false,
+        noteMaterials: {
+          complete: false,
+          published: false,
+          dryRun: false,
+          failed: 1,
+          rows: [{
+            sourceRecordId: 'synthetic-deferred-row',
+            status: 'failed',
+            deferred: true,
+            sourceValueFingerprint: 'a'.repeat(64),
+            sourceLinkFingerprint: 'b'.repeat(64),
+            deferredAction: 'clear',
+            mediaStateFingerprint: 'c'.repeat(64),
+            physicalUnitFingerprint: 'd'.repeat(64)
+          }]
+        }
+      }
+    })
+    assert.strictEqual(partialResult.inventoryCommittable, true)
+    assert.strictEqual(partialResult.inventoryPublished, true)
+    assert.strictEqual(feishuSync.isCommittableSyncResult(partialResult), true)
   } finally {
     config.feishu.mirrorSyncEnabled = previousMirrorMode
   }
@@ -1552,11 +2192,14 @@ function testInventoryCommitAndWholeRunStatusAreSeparated() {
 async function testSourceContentIsRevalidatedBeforeReuse() {
   const previous = {
     enabled: config.feishu.noteMaterialSyncEnabled,
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     hosts: config.feishu.noteMaterialAllowedHosts,
     root: config.feishu.noteMaterialTargetRootFolderToken,
     legacyRoot: config.feishu.folderToken
   }
   const item = listing('rec-1')
+  item.companyListing = true
+  item.externalSource = 'feishu'
   const db = { listings: [item] }
   let sourceBody = Buffer.from('old!')
   let materializeCalls = 0
@@ -1636,6 +2279,7 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     }
   }
   config.feishu.noteMaterialSyncEnabled = true
+  config.feishu.sourceCompatibilityProfile = 'employee-current-stock-v1'
   config.feishu.noteMaterialAllowedHosts = [HOST]
   config.feishu.noteMaterialTargetRootFolderToken = ROOT
   config.feishu.folderToken = 'legacyIndependentRoot123'
@@ -1654,6 +2298,32 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
       prepareMaterial
     })
     assert.strictEqual(first.published, true)
+    assert.strictEqual(item.missingVideoMaterial, false, '房源笔记视频成功落库后必须清除旧缺视频标记')
+    assert.strictEqual(item.videoMaterialStatus, '已匹配视频素材')
+    assert.strictEqual(item.syncStatus, '已同步飞书')
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(item, 'videoMaterialFailureReason'), false)
+    const reconciledInventory = feishuSync._internal.reconcileInventoryVideoSummary(db, {
+      missingVideoMaterial: 1,
+      skippedNoMaterial: 1,
+      materialTransferFailed: 1
+    })
+    assert.deepStrictEqual({
+      missingVideoMaterial: reconciledInventory.missingVideoMaterial,
+      skippedNoMaterial: reconciledInventory.skippedNoMaterial,
+      materialTransferFailed: reconciledInventory.materialTransferFailed
+    }, {
+      missingVideoMaterial: 0,
+      skippedNoMaterial: 0,
+      materialTransferFailed: 0
+    }, '最终同步汇总必须以房源笔记素材落库后的真实视频状态为准')
+    const warningInventory = feishuSync._internal.reconcileInventoryVideoSummary(db, {}, {
+      failed: 2
+    })
+    assert.strictEqual(
+      warningInventory.materialTransferFailed,
+      2,
+      '逐行延期素材必须如实进入最终搬运失败汇总'
+    )
     const oldHash = item.mediaAssets[0].contentSha256
 
     sourceBody = Buffer.from('new!')
@@ -1669,6 +2339,7 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     assert.notStrictEqual(item.mediaAssets[0].contentSha256, oldHash, '源内容变化必须进入新的素材状态')
   } finally {
     config.feishu.noteMaterialSyncEnabled = previous.enabled
+    config.feishu.sourceCompatibilityProfile = previous.sourceCompatibilityProfile
     config.feishu.noteMaterialAllowedHosts = previous.hosts
     config.feishu.noteMaterialTargetRootFolderToken = previous.root
     config.feishu.folderToken = previous.legacyRoot
@@ -1678,10 +2349,12 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
 async function testFormalSyncReportsMaterialFailureWithoutUndoingInventory() {
   const previous = {
     enabled: config.feishu.noteMaterialSyncEnabled,
+    sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     hosts: config.feishu.noteMaterialAllowedHosts,
     root: config.feishu.noteMaterialTargetRootFolderToken
   }
   config.feishu.noteMaterialSyncEnabled = true
+  config.feishu.sourceCompatibilityProfile = 'employee-current-stock-v1'
   config.feishu.noteMaterialAllowedHosts = [HOST]
   config.feishu.noteMaterialTargetRootFolderToken = ROOT
   const db = { listings: [listing('rec-1')] }
@@ -1746,34 +2419,47 @@ async function testFormalSyncReportsMaterialFailureWithoutUndoingInventory() {
     )
   } finally {
     config.feishu.noteMaterialSyncEnabled = previous.enabled
+    config.feishu.sourceCompatibilityProfile = previous.sourceCompatibilityProfile
     config.feishu.noteMaterialAllowedHosts = previous.hosts
     config.feishu.noteMaterialTargetRootFolderToken = previous.root
   }
 }
 
 async function run() {
-  testMaterialSyncRequiresExplicitOptIn()
-  testStableSourceFieldContract()
-  await testSourceClientHardReadOnly()
-  await testDriveHierarchyAndRedirectPolicy()
-  await testDrivePaginationContract()
-  await testDriveMaterializeRequiresTargetHashReadback()
-  await testMaterializeDoesNotReturnSuppliedEvidenceBuffer()
-  await testBoundedDownload()
-  await testMaterializedReadbackUsesExpectedSizeAsHardLimit()
-  await testMaterializeStreamsPreparedFileWithoutWholeBufferBody()
-  await testLargeMaterialUsesRangeStreamsForEveryDrivePart()
-  await testRealDriveClientSameTokenContentReplacement()
-  await testConcurrentStateConflictPreservesNewestListingState()
-  await testOversizeSourceRetainsExistingMaterialWithoutBusinessWrites()
-  await testAtomicInventoryState()
-  await testSharedSourceTokenCreatesListingScopedCopies()
-  await testMediaCountLimitBeforeExternalWrites()
-  await testMaterialTargetMustBeIndependentFromLegacySource()
-  testInventoryCommitAndWholeRunStatusAreSeparated()
-  await testSourceContentIsRevalidatedBeforeReuse()
-  await testFormalSyncReportsMaterialFailureWithoutUndoingInventory()
-  console.log('feishu-note-material-pipeline-v1-test passed')
+  const previousNoteMaterialFieldId = config.feishu.noteMaterialFieldId
+  config.feishu.noteMaterialFieldId = 'fldPipelineNoteMaterial123'
+  try {
+    testMaterialSyncRequiresExplicitOptIn()
+    testStableSourceFieldContract()
+    testMirrorSafetyDigestsAndAdminContract()
+    await testPublicMirrorSummaryCarriesOnlySafeDigestEvidence()
+    await testMirrorPlanMismatchStopsLegacyApplyBeforeTargetWrite()
+    await testLegacyMaterialEvidenceBindsLocalBytes()
+    await testLegacyDrivePaginationAndJsonDeadline()
+    await testNoteMaterialJsonBodyDeadline()
+    await testSourceClientHardReadOnly()
+    await testDriveHierarchyAndRedirectPolicy()
+    await testDrivePaginationContract()
+    await testDriveMaterializeRequiresTargetHashReadback()
+    await testMaterializeDoesNotReturnSuppliedEvidenceBuffer()
+    await testBoundedDownload()
+    await testMaterializedReadbackUsesExpectedSizeAsHardLimit()
+    await testMaterializeStreamsPreparedFileWithoutWholeBufferBody()
+    await testLargeMaterialUsesRangeStreamsForEveryDrivePart()
+    await testRealDriveClientSameTokenContentReplacement()
+    await testConcurrentStateConflictPreservesNewestListingState()
+    await testOversizeSourceRetainsExistingMaterialWithoutBusinessWrites()
+    await testAtomicInventoryState()
+    await testSharedSourceTokenCreatesListingScopedCopies()
+    await testMediaCountLimitBeforeExternalWrites()
+    await testMaterialTargetMustBeIndependentFromLegacySource()
+    testInventoryCommitAndWholeRunStatusAreSeparated()
+    await testSourceContentIsRevalidatedBeforeReuse()
+    await testFormalSyncReportsMaterialFailureWithoutUndoingInventory()
+    console.log('feishu-note-material-pipeline-v1-test passed')
+  } finally {
+    config.feishu.noteMaterialFieldId = previousNoteMaterialFieldId
+  }
 }
 
 run().catch((error) => {

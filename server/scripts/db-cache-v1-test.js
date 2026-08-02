@@ -2,6 +2,7 @@ const assert = require('assert')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const crypto = require('crypto')
 
 // 用独立临时数据文件，避免动到真实 db.json；必须在 require db.js（进而 config.js）之前设置。
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-db-cache-'))
@@ -136,11 +137,15 @@ try {
   dbStore.commitDelta(base2, syncCopy2)
   assert.strictEqual(dbStore.readDb().counter, 100, '同键冲突时同步值胜出（与旧整库回写行为一致）')
 
-  // 7) 调用点契约：三处飞书同步必须走 clone 私有副本 + commitDelta 增量回写，而非把 clone 直接
-  //    整库 writeDb（那会丢窗口内并发写）；助手快照必须 clone。锁住调用点本身，而不只是工具函数。
+  // 7) 调用点契约：飞书同步已从三个进程内入口收敛到唯一持久化 worker，最终业务差量、提交标记
+  //    和成功终态必须走同一把 DB 锁内的 commitDeltaChecked；助手快照仍必须 clone。
   const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8')
-  const commitDeltaCount = (indexSource.match(/dbStore\.commitDelta\(/g) || []).length
-  assert.ok(commitDeltaCount >= 3, `三处飞书同步路径都必须用 commitDelta 回写，实际命中 ${commitDeltaCount} 处`)
+  const workerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'feishu-sync-worker.js'), 'utf8')
+  assert.strictEqual(
+    (workerSource.match(/commitDeltaChecked\(applyBase, nextDb,/g) || []).length,
+    1,
+    '飞书 worker 必须只有一个受租约与围栏保护的原子业务提交点'
+  )
   assert.ok(
     !indexSource.includes('dbStore.writeDb(nextDb)'),
     '飞书同步不得再用 dbStore.writeDb(nextDb) 整库覆盖（会丢 await 窗口内并发写）'
@@ -150,8 +155,9 @@ try {
     '助手对话快照必须在 clone 的私有副本上跑'
   )
   assert.ok(
-    indexSource.includes('已有飞书同步任务进行中'),
-    '手动同步必须与定时同步互斥（并发全量同步会先后整库互抹）'
+    indexSource.includes('feishuSyncWorker.enqueue({') &&
+      indexSource.includes('startFeishuSyncWorkerProcess(queued.runId)'),
+    '手动同步必须进入与定时同步共用的持久化 worker，不能另开进程内旁路'
   )
 
   // 8) footprints 元素级合并：同步下架房源会往 footprints 追加下架留痕（footprints 成为“同步改过
@@ -280,6 +286,152 @@ try {
   assert.strictEqual(scResult.expiredAt, undefined, '成交终态胜出时不得残留同步下架时间')
   assert.strictEqual(scResult.expiredReason, undefined, '成交终态胜出时不得残留同步下架原因')
   assert.strictEqual(scResult.syncedAt, 'T2', '状态裁决不应阻止同步元数据落地')
+
+  // 13b) 同步准备把此前下架房源重新发布时，若 await 窗口内人工确认成交，成交终态必须
+  //      连同不可见开关一起胜出；不能出现“状态已成交，但 published/enabled 又被同步打开”的矛盾房源。
+  dbStore.writeDb({
+    listings: [{
+      id: 'FEISHU4',
+      externalSource: 'feishu',
+      status: '已下架',
+      listingStatus: '已下架',
+      lifecycleStatus: 'expired',
+      lifecycleStatusText: '已下架',
+      published: false,
+      enabled: false,
+      syncedAt: 'T0'
+    }],
+    dealRecords: []
+  })
+  const reopenBase = dbStore.clone(dbStore.readDb())
+  const reopenSync = dbStore.clone(reopenBase)
+  Object.assign(reopenSync.listings[0], {
+    status: '在租',
+    listingStatus: '待出租',
+    lifecycleStatus: 'active',
+    lifecycleStatusText: '待出租',
+    published: true,
+    enabled: true,
+    syncedAt: 'T3'
+  })
+  dbStore.updateDb((db) => {
+    const listing = db.listings.find((item) => item.id === 'FEISHU4')
+    Object.assign(listing, {
+      status: '已成交',
+      listingStatus: '已出租',
+      lifecycleStatus: 'sold',
+      lifecycleStatusText: '已出租',
+      published: false,
+      enabled: false
+    })
+    db.dealRecords.push({ id: 'DEAL4', listingId: 'FEISHU4' })
+  })
+  dbStore.commitDelta(reopenBase, reopenSync)
+  const reopenResult = dbStore.readDb().listings.find((item) => item.id === 'FEISHU4')
+  assert.strictEqual(reopenResult.status, '已成交', '并发成交终态不得被同步重新上架覆盖')
+  assert.strictEqual(reopenResult.lifecycleStatus, 'sold', '并发成交生命周期不得被同步恢复为 active')
+  assert.strictEqual(reopenResult.published, false, '并发成交后 published 必须保持关闭')
+  assert.strictEqual(reopenResult.enabled, false, '并发成交后 enabled 必须保持关闭')
+  assert.strictEqual(reopenResult.syncedAt, 'T3', '终态可见性保护不应阻止同步元数据落地')
+
+  // 14) 后台同步最终提交必须在同一把数据库文件锁内验证 lease/fence。若旧 worker 的
+  //     fence 已被新 worker 替换，任何业务改动和提交标记都不得落盘；验证通过时仍复用
+  //     commitDelta 的三方合并语义，保住窗口内并发写。
+  dbStore.writeDb({
+    counter: 0,
+    listings: [{ id: 'LEASE-L1', rent: 1000 }],
+    feishuSyncScheduler: { lease: { ownerNonce: 'owner-new', fence: 8 } },
+    feishuSyncCommitMarkers: []
+  })
+  const leaseBase = dbStore.clone(dbStore.readDb())
+  const leaseSync = dbStore.clone(leaseBase)
+  leaseSync.listings[0].rent = 2000
+  leaseSync.feishuSyncCommitMarkers.push({ id: 'RUN-OLD', fence: 7 })
+  assert.throws(
+    () => dbStore.commitDeltaChecked(leaseBase, leaseSync, (freshDb) => {
+      const lease = freshDb.feishuSyncScheduler && freshDb.feishuSyncScheduler.lease
+      return Boolean(lease && lease.ownerNonce === 'owner-old' && lease.fence === 7)
+    }),
+    (error) => error && error.code === 'DB_COMMIT_GUARD_REJECTED',
+    '旧 fence 必须在同一数据库临界区被拒绝'
+  )
+  assert.strictEqual(dbStore.readDb().listings[0].rent, 1000, 'guard 拒绝后业务数据不得部分落盘')
+  assert.strictEqual(dbStore.readDb().feishuSyncCommitMarkers.length, 0, 'guard 拒绝后提交标记不得落盘')
+
+  const currentBase = dbStore.clone(dbStore.readDb())
+  const currentSync = dbStore.clone(currentBase)
+  currentSync.listings[0].rent = 3000
+  currentSync.feishuSyncCommitMarkers.push({ id: 'RUN-NEW', fence: 8 })
+  dbStore.updateDb((db) => { db.concurrentAudit = [{ id: 'AUDIT-1' }] })
+  dbStore.commitDeltaChecked(currentBase, currentSync, (freshDb) => {
+    const lease = freshDb.feishuSyncScheduler && freshDb.feishuSyncScheduler.lease
+    return Boolean(lease && lease.ownerNonce === 'owner-new' && lease.fence === 8)
+  })
+  const guardedMerged = dbStore.readDb()
+  assert.strictEqual(guardedMerged.listings[0].rent, 3000, '当前 fence 通过后同步业务数据必须落盘')
+  assert.ok(guardedMerged.feishuSyncCommitMarkers.some((item) => item.id === 'RUN-NEW'), '当前 fence 的提交标记必须与业务数据同次落盘')
+  assert.ok(guardedMerged.concurrentAudit.some((item) => item.id === 'AUDIT-1'), '受 guard 的增量提交仍须保留无关并发写')
+
+  // 15) worker 对象契约必须把业务增量、提交标记与任务终态放进同一锁事务。
+  dbStore.writeDb({
+    listings: [{ id: 'WORKER-L1', rent: 1000 }],
+    feishuSyncRuns: [{
+      runId: 'RUN-ATOMIC',
+      state: 'committing',
+      lease: { owner: 'worker-1', fence: 12 }
+    }],
+    feishuSyncCommitMarkers: {},
+    concurrentAudit: [{ id: 'AUDIT-2' }]
+  })
+  const atomicBase = { listings: [{ id: 'WORKER-L1', rent: 1000 }] }
+  const atomicNext = { listings: [{ id: 'WORKER-L1', rent: 3600 }] }
+  const markerBody = {
+    runId: 'RUN-ATOMIC',
+    fence: 12,
+    schemaSha256: '1'.repeat(64),
+    mirrorPlanSha256: '2'.repeat(64),
+    contentPlanSha256: '3'.repeat(64),
+    contentPlanAssetCount: 4,
+    committedAt: 1800000000000
+  }
+  const atomicMarker = {
+    ...markerBody,
+    markerSha256: crypto.createHash('sha256').update(JSON.stringify(markerBody)).digest('hex')
+  }
+  const atomicResult = dbStore.commitDeltaChecked(atomicBase, atomicNext, {
+    runId: 'RUN-ATOMIC',
+    workerId: 'worker-1',
+    fence: 12,
+    excludedTopLevelKeys: ['feishuSyncRuns', 'feishuSyncCommitMarkers'],
+    commitMarker: atomicMarker,
+    finalize(freshDb) {
+      const run = freshDb.feishuSyncRuns.find((item) => item.runId === 'RUN-ATOMIC')
+      assert.strictEqual(freshDb.feishuSyncCommitMarkers['RUN-ATOMIC'].markerSha256, atomicMarker.markerSha256)
+      run.state = 'succeeded'
+      run.lease = null
+    }
+  })
+  assert.strictEqual(atomicResult.committed, true, '对象契约成功后必须返回已提交证据')
+  const atomicDb = dbStore.readDb()
+  assert.strictEqual(atomicDb.listings[0].rent, 3600, '业务增量必须落盘')
+  assert.strictEqual(atomicDb.feishuSyncRuns[0].state, 'succeeded', '任务终态必须与业务增量同次落盘')
+  assert.strictEqual(atomicDb.feishuSyncCommitMarkers['RUN-ATOMIC'].markerSha256, atomicMarker.markerSha256, '提交标记必须同次落盘')
+  assert.ok(atomicDb.concurrentAudit.some((item) => item.id === 'AUDIT-2'), '对象契约也必须保留无关并发写')
+
+  const rejectedNext = { listings: [{ id: 'WORKER-L1', rent: 9999 }] }
+  assert.throws(
+    () => dbStore.commitDeltaChecked(atomicBase, rejectedNext, {
+      runId: 'RUN-ATOMIC',
+      workerId: 'worker-old',
+      fence: 11,
+      excludedTopLevelKeys: ['feishuSyncRuns', 'feishuSyncCommitMarkers'],
+      commitMarker: { ...atomicMarker, fence: 11 },
+      finalize() { throw new Error('旧 fence 不得进入 finalize') }
+    }),
+    (error) => error && error.code === 'DB_COMMIT_GUARD_REJECTED',
+    '旧 owner/fence 必须在业务增量前被拒绝'
+  )
+  assert.strictEqual(dbStore.readDb().listings[0].rent, 3600, '旧 fence 拒绝后不得产生任何业务变化')
 
   console.log('db-cache-v1-test passed')
 } finally {

@@ -66,8 +66,10 @@ HTTP 内测链路已废弃。不要再使用旧公网 IP、`--internal-http` 或
 - `adminAccounts`：管理后台账号。
 - `llmConfig`：LLM 配置。
 - `uploadRecords`：上传记录。
-- `companySheetSnapshot`：飞书公司房源固定十列快照缓存；镜像模式下同时保存
-  `sourceMode=feishu-mini-mirror-v1` 与 `schemaVersion=1`，未知来源或未知版本不得被首页渲染。
+- `companySheetSnapshot`：旧客户端兼容的 v1 固定十列快照缓存。
+- `companySheetSnapshotV2`：首页当前读取的固定十列机器契约；保存
+  `sourceMode=feishu-mini-mirror-v2`、`schemaVersion=2`、固定列键、内容摘要和快照 ID，未知来源、
+  未知版本、额外字段、表头混入或摘要不符都不得被首页渲染。
 - `listings[].mediaAssets`：服务端私有的已验证图片/视频清单；每项保存稳定素材 ID、受控 OSS
   对象键、内容摘要、顺序和回读证据。公开接口只投影素材 ID、顺序和 API 域能力地址，不返回
   OSS 对象键、飞书 token、源文件名或源记录 ID。
@@ -223,7 +225,7 @@ BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js --file backups/db-backup
 
 数据库 JSON 默认紧凑写入以降低整库重写的磁盘写放大；如需人工排查可设置 `DB_JSON_PRETTY=1` 恢复两空格缩进（`/admin/data/export` 导出始终为美化格式，不受影响）。
 
-**并发写保护（P0-2）**：`server/src/db.js` 的写路径（`updateDb`/`writeDb`）加了一层零依赖的**跨进程 advisory 写锁**（同机 `db.json.lock` 文件锁），防止服务器与运维脚本（如 `backfill-listing-districts.js`、`geocode-listing-communities.js`）同时写库时后写覆盖先写、丢数据。单进程内 `updateDb` 本就被事件循环串行化、锁几乎无争用；锁持有仅毫秒级。锁按「持有者进程存活探测」回收陈旧锁（持有者存活绝不误删活锁），获取有界超时（拿不到就抛错、绝不死锁或无限自旋），并对 Windows 瞬时 `EPERM`/`EBUSY` 做重试。相关环境变量（一般无需设置）：`DB_WRITE_LOCK`（默认开；置 `0`/`off` 紧急退回无锁旧行为）、`DB_LOCK_TIMEOUT_MS`（默认 10000）、`DB_LOCK_STALE_MS`（默认 30000）。**生产不得关闭 `DB_WRITE_LOCK`**：M6 的账号停用/退出与在途写、外部签名能力复验也依赖同一把锁完成跨进程线性化；关闭只允许作为明确知晓风险的短时应急退化。锁定测试：`server/scripts/db-write-lock-v1-test.js`。飞书同步这类「clone→长 await→落盘」路径仍由 `commitDelta` 的三方合并处理 await 窗口内的并发（与本锁互补）。
+**并发写保护（P0-2）**：`server/src/db.js` 的写路径（`updateDb`/`writeDb`）加了一层零依赖的**跨进程 advisory 写锁**（同机 `db.json.lock` 文件锁），防止服务器与运维脚本（如 `backfill-listing-districts.js`、`geocode-listing-communities.js`）同时写库时后写覆盖先写、丢数据。单进程内 `updateDb` 本就被事件循环串行化、锁几乎无争用；锁持有仅毫秒级。锁按「持有者进程存活探测」回收陈旧锁（持有者存活绝不误删活锁），获取有界超时（拿不到就抛错、绝不死锁或无限自旋），并对 Windows 瞬时 `EPERM`/`EBUSY` 做重试。相关环境变量（一般无需设置）：`DB_WRITE_LOCK`（默认开；置 `0`/`off` 紧急退回无锁旧行为）、`DB_LOCK_TIMEOUT_MS`（默认 10000）、`DB_LOCK_STALE_MS`（默认 30000）。**生产不得关闭 `DB_WRITE_LOCK`**：M6 的账号停用/退出与在途写、外部签名能力复验也依赖同一把锁完成跨进程线性化；关闭只允许作为明确知晓风险的短时应急退化。worker-v2 的跨进程单飞同样承重于该锁，因此锁关闭时手工与自动飞书任务都必须在排队和外部写入前失败关闭，健康巡检同时告警。锁定测试：`server/scripts/db-write-lock-v1-test.js`。飞书同步这类「clone→长 await→落盘」路径仍由受 fence 保护的增量提交处理 await 窗口内并发（与本锁互补）。
 
 游客限流按客户端 IP 分桶。`TRUST_PROXY` 默认开启，表示服务部署在 nginx 等可信反向代理之后，取 `X-Forwarded-For` 末段（由代理追加、客户端无法伪造）作为真实 IP；若直连暴露（无反向代理）务必设 `TRUST_PROXY=0`，改用 socket 远端地址，避免客户端伪造 XFF 绕过限流。
 
@@ -463,19 +465,26 @@ GET /mini/map/pins
 小程序端快照接口：
 
 ```http
+GET /mini/v2/company-sheet-snapshot
 GET /mini/company-sheet-snapshot
 ```
 
-镜像模式的公开快照固定为以下十列，顺序和语义都属于版本契约：
+`/mini/v2/company-sheet-snapshot` 是当前首页唯一首选数据源；旧接口只保留给尚未升级的客户端。
+客户端只有在 v2 请求**明确返回 HTTP 404** 时才允许回退 v1；网络错误、超时、5xx、坏摘要、坏版本或
+列契约不匹配都必须保持安全空态，不能用旧接口掩盖发布或数据故障。
+
+v2 镜像快照固定为以下十列，顺序和语义都属于版本契约：
 
 ```text
 行政区｜板块/商圈｜小区｜小区+房号｜户型描述｜户型分类｜月租金｜看房方式｜备注｜房源状态
 ```
 
 后端只从完整回读通过的 canonical 专用表生成这十列，并返回
-`sourceMode=feishu-mini-mirror-v1`、`schemaVersion=1`。首页只有在来源、版本、十列表头和
-每行列数全部匹配时才生成图片；未知列、旧八列、敏感表头、来源不可用或数据损坏一律关闭图片
-生成并保留安全空态，不猜列、不回退旧缓存。
+`contract=ynzy.company-sheet.snapshot`、`sourceMode=feishu-mini-mirror-v2`、`schemaVersion=2`、
+固定 `columnKeys`、逐行精确十列、`contentSha256` 和 `snapshotId`。v2 的 `rows` **不含表头行**，
+首页按固定契约自行绘制表头；服务端会拒绝数据区混入表头、首四列缺失、行列数不符、额外输出字段或
+摘要不一致。未知列、旧八列、敏感表头、来源不可用或数据损坏一律关闭图片生成并保留安全空态，
+不猜列、不补列、不沿用上一张成功图片。
 
 首页图片按“行政区 → 板块/商圈 → 小区”三级合并，房号、户型描述和备注最多两行，其余业务
 列一行。为兼容微信设备 Canvas，按最高 2 倍像素输出且任一物理边不得超过 4096px；固定十列
@@ -505,35 +514,40 @@ GET /admin/feishu-sync/status
 POST /admin/feishu-sync/run
 ```
 
-当镜像同步与房源笔记素材同步同时开启时，正式请求必须携带最近一次完整 dry-run 返回的两项
-内容计划确认值：
+worker-v2 接管了手工与自动同步。后台 HTTP 请求体**只接受**一个 JSON 布尔字段：
 
 ```json
 {
-  "dryRun": false,
-  "expectedContentPlanSha256": "64位小写十六进制摘要",
-  "expectedContentAssetCount": 0
+  "dryRun": true
 }
 ```
 
-`expectedContentPlanSha256` 与 `expectedContentAssetCount` 必须同时出现；前者只接受精确 64 位小写
-十六进制，后者只接受非负安全整数。缺失、单边、错型、负数、小数、超出安全整数或大写摘要都在
-取得同步互斥锁及任何飞书读写前返回 HTTP 400。`dryRun=true` 不要求确认值，但若主动携带也必须
-满足同一类型契约。只有镜像和房源笔记素材两项开关同时启用时才强制正式确认，关闭素材链或回退
-旧非镜像链不会扩大原请求契约。
+`dryRun=true` 只预演；`dryRun=false` 请求完整同步。接口把任务持久化排队后立即返回 HTTP 202，
+不会把飞书、压缩、Drive、OSS 或数据库长任务绑在 HTTP 连接上。`runId`、批次时间、schema/resource/
+镜像计划/内容计划摘要、素材数量和防并发 fence 全由服务端生成、持久化并在 apply 前后复核；客户端
+提交这些字段、令牌、field binding、内部适配器或任何未知字段都会在排队前返回固定 HTTP 400。
 
-后台 HTTP 请求只接受 `dryRun`、`runId`、`nowMs`、`expectedContentPlanSha256` 和
-`expectedContentAssetCount` 五个公开字段，任何内部适配器、飞书客户端、令牌、私有映射或其他未知
-字段都会在进入同步前返回固定文案的 HTTP 400，错误响应不会反射客户端提交的字段名或内容。
-`runId` 只能是 8 至 128 位 ASCII 安全标识，首位为字母或数字，其余只允许字母、数字、点、下划线、
-冒号和连字符；`nowMs` 只能是正安全整数毫秒时间戳。服务端内部直接调用仍可显式注入测试/受信
-适配器，但该能力不属于 HTTP 契约。
+完整任务把员工源只读快照、位置字典、目标 Base、素材压缩、飞书 Drive、OSS、库存和首页 v2 十列
+快照绑定在同一个服务端计划中。只有 schema 摘要与精确 Base/table 资源身份摘要分别等于运维明确批准的
+`FEISHU_APPROVED_SCHEMA_SHA256`、`FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256`，预演摘要稳定且正式结果逐项一致，才允许原子提交库存和首页快照。
+如果进入外部写阶段后进程中断或结果无法证明，状态必须进入 `UNKNOWN`；计划/环境冲突等需要人工
+处置的情况进入 `BLOCKED`。两者都会阻断后续正式任务和自动重试，必须先做只读对账，禁止为了
+“跑通”而重复点击、重启后盲目重发或清空状态。
 
-同步间隔默认值来自 `server/src/config.js`，当前默认 `60` 分钟；服务器可通过环境变量覆盖：
+同步间隔默认值来自 `server/src/config.js`，当前为 `30` 分钟；真正调度由 systemd
+`ynzy-feishu-sync.timer` 触发独立 oneshot worker，不再由常驻 Node 进程内定时器触发：
 
 ```env
-FEISHU_SYNC_INTERVAL_MINUTES=60
+FEISHU_SYNC_INTERVAL_MINUTES=30
+FEISHU_SYNC_CONTROLLER_MODE=worker-v2
+FEISHU_APPROVED_SCHEMA_SHA256=
+FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256=
+FEISHU_AUTO_SYNC_ENABLED=false
 ```
+
+自动同步缺省关闭。只有人工 dry-run 核对脱敏字段绑定、schema 与资源身份摘要后，才把同轮两项摘要写入服务器私有
+环境中的 `FEISHU_APPROVED_SCHEMA_SHA256` 和 `FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256`；确认 `DB_WRITE_LOCK` 未关闭并设置控制器为 `worker-v2` 后，最后开启自动开关。
+任一条件缺失时 timer 可以被 systemd 唤醒，但 worker 必须安全跳过或失败关闭，不能回退旧控制器。
 
 ### 小程序专用源表模式（默认关闭，完成飞书建表后再启用）
 
@@ -581,6 +595,9 @@ FEISHU_SYNC_INTERVAL_MINUTES=60
 ```env
 FEISHU_SYNC_ENABLED=true
 FEISHU_AUTO_SYNC_ENABLED=false
+FEISHU_SYNC_CONTROLLER_MODE=worker-v2
+FEISHU_APPROVED_SCHEMA_SHA256=
+FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256=
 FEISHU_MIRROR_SYNC_ENABLED=true
 FEISHU_SOURCE_COMPATIBILITY_PROFILE=employee-current-stock-v1
 FEISHU_SOURCE_BITABLE_APP_TOKEN=app_employee_source_placeholder
@@ -628,7 +645,7 @@ FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 
 计时起点只使用员工源记录的飞书 `created_time`：状态为“即将空出”时字段 `metricKind=提前挂出天数`，状态为“待出租”时为 `metricKind=待租天数`，`lifecycleDays` 按完整 24 小时向下取整。飞书“列出记录”默认不返回自动字段，因此员工 AI 数据底座读取源记录时必须在每一页请求显式携带 `automatic_fields=true`；其他不需要创建时间的表不无条件扩大响应。创建时间必须是 13 位毫秒量级的安全整数；缺失、秒级误传、非法、冲突或真实晚于本次完整读取完成时间时，均在首笔写入前阻断，不能用修改时间、合同开始/结束时间或同步时间代替。
 
-同步批次的 `nowMs` 只作为本轮稳定的 `created_time` 截止时间和生命周期观察时间，不能冒充实际读取员工源表时的“当前时间”。客户端会在 fields 与 records 全部分页完成后采样实时校验时钟，先对原始快照中的每一行完成 record ID、字段、附件和真实未来校验，再把 `created_time > nowMs` 的完整合法新增行延后到下一批；`created_time === nowMs` 仍纳入本批。有效 `records`、`recordCount` 与 `digest` 都在延后过滤后重算，因此同一 `runId/nowMs` 的两次 dry-run 和一次正式执行不会仅因运行期间新增行而漂移，下一全新批次提高截止时间后会自动接住这些行。截止后的非法行仍整批阻断；截止前旧行被修改或删除仍会让摘要/计划漂移并由双预演门阻断。原表非空但本批截止内一条有效记录都没有时也 fail-closed，禁止把陈旧空快照用于批量撤下。
+同步批次的 `nowMs` 只作为本轮稳定的 `created_time` 截止时间和生命周期观察时间，不能冒充实际读取员工源表时的“当前时间”。只读源客户端会在 fields 与 records 全部分页完成后采样实时校验时钟，先对原始快照中的每一行完成 record ID、字段、附件和真实未来校验，再把 `created_time > nowMs` 的完整合法新增行延后到下一批；`created_time === nowMs` 仍纳入本批。有效 `records`、`recordCount` 与 `digest` 都在延后过滤后重算，因此同一服务端任务的 worker 预演、正式前内置预检和正式执行不会仅因运行期间新增行而漂移，下一全新批次提高截止时间后会自动接住这些行。截止后的非法行仍整批阻断；截止前旧行被修改或删除仍会让摘要/计划漂移并由预演门阻断。原表非空但本批截止内一条有效记录都没有时也 fail-closed，禁止把陈旧空快照用于批量撤下。
 
 当前主档新增字段及类型：
 
@@ -664,11 +681,11 @@ FEISHU_HISTORY_FIELD_BINDINGS={"historyEventId":"fld_history_event_id","foundati
 
 启用 AI profile 前，`FEISHU_MINI_FIELD_BINDINGS` 必须补齐上述 18 个当前主档字段，其中目标 `vacancyNote` 仍是必建文本列；当前 17 列员工现表的 `FEISHU_SOURCE_FIELD_BINDINGS` 保持既有 `viewingMethod` 绑定且省略 `vacancyNote`。只有未来确有独立空出列时才可额外绑定源 `vacancyNote`，并继续通过 `field_id` 不重复门禁。员工源表、位置字典、当前主档、已出租表和流水表五个“Base token + table ID”资源必须互不重叠；一次性补全入口还会在取得 token、创建客户端或读取表前再次核验员工源 Base 与目标 Base 分离、当前主档与流水表独立，以及两表字段契约完整。上线顺序固定为：保持自动同步关闭 → 用应用身份完成五表字段与只读/写权限校验 → dry-run 对账源记录、当前主档、拟归档、拟流水和公开十列表数量 → 一次人工正式同步并回读四张目标表 → 核对公开库存和待租表 → 再单独授权打开自动同步。紧急止写必须关闭同步总开关，不能把 profile 改回 `employee-current-stock-v1` 当作数据回滚；代码会在旧 profile 写入时保护 17 个底座专有字段不被 full write 清空。旧 profile 只有在源表确有独立 `vacancyNote` 绑定时才同步该字段，且不负责从“看房方式”维护生命周期语义。正式回滚仍按本节既有总开关流程执行，禁止直接删表或用员工源反向覆盖归档。
 
-启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型，AI profile 还须建好已出租表与状态流水表 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典及全部目标表可读写 → 成对配置 source/target Base token、所选 profile 要求的全部 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台先执行 dry-run → 人工携同次内容计划确认执行一次正式同步并核对全部目标表、库存和十列待租表计数。若房源笔记素材同步同时开启，当前内置定时任务没有自动生成确认摘要的能力，自动开关必须继续保持 `false`；未来只有经过独立审计的两阶段自动控制器可以恢复它。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
+启用顺序必须是：在小程序专用 Base 内复制/新建位置字典与专用源表并核对字段类型，AI profile 还须建好已出租表与状态流水表 → 在飞书文档的应用权限中授予所配置自建应用对员工源 Base 的读取权限、对小程序专用 Base 的可编辑权限 → 用应用身份分别验证员工源可读、位置字典及全部目标表可读写 → 成对配置 source/target Base token、所选 profile 要求的全部 table ID 与 `field_id`；仅当前 17 列员工现表使用上述兼容 profile，新建标准源表应清空 profile 并显式绑定 `rentMode/listingStatus` → 保持 `FEISHU_AUTO_SYNC_ENABLED=false` → 后台提交 `{"dryRun":true}` 并等待 worker 的 `dry-succeeded` → 人工核对脱敏字段绑定、资源身份和三个计划摘要，将同轮 `schemaSha256/resourceIdentitySha256` 分别写入服务器私有环境的 `FEISHU_APPROVED_SCHEMA_SHA256/FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256` → 后台提交 `{"dryRun":false}`，由 worker 用服务端保存的计划完成一次正式同步并核对全部目标表、Drive、OSS、库存和 v2 十列待租表计数 → 最后确认 `DB_WRITE_LOCK` 开启，同时设置 `FEISHU_SYNC_CONTROLLER_MODE=worker-v2` 并显式开启自动同步。目标 Base 没有应用“可编辑”权限时，dry-run 仍可能完成全量只读校验，但正式同步会被飞书写权限拒绝且不会进入库存发布，不能把 dry-run 通过误认为已具备写权限。
 
 未启用员工 profile 的旧单 Base 配置仍受兼容支持，但运行时也会为同一个 Base 分别创建硬只读源客户端和可写目标客户端；源读取与目标表写入不得复用同一客户端。员工 profile 继续强制源、目标 Base 分离。
 
-管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400，避免“响应显示预演但实际写专用表”。公开 `GET /mini/company-sheet-snapshot` 在镜像模式只读最后一次完整快照，绝不因游客访问触发飞书写入。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库。旧镜像 profile 的撤下熔断仍以“专用表历史公开 sourceRecordId + 当前线上活跃飞书库存 sourceRecordId”的并集为基线；AI 数据底座 profile 则按目标主档前后 `foundationListingId` 判断实际实体撤下，并以当前线上活跃飞书库存数量作为不能绕过的独立下限。两种身份域不得混合成一个集合；否则区域/板块字典变化或旧库存仍使用上一张源表 ID 时会产生假撤下。两种 profile 都保留数据库第二基线，专用表为空或被重建也不能用更少计划记录绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。当前内置定时任务不会生成或保存人类确认摘要；镜像与笔记素材同时开启时，它会因缺少确认在源表读取和目标写入前 fail-closed。除非后续另行实现并审计“先 dry-run、再绑定同计划正式执行”的自动控制器，否则必须保持 `FEISHU_AUTO_SYNC_ENABLED=false`，不得把手动确认值长期写入环境变量或复用上一轮摘要。
+管理接口的 `dryRun` 只接受 JSON 布尔值 `true/false`，字符串、数字、对象或数组均返回 400；任务身份、时间与确认摘要不能由 HTTP 客户端指定。接口仅返回 HTTP 202 排队回执，执行状态从 `GET /admin/feishu-sync/status` 查询。公开 `GET /mini/v2/company-sheet-snapshot` 在镜像模式只读最后一次完整提交的 v2 快照，绝不因游客访问触发飞书写入；只有旧服务器明确 404 时客户端才回退 v1。任一分页、字段、位置、附件、回读、库存或快照阶段失败都不提交数据库。旧镜像 profile 的撤下熔断仍以“专用表历史公开 sourceRecordId + 当前线上活跃飞书库存 sourceRecordId”的并集为基线；AI 数据底座 profile 则按目标主档前后 `foundationListingId` 判断实际实体撤下，并以当前线上活跃飞书库存数量作为不能绕过的独立下限。两种身份域不得混合成一个集合；否则区域/板块字典变化或旧库存仍使用上一张源表 ID 时会产生假撤下。两种 profile 都保留数据库第二基线，专用表为空或被重建也不能用更少计划记录绕过，数量阈值和比例阈值任一超限即在首个专用表写请求前停止。worker-v2 会在同一持久任务中生成并复核 schema、资源、镜像和素材计划摘要；自动执行只接受分别已批准的 schema 与资源身份，不能复用客户端传入或上一批手工确认值。
 
 紧急止写应设置 `FEISHU_SYNC_ENABLED=false`。需要回滚到旧模式时，先关闭自动同步和镜像开关，确认没有在途任务，再同时清空 source/target 两项新 token 并恢复旧 Base/Sheet 配置，重启后先 dry-run 和计数对账；不得只清一个新 token，也不要在未对账时直接切回旧 Sheet，避免半配置或重新形成双事实源。
 
@@ -747,7 +764,8 @@ node server/scripts/feishu-material-copy.js --input D:\private\feishu-material-p
 
 该链路与上面的历史素材库复制工具互相独立。它只在
 `employee-current-stock-v1` / `employee-ai-foundation-v1` 员工源 profile 下读取员工源 Base
-中稳定字段 ID `fldyeAGJHV`，并要求飞书字段 API 回读类型为超链接（类型码 `15`）。员工改显示列名
+中由服务器私有环境 `FEISHU_NOTE_MATERIAL_FIELD_ID` 显式绑定的稳定字段 ID，并要求飞书字段 API
+回读类型为超链接（类型码 `15`）。仓库不提供默认 ID，空值会失败关闭；员工改显示列名
 不会影响读取；同步客户端以 `readOnly=true` 建立，任何员工源 POST/PATCH/DELETE 都会在发请求前
 被拒绝。“房源笔记”不会复制进小程序专用房源表，也不会把原始链接写入数据库或公开接口。
 
@@ -813,33 +831,33 @@ fail-closed。处理过程单并发、总时限默认 15 分钟；成功、失�
 变化，只要源摘要与已确认计划不同就必须停止，输出摘要或处理规则身份不同也必须重新物化。单套房最多 64 个图片/视频素材；第 65
 个素材会在创建目录、上传 Drive 或写 OSS 之前整套拒绝，避免外部孤儿写入后才被领域层上限驳回。
 
-每次完整的素材 dry-run 和正式 apply 还会返回私有聚合字段
+每次完整的素材 dry-run 和正式 apply 都会形成私有聚合字段
 `contentPlanSha256`（64 位小写十六进制）与 `contentPlanAssetCount`。摘要使用固定
-`feishu-note-content-plan-v3` 版本，按源记录不可逆 SHA-256 指纹、`assetId`、源文件摘要/大小/MIME、
-标准化成品摘要/大小/MIME、处理规则版本、处理工具指纹、处理动作和 `displayOrder` 排序后计算；
-输入记录或素材数组换序不会漂移，但任一归属、源内容、成品内容、处理身份、类型或展示顺序变化
-都会改变摘要。摘要响应不包含员工源
-记录 ID、源/目标 Drive token、链接、目录、Buffer、OSS 对象键或源文件名；这些计划字段也不写入
-房源、公开投影或普通同步日志。零视频有固定的空计划摘要。只要任一记录失败、状态冲突或最终
-`complete=false`，两个字段都省略，禁止把部分摘要用于确认正式同步。正式 apply 会返回本轮实际
-内容的同一聚合摘要；全批源复验和单次写前压缩继续核对内容 SHA-256、字节数与 MIME 类型，
-任一变化都在对应写入前失败。需要双次 dry-run 确认的运维控制器必须把这两个字段纳入外层
-`PLAN_SHA`，不能只比较链接、token、文件数量或易失元数据。
+`feishu-note-content-plan-v3` 版本：成功素材按源记录不可逆 SHA-256 指纹、`assetId`、源文件摘要/大小/MIME、
+标准化成品摘要/大小/MIME、处理规则版本、处理工具指纹、处理动作和 `displayOrder` 排序；允许延期的
+单行失败则另外绑定源值指纹、规范链接指纹、房源媒体状态、物理房间指纹、失败状态和本地动作
+（`retain`/`clear`/`none`）。输入记录或素材数组换序不会漂移，但任一归属、源值、内容、处理身份、
+房间、媒体状态、类型、展示顺序或延期动作变化都会改变摘要并阻断正式阶段。摘要响应不包含员工源
+记录 ID、源/目标 Drive token、链接、目录、Buffer、OSS 对象键或源文件名；行级计划不写入房源、
+公开投影或普通同步日志。零素材有固定空计划摘要。已知的单行素材失败可以形成带延期证据的受信
+部分计划；摘要/转换规则损坏、状态冲突、外部写未知或其他管线级失败仍禁止生成可提交计划。
+worker-v2 必须把素材计划与 schema/resource/mirror 摘要一并纳入服务端任务身份，不能只比较链接、
+token、文件数量或易失元数据，也不能接受 HTTP 客户端传入摘要。
 成功 dry-run 的私有行级计划仅保留在当前服务进程内，最多 15 分钟且最多 16 份；不会写数据库、
-日志或响应。服务重启、超时或缓存未命中时，正式 apply 必须失败并重新完成两次 dry-run。正式请求
+日志或响应。服务重启、超时或缓存未命中时，正式 apply 必须失败并由 worker 建立新任务重新完成预演。正式请求
 内部预检复用该私有计划验证工具档案和当前源内容，不再对整批素材重复执行 FFmpeg；实际正式阶段
 仍会再次全批核源，防止预检与写入之间源文件被原位替换。
 
-当镜像与房源笔记素材两项开关同时开启时，正式同步入口会先固定本轮 `runId/nowMs`，用正式
+当镜像与房源笔记素材两项开关同时开启时，worker 的内部正式同步调用会先固定本轮 `runId/nowMs`，用正式
 working DB 的隔离 clone、同一源/目标表只读适配器和同一素材只读适配器完整重跑
 “镜像 dry-run → 新源行应用到 clone → 素材 dry-run → 首页快照预演 → 最终阶段分类”。正式入口
 在该预检之前还会先核对固定素材字段、白名单，以及满足
 `^[A-Za-z0-9_-]{8,160}$`、独立且非旧源目录的目标根。若服务端内部显式注入素材 Drive 适配器，
 它必须同时实现目录分页、源下载、目标目录创建、视频落盘和目标回读校验五项能力；显式注入 OSS
 适配器必须同时实现确定性写入和鉴权回读校验两项能力。任一确定性配置或适配器合同不成立，都会
-在员工源或目标 Base 的首个镜像读写前返回 503。该预检得到的聚合摘要
-和数量必须与请求的 expected 两项精确一致，才允许开始目标 Base、工作 DB、Drive 或 OSS 的正式
-阶段；同一 token 若在人类 dry-run 后、服务端完整正式预检开始前已经原位换字节，会在首个正式
+在员工源或目标 Base 的首个镜像读写前返回 503。该预检得到的聚合摘要和数量必须与 worker 已
+持久化的本轮计划精确一致，才允许开始目标 Base、工作 DB、Drive 或 OSS 的正式阶段；同一 token
+若预演后、服务端完整正式预检开始前已经原位换字节，会在首个正式
 写入前阻断。预检私下还保留仅由不可逆记录指纹、素材 ID、内容摘要、大小、MIME 和顺序组成的
 行级计划，不进入 JSON 响应、日志、房源或公开投影。
 
@@ -847,7 +865,7 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 对全部源文件做一次只读复验；随后只为确实缺少目标的素材在写入前下载、标准化并逐项比对一次。
 若任一层变化，错误按
 内容计划确认失败分类，失败响应不生成可复用摘要；最终正式响应的
-`contentPlanSha256/contentPlanAssetCount` 也必须与 expected 完全一致，否则顶层强制
+`contentPlanSha256/contentPlanAssetCount` 也必须与 worker 保存值完全一致，否则顶层强制
 `inventoryCommittable=false`，数据库不得提交。
 
 全批源复验保证预检期间任一素材变化时三类外部写入均为 0。飞书源没有可锁定的内容快照；
@@ -856,18 +874,25 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 遇到该状态只允许先只读对账后重跑，禁止按名称盲删、覆盖或跳过摘要门禁。
 
 素材 dry-run 仍会只读下载源文件并计算上述真实内容摘要与聚合 `contentPlanSha256`，确保正式计划
-不会只凭易失元数据假绿；但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有两次完整预演的
-`contentPlanSha256/contentPlanAssetCount` 与外层计划摘要都一致后，才允许执行一次正式同步。
+不会只凭易失元数据假绿；但不得创建 Drive 目录/文件、写 OSS 或改数据库。只有 worker 预演和
+正式入口内置预检的 `contentPlanSha256/contentPlanAssetCount` 与外层计划摘要都一致后，才允许执行一次正式同步。
 
-同一房源的全部图片和视频成功后，服务端才通过领域层原子替换 `mediaAssets`。空链接只清除
-`feishu-note-v1` 管理的素材，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或
-链接指纹变化会清除笔记管理素材。只有相同链接指纹、相同且非空物理房间、房源仍在架、已有
-已验证素材且错误属于网络、限流、临时权限或 5xx 时，才允许保留上轮清单。库存同步失败时素材
-阶段完全不启动；素材失败不会回滚已经成功的库存字段，但本轮 `noteMaterials.published=false`，
-必须单独处理后才能声称素材同步完成。服务端明确拆分两个状态：`inventoryCommittable=true`
-表示库存与首页快照可原子提交；只有素材也完整成功时顶层 `success=true`。库存提交后素材失败时
-顶层固定为 `success=false/status=inventory-published-materials-failed`，后台面板和定时任务日志
-必须显示“库存已提交，但素材同步未完整成功”，不得写成整体完成。
+同一房源本轮全部图片和视频成功后，服务端才通过领域层原子替换该房源 `mediaAssets`。空链接只清除
+`feishu-note-v1` 管理的素材，保留人工上传或旧视频；永久错误、物理房间变化、房源不在架或链接指纹
+变化会按已确认计划清除笔记管理素材。只有相同链接指纹、相同且非空物理房间、房源仍在架、已有
+已验证素材且错误属于网络、限流、临时权限或 5xx 时，才允许按已确认计划保留上轮清单。库存同步
+失败时素材阶段完全不启动。
+
+已知的单行素材失败不再阻塞其他房源、目标 Base、库存和首页 v2 快照：dry-run 把该行写入延期计划，
+正式阶段先复验完全相同的计划，再执行 `retain` 或 `clear`，正常房源继续发布；worker 以
+`succeeded + MATERIALS_PARTIAL_FAILURE` 结束并记录真实失败数，健康检查保持 `degraded`，不刷新
+`lastSuccessAt`。下一次半小时任务会从员工源重新生成完整计划并重试失败行，恢复后自动补齐 Drive、
+OSS 与私有媒体清单。任何延期证据或本地状态变化都必须在外部写前关闭，不能沿用旧计划。
+
+飞书和 OSS 适配器只在真正调用创建目录、上传文件或 PUT 时回报“写已派发”；写前的目录查询、目标
+文件查询、HEAD 或 Bucket 版本检查失败属于零写故障，可进入上述延期重试。写请求一旦派发但无法用
+回读证明结果，或目标 Base/Drive/OSS 写后证据不完整，任务仍进入 `UNKNOWN` 并停止自动重试；媒体
+状态 CAS 冲突、内容计划漂移和同键异内容仍整批阻断，由运维只读对账后建立新任务，绝不盲目重放。
 
 每条记录在开始解析时固定完整媒体状态键；目标处理前后、发布以及失败清理都必须继续使用同一
 旧键做 CAS。若另一同步任务已更新任一素材字段，旧任务只记录 `state-conflict`，不得用重新计算
@@ -878,7 +903,7 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 
 ```env
 FEISHU_NOTE_MATERIAL_SYNC_ENABLED=false
-FEISHU_NOTE_MATERIAL_FIELD_ID=fldyeAGJHV
+FEISHU_NOTE_MATERIAL_FIELD_ID=
 FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
 FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
 FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
@@ -896,14 +921,13 @@ NOTE_MATERIAL_MAX_VIDEO_DURATION_SECONDS=900
 NOTE_MATERIAL_MIN_FREE_MB=256
 ```
 
-新链路默认关闭，且目标根目录必须显式配置，不能回退或等于旧
-`FEISHU_MATERIAL_FOLDER_TOKEN`。首次启用顺序固定为：先关闭
-`FEISHU_AUTO_SYNC_ENABLED` → 配置独立目标根和白名单 → 显式把
-`FEISHU_NOTE_MATERIAL_SYNC_ENABLED` 改为 `true` → 重启后连续运行两次 `dryRun=true` →
-核对两次内容计划一致且预演零目标 Base/Drive/OSS/数据库写入 → 把最后一次 dry-run 的两项确认值
-原样放入一次性正式请求 → 人工正式同步一次并完整对账。当前内置定时任务没有两阶段确认能力，
-所以笔记素材开关保持开启期间自动同步必须继续关闭；只有未来独立实现并审计自动两阶段控制器后
-才可恢复自动同步。
+新链路默认关闭，且字段 ID、目标根目录必须显式配置，目标根不能回退或等于旧
+`FEISHU_MATERIAL_FOLDER_TOKEN`。首次启用顺序固定为：先关闭自动同步 → 配置素材字段、独立目标根、
+租户白名单和压缩工具 → 显式开启笔记素材链 → 通过后台排队一次只读 dry-run → 核对素材数量、
+压缩后内容计划、schema/resource/mirror 摘要以及目标 Base/Drive/OSS/数据库零写 → 分别批准本轮
+`schemaSha256/resourceIdentitySha256` → 排队一次完整任务并对账 Drive、OSS、私有清单、库存与首页 v2 快照。完成首轮且
+状态无 `UNKNOWN/BLOCKED` 后，才可启用 worker-v2 的半小时自动调度。自动任务仍会重新生成计划，
+不接受或复用客户端确认摘要；源字段、资源、内容或处理工具变化都会在 apply 前停止。
 
 生产启用前还必须在目标服务器只读确认上述绝对路径可执行，`ffprobe` 可用，`ffmpeg` 同时具备
 `libx264`、`libwebp`、AAC 编码器以及 `fd`/`pipe` 输入输出能力，临时目录存在且当前服务用户可写。
@@ -951,11 +975,14 @@ FEISHU_SHEET_RANGE=A1:ZZ1000
 FEISHU_BITABLE_APP_TOKEN=
 FEISHU_BITABLE_TABLE_ID=
 FEISHU_SYNC_ENABLED=true
-FEISHU_AUTO_SYNC_ENABLED=true
+FEISHU_AUTO_SYNC_ENABLED=false
+FEISHU_SYNC_CONTROLLER_MODE=worker-v2
+FEISHU_APPROVED_SCHEMA_SHA256=
+FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256=
 FEISHU_MIRROR_SYNC_ENABLED=false
 FEISHU_MATERIAL_FOLDER_TOKEN=
 FEISHU_NOTE_MATERIAL_SYNC_ENABLED=false
-FEISHU_NOTE_MATERIAL_FIELD_ID=fldyeAGJHV
+FEISHU_NOTE_MATERIAL_FIELD_ID=
 FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS=tenant.example
 FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN=
 FEISHU_NOTE_MATERIAL_MAX_DEPTH=8
@@ -975,7 +1002,9 @@ FEISHU_UPLOAD_TO_OSS=true
 FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000
 FEISHU_MATERIAL_TRANSFER_RETRY_COUNT=2
 FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS=800
-FEISHU_SYNC_INTERVAL_MINUTES=60
+FEISHU_SYNC_INTERVAL_MINUTES=30
+FEISHU_SYNC_WORKER_LEASE_SECONDS=14400
+FEISHU_SYNC_RUN_HISTORY_LIMIT=50
 ```
 
 小程序端不接触飞书密钥、OSS AccessKey 或 RAM 权限。

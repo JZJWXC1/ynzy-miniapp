@@ -116,6 +116,25 @@ function sha256(value) {
   return crypto.createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex')
 }
 
+function fieldContractChangedError(message) {
+  const error = new Error(message)
+  error.name = 'FieldContractChangedError'
+  error.code = 'FIELD_CONTRACT_CHANGED'
+  error.statusCode = 409
+  error.safeBeforeWrite = true
+  return error
+}
+
+function assertExpectedSchemaFingerprint(expected, actual) {
+  if (expected === undefined) return
+  const expectedText = typeof expected === 'string' ? expected : ''
+  const actualText = typeof actual === 'string' ? actual : ''
+  if (!/^[0-9a-f]{64}$/.test(expectedText) || !/^[0-9a-f]{64}$/.test(actualText) ||
+      !crypto.timingSafeEqual(Buffer.from(expectedText, 'hex'), Buffer.from(actualText, 'hex'))) {
+    throw fieldContractChangedError('飞书字段契约已变化，schema 指纹与已批准版本不一致')
+  }
+}
+
 function isEmptyRequiredValue(value) {
   if (value === undefined || value === null) return true
   if (typeof value === 'string') return value.trim() === ''
@@ -300,14 +319,15 @@ function createBitableClient(options) {
       /请求超时|请求失败$/.test(message)
   }
 
-  async function requestJson(url, requestOptions, operation) {
+  async function requestJson(url, requestOptions, operation, allowRetry = false) {
     let lastError
-    for (let attempt = 0; attempt <= config.maxRetries; attempt += 1) {
+    const maxAttempts = allowRetry === true ? config.maxRetries + 1 : 1
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         return await requestJsonOnce(url, requestOptions, operation)
       } catch (error) {
         lastError = error
-        if (attempt >= config.maxRetries || !retryableRequestError(error)) throw error
+        if (attempt >= maxAttempts - 1 || !retryableRequestError(error)) throw error
         const waitMs = Math.min(config.retryDelayMs * (2 ** attempt), 5000)
         if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
       }
@@ -342,7 +362,7 @@ function createBitableClient(options) {
       const data = await requestJson(url.toString(), {
         method: 'GET',
         headers: authHeaders()
-      }, '读取')
+      }, '读取', true)
       if (typeof data.has_more !== 'boolean') throw new Error('飞书分页响应 has_more 缺失或类型错误')
       const isFirstEmptyPageWithoutItems =
         data.items === undefined &&
@@ -374,7 +394,8 @@ function createBitableClient(options) {
     allowEmpty = false,
     requireCreatedTime = false,
     nowMs,
-    createdTimeCutoffMs
+    createdTimeCutoffMs,
+    expectedSchemaFingerprint
   }) {
     if (typeof requireCreatedTime !== 'boolean') {
       throw new Error('飞书快照 requireCreatedTime 必须是布尔值')
@@ -393,6 +414,9 @@ function createBitableClient(options) {
         )
     const fields = await readAllPages(tableId, 'fields')
     const contract = validateFieldContract({ fields, bindings })
+    // 字段契约必须在读取任何业务记录前与获批指纹比较。显示名不进入指纹，员工改列名仍兼容；
+    // semantic 与同类型 field_id 互换则会在这里 fail-closed，避免把完整错误列读成合法快照。
+    assertExpectedSchemaFingerprint(expectedSchemaFingerprint, contract.schemaFingerprint)
     const rawRecords = await readAllPages(tableId, 'records', {
       automaticFields: requireCreatedTime
     })
@@ -463,12 +487,18 @@ function createBitableClient(options) {
       result[semantic] = contract.bySemantic[semantic].fieldName
       return result
     }, {})
+    const schemaBindings = Object.keys(contract.bySemantic).sort().map((semantic) => ({
+      semantic,
+      fieldName: contract.bySemantic[semantic].fieldName,
+      type: contract.bySemantic[semantic].type
+    }))
     return {
       complete: true,
       records,
       recordCount: records.length,
       digest: sha256(digestRecords),
       schemaFingerprint: contract.schemaFingerprint,
+      schemaBindings,
       ...(normalizedCreatedTimeCutoffMs == null
         ? {}
         : { deferredRecordCount: validatedRecords.length - records.length }),
@@ -503,29 +533,35 @@ function createBitableClient(options) {
     validateBatchRecords(records, operation)
     if (records.length === 0) return []
     const url = new URL(endpoint(tableId, suffix))
-    if (clientToken != null && String(clientToken).trim()) {
-      url.searchParams.set('client_token', String(clientToken).trim())
+    const normalizedClientToken = clientToken == null ? '' : String(clientToken).trim()
+    if (normalizedClientToken) {
+      url.searchParams.set('client_token', normalizedClientToken)
     }
     const data = await requestJson(url.toString(), {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
       body: JSON.stringify({ records })
-    }, `批量${operation}`)
+    }, `批量${operation}`, Boolean(normalizedClientToken))
     if (!Array.isArray(data.records)) throw new Error(`飞书批量${operation}响应缺少 records`)
     if (data.records.length !== records.length) throw new Error(`飞书批量${operation}响应数量不一致`)
     return data.records
   }
 
   async function batchCreateRecords(tableId, records, { clientToken } = {}) {
-    if (clientToken != null && String(clientToken).trim() &&
+    if (clientToken != null &&
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(clientToken).trim())) {
       throw new Error('飞书批量新增 client_token 必须是 UUIDv4')
     }
     return writeBatch(tableId, records, 'records/batch_create', '新增', clientToken)
   }
 
-  async function batchUpdateRecords(tableId, records) {
-    return writeBatch(tableId, records, 'records/batch_update', '更新')
+  async function batchUpdateRecords(tableId, records, { clientToken = crypto.randomUUID() } = {}) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(clientToken).trim())) {
+      throw new Error('飞书批量更新 client_token 必须是 UUIDv4')
+    }
+    // batch_update 同样支持 client_token。一次调用只生成一个令牌并在有限重试中固定复用，
+    // 因此“远端已提交、响应超时”不会把同一批更新及其自动化副作用重复执行。
+    return writeBatch(tableId, records, 'records/batch_update', '更新', clientToken)
   }
 
   return {

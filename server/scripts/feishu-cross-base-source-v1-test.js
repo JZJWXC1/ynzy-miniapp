@@ -659,6 +659,137 @@ async function testConfiguredSyncCreatesSeparateBaseClients() {
   }
 }
 
+async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
+  const previous = JSON.parse(JSON.stringify(config.feishu))
+  const previousFetch = global.fetch
+  const bindings = validBindings()
+  const clients = makeClients()
+  const poisonMaterials = []
+  Object.defineProperty(poisonMaterials, Symbol.iterator, {
+    value() {
+      throw new Error('worker-v2 不得枚举旧素材清单')
+    }
+  })
+  let fetchCalls = 0
+  try {
+    Object.assign(config.feishu, {
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      bitableAppToken: 'legacy-token',
+      sourceBitableAppToken: 'source-base',
+      targetBitableAppToken: 'target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: 'tbl-source',
+      miniTableId: 'tbl-mini',
+      locationTableId: 'tbl-location',
+      sourceFieldBindings: bindings.source,
+      miniFieldBindings: bindings.mini,
+      locationFieldBindings: bindings.location,
+      sourceCompatibilityProfile: '',
+      noteMaterialSyncEnabled: false,
+      folderToken: 'legacy-folder-must-not-be-read'
+    })
+    global.fetch = async () => {
+      fetchCalls += 1
+      throw new Error('worker-v2 不得请求旧素材 Drive')
+    }
+    const result = await feishuSync._internal.configuredMirrorTableSync({
+      feishuToken: 'tenant-token-for-test',
+      dryRun: true,
+      disableLegacyMaterials: true,
+      materials: poisonMaterials,
+      clientFactory(options) {
+        if (options.appToken === 'source-base') return clients.sourceClient
+        if (options.appToken === 'target-base') return clients.targetClient
+        throw new Error(`创建了非预期 Base 客户端：${options.appToken}`)
+      }
+    })
+    assert.strictEqual(result.status, 'success-dry-run')
+    assert.deepStrictEqual(result.materials, [], 'worker-v2 真实配置入口不得把旧素材清单传给库存阶段')
+    assert.strictEqual(fetchCalls, 0, 'worker-v2 真实配置入口不得读取旧素材目录')
+  } finally {
+    global.fetch = previousFetch
+    restore(config.feishu, previous)
+  }
+}
+
+async function testAutomaticWorkerRequiresFormalNoteMaterialMode() {
+  const previousFeishu = JSON.parse(JSON.stringify(config.feishu))
+  const previousOss = JSON.parse(JSON.stringify(config.oss))
+  const previousFetch = global.fetch
+  const bindings = validBindings()
+  let fetchCalls = 0
+  try {
+    Object.assign(config.feishu, {
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      syncEnabled: true,
+      autoSyncEnabled: true,
+      mirrorSyncEnabled: true,
+      syncControllerMode: 'worker-v2',
+      approvedSchemaSha256: 'a'.repeat(64),
+      approvedResourceIdentitySha256: 'b'.repeat(64),
+      sourceBitableAppToken: 'source-base',
+      targetBitableAppToken: 'target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: 'tbl-source',
+      miniTableId: 'tbl-mini',
+      locationTableId: 'tbl-location',
+      sourceFieldBindings: bindings.source,
+      miniFieldBindings: bindings.mini,
+      locationFieldBindings: bindings.location,
+      sourceCompatibilityProfile: '',
+      noteMaterialSyncEnabled: true,
+      folderToken: 'legacy-folder-must-not-mask-invalid-profile',
+      noteMaterialFieldId: 'fld-note-material',
+      noteMaterialAllowedHosts: ['tenant.example'],
+      noteMaterialTargetRootFolderToken: 'targetFolder12345'
+    })
+    global.fetch = async () => {
+      fetchCalls += 1
+      throw new Error('错误素材 profile 不得开始任何飞书或素材 I/O')
+    }
+    assert.strictEqual(feishuSync.status({}).ready, false, '自动模式不得被旧素材目录伪装成就绪')
+    await assert.rejects(
+      () => feishuSync.sync({ users: [], listings: [] }, 'system:test', {
+        syncController: 'worker-v2',
+        dryRun: true
+      }),
+      (error) => error && error.code === 'WORKER_NOTE_MATERIAL_MODE_REQUIRED' && error.safeBeforeWrite === true,
+      'worker-v2 错误或空 profile 必须在任何外部 I/O 前阻断'
+    )
+    assert.strictEqual(fetchCalls, 0, '素材模式配置失败必须保持 Base、Drive 与 OSS 零 I/O')
+
+    Object.assign(config.feishu, {
+      sourceCompatibilityProfile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
+      sourceFieldBindings: employeeSourceBindings(),
+      folderToken: '',
+      materialsFile: ''
+    })
+    Object.assign(config.oss, {
+      bucket: 'synthetic-bucket',
+      region: 'oss-cn-hangzhou',
+      accessKeyId: 'synthetic-access-key-id',
+      accessKeySecret: 'synthetic-access-key-secret'
+    })
+    assert.strictEqual(
+      feishuSync._internal.mirrorConfigurationStatus().materialsReady,
+      true,
+      '正式房源笔记配置完整时不得再依赖旧素材目录'
+    )
+    assert.strictEqual(
+      feishuSync.automaticWorkerConfigurationStatus().ready,
+      true,
+      '字段、资源、控制器、素材模式均批准后自动 worker 才能显示就绪'
+    )
+    assert.strictEqual(feishuSync.status({}).ready, true, '自动状态与真实 worker 前置门必须使用同一就绪口径')
+  } finally {
+    global.fetch = previousFetch
+    restore(config.feishu, previousFeishu)
+    restore(config.oss, previousOss)
+  }
+}
+
 async function testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget() {
   const previous = JSON.parse(JSON.stringify(config.feishu))
   const bindings = validBindings()
@@ -1254,6 +1385,8 @@ async function main() {
   await testResourceIdentityAndPartialConfiguration()
   await testSeparateClientsRouteReadsAndWrites()
   await testConfiguredSyncCreatesSeparateBaseClients()
+  await testWorkerV2DisablesLegacyMaterialSourceBehaviorally()
+  await testAutomaticWorkerRequiresFormalNoteMaterialMode()
   await testLegacySameBaseStillUsesSeparateReadOnlySourceAndWritableTarget()
   await testEmployeeCurrentStockProfileDryRunIsReadOnly()
   await testEmployeeUnknownCommunityStopsAfterLocationRead()

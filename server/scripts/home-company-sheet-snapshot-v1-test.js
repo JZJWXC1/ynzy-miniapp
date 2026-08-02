@@ -7,6 +7,7 @@ const repoRoot = path.join(__dirname, '..', '..')
 const indexPath = path.join(repoRoot, 'pages', 'index', 'index.js')
 const indexWxmlPath = path.join(repoRoot, 'pages', 'index', 'index.wxml')
 const apiServicePath = path.join(repoRoot, 'utils', 'api-service.js')
+const companySheetSnapshotContract = require('../../utils/company-sheet-snapshot-contract')
 const indexSource = fs.readFileSync(indexPath, 'utf8')
 const indexWxmlSource = fs.readFileSync(indexWxmlPath, 'utf8')
 const apiServiceSource = fs.readFileSync(apiServicePath, 'utf8')
@@ -38,6 +39,28 @@ function snapshot(rows, overrides) {
     schemaVersion: 1,
     sensitiveStripped: true
   }, overrides || {})
+}
+
+function snapshotV2(rows, overrides) {
+  const value = Object.assign({
+    contract: companySheetSnapshotContract.CONTRACT,
+    sourceMode: companySheetSnapshotContract.SOURCE_MODE,
+    schemaVersion: companySheetSnapshotContract.SCHEMA_VERSION,
+    minReaderVersion: companySheetSnapshotContract.MIN_READER_VERSION,
+    columnKeys: companySheetSnapshotContract.COLUMN_KEYS.slice(),
+    title: '寓你住一起房源表',
+    updatedAt: '2026-08-02 10:00:00',
+    unavailable: false,
+    rows: (rows || []).map((row) => row.slice()),
+    dataRowCount: (rows || []).length,
+    columnCount: 10,
+    contentSha256: '',
+    snapshotId: '',
+    sensitiveStripped: true
+  }, overrides || {})
+  value.contentSha256 = companySheetSnapshotContract.contentSha256Of(value)
+  value.snapshotId = `company-sheet-v2:${value.contentSha256}`
+  return value
 }
 
 function listingRow(overrides) {
@@ -205,6 +228,7 @@ function loadIndexPage(apiStub, runtime) {
     },
     require(request) {
       if (request === '../../utils/api-service') return apiStub
+      if (request === '../../utils/company-sheet-snapshot-contract') return companySheetSnapshotContract
       if (request === '../../utils/api-client') {
         return {
           getAuthSessionKey() { return 'guest-home-sheet-test' },
@@ -352,6 +376,35 @@ function testFixedTenColumnModel() {
   assert.strictEqual(blockSpans.length, 2, '同一行政区下两个板块必须形成两个独立合并区')
   assert.strictEqual(blockSpans[0].count, 2, '祥符板块应合并连续两套房源')
   assert.strictEqual(blockSpans[1].count, 1, '东新园板块不得并入祥符')
+}
+
+function testV2UsesOnlyFixedDataRows() {
+  const loaded = loadIndexPage(defaultApi(), {})
+  const first = listingRow({
+    community: '首条真实房源',
+    roomLabel: '首条真实房源 1幢101'
+  })
+  const second = listingRow({
+    block: '东新园',
+    community: '第二条真实房源',
+    roomLabel: '第二条真实房源 2幢202'
+  })
+  const model = loaded.helpers.buildSheetModel(snapshotV2([first, second]))
+  assert.strictEqual(model.invalidSchema, false, '合法 v2 快照必须被首页识别')
+  assert.strictEqual(model.listingCount, 2, 'v2 第一行就是房源数据，绝不能再被当成表头丢弃')
+  assert.deepStrictEqual(Array.from(model.header), FIXED_HEADERS, 'v2 展示表头只能来自本地固定契约')
+  assert.deepStrictEqual(Array.from(model.dataRows[0].cells), first, 'v2 第一行十列必须原位展示')
+  assert.deepStrictEqual(Array.from(model.dataRows[1].cells), second, 'v2 第二行十列必须原位展示')
+
+  const injectedHeader = snapshotV2([FIXED_HEADERS, first])
+  const injectedHeaderModel = loaded.helpers.buildSheetModel(injectedHeader)
+  assert.strictEqual(injectedHeaderModel.invalidSchema, true, 'v2 数据区夹带表头必须整份 fail-closed')
+  assert.strictEqual(injectedHeaderModel.listingCount, 0, 'v2 夹带表头不得发布部分房源')
+
+  const blankLocation = snapshotV2([first, listingRow({ district: '', block: '', community: '' })])
+  const blankLocationModel = loaded.helpers.buildSheetModel(blankLocation)
+  assert.strictEqual(blankLocationModel.invalidSchema, true, 'v2 缺位置字段必须整份 fail-closed')
+  assert.strictEqual(blankLocationModel.listingCount, 0, 'v2 不得沿用 v1 合并单元格向下填充位置')
 }
 
 async function testDrawUsesFieldRoleLineLimits() {
@@ -717,6 +770,21 @@ function testSnapshotEmptyStates() {
   assert.strictEqual(unknownSchema.shouldRender, false, '未知 schema 必须 fail-closed，不能按列位置猜测')
   assert.strictEqual(unknownSchema.status, '房源表数据格式待更新')
   assert.strictEqual(unknownSchema.preview.listingCount, 0, '未知 schema 不得把任何行展示为房源')
+
+  const v2Zero = loaded.helpers.snapshotViewState(snapshotV2([]))
+  assert.strictEqual(v2Zero.shouldRender, false, '合法 v2 零行快照不得生成空图')
+  assert.strictEqual(v2Zero.status, '当前暂无待租房源')
+
+  const v2Unavailable = snapshotV2([], { unavailable: true, updatedAt: '' })
+  const v2UnavailableState = loaded.helpers.snapshotViewState(v2Unavailable)
+  assert.strictEqual(v2UnavailableState.shouldRender, false, '合法 v2 unavailable 不得生成空图')
+  assert.strictEqual(v2UnavailableState.status, '房源表暂未同步')
+
+  const damagedV2 = snapshotV2([listingRow()])
+  damagedV2.rows[0][6] = '9999'
+  const damagedV2State = loaded.helpers.snapshotViewState(damagedV2)
+  assert.strictEqual(damagedV2State.status, '房源表数据格式待更新', 'v2 内容与摘要不一致必须 fail-closed')
+  assert.strictEqual(damagedV2State.preview.listingCount, 0, '坏 v2 不得降级猜列或展示部分数据')
 }
 
 async function testRequestFailureRetriesImmediately() {
@@ -796,12 +864,13 @@ function testRuntimeBrandingAndMockParity() {
     '首页运行时文案不得暴露飞书来源'
   )
   assert.ok(/columnCount:\s*10/.test(apiServiceSource), 'Mock 快照必须与生产固定十列一致')
-  assert.ok(/sourceMode:\s*['"]feishu-mini-mirror-v1['"]/.test(apiServiceSource), 'Mock 必须带固定来源契约')
-  assert.ok(/schemaVersion:\s*1/.test(apiServiceSource), 'Mock 必须带固定 schemaVersion')
+  assert.ok(/\/mini\/v2\/company-sheet-snapshot/.test(apiServiceSource), '首页 API 必须优先请求 v2 快照')
+  assert.ok(/contentSha256/.test(apiServiceSource) && /snapshotId/.test(apiServiceSource), 'Mock v2 必须带内容摘要与快照身份')
 }
 
 async function main() {
   testFixedTenColumnModel()
+  testV2UsesOnlyFixedDataRows()
   await testDrawUsesFieldRoleLineLimits()
   testCanvasPaginationBoundaries()
   await testPaginationKeepsFixedTenColumnPrivacyBoundary()

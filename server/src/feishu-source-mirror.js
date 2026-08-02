@@ -892,7 +892,7 @@ function failedRun(stage, result) {
 }
 
 function publicStageSummary(result = {}) {
-  return {
+  const summary = {
     complete: result.complete === true,
     published: result.published === true,
     failed: typeof result.failed === 'number' && Number.isFinite(result.failed) ? result.failed : null,
@@ -902,6 +902,20 @@ function publicStageSummary(result = {}) {
     planned: result.planned === true,
     status: typeof result.status === 'string' ? result.status : ''
   }
+  ;['schemaSha256', 'resourceIdentitySha256', 'mirrorPlanSha256'].forEach((field) => {
+    if (/^[0-9a-f]{64}$/.test(String(result[field] || ''))) summary[field] = result[field]
+  })
+  if (result.dryRun === true && Array.isArray(result.schemaBindings)) {
+    summary.schemaBindings = result.schemaBindings.map((entry) => ({
+      role: typeof (entry && entry.role) === 'string' ? entry.role : '',
+      bindings: (entry && Array.isArray(entry.bindings) ? entry.bindings : []).map((binding) => ({
+        semantic: typeof (binding && binding.semantic) === 'string' ? binding.semantic : '',
+        fieldName: typeof (binding && binding.fieldName) === 'string' ? binding.fieldName : '',
+        type: typeof (binding && binding.type) === 'string' ? binding.type : ''
+      })).filter((binding) => binding.semantic && binding.fieldName && binding.type)
+    })).filter((entry) => entry.role)
+  }
+  return summary
 }
 
 async function runCompanySourceSync({ db, mirrorSync, applyInventory, publishSnapshot, commit } = {}) {

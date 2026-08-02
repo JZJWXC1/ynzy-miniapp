@@ -401,6 +401,15 @@ function replaceListingMediaAssets(db, listingId, mediaAssets, options = {}) {
   const firstVideo = normalized.find((asset) => asset.kind === 'video')
   listing.videoKey = firstVideo ? firstVideo.objectKey : ''
   listing.videoUrl = ''
+  if (isCompanyListing(listing)) {
+    const hasVerifiedVideo = Boolean(firstVideo)
+    listing.missingVideoMaterial = !hasVerifiedVideo
+    listing.videoMaterialStatus = hasVerifiedVideo ? '已匹配视频素材' : '缺视频素材'
+    listing.syncStatus = hasVerifiedVideo ? '已同步飞书' : '缺视频素材'
+    // 替换入口只接受已完成双目标回读的规范清单；成功写入或明确清空后，上一轮搬运
+    // 失败原因都不再代表当前事实，不能继续污染后台缺视频筛选。
+    delete listing.videoMaterialFailureReason
+  }
   listing.updatedAt = options.updatedAt || nowText()
   syncListingRecommendationProfile(listing)
   return {

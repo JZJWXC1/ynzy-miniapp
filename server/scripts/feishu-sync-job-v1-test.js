@@ -1,6 +1,7 @@
 const assert = require('assert')
 const fs = require('fs')
 const path = require('path')
+const { spawnSync } = require('child_process')
 
 const {
   classifyMirrorRunResult,
@@ -36,8 +37,50 @@ function settled(promise) {
   )
 }
 
+function testFailClosedSyncDefaults() {
+  const env = { ...process.env }
+  ;[
+    'FEISHU_AUTO_SYNC_ENABLED',
+    'FEISHU_NOTE_MATERIAL_FIELD_ID',
+    'FEISHU_SYNC_CONTROLLER_MODE',
+    'FEISHU_APPROVED_SCHEMA_SHA256',
+    'FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256'
+  ].forEach((name) => { delete env[name] })
+  const script = [
+    "const config = require('./src/config')",
+    'process.stdout.write(JSON.stringify({',
+    '  autoSyncEnabled: config.feishu.autoSyncEnabled,',
+    '  noteMaterialFieldId: config.feishu.noteMaterialFieldId,',
+    '  syncControllerMode: config.feishu.syncControllerMode,',
+    '  approvedSchemaSha256: config.feishu.approvedSchemaSha256,',
+    '  approvedResourceIdentitySha256: config.feishu.approvedResourceIdentitySha256,',
+    '  syncIntervalMinutes: config.feishu.syncIntervalMinutes',
+    '}))'
+  ].join('\n')
+  const child = spawnSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '..'),
+    env,
+    encoding: 'utf8'
+  })
+  assert.strictEqual(child.status, 0, child.stderr || '配置子进程必须成功')
+  const actual = JSON.parse(child.stdout)
+  assert.strictEqual(actual.autoSyncEnabled, false, '未显式配置时自动同步必须默认关闭')
+  assert.strictEqual(actual.noteMaterialFieldId, '', '房源笔记字段 ID 必须来自显式生产配置，不得内置某张表的固定 ID')
+  assert.strictEqual(actual.syncControllerMode, '', '未显式批准后台控制器时不得启动自动同步')
+  assert.strictEqual(actual.approvedSchemaSha256, '', '字段契约摘要不得由代码伪造默认值')
+  assert.strictEqual(actual.approvedResourceIdentitySha256, '', '飞书资源身份摘要不得由代码伪造默认值')
+  assert.strictEqual(actual.syncIntervalMinutes, 30, 'V2 自动同步默认时间桶必须固定为半小时')
+}
+
 function testIndexWiringContract() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'index.js'), 'utf8')
+  const publicV2Start = source.indexOf("pathname === '/mini/v2/company-sheet-snapshot'")
+  const publicV2End = source.indexOf("pathname === '/mini/company-sheet-snapshot'", publicV2Start)
+  const publicV2Block = source.slice(publicV2Start, publicV2End)
+  assert.ok(publicV2Start >= 0 && publicV2End > publicV2Start, '必须提供固定十列 v2 快照路由')
+  assert.ok(publicV2Block.includes('feishuSync.cachedSheetSnapshotV2(db)'), 'v2 公开接口必须只读已提交缓存')
+  assert.ok(publicV2Block.includes('feishuSync.unavailableSheetSnapshotV2()'), 'v2 坏缓存或无缓存必须返回可验证 unavailable')
+  assert.ok(!/refresh|sync\s*\(/.test(publicV2Block), 'v2 公开 GET 不得联网或触发同步')
   const publicStart = source.indexOf("pathname === '/mini/company-sheet-snapshot'")
   const publicEnd = source.indexOf("pathname === '/mini/listings'", publicStart)
   const publicBlock = source.slice(publicStart, publicEnd)
@@ -51,41 +94,33 @@ function testIndexWiringContract() {
   const manualBlock = source.slice(manualStart, manualEnd)
   assert.ok(manualStart >= 0 && manualEnd > manualStart, '必须定位手动飞书同步路由')
   assert.ok(
-    manualBlock.includes('feishuSync.parseAdminSyncRequest(body)'),
-    '手动同步必须在调用飞书前统一校验 dryRun 与素材内容确认字段'
+    manualBlock.includes('feishuSync.parseAdminSyncRequest(body, { externalWorkerRequest: true })'),
+    '手动同步外部请求只允许 dryRun，任务身份与摘要由服务端生成'
   )
   assert.ok(
-    manualBlock.indexOf('feishuSync.parseAdminSyncRequest(body)') < manualBlock.indexOf('if (feishuSyncRunning)'),
-    '手动同步确认字段必须在取得互斥锁和任何飞书读写前完成校验'
-  )
-  assert.ok(manualBlock.indexOf('if (feishuSyncRunning)') < manualBlock.indexOf('if (dryRun)'), 'dry-run 必须与正式同步共用互斥锁')
-  assert.ok(manualBlock.includes('feishuSync.isCommittableSyncResult(result)'), '手动同步必须检查完整发布分类')
-  assert.ok(manualBlock.indexOf('feishuSync.isCommittableSyncResult(result)') < manualBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)'), '手动同步必须先过发布门禁再提交数据库')
-
-  const scheduledStart = source.indexOf('async function runScheduledFeishuSync()')
-  const scheduledEnd = source.indexOf('function startFeishuSyncTimer()', scheduledStart)
-  const scheduledBlock = source.slice(scheduledStart, scheduledEnd)
-  assert.ok(scheduledStart >= 0 && scheduledEnd > scheduledStart, '必须定位定时同步函数')
-  assert.ok(scheduledBlock.includes('if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return'), '总开关或自动开关关闭时定时任务必须零执行')
-  assert.ok(scheduledBlock.includes('feishuSync.isCommittableSyncResult(result)'), '定时同步必须检查完整发布分类')
-  assert.ok(scheduledBlock.indexOf('feishuSync.isCommittableSyncResult(result)') < scheduledBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)'), '定时同步必须先过发布门禁再提交数据库')
-  assert.ok(
-    scheduledBlock.includes('if (result.success !== true)'),
-    '库存可提交但素材失败时，定时同步必须单独识别整轮失败'
+    manualBlock.indexOf('feishuSync.parseAdminSyncRequest') < manualBlock.indexOf('feishuSyncWorker.enqueue'),
+    '手动同步必须先校验请求，再持久化任务'
   )
   assert.ok(
-    scheduledBlock.indexOf('dbStore.commitDelta(baseSnapshot, nextDb)') <
-      scheduledBlock.indexOf('if (result.success !== true)'),
-    '整轮失败日志只能在库存成功提交后说明库存已提交、素材失败'
+    manualBlock.includes('actorId: adminAccount.userId || adminAccount.id'),
+    '手动同步必须把已认证管理员身份写入后台任务，不能跨进程回退成系统账号'
   )
+  assert.ok(manualBlock.includes('startFeishuSyncWorkerProcess(queued.runId)'), 'HTTP 入队后必须交给独立后台进程')
+  assert.ok(manualBlock.includes('}, 202)'), '手动同步必须立即返回 202，不能再等待网关超时')
+  assert.ok(!manualBlock.includes('await feishuSync.sync'), 'HTTP 路由不得直接执行长同步')
+  assert.ok(!source.includes('runScheduledFeishuSync') && !source.includes('startFeishuSyncTimer'), '应用进程内旧定时器必须彻底移除，避免双控制器并发写')
+  const workerCli = fs.readFileSync(path.resolve(__dirname, 'run-feishu-sync-worker.js'), 'utf8')
+  assert.ok(workerCli.includes("args.mode === 'schedule'"), '独立 worker CLI 必须提供定时入口')
   assert.ok(
-    scheduledBlock.includes('库存已提交，但素材同步未完整成功'),
-    '定时同步不得把嵌套素材失败写成自动同步完成'
+    workerCli.includes('feishuSync.automaticWorkerConfigurationStatus().ready'),
+    '自动执行必须复用业务层统一门，同时校验 worker-v2、两项批准摘要与正式笔记素材配置'
   )
-  const timerBlock = source.slice(scheduledEnd, source.indexOf('// 实时 ASR', scheduledEnd))
-  assert.ok(timerBlock.includes('if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return'), '自动开关关闭时不得启动定时器，但手动 dry-run 仍可用')
 
   const syncSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'feishu-sync.js'), 'utf8')
+  assert.ok(
+    syncSource.includes('}, { fillMergedCells: false })'),
+    '镜像发布 v2 前必须禁用旧表格合并单元格向下补齐'
+  )
   const mirrorStart = syncSource.indexOf('async function syncViaMirror')
   const mirrorEnd = syncSource.indexOf('function isCommittableSyncResult', mirrorStart)
   const mirrorBlock = syncSource.slice(mirrorStart, mirrorEnd)
@@ -101,8 +136,8 @@ function testIndexWiringContract() {
   )
   assert.strictEqual(
     (mirrorBlock.match(/baselinePublishedFoundationIdentityKeys/g) || []).length,
-    3,
-    '线上库存数量下限必须且只能覆盖生成、正式前内容计划预演和正式镜像三处接线'
+    4,
+    '线上库存数量下限必须覆盖生成、内容计划预演、安全摘要预演和正式镜像四处接线'
   )
   assert.ok(
     /\.\.\.coordinates,\s*baselinePublishedSourceIds,\s*baselinePublishedFoundationIdentityKeys,\s*dryRun:\s*true/.test(
@@ -171,24 +206,28 @@ function testIndexWiringContract() {
 
   const adminSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'admin-web', 'index.html'), 'utf8')
   assert.ok(
-    adminSource.includes('库存已提交，但素材同步未完整成功'),
-    '后台同步面板必须明确区分库存已提交与素材失败，不能显示成整体完成'
+    adminSource.includes('出现“状态未知”或“已阻断”时自动同步会停止'),
+    '后台同步面板必须明确提示未知或阻断状态不会自动重放'
   )
   assert.ok(
-    adminSource.includes('inventoryCommittable: Boolean(lastLog.inventoryCommittable)'),
-    '后台同步结果必须展示库存可提交状态'
+    adminSource.includes('externalWritesMayHaveOccurred: Boolean(latestRun.externalWritesMayHaveOccurred)'),
+    '后台同步结果必须展示外部写入可能性，不能把状态未知伪装成失败前安全退出'
   )
   assert.ok(
-    adminSource.includes('noteMaterials: lastLog.noteMaterials || null'),
-    '后台同步结果必须展示嵌套素材阶段，供人工对账完整成功'
+    ['schemaSha256', 'mirrorPlanSha256', 'contentPlanSha256', 'schemaBindings'].every((field) =>
+      adminSource.includes(`${field}: latestRun.${field}`)
+    ),
+    '后台同步结果必须展示字段、镜像、素材摘要与脱敏字段绑定，供人工核对'
   )
   assert.ok(
-    adminSource.includes('const lastLog = payload.result || status.lastLog || null'),
-    '刚执行同步时必须优先展示本轮整轮结果，不能被库存阶段旧日志遮住素材失败'
+    adminSource.includes("const terminalStates = new Set(['dry-succeeded', 'succeeded', 'failed-before-write', 'unknown', 'blocked'])") &&
+      adminSource.includes('const runId = result && result.run && result.run.runId'),
+    '后台必须按服务端 runId 轮询到稳定终态，不能把入队成功显示成同步完成'
   )
 }
 
 async function main() {
+  testFailClosedSyncDefaults()
   testIndexWiringContract()
   const invalidDryRunValues = ['true', 'false', 1, 0, {}, []]
   invalidDryRunValues.forEach((dryRun) => {

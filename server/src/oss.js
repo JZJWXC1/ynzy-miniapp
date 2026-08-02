@@ -180,8 +180,23 @@ function readSourceOrigins() {
     .filter(Boolean)
 }
 
-const OSS_OBJECT_REQUEST_TIMEOUT_MS = 30000
+const OSS_OBJECT_IDLE_TIMEOUT_MS = 30000
 const OSS_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
+
+function objectRequestDeadlineMs() {
+  const configured = Number(config.feishu && config.feishu.materialTransferTimeoutMs)
+  return Number.isSafeInteger(configured) && configured >= 25 ? configured : 120000
+}
+
+function armAbsoluteRequestDeadline(req, timeoutMs, rejectOnce, message) {
+  const timer = setTimeout(() => {
+    const error = new Error(message)
+    error.statusCode = 504
+    error.code = 'OSS_REQUEST_TIMEOUT'
+    if (rejectOnce(error)) req.destroy(error)
+  }, timeoutMs)
+  return () => clearTimeout(timer)
+}
 
 function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
   const missing = missingConfigKeys()
@@ -230,15 +245,18 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let clearDeadline = () => {}
     const resolveOnce = (value) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       resolve(value)
       return true
     }
     const rejectOnce = (error) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       reject(error)
       return true
     }
@@ -280,12 +298,19 @@ function putObjectBuffer(objectKey, buffer, contentType, options = {}) {
         rejectOnce(error)
       })
     })
-    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+    clearDeadline = armAbsoluteRequestDeadline(
+      req,
+      objectRequestDeadlineMs(),
+      rejectOnce,
+      'OSS 上传请求超过总时限'
+    )
+    req.setTimeout(OSS_OBJECT_IDLE_TIMEOUT_MS, () => {
       const error = new Error('OSS 上传请求超时')
       error.statusCode = 504
       if (rejectOnce(error)) req.destroy(error)
     })
     req.on('error', rejectOnce)
+    if (typeof options.onWriteDispatched === 'function') options.onWriteDispatched()
     req.end(body)
   })
 }
@@ -333,6 +358,7 @@ function putObjectFile(objectKey, file, contentType, options = {}) {
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let clearDeadline = () => {}
     let source = null
     let streamedBytes = 0
     let sourceEnded = false
@@ -344,6 +370,7 @@ function putObjectFile(objectKey, file, contentType, options = {}) {
     const resolveOnce = (value) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       stopSource()
       resolve(value)
       return true
@@ -351,6 +378,7 @@ function putObjectFile(objectKey, file, contentType, options = {}) {
     const rejectOnce = (error) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       stopSource()
       reject(error)
       return true
@@ -405,7 +433,13 @@ function putObjectFile(objectKey, file, contentType, options = {}) {
         if (rejectOnce(error)) req.destroy()
       })
     })
-    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+    clearDeadline = armAbsoluteRequestDeadline(
+      req,
+      objectRequestDeadlineMs(),
+      rejectOnce,
+      'OSS 上传请求超过总时限'
+    )
+    req.setTimeout(OSS_OBJECT_IDLE_TIMEOUT_MS, () => {
       const error = new Error('OSS 上传请求超时')
       error.statusCode = 504
       if (rejectOnce(error)) req.destroy(error)
@@ -456,6 +490,7 @@ function putObjectFile(objectKey, file, contentType, options = {}) {
         if (rejectOnce(error)) req.destroy(error)
       }
     })
+    if (typeof options.onWriteDispatched === 'function') options.onWriteDispatched()
     source.pipe(req)
   })
 }
@@ -483,15 +518,18 @@ function readObjectBufferAuthenticated(objectKey, maxBytes) {
   headers.Authorization = `OSS ${config.oss.accessKeyId}:${signOssString(stringToSign)}`
   return new Promise((resolve, reject) => {
     let settled = false
+    let clearDeadline = () => {}
     const resolveOnce = (value) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       resolve(value)
       return true
     }
     const rejectOnce = (error) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       reject(error)
       return true
     }
@@ -552,7 +590,13 @@ function readObjectBufferAuthenticated(objectKey, maxBytes) {
         })
       })
     })
-    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+    clearDeadline = armAbsoluteRequestDeadline(
+      req,
+      objectRequestDeadlineMs(),
+      rejectOnce,
+      'OSS 回读素材请求超过总时限'
+    )
+    req.setTimeout(OSS_OBJECT_IDLE_TIMEOUT_MS, () => {
       const error = new Error('OSS 回读素材请求超时')
       error.statusCode = 504
       if (rejectOnce(error)) req.destroy(error)
@@ -588,15 +632,18 @@ function readObjectEvidenceAuthenticated(objectKey, expectedSize) {
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let clearDeadline = () => {}
     const resolveOnce = (value) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       resolve(value)
       return true
     }
     const rejectOnce = (error) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       reject(error)
       return true
     }
@@ -685,7 +732,13 @@ function readObjectEvidenceAuthenticated(objectKey, expectedSize) {
         })
       })
     })
-    req.setTimeout(OSS_OBJECT_REQUEST_TIMEOUT_MS, () => {
+    clearDeadline = armAbsoluteRequestDeadline(
+      req,
+      objectRequestDeadlineMs(),
+      rejectOnce,
+      'OSS 回读素材请求超过总时限'
+    )
+    req.setTimeout(OSS_OBJECT_IDLE_TIMEOUT_MS, () => {
       const error = new Error('OSS 回读素材请求超时')
       error.statusCode = 504
       if (rejectOnce(error)) req.destroy(error)
@@ -742,15 +795,18 @@ function readBucketVersioningState() {
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let clearDeadline = () => {}
     const resolveOnce = (value) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       resolve(value)
       return true
     }
     const rejectOnce = (error) => {
       if (settled) return false
       settled = true
+      clearDeadline()
       reject(error)
       return true
     }
@@ -796,6 +852,12 @@ function readBucketVersioningState() {
         }
       })
     })
+    clearDeadline = armAbsoluteRequestDeadline(
+      req,
+      OSS_CONTROL_REQUEST_TIMEOUT_MS,
+      rejectOnce,
+      'OSS Bucket 版本状态读取超过总时限'
+    )
     req.setTimeout(OSS_CONTROL_REQUEST_TIMEOUT_MS, () => {
       const error = new Error('OSS Bucket 版本状态读取超时')
       error.statusCode = 504
@@ -1031,7 +1093,8 @@ async function putMaterialDeterministic(input = {}) {
         {
           metadata: { 'x-oss-meta-content-sha256': normalized.contentSha256 },
           forbidOverwrite: true,
-          expectedSha256: normalized.contentSha256
+          expectedSha256: normalized.contentSha256,
+          onWriteDispatched: input.onWriteDispatched
         }
       )
     } catch (error) {
@@ -1211,6 +1274,7 @@ function createShowingPhotoUploadPolicy(input = {}) {
 }
 
 module.exports = {
+  writeDispatchEvidenceVersion: 1,
   createVideoUploadPolicy,
   createGroupScreenshotUploadPolicy,
   createShowingPhotoUploadPolicy,

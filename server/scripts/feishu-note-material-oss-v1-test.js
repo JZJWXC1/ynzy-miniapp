@@ -441,8 +441,12 @@ async function testWriteReadbackAndTransportFailClosed(oss) {
   objects.delete(putTimeout.objectKey)
   timeoutTarget = { method: 'PUT', path: `/${putTimeout.objectKey}` }
   calls.length = 0
+  let putWriteDispatches = 0
   await assert.rejects(
-    () => oss.putMaterialDeterministic(putTimeout),
+    () => oss.putMaterialDeterministic({
+      ...putTimeout,
+      onWriteDispatched() { putWriteDispatches += 1 }
+    }),
     /上传请求超时/
   )
   assert.deepStrictEqual(requestMethods(), ['GET', 'GET', 'PUT'])
@@ -450,16 +454,22 @@ async function testWriteReadbackAndTransportFailClosed(oss) {
   assert.strictEqual(calls[2].destroyCount, 1, '素材 PUT 超时后必须销毁底层请求')
   assert.match(calls[2].destroyError, /上传请求超时/)
   assert.strictEqual(objects.has(putTimeout.objectKey), false)
+  assert.strictEqual(putWriteDispatches, 1, 'OSS 仅在 PUT 真正派发时标记一次外部写')
 
   const versioningTimeout = videoInput(17)
   objects.delete(versioningTimeout.objectKey)
   timeoutTarget = { method: 'GET', path: '/?versioning' }
   calls.length = 0
+  let versioningWriteDispatches = 0
   await assert.rejects(
-    () => oss.putMaterialDeterministic(versioningTimeout),
+    () => oss.putMaterialDeterministic({
+      ...versioningTimeout,
+      onWriteDispatched() { versioningWriteDispatches += 1 }
+    }),
     /版本状态读取超时/
   )
   assert.deepStrictEqual(requestMethods(), ['GET', 'GET'])
+  assert.strictEqual(versioningWriteDispatches, 0, 'OSS 版本状态只读检查失败不得误报外部写已派发')
   assert.strictEqual(calls[1].destroyCount, 1, '版本状态读取超时后必须销毁底层请求')
 
   const versioningOversized = videoInput(18)

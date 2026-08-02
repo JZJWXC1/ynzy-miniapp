@@ -4,6 +4,7 @@ const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
 const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
+const companySheetSnapshotContract = require('../../utils/company-sheet-snapshot-contract')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
@@ -327,6 +328,17 @@ function buildSheetSpans(dataRows, areaCol, blockCol, communityCol) {
 }
 
 function buildSheetModel(snapshot) {
+  const isV2Snapshot = snapshot && (
+    snapshot.contract === companySheetSnapshotContract.CONTRACT ||
+    snapshot.sourceMode === companySheetSnapshotContract.SOURCE_MODE ||
+    Number(snapshot.schemaVersion) === companySheetSnapshotContract.SCHEMA_VERSION ||
+    Number(snapshot.minReaderVersion) === companySheetSnapshotContract.MIN_READER_VERSION
+  )
+  if (isV2Snapshot) {
+    // v2 的 rows 从第一行起就是固定十列业务数据；表头只来自本地契约。
+    // 校验失败直接返回 invalidSchema，绝不回到 v1 的找表头/合并单元格填充逻辑。
+    return companySheetSnapshotContract.toHomepageCompanySheetModel(snapshot)
+  }
   const sourceRows = snapshot && snapshot.rows
   const contractMatches = snapshot &&
     snapshot.sourceMode === companySheetSourceMode &&

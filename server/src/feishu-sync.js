@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 const config = require('./config')
+const companySheetSnapshotContract = require('./company-sheet-snapshot-contract')
 const domain = require('./domain')
 const locationMap = require('./location-map')
 const oss = require('./oss')
@@ -16,7 +17,9 @@ const { syncNoteMaterialsForInventory } = noteMaterialSync
 const {
   rememberContentPlanConfirmation,
   recallContentPlanConfirmation,
-  isContentPlanConfirmationError
+  isContentPlanConfirmationError,
+  isKnownMaterialRowWarningReport,
+  isExternalWriteStateUnknownError
 } = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
 const {
@@ -258,17 +261,45 @@ async function withMaterialRetry(label, action) {
 
 async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController()
-  const timeout = materialTimeoutMs()
-  const timer = setTimeout(() => controller.abort(), timeout)
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    })
-  } catch (error) {
-    if (error && error.name === 'AbortError') {
-      const timeoutError = new Error(`请求超过 ${Math.round(timeout / 1000)} 秒未返回`)
+  const timeout = Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : materialTimeoutMs()
+  const operation = normalizeText(options.operation) || '请求'
+  const consume = typeof options.consume === 'function' ? options.consume : null
+  let timedOut = false
+  let timer
+  const timeoutPromise = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      const timeoutError = new Error(`${operation}超过 ${Math.round(timeout / 1000)} 秒未完成`)
       timeoutError.statusCode = 504
+      timeoutError.code = 'FEISHU_REQUEST_TIMEOUT'
+      reject(timeoutError)
+    }, timeout)
+  })
+  try {
+    const requestOptions = { ...options }
+    delete requestOptions.timeoutMs
+    delete requestOptions.operation
+    delete requestOptions.consume
+    const response = await Promise.race([
+      fetch(url, {
+        ...requestOptions,
+        signal: controller.signal
+      }),
+      timeoutPromise
+    ])
+    if (!consume) return response
+    return await Promise.race([
+      Promise.resolve().then(() => consume(response)),
+      timeoutPromise
+    ])
+  } catch (error) {
+    if (timedOut || (error && error.name === 'AbortError')) {
+      const timeoutError = new Error(`${operation}超过 ${Math.round(timeout / 1000)} 秒未完成`)
+      timeoutError.statusCode = 504
+      timeoutError.code = 'FEISHU_REQUEST_TIMEOUT'
       throw timeoutError
     }
     throw error
@@ -749,21 +780,60 @@ function isAmbiguousMaterialMatch(value) {
 }
 
 async function feishuJson(pathname, token, options = {}) {
-  const response = await fetch(`${trimSlash(config.feishu.baseUrl)}${pathname}`, {
-    method: options.method || 'GET',
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
-  })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok || (body.code !== undefined && body.code !== 0)) {
-    const error = new Error(body.msg || body.message || `飞书接口请求失败：${response.status}`)
-    error.statusCode = response.status || 502
-    throw error
+  const method = String(options.method || 'GET').toUpperCase()
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : Number(config.feishu.requestTimeoutMs || 30000)
+  const configuredRetries = Number.isSafeInteger(Number(options.maxRetries))
+    ? Number(options.maxRetries)
+    : Number(config.feishu.requestMaxRetries || 0)
+  const maxRetries = Math.max(0, Math.min(5, configuredRetries))
+  const retrySafe = method === 'GET' || pathname === '/auth/v3/tenant_access_token/internal'
+  let lastError = null
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fetchWithTimeout(`${trimSlash(config.feishu.baseUrl)}${pathname}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        timeoutMs,
+        operation: '飞书接口请求',
+        consume: async (response) => {
+          let body
+          try {
+            body = await response.json()
+          } catch (error) {
+            const invalid = new Error('飞书接口响应不是有效 JSON')
+            invalid.statusCode = Number(response && response.status) || 502
+            invalid.code = 'FEISHU_RESPONSE_INVALID'
+            throw invalid
+          }
+          if (!response.ok || !body || (body.code !== undefined && Number(body.code) !== 0)) {
+            const failure = new Error('飞书接口请求失败')
+            failure.statusCode = Number(response && response.status) || 502
+            failure.apiCode = Number(body && body.code) || 0
+            failure.code = 'FEISHU_REQUEST_FAILED'
+            throw failure
+          }
+          return body.data || body
+        }
+      })
+    } catch (error) {
+      lastError = error
+      const status = Number(error && error.statusCode) || 0
+      const retryable = retrySafe && (
+        !status || status === 408 || status === 429 || status >= 500 ||
+        (error && error.code === 'FEISHU_REQUEST_TIMEOUT')
+      )
+      if (!retryable || attempt >= maxRetries) throw error
+      const delayBase = Math.max(0, Number(config.feishu.requestRetryDelayMs || 0))
+      if (delayBase > 0) await sleep(delayBase * (attempt + 1))
+    }
   }
-  return body.data || body
+  throw lastError || new Error('飞书接口请求失败')
 }
 
 async function tenantAccessToken() {
@@ -1536,7 +1606,15 @@ function publicSnapshotDateTime(value) {
 }
 
 function sanitizeSheetSnapshot(snapshot = {}, options = {}) {
-  const rows = normalizeSnapshotRows(Array.isArray(snapshot.rows) ? snapshot.rows : [])
+  const sourceRows = Array.isArray(snapshot.rows) ? snapshot.rows : []
+  const rows = options.fillMergedCells === false
+    ? (() => {
+        const columnCount = Math.max(0, ...sourceRows.map((row) => Array.isArray(row) ? row.length : 0))
+        return sourceRows.map((row) => Array.from({ length: columnCount }).map(
+          (_, index) => normalizeText(Array.isArray(row) ? row[index] : '')
+        ))
+      })()
+    : normalizeSnapshotRows(sourceRows)
   const contactPhones = normalizedSnapshotContactPhones(options)
   const contactText = contactPhones.join(' / ')
   const allowedPhones = new Set(contactPhones)
@@ -1601,6 +1679,26 @@ function cachedSheetSnapshot(db = {}) {
   return snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length ? sanitizeSheetSnapshot(snapshot) : null
 }
 
+function cachedSheetSnapshotV2(db = {}) {
+  const hasStoredV2 = Object.prototype.hasOwnProperty.call(db, 'companySheetSnapshotV2')
+  const stored = companySheetSnapshotContract.parseCompanySheetSnapshotV2(db.companySheetSnapshotV2)
+  if (stored) return stored
+  // 仅“从未写过 v2 字段”允许一次旧缓存迁移；字段已经存在却验签失败代表损坏，必须
+  // fail-closed，不能用旧 v1 静默掩盖摘要、列键或行数据被破坏。
+  if (hasStoredV2) return null
+  // 首次升级期间允许把数据库内“精确 v1 固定十列快照”只读转换为 v2；任何旧表头别名、
+  // 错列、合并单元格空值或摘要损坏都会失败并返回 unavailable，不做猜测和填充。
+  try {
+    const rawLegacy = db.companySheetSnapshot
+    const legacy = rawLegacy && Array.isArray(rawLegacy.rows) && rawLegacy.rows.length
+      ? sanitizeSheetSnapshot(rawLegacy, { fillMergedCells: false })
+      : null
+    return legacy ? companySheetSnapshotContract.convertTrustedV1SnapshotToV2(legacy) : null
+  } catch (error) {
+    return null
+  }
+}
+
 function unavailableSheetSnapshot() {
   const snapshot = buildCompanySheetSnapshot([])
   return sanitizeSheetSnapshot({
@@ -1612,6 +1710,10 @@ function unavailableSheetSnapshot() {
   })
 }
 
+function unavailableSheetSnapshotV2() {
+  return companySheetSnapshotContract.createUnavailableCompanySheetSnapshotV2()
+}
+
 async function refreshSheetSnapshot(db = {}, options = {}) {
   const snapshot = await sheetSnapshot(options)
   db.companySheetSnapshot = sanitizeSheetSnapshot({
@@ -1621,32 +1723,112 @@ async function refreshSheetSnapshot(db = {}, options = {}) {
   return db.companySheetSnapshot
 }
 
-async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 0) {
-  if (!folderToken || depth > config.feishu.maxFolderDepth) return []
+async function loadFolderMaterials(token, folderToken, parentPath = '', depth = 0, traversal = null) {
+  if (!folderToken) return []
+  if (depth > config.feishu.maxFolderDepth) {
+    const error = new Error('旧素材目录层级超过安全上限')
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  const state = traversal || {
+    pages: 0,
+    items: 0,
+    visitedFolders: new Set()
+  }
+  const folderIdentity = normalizeText(folderToken)
+  if (state.visitedFolders.has(folderIdentity)) {
+    const error = new Error('旧素材目录存在重复或循环引用')
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  state.visitedFolders.add(folderIdentity)
   let pageToken = ''
   const materials = []
-  do {
+  const seenPageTokens = new Set()
+  let folderPage = 0
+  while (true) {
+    folderPage += 1
+    state.pages += 1
+    if (state.pages > 10000) {
+      const error = new Error('旧素材目录分页超过安全上限')
+      error.statusCode = 409
+      error.safeBeforeWrite = true
+      throw error
+    }
     const params = new URLSearchParams({
       folder_token: folderToken,
       page_size: String(config.feishu.pageSize)
     })
     if (pageToken) params.set('page_token', pageToken)
     const data = await feishuJson(`/drive/v1/files?${params.toString()}`, token)
-    const files = data.files || data.items || []
+    if (typeof data.has_more !== 'boolean') {
+      const error = new Error('旧素材目录分页缺少严格 has_more')
+      error.statusCode = 502
+      error.safeBeforeWrite = true
+      throw error
+    }
+    let files = Array.isArray(data.files)
+      ? data.files
+      : (Array.isArray(data.items) ? data.items : null)
+    if (!files) {
+      const firstEmpty = folderPage === 1 && data.has_more === false && Number(data.total || 0) === 0
+      if (!firstEmpty) {
+        const error = new Error('旧素材目录分页缺少项目数组')
+        error.statusCode = 502
+        error.safeBeforeWrite = true
+        throw error
+      }
+      files = []
+    }
+    state.items += files.length
+    if (state.items > Number(config.feishu.noteMaterialMaxItems || 5000)) {
+      const error = new Error('旧素材目录项目数量超过安全上限')
+      error.statusCode = 409
+      error.safeBeforeWrite = true
+      throw error
+    }
     for (const file of files) {
       const name = normalizeText(file.name || file.file_name)
       const type = normalizeText(file.type || file.file_type)
       if (/folder/i.test(type)) {
         const childToken = file.token || file.file_token
-        const children = await loadFolderMaterials(token, childToken, [parentPath, name].filter(Boolean).join('/'), depth + 1)
+        if (!childToken) {
+          const error = new Error('旧素材子目录缺少稳定标识')
+          error.statusCode = 502
+          error.safeBeforeWrite = true
+          throw error
+        }
+        const children = await loadFolderMaterials(
+          token,
+          childToken,
+          [parentPath, name].filter(Boolean).join('/'),
+          depth + 1,
+          state
+        )
         materials.push(...children)
       } else if (VIDEO_EXT_PATTERN.test(name) || /^video\//i.test(type)) {
         materials.push(materialFromRaw(file, parentPath))
       }
     }
-    pageToken = data.page_token || ''
     if (!data.has_more) break
-  } while (pageToken)
+    const nextPageToken = normalizeText(data.next_page_token || data.page_token)
+    if (!nextPageToken) {
+      const error = new Error('旧素材目录声明 has_more 但缺少 page_token')
+      error.statusCode = 502
+      error.safeBeforeWrite = true
+      throw error
+    }
+    if (seenPageTokens.has(nextPageToken)) {
+      const error = new Error('旧素材目录分页 token 循环')
+      error.statusCode = 502
+      error.safeBeforeWrite = true
+      throw error
+    }
+    seenPageTokens.add(nextPageToken)
+    pageToken = nextPageToken
+  }
   return materials
 }
 
@@ -2398,7 +2580,15 @@ function mirrorConfigurationStatus() {
   const rentedBindingsReady = rentedContract.ready
   const historyBindingsReady = historyContract.ready
   const pairedBindingsReady = pairedMirrorBindingsReady(config.feishu.sourceFieldBindings, config.feishu.miniFieldBindings)
-  const materialsReady = Boolean(config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video)
+  const noteMaterialModeRequested = config.feishu.noteMaterialSyncEnabled === true
+  const noteMaterialsReady = noteMaterialModeRequested && effectiveNoteMaterialSyncEnabled() &&
+    formalNoteMaterialConfigurationReady()
+  const legacyMaterialsReady = Boolean(
+    config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video
+  )
+  // 启用新房源笔记管线后，只认正式 field_id、域名、独立目标目录和 OSS 契约；遗留
+  // 目录不得把错误 profile 或缺失新配置伪装成 ready。未启用时保留人工 legacy 兼容口径。
+  const materialsReady = noteMaterialModeRequested ? noteMaterialsReady : legacyMaterialsReady
   return {
     ready: hasAuth && sourceBaseReadOnlyBoundaryReady &&
       sourceTableReady && miniTableReady && locationTableReady && tableResourcesDistinct &&
@@ -2425,7 +2615,8 @@ function mirrorConfigurationStatus() {
     historyBindingsReady,
     aiFoundationEnabled,
     pairedBindingsReady,
-    materialsReady
+    materialsReady,
+    noteMaterialsReady
   }
 }
 
@@ -3604,6 +3795,308 @@ function secureDigestEqual(left, right) {
   return crypto.timingSafeEqual(Buffer.from(leftText, 'hex'), Buffer.from(rightText, 'hex'))
 }
 
+function stableSha256(value) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stablePlanValue(value)))
+    .digest('hex')
+}
+
+function resourceTokenSha256(value) {
+  const token = normalizeResourceIdentifier(value)
+  return token ? crypto.createHash('sha256').update(token).digest('hex') : ''
+}
+
+async function sha256LegacyMaterialFile(filePath) {
+  const resolved = path.resolve(filePath)
+  const pathStat = await fs.promises.lstat(resolved)
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+    const error = new Error('旧素材本地路径必须是普通文件')
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  const handle = await fs.promises.open(resolved, 'r')
+  try {
+    const before = await handle.stat()
+    const hash = crypto.createHash('sha256')
+    const stream = handle.createReadStream({ autoClose: false })
+    for await (const chunk of stream) hash.update(chunk)
+    const after = await handle.stat()
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
+        (before.ino && after.ino && before.ino !== after.ino)) {
+      const error = new Error('旧素材本地文件在摘要计算期间发生变化')
+      error.statusCode = 409
+      error.safeBeforeWrite = true
+      throw error
+    }
+    return {
+      size: before.size,
+      contentSha256: hash.digest('hex')
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+function automaticWorkerConfigurationStatus(options = {}) {
+  const mirrorState = mirrorConfigurationStatus()
+  const noteMaterialsReady = effectiveNoteMaterialSyncEnabled() &&
+    formalNoteMaterialConfigurationReady(options)
+  const controllerReady = config.feishu.syncControllerMode === 'worker-v2'
+  const schemaApproved = /^[a-f0-9]{64}$/.test(String(config.feishu.approvedSchemaSha256 || ''))
+  const resourceApproved = /^[a-f0-9]{64}$/.test(
+    String(config.feishu.approvedResourceIdentitySha256 || '')
+  )
+  return {
+    ready: config.feishu.syncEnabled === true &&
+      config.feishu.mirrorSyncEnabled === true &&
+      mirrorState.ready && noteMaterialsReady && controllerReady &&
+      schemaApproved && resourceApproved,
+    mirrorReady: mirrorState.ready,
+    noteMaterialsReady,
+    controllerReady,
+    schemaApproved,
+    resourceApproved
+  }
+}
+
+async function buildLegacyMaterialEvidence(materials = [], options = {}) {
+  if (!Array.isArray(materials)) {
+    const error = new Error('旧素材清单必须是数组')
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  const manifest = []
+  for (const raw of materials) {
+    const material = materialFromRaw(raw || {})
+    const localFile = material.localFilePath
+      ? await sha256LegacyMaterialFile(material.localFilePath)
+      : null
+    manifest.push({
+      name: material.name,
+      token: material.token,
+      type: material.type,
+      url: material.url,
+      videoUrl: material.videoUrl,
+      videoKey: material.videoKey,
+      sourcePath: material.sourcePath,
+      localFile
+    })
+  }
+  manifest.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+  return {
+    enabled: options.enabled === true || manifest.length > 0,
+    count: manifest.length,
+    manifestSha256: stableSha256({
+      version: 'legacy-material-manifest-v1',
+      materials: manifest
+    })
+  }
+}
+
+function normalizeLegacyMaterialEvidence(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const enabled = source.enabled === true
+  const count = Number(source.count)
+  const manifestSha256 = normalizeText(source.manifestSha256).toLowerCase()
+  if (!Number.isSafeInteger(count) || count < 0 || !/^[0-9a-f]{64}$/.test(manifestSha256)) {
+    const error = new Error('旧素材清单缺少完整内容摘要')
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  return { enabled, count, manifestSha256 }
+}
+
+function mirrorSafetyResources(options = {}) {
+  const explicit = options.mirrorSafetyResources && typeof options.mirrorSafetyResources === 'object'
+    ? options.mirrorSafetyResources
+    : {}
+  return {
+    sourceBaseToken: explicit.sourceBaseToken,
+    targetBaseToken: explicit.targetBaseToken,
+    sourceTableId: explicit.sourceTableId || options.sourceTableId,
+    locationTableId: explicit.locationTableId || options.locationTableId,
+    miniTableId: explicit.miniTableId || options.miniTableId,
+    rentedTableId: explicit.rentedTableId || options.rentedTableId,
+    historyTableId: explicit.historyTableId || options.historyTableId,
+    feishuApiBaseUrl: explicit.feishuApiBaseUrl,
+    legacyMaterialFolderToken: explicit.legacyMaterialFolderToken,
+    noteMaterialSyncEnabled: explicit.noteMaterialSyncEnabled === true,
+    noteMaterialTargetRootFolderToken: explicit.noteMaterialTargetRootFolderToken,
+    noteMaterialAllowedHosts: Array.isArray(explicit.noteMaterialAllowedHosts)
+      ? explicit.noteMaterialAllowedHosts
+      : [],
+    uploadToOss: explicit.uploadToOss === true,
+    ossBucket: explicit.ossBucket,
+    ossRegion: explicit.ossRegion,
+    ossUploadDir: explicit.ossUploadDir,
+    ossPublicBaseUrl: explicit.ossPublicBaseUrl
+  }
+}
+
+function mirrorSafetySnapshot(role, snapshot) {
+  const input = snapshot && typeof snapshot === 'object' ? snapshot : {}
+  return {
+    role,
+    schemaFingerprint: normalizeText(input.schemaFingerprint).toLowerCase(),
+    digest: normalizeText(input.digest).toLowerCase(),
+    recordCount: Number.isSafeInteger(input.recordCount)
+      ? input.recordCount
+      : (Array.isArray(input.records) ? input.records.length : 0)
+  }
+}
+
+function publicSchemaBindings(role, snapshot) {
+  const raw = snapshot && Array.isArray(snapshot.schemaBindings)
+    ? snapshot.schemaBindings
+    : []
+  return {
+    role,
+    bindings: raw.map((binding) => ({
+      semantic: normalizeText(binding && binding.semantic),
+      fieldName: normalizeText(binding && binding.fieldName),
+      type: normalizeText(binding && binding.type)
+    })).filter((binding) => binding.semantic && binding.fieldName && binding.type)
+      .sort((left, right) => left.semantic.localeCompare(right.semantic))
+  }
+}
+
+function buildMirrorSafetyDigests(input = {}) {
+  const snapshotRoles = [
+    ['source', input.sourceSnapshot],
+    ['location', input.locationSnapshot],
+    ['mini', input.mirrorSnapshot]
+  ]
+  if (input.rentedSnapshot) snapshotRoles.push(['rented', input.rentedSnapshot])
+  if (input.historySnapshot) snapshotRoles.push(['history', input.historySnapshot])
+  const snapshots = snapshotRoles.map(([role, snapshot]) => mirrorSafetySnapshot(role, snapshot))
+  const schemaBindings = snapshotRoles.map(([role, snapshot]) => publicSchemaBindings(role, snapshot))
+  const schemaSha256 = stableSha256({
+    version: 'feishu-mirror-schema-v1',
+    schemas: snapshots.map(({ role, schemaFingerprint }) => ({ role, schemaFingerprint }))
+  })
+
+  const resources = input.resources && typeof input.resources === 'object'
+    ? input.resources
+    : {}
+  const legacyMaterialEvidence = normalizeLegacyMaterialEvidence(
+    input.legacyMaterialEvidence || {
+      enabled: false,
+      count: 0,
+      manifestSha256: stableSha256({ version: 'legacy-material-manifest-v1', materials: [] })
+    }
+  )
+  const noteMaterialSyncEnabled = resources.noteMaterialSyncEnabled === true
+  // 房源笔记发布链无论旧 FEISHU_UPLOAD_TO_OSS 开关如何都会把同一压缩成品写入 OSS；
+  // 因此资源身份必须描述“真实会写入的目的地”，不能用旧开关把 Bucket/Region/目录从摘要中抹掉。
+  const legacyUploadToOss = legacyMaterialEvidence.enabled && resources.uploadToOss === true
+  const ossDeliveryRequired = noteMaterialSyncEnabled || legacyUploadToOss
+  const allowedHosts = Array.isArray(resources.noteMaterialAllowedHosts)
+    ? resources.noteMaterialAllowedHosts
+      .map((value) => normalizeResourceIdentifier(value).toLowerCase())
+      .filter(Boolean)
+      .sort()
+    : []
+  const resourceIdentitySha256 = stableSha256({
+    version: 'feishu-mirror-resource-identity-v1',
+    resources: [
+      {
+        role: 'source',
+        baseTokenSha256: resourceTokenSha256(resources.sourceBaseToken),
+        tableId: normalizeResourceIdentifier(resources.sourceTableId)
+      },
+      {
+        role: 'location',
+        baseTokenSha256: resourceTokenSha256(resources.targetBaseToken),
+        tableId: normalizeResourceIdentifier(resources.locationTableId)
+      },
+      {
+        role: 'mini',
+        baseTokenSha256: resourceTokenSha256(resources.targetBaseToken),
+        tableId: normalizeResourceIdentifier(resources.miniTableId)
+      },
+      ...(input.rentedSnapshot ? [{
+        role: 'rented',
+        baseTokenSha256: resourceTokenSha256(resources.targetBaseToken),
+        tableId: normalizeResourceIdentifier(resources.rentedTableId)
+      }] : []),
+      ...(input.historySnapshot ? [{
+        role: 'history',
+        baseTokenSha256: resourceTokenSha256(resources.targetBaseToken),
+        tableId: normalizeResourceIdentifier(resources.historyTableId)
+      }] : [])
+    ],
+    delivery: {
+      feishuApiBaseUrlSha256: resourceTokenSha256(resources.feishuApiBaseUrl),
+      legacyMaterialSourceEnabled: legacyMaterialEvidence.enabled,
+      legacyMaterialFolderSha256: legacyMaterialEvidence.enabled
+        ? resourceTokenSha256(resources.legacyMaterialFolderToken)
+        : '',
+      legacyUploadToOss,
+      noteMaterialSyncEnabled,
+      noteMaterialTargetRootSha256: noteMaterialSyncEnabled
+        ? resourceTokenSha256(resources.noteMaterialTargetRootFolderToken)
+        : '',
+      noteMaterialAllowedHostsSha256: noteMaterialSyncEnabled ? stableSha256(allowedHosts) : '',
+      ossDeliveryRequired,
+      ossBucketSha256: ossDeliveryRequired ? resourceTokenSha256(resources.ossBucket) : '',
+      ossRegionSha256: ossDeliveryRequired ? resourceTokenSha256(resources.ossRegion) : '',
+      ossUploadDirSha256: ossDeliveryRequired ? resourceTokenSha256(resources.ossUploadDir) : '',
+      ossPublicBaseUrlSha256: ossDeliveryRequired
+        ? resourceTokenSha256(resources.ossPublicBaseUrl)
+        : ''
+    }
+  })
+
+  const plannedRecords = Array.isArray(input.plannedRecords) ? input.plannedRecords : []
+  const publicCompanySheetSnapshot = buildCompanySheetSnapshot(plannedRecords)
+  const mirrorPlanSha256 = stableSha256({
+    version: 'feishu-mirror-plan-v1',
+    schemaSha256,
+    resourceIdentitySha256,
+    snapshots: snapshots.map(({ role, digest, recordCount }) => ({ role, digest, recordCount })),
+    operations: operationsForPlanDigest(input.operations || []),
+    archiveOperations: operationsForPlanDigest(input.archiveOperations || []),
+    historyOperations: operationsForPlanDigest(input.historyOperations || []),
+    baselineMarkerOperation: input.baselineMarkerOperation
+      ? operationsForPlanDigest([input.baselineMarkerOperation])[0]
+      : null,
+    legacyMaterialEvidence,
+    publicCompanySheetSnapshot: stablePlanValue(publicCompanySheetSnapshot)
+  })
+  return { schemaSha256, resourceIdentitySha256, mirrorPlanSha256, schemaBindings }
+}
+
+function mirrorSafetyDigestError(code, message) {
+  const error = new Error(message)
+  error.name = 'MirrorSafetyDigestError'
+  error.code = code
+  error.statusCode = 409
+  error.safeBeforeWrite = true
+  return error
+}
+
+function assertMirrorSafetyDigestConfirmation(options = {}, digests = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, 'expectedSchemaSha256') &&
+      options.expectedSchemaSha256 !== undefined &&
+      !secureDigestEqual(options.expectedSchemaSha256, digests.schemaSha256)) {
+    throw mirrorSafetyDigestError('MIRROR_SCHEMA_CHANGED', '飞书镜像字段契约摘要已变化，已在写入前阻断')
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'expectedMirrorPlanSha256') &&
+      options.expectedMirrorPlanSha256 !== undefined &&
+      !secureDigestEqual(options.expectedMirrorPlanSha256, digests.mirrorPlanSha256)) {
+    throw mirrorSafetyDigestError('MIRROR_PLAN_CHANGED', '飞书镜像源数据或写入计划已变化，已在写入前阻断')
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'expectedResourceIdentitySha256') &&
+      options.expectedResourceIdentitySha256 !== undefined &&
+      !secureDigestEqual(options.expectedResourceIdentitySha256, digests.resourceIdentitySha256)) {
+    throw mirrorSafetyDigestError('MIRROR_RESOURCE_CHANGED', '飞书源表或目标表身份已变化，已在写入前阻断')
+  }
+  return true
+}
+
 function enrichmentCurrentOperations(currentSnapshot, plan) {
   const byRecordId = new Map((currentSnapshot.records || []).map((record) => [
     normalizeText(record && (record.recordId || record.record_id)),
@@ -3773,6 +4266,7 @@ async function executeFoundationEnrichment({
 async function executeAiFoundationSync({
   targetClient,
   sourceSnapshot,
+  locationSnapshot,
   mirrorSnapshot,
   rentedSnapshot,
   historySnapshot,
@@ -3825,6 +4319,26 @@ async function executeAiFoundationSync({
     plan.archiveOperations.length === 0 &&
     historyOperations.length === 0 &&
     baseline === false
+  const baselineMarkerOperation = baseline
+    ? foundationBaselineMarkerOperation(runId, nowMs)
+    : null
+  const safetyDigests = buildMirrorSafetyDigests({
+    sourceSnapshot,
+    locationSnapshot,
+    mirrorSnapshot,
+    rentedSnapshot,
+    historySnapshot,
+    resources: mirrorSafetyResources(options),
+    legacyMaterialEvidence: options.legacyMaterialEvidence,
+    operations: plan.operations,
+    archiveOperations: plan.archiveOperations,
+    historyOperations,
+    baselineMarkerOperation,
+    plannedRecords: plan.plannedRecords
+  })
+  // dry-run 与 apply 都产出同一组三摘要；调用方提供确认摘要时，任何漂移都必须在
+  // 飞书首个目标写请求前失败。这样同类型字段互换也不能伪装成合法业务变化。
+  assertMirrorSafetyDigestConfirmation(options, safetyDigests)
   if (options.dryRun === true) {
     return {
       complete: true,
@@ -3840,6 +4354,7 @@ async function executeAiFoundationSync({
       counts: clone(plan.counts),
       lifecycleCounts,
       baseline,
+      ...safetyDigests,
       records: clone(plan.plannedRecords),
       materials: options.materials || []
     }
@@ -3944,12 +4459,11 @@ async function executeAiFoundationSync({
 
   let finalHistorySnapshot = historyReadback
   if (baseline) {
-    const markerOperation = foundationBaselineMarkerOperation(runId, nowMs)
     await createSemanticRecords(
       targetClient,
       options.historyTableId,
       historyReadback,
-      [markerOperation]
+      [baselineMarkerOperation]
     )
     finalHistorySnapshot = await targetClient.readValidatedTableSnapshot({
       tableId: options.historyTableId,
@@ -3977,6 +4491,7 @@ async function executeAiFoundationSync({
     counts: clone(plan.counts),
     lifecycleCounts,
     baseline,
+    ...safetyDigests,
     records: clone(remainingPlan.plannedRecords),
     materials: options.materials || []
   }
@@ -4007,7 +4522,32 @@ function sourceBindingsWithNoteMaterial(bindings, options = {}) {
   return source
 }
 
+function noteMaterialFieldContractReady() {
+  const fieldId = normalizeText(config.feishu.noteMaterialFieldId)
+  if (!fieldId) return false
+  try {
+    const bindings = sourceBindingsWithNoteMaterial(config.feishu.sourceFieldBindings, {
+      enabled: true,
+      fieldId
+    })
+    const materialBinding = bindings.noteMaterialLink
+    const allowedTypes = (MIRROR_FIELD_TYPE_CONTRACTS.source.noteMaterialLink || [])
+      .map((value) => String(value))
+    return normalizeText(materialBinding && materialBinding.fieldId) === fieldId &&
+      String(materialBinding && materialBinding.type) === '15' &&
+      allowedTypes.includes('15')
+  } catch (_) {
+    return false
+  }
+}
+
 async function executeMirrorTableSync(options = {}) {
+  const legacyMaterialEvidence = options.legacyMaterialEvidence
+    ? normalizeLegacyMaterialEvidence(options.legacyMaterialEvidence)
+    : await buildLegacyMaterialEvidence(options.materials || [], {
+      enabled: options.legacyMaterialSourceConfigured === true
+    })
+  options = { ...options, legacyMaterialEvidence }
   assertLifecycleTableResourcesDistinct(options)
   const sourceClient = options.sourceClient || options.client
   const targetClient = options.targetClient || options.client
@@ -4061,6 +4601,7 @@ async function executeMirrorTableSync(options = {}) {
     const foundationResult = await executeAiFoundationSync({
       targetClient,
       sourceSnapshot,
+      locationSnapshot,
       mirrorSnapshot,
       rentedSnapshot,
       historySnapshot,
@@ -4094,6 +4635,17 @@ async function executeMirrorTableSync(options = {}) {
     allowMassDeactivate: options.allowMassDeactivate === true
   })
 
+  const safetyDigests = buildMirrorSafetyDigests({
+    sourceSnapshot,
+    locationSnapshot,
+    mirrorSnapshot,
+    resources: mirrorSafetyResources(options),
+    legacyMaterialEvidence: options.legacyMaterialEvidence,
+    operations: plan.operations,
+    plannedRecords
+  })
+  assertMirrorSafetyDigestConfirmation(options, safetyDigests)
+
   if (options.dryRun === true) {
     return {
       complete: true,
@@ -4107,6 +4659,7 @@ async function executeMirrorTableSync(options = {}) {
       noop: plan.noop,
       status: 'success-dry-run',
       counts: clone(plan.counts),
+      ...safetyDigests,
       records: plannedRecords,
       materials: options.materials || []
       ,
@@ -4170,6 +4723,7 @@ async function executeMirrorTableSync(options = {}) {
     noop: plan.noop,
     status: plan.noop ? 'success-noop' : 'success',
     counts: clone(plan.counts),
+    ...safetyDigests,
     records: activeMirrorRecords(readback),
     materials: options.materials || []
     ,
@@ -4178,6 +4732,7 @@ async function executeMirrorTableSync(options = {}) {
 }
 
 async function loadConfiguredMirrorMaterials(token, options = {}) {
+  if (options.disableLegacyMaterials === true) return []
   if (Array.isArray(options.materials)) return options.materials
   if (config.feishu.materialsFile) return readJson(config.feishu.materialsFile)
   if (config.feishu.folderToken) return loadFolderMaterials(token, config.feishu.folderToken)
@@ -4209,6 +4764,12 @@ async function configuredMirrorTableSync(options = {}) {
     EMPLOYEE_AI_FOUNDATION_PROFILE
   ].includes(config.feishu.sourceCompatibilityProfile)
   const noteMaterialSyncEnabled = config.feishu.noteMaterialSyncEnabled === true && employeeSourceProfile
+  // 新“房源笔记”确定性管线是 worker-v2 唯一允许的素材写通道。启用它或由 worker-v2
+  // 发起时，旧目录/本地清单不得再参与匹配、随机 OSS 上传或数据库视频地址写入。
+  const disableLegacyMaterials = noteMaterialSyncEnabled || options.disableLegacyMaterials === true
+  const legacyMaterialSourceConfigured = !disableLegacyMaterials && (
+    Array.isArray(options.materials) || Boolean(config.feishu.materialsFile || config.feishu.folderToken)
+  )
   const sourceClient = options.sourceClient || options.client || clientFactory({
     ...commonClientOptions,
     appToken: sourceBaseToken,
@@ -4220,7 +4781,13 @@ async function configuredMirrorTableSync(options = {}) {
     ...commonClientOptions,
     appToken: targetBaseToken
   })
-  const materials = await loadConfiguredMirrorMaterials(token, options)
+  const materials = await loadConfiguredMirrorMaterials(token, {
+    ...options,
+    disableLegacyMaterials
+  })
+  const legacyMaterialEvidence = await buildLegacyMaterialEvidence(materials, {
+    enabled: legacyMaterialSourceConfigured
+  })
   const configuredSourceBindings = sourceBindingsWithNoteMaterial(config.feishu.sourceFieldBindings, {
     enabled: noteMaterialSyncEnabled,
     fieldId: config.feishu.noteMaterialFieldId
@@ -4265,7 +4832,35 @@ async function configuredMirrorTableSync(options = {}) {
     dryRun: options.dryRun === true,
     nowMs: options.nowMs,
     runId: options.runId,
+    expectedSchemaSha256: options.expectedSchemaSha256,
+    expectedResourceIdentitySha256: options.expectedResourceIdentitySha256,
+    expectedMirrorPlanSha256: options.expectedMirrorPlanSha256,
+    mirrorSafetyResources: {
+      sourceBaseToken,
+      targetBaseToken,
+      sourceTableId,
+      miniTableId,
+      locationTableId,
+      rentedTableId,
+      historyTableId,
+      feishuApiBaseUrl: config.feishu.baseUrl,
+      legacyMaterialFolderToken: config.feishu.folderToken,
+      noteMaterialSyncEnabled,
+      noteMaterialTargetRootFolderToken: config.feishu.noteMaterialTargetRootFolderToken,
+      noteMaterialAllowedHosts: config.feishu.noteMaterialAllowedHosts,
+      uploadToOss: config.feishu.uploadToOss === true,
+      ossBucket: config.oss.bucket,
+      ossRegion: config.oss.region,
+      ossUploadDir: config.oss.uploadDir,
+      ossPublicBaseUrl: config.oss.publicBaseUrl || (
+        config.oss.bucket && config.oss.region
+          ? `https://${config.oss.bucket}.${config.oss.region}.aliyuncs.com`
+          : config.oss.homeUrl
+      )
+    },
     materials,
+    legacyMaterialSourceConfigured,
+    legacyMaterialEvidence,
     noteMaterialSyncEnabled
   })
   return { ...result, feishuToken: token }
@@ -4381,11 +4976,16 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
     expectedContentPlanSha256: expected.expectedContentPlanSha256,
     expectedContentAssetCount: expected.expectedContentAssetCount,
     expectedContentPlanEvidence: cachedConfirmation.expectedContentPlanEvidence,
+    expectedDeferredMaterialEvidence: Array.isArray(cachedConfirmation.expectedDeferredMaterialEvidence)
+      ? cachedConfirmation.expectedDeferredMaterialEvidence
+      : [],
     verifyExpectedContentPlan: true
   })
-  if (!preflight || preflight.complete !== true || preflight.dryRun !== true ||
+  const preflightAccepted = preflight && (
+    preflight.complete === true || isKnownMaterialRowWarningReport(preflight, { dryRun: true })
+  )
+  if (!preflightAccepted || preflight.dryRun !== true ||
       preflight.sourcesGloballyVerified !== true ||
-      Number(preflight.failed || 0) !== 0 ||
       preflight.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
       preflight.contentPlanAssetCount !== expected.expectedContentAssetCount) {
     throw contentPlanConfirmationError('正式飞书同步只读预检与已确认素材内容计划不一致')
@@ -4400,6 +5000,9 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
   return {
     ...expected,
     expectedContentPlanEvidence: privateConfirmation.expectedContentPlanEvidence,
+    expectedDeferredMaterialEvidence: Array.isArray(privateConfirmation.expectedDeferredMaterialEvidence)
+      ? privateConfirmation.expectedDeferredMaterialEvidence
+      : [],
     sourcesGloballyVerified: true
   }
 }
@@ -4443,7 +5046,7 @@ function formalNoteMaterialConfigurationReady(options = {}) {
         'verifyVideoDeterministic'
       ])
     : oss.hasReadConfig()
-  return config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
+  return noteMaterialFieldContractReady() &&
     Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
     config.feishu.noteMaterialAllowedHosts.length > 0 &&
     /^[A-Za-z0-9_-]{8,160}$/.test(targetRoot) &&
@@ -4463,7 +5066,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
   const sourceRows = Array.isArray(mirrorResult && mirrorResult.sourceNoteMaterials)
     ? mirrorResult.sourceNoteMaterials
     : []
-  if (config.feishu.noteMaterialSyncEnabled !== true) {
+  if (!effectiveNoteMaterialSyncEnabled()) {
     return {
       complete: true,
       published: options.dryRun !== true,
@@ -4487,7 +5090,8 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       sourcesGloballyVerified: options.sourcesGloballyVerified === true,
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
-      expectedContentPlanEvidence: options.expectedContentPlanEvidence
+      expectedContentPlanEvidence: options.expectedContentPlanEvidence,
+      expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence
     })
     emptyPlan.skipped = true
     return emptyPlan
@@ -4563,6 +5167,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
+      expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
       mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
       replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
         workingDb,
@@ -4575,6 +5180,10 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       )
     })
   } catch (error) {
+    const externalWriteStateUnknown = isExternalWriteStateUnknownError(error)
+    const status = externalWriteStateUnknown
+      ? 'external-write-state-unknown'
+      : (isContentPlanConfirmationError(error) ? 'content-plan-confirmation-failed' : 'pipeline-failed')
     return {
       complete: false,
       published: false,
@@ -4584,12 +5193,13 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       cleared: 0,
       retained: 0,
       failed: Math.max(1, sourceRows.length),
-      status: isContentPlanConfirmationError(error) ? 'content-plan-confirmation-failed' : 'pipeline-failed',
+      status,
+      externalWriteStateUnknown,
       rows: [{
-        status: isContentPlanConfirmationError(error)
-          ? 'content-plan-confirmation-failed'
-          : 'pipeline-failed',
-        error: shortError(error)
+        status,
+        error: externalWriteStateUnknown
+          ? '房源笔记素材外部写入状态待核对'
+          : shortError(error)
       }]
     }
   }
@@ -4640,7 +5250,9 @@ function finalizeMirrorSyncResult(run = {}) {
     noteMaterials,
     sheetSnapshot: run.snapshot,
     inventoryCommittable,
-    inventoryPublished
+    inventoryPublished,
+    externalWriteStateUnknown: run.externalWriteStateUnknown === true ||
+      Boolean(noteMaterials && noteMaterials.externalWriteStateUnknown === true)
   }
   if (!inventoryClassification.success || !noteMaterials) return flattened
 
@@ -4648,6 +5260,10 @@ function finalizeMirrorSyncResult(run = {}) {
     Number(noteMaterials.failed || 0) === 0 &&
     (run.dryRun === true ? noteMaterials.dryRun === true : noteMaterials.published === true)
   if (materialSucceeded) return flattened
+
+  const committableMaterialWarning = isKnownMaterialRowWarningReport(noteMaterials, {
+    dryRun: run.dryRun === true
+  }) && flattened.externalWriteStateUnknown !== true
 
   return {
     ...flattened,
@@ -4658,7 +5274,9 @@ function finalizeMirrorSyncResult(run = {}) {
       ? 'inventory-validated-materials-failed'
       : 'inventory-published-materials-failed',
     failed: Math.max(1, Number(noteMaterials.failed || 0)),
-    noop: false
+    noop: false,
+    inventoryCommittable: committableMaterialWarning ? inventoryCommittable : false,
+    inventoryPublished: committableMaterialWarning ? inventoryPublished : false
   }
 }
 
@@ -4673,6 +5291,9 @@ function recordMirrorSyncOutcome(db, result = {}) {
   latest.status = String(result.status || (result.success === true ? 'success' : 'failed'))
   latest.inventoryCommittable = result.inventoryCommittable === true
   latest.inventoryPublished = result.inventoryPublished === true
+  for (const field of ['missingVideoMaterial', 'skippedNoMaterial', 'materialTransferFailed']) {
+    if (Number.isFinite(Number(result[field]))) latest[field] = Math.max(0, Number(result[field]))
+  }
   latest.noteMaterials = note
     ? {
         complete: note.complete === true,
@@ -4694,6 +5315,24 @@ function recordMirrorSyncOutcome(db, result = {}) {
   return true
 }
 
+function reconcileInventoryVideoSummary(db, inventory = {}, noteMaterials = null) {
+  const activeCompanyListings = (db && Array.isArray(db.listings) ? db.listings : []).filter((listing) => (
+    listing && listing.externalSource === 'feishu' &&
+    listing.lifecycleStatus !== 'expired' && listing.status !== '已下架'
+  ))
+  const currentMissingVideoCount = activeCompanyListings.filter((listing) => (
+    !domain.hasListingVideo(listing) || listing.missingVideoMaterial === true
+  )).length
+  // worker-v2 已禁止 legacy 素材链；库存阶段的 skippedNoMaterial 只是旧匹配器看到空数组，
+  // 最终汇总必须以房源笔记管线落库后的真实媒体状态为准。
+  inventory.missingVideoMaterial = currentMissingVideoCount
+  inventory.skippedNoMaterial = currentMissingVideoCount
+  inventory.materialTransferFailed = Math.max(0, Number(
+    noteMaterials && noteMaterials.failed || 0
+  ))
+  return inventory
+}
+
 async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
   if (options.verifyExpectedContentPlan !== true ||
       !Array.isArray(options.expectedContentPlanEvidence)) {
@@ -4712,13 +5351,20 @@ async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
     expectedContentPlanSha256: options.expectedContentPlanSha256,
     expectedContentAssetCount: options.expectedContentAssetCount,
     expectedContentPlanEvidence: options.expectedContentPlanEvidence,
+    expectedDeferredMaterialEvidence: Array.isArray(options.expectedDeferredMaterialEvidence)
+      ? options.expectedDeferredMaterialEvidence
+      : [],
     _captureContentPlanConfirmation(value) {
       captured = value
     }
   })
-  if (!previewResult || previewResult.complete !== true ||
-      previewResult.success !== true || previewResult.dryRun !== true ||
-      Number(previewResult.failed || 0) !== 0 ||
+  const previewAccepted = previewResult && (
+    (previewResult.complete === true && previewResult.success === true &&
+      Number(previewResult.failed || 0) === 0) ||
+    (previewResult.status === 'inventory-validated-materials-failed' &&
+      isKnownMaterialRowWarningReport(previewResult.noteMaterials, { dryRun: true }))
+  )
+  if (!previewAccepted || previewResult.dryRun !== true ||
       !captured || !captured.report || !captured.privateConfirmation) {
     throw contentPlanConfirmationError('正式飞书同步的完整只读预检未通过')
   }
@@ -4734,7 +5380,11 @@ async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
 function enforceFormalContentPlanResult(result, expected) {
   if (!expected) return result
   const note = result && result.noteMaterials
-  const matched = note && note.complete === true && note.published === true &&
+  const noteAccepted = note && (
+    (note.complete === true && note.published === true) ||
+    isKnownMaterialRowWarningReport(note, { dryRun: false })
+  )
+  const matched = noteAccepted && result.externalWriteStateUnknown !== true &&
     note.contentPlanSha256 === expected.expectedContentPlanSha256 &&
     note.contentPlanAssetCount === expected.expectedContentAssetCount
   if (matched) return result
@@ -4784,12 +5434,38 @@ async function syncViaMirror(db, adminId, options = {}) {
           expectedContentPlanSha256: confirmationContext.expectedContentPlanSha256,
           expectedContentAssetCount: confirmationContext.expectedContentAssetCount,
           expectedContentPlanEvidence: confirmationContext.expectedContentPlanEvidence,
+          expectedDeferredMaterialEvidence: confirmationContext.expectedDeferredMaterialEvidence,
           verifyExpectedContentPlan: confirmationContext.verifyExpectedContentPlan === true
         })
         preflightFeishuToken = preflight.feishuToken || ''
         return preflight
       }
     })
+  }
+  let mirrorSafetyPreflight = null
+  if (options.dryRun !== true) {
+    // 每次正式同步都先用完全相同的 runId/nowMs、资源和基线做一次镜像只读预检。
+    // 预检产出的摘要随即成为 apply 的 expected 值；若调用方还携带上一次人工批准摘要，
+    // configuredMirrorTableSync 会先核对它，任何漂移都不会进入目标写阶段。
+    mirrorSafetyPreflight = await configuredMirrorTableSync({
+      ...options,
+      ...coordinates,
+      baselinePublishedSourceIds,
+      baselinePublishedFoundationIdentityKeys,
+      dryRun: true,
+      feishuToken: options.feishuToken || preflightFeishuToken || ''
+    })
+    if (!mirrorSafetyPreflight || mirrorSafetyPreflight.complete !== true ||
+        mirrorSafetyPreflight.dryRun !== true ||
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.schemaSha256 || '')) ||
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.resourceIdentitySha256 || '')) ||
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.mirrorPlanSha256 || ''))) {
+      throw mirrorSafetyDigestError(
+        'MIRROR_PREFLIGHT_FAILED',
+        '飞书镜像正式同步的只读安全预检未形成完整摘要'
+      )
+    }
+    preflightFeishuToken = mirrorSafetyPreflight.feishuToken || preflightFeishuToken
   }
   const effectiveOptions = {
     ...options,
@@ -4803,7 +5479,17 @@ async function syncViaMirror(db, adminId, options = {}) {
     expectedContentPlanEvidence: confirmedContentPlan
       ? confirmedContentPlan.expectedContentPlanEvidence
       : (verificationDryRun ? options.expectedContentPlanEvidence : undefined),
-    feishuToken: options.feishuToken || preflightFeishuToken || ''
+    expectedDeferredMaterialEvidence: confirmedContentPlan
+      ? confirmedContentPlan.expectedDeferredMaterialEvidence
+      : (verificationDryRun ? options.expectedDeferredMaterialEvidence : undefined),
+    feishuToken: options.feishuToken || preflightFeishuToken || '',
+    ...(mirrorSafetyPreflight
+      ? {
+          expectedSchemaSha256: mirrorSafetyPreflight.schemaSha256,
+          expectedResourceIdentitySha256: mirrorSafetyPreflight.resourceIdentitySha256,
+          expectedMirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256
+        }
+      : {})
   }
   let pendingDryContentPlan = null
   const run = await runCompanySourceSync({
@@ -4829,9 +5515,14 @@ async function syncViaMirror(db, adminId, options = {}) {
         mirrorResult,
         effectiveOptions
       )
+      if (effectiveNoteMaterialSyncEnabled() && effectiveOptions.dryRun !== true) {
+        reconcileInventoryVideoSummary(workingDb, inventory, noteMaterials)
+      }
       if (effectiveOptions.dryRun === true && contentPlanConfirmationRequired() &&
-          noteMaterials && noteMaterials.complete === true &&
-          Number(noteMaterials.failed || 0) === 0) {
+          noteMaterials && (
+            (noteMaterials.complete === true && Number(noteMaterials.failed || 0) === 0) ||
+            isKnownMaterialRowWarningReport(noteMaterials, { dryRun: true })
+          )) {
         pendingDryContentPlan = {
           report: noteMaterials,
           feishuToken: mirrorResult.feishuToken || effectiveOptions.feishuToken || ''
@@ -4846,7 +5537,10 @@ async function syncViaMirror(db, adminId, options = {}) {
       }
     },
     publishSnapshot: async (workingDb, records) => {
-      const before = JSON.stringify(workingDb.companySheetSnapshot || null)
+      const before = JSON.stringify({
+        v1: workingDb.companySheetSnapshot || null,
+        v2: workingDb.companySheetSnapshotV2 || null
+      })
       // 镜像阶段已按“此前公开 ID → 本轮公开 ID”执行批量撤下熔断；小批明确房态变更后
       // 允许合法发布仅含表头的零房源快照，不能因旧的非空保护让已租房源继续公开。
       const snapshot = publishCompanySnapshot(workingDb, records, { complete: true, allowEmptyPublic: true })
@@ -4855,13 +5549,15 @@ async function syncViaMirror(db, adminId, options = {}) {
         sourceMode: 'feishu-mini-mirror-v1',
         schemaVersion: 1,
         updatedAt: nowText()
-      })
+      }, { fillMergedCells: false })
       workingDb.companySheetSnapshot = sanitized
+      const snapshotV2 = companySheetSnapshotContract.convertTrustedV1SnapshotToV2(sanitized)
+      workingDb.companySheetSnapshotV2 = snapshotV2
       return {
         complete: true,
         published: true,
         failed: 0,
-        noop: before === JSON.stringify(sanitized),
+        noop: before === JSON.stringify({ v1: sanitized, v2: snapshotV2 }),
         rowCount: sanitized.rowCount,
         columnCount: sanitized.columnCount,
         updatedAt: sanitized.updatedAt
@@ -4875,8 +5571,12 @@ async function syncViaMirror(db, adminId, options = {}) {
     finalizeMirrorSyncResult(run),
     confirmedContentPlan
   )
-  if (result.dryRun === true && result.complete === true &&
-      result.success === true && Number(result.failed || 0) === 0 &&
+  const acceptedDryResult = result.dryRun === true && (
+    (result.complete === true && result.success === true && Number(result.failed || 0) === 0) ||
+    (result.status === 'inventory-validated-materials-failed' &&
+      isKnownMaterialRowWarningReport(result.noteMaterials, { dryRun: true }))
+  )
+  if (acceptedDryResult &&
       pendingDryContentPlan) {
     const privateConfirmation = rememberContentPlanConfirmation(pendingDryContentPlan.report)
     if (typeof effectiveOptions._captureContentPlanConfirmation === 'function') {
@@ -4911,12 +5611,24 @@ function parseAdminDryRun(body = {}) {
 
 function parseAdminSyncRequest(body = {}, options = {}) {
   const dryRun = parseAdminDryRun(body)
+  if (options.externalWorkerRequest === true) {
+    const unknownFields = Object.keys(body).filter((field) => field !== 'dryRun')
+    if (unknownFields.length) {
+      const error = new Error('后台同步只接受 dryRun；任务身份与全部摘要只能由服务端生成')
+      error.statusCode = 400
+      throw error
+    }
+    return { dryRun }
+  }
   const allowedFields = new Set([
     'dryRun',
     'runId',
     'nowMs',
     'expectedContentPlanSha256',
-    'expectedContentAssetCount'
+    'expectedContentAssetCount',
+    'expectedSchemaSha256',
+    'expectedResourceIdentitySha256',
+    'expectedMirrorPlanSha256'
   ])
   const unknownFields = Object.keys(body).filter((field) => !allowedFields.has(field))
   if (unknownFields.length) {
@@ -4937,6 +5649,14 @@ function parseAdminSyncRequest(body = {}, options = {}) {
     error.statusCode = 400
     throw error
   }
+  for (const field of ['expectedSchemaSha256', 'expectedResourceIdentitySha256', 'expectedMirrorPlanSha256']) {
+    if (Object.prototype.hasOwnProperty.call(body, field) &&
+        (typeof body[field] !== 'string' || !/^[0-9a-f]{64}$/.test(body[field]))) {
+      const error = new Error(`${field} 必须是 64 位小写十六进制摘要`)
+      error.statusCode = 400
+      throw error
+    }
+  }
   const required = Object.prototype.hasOwnProperty.call(options, 'contentPlanConfirmationRequired')
     ? options.contentPlanConfirmationRequired === true
     : contentPlanConfirmationRequired()
@@ -4945,6 +5665,15 @@ function parseAdminSyncRequest(body = {}, options = {}) {
     dryRun,
     ...(Object.prototype.hasOwnProperty.call(body, 'runId') ? { runId: body.runId } : {}),
     ...(Object.prototype.hasOwnProperty.call(body, 'nowMs') ? { nowMs: body.nowMs } : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, 'expectedSchemaSha256')
+      ? { expectedSchemaSha256: body.expectedSchemaSha256 }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, 'expectedResourceIdentitySha256')
+      ? { expectedResourceIdentitySha256: body.expectedResourceIdentitySha256 }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, 'expectedMirrorPlanSha256')
+      ? { expectedMirrorPlanSha256: body.expectedMirrorPlanSha256 }
+      : {}),
     ...(expected || {})
   }
 }
@@ -4972,6 +5701,21 @@ async function sync(db, adminId, options = {}) {
   if (!config.feishu.syncEnabled) {
     const error = new Error('飞书房源同步已由服务端配置停用')
     error.statusCode = 503
+    throw error
+  }
+  if (options.syncController === 'worker-v2' && !config.feishu.mirrorSyncEnabled) {
+    const error = new Error('worker-v2 只允许执行字段契约明确的飞书镜像同步')
+    error.code = 'WORKER_MIRROR_MODE_REQUIRED'
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  if (options.syncController === 'worker-v2' &&
+      (!effectiveNoteMaterialSyncEnabled() || !formalNoteMaterialConfigurationReady(options))) {
+    const error = new Error('worker-v2 只允许执行配置完整的房源笔记确定性素材管线')
+    error.code = 'WORKER_NOTE_MATERIAL_MODE_REQUIRED'
+    error.statusCode = 409
+    error.safeBeforeWrite = true
     throw error
   }
   if (config.feishu.mirrorSyncEnabled) return syncViaMirror(db, adminId, options)
@@ -5012,15 +5756,11 @@ function status(db = {}) {
   const hasFolder = Boolean(config.feishu.folderToken || config.feishu.materialsFile)
   const legacyReady = (hasLocalFiles || hasBitable || hasSheet) && hasFolder
   const mirrorState = mirrorConfigurationStatus()
-  const noteMaterialsReady = config.feishu.noteMaterialSyncEnabled === true &&
-    config.feishu.noteMaterialFieldId === 'fldyeAGJHV' &&
-    Array.isArray(config.feishu.noteMaterialAllowedHosts) &&
-    config.feishu.noteMaterialAllowedHosts.length > 0 &&
-    Boolean(config.feishu.noteMaterialTargetRootFolderToken) &&
-    (!config.feishu.folderToken ||
-      String(config.feishu.noteMaterialTargetRootFolderToken).trim() !== String(config.feishu.folderToken).trim()) &&
-    oss.hasReadConfig()
-  const sourceReady = config.feishu.syncEnabled && (config.feishu.mirrorSyncEnabled ? mirrorState.ready : legacyReady)
+  const noteMaterialsReady = effectiveNoteMaterialSyncEnabled() && formalNoteMaterialConfigurationReady()
+  const automaticState = automaticWorkerConfigurationStatus()
+  const sourceReady = config.feishu.syncEnabled && (config.feishu.mirrorSyncEnabled
+    ? (config.feishu.autoSyncEnabled ? automaticState.ready : mirrorState.ready)
+    : legacyReady)
   return {
     ready: sourceReady,
     mode: config.feishu.mirrorSyncEnabled
@@ -5028,6 +5768,7 @@ function status(db = {}) {
       : (hasLocalFiles ? '本地文件导入' : (hasBitable ? '飞书多维表' : '飞书表格')),
     syncEnabled: config.feishu.syncEnabled,
     autoSyncEnabled: config.feishu.autoSyncEnabled,
+    automaticReady: automaticState.ready,
     mirrorSyncEnabled: config.feishu.mirrorSyncEnabled,
     recordsReady: config.feishu.mirrorSyncEnabled
       ? mirrorState.sourceTableReady && mirrorState.miniTableReady && mirrorState.locationTableReady
@@ -5080,9 +5821,12 @@ function status(db = {}) {
 module.exports = {
   sync,
   status,
+  automaticWorkerConfigurationStatus,
   sheetSnapshot,
   cachedSheetSnapshot,
+  cachedSheetSnapshotV2,
   unavailableSheetSnapshot,
+  unavailableSheetSnapshotV2,
   refreshSheetSnapshot,
   normalizeRecord,
   applySync,
@@ -5098,18 +5842,24 @@ module.exports = {
     canonicalMirrorRecordToSyncRow,
     executeMirrorTableSync,
     mirrorConfigurationStatus,
+    automaticWorkerConfigurationStatus,
     assertFoundationEnrichmentConfiguration,
     configuredMirrorTableSync,
     syncMirrorNoteMaterials,
     syncNoteMaterialsAfterInventory,
     finalizeMirrorSyncResult,
     recordMirrorSyncOutcome,
+    reconcileInventoryVideoSummary,
     sourceBindingsWithNoteMaterial,
+    noteMaterialFieldContractReady,
     sourceNoteMaterialRows,
     bindingContractStatus,
     resolvedContractBindings,
     pairedMirrorBindingsReady,
     loadConfiguredMirrorMaterials,
+    loadFolderMaterials,
+    feishuJson,
+    buildLegacyMaterialEvidence,
     semanticFieldsForWrite,
     assertMirrorDeactivateSafety,
     activeFeishuSourceRecordIds,
@@ -5123,6 +5873,8 @@ module.exports = {
     foundationArchiveFields,
     lifecycleHistoryOperations,
     foundationEnrichmentPlanSha256,
+    buildMirrorSafetyDigests,
+    assertMirrorSafetyDigestConfirmation,
     executeFoundationEnrichment
   }
 }

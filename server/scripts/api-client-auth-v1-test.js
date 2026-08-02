@@ -645,6 +645,7 @@ async function run() {
     const captured = []
     apiClient.call = (options) => {
       captured.push(options)
+      if (options.path === '/mini/v2/company-sheet-snapshot') return Promise.resolve(options.mock())
       if (options.path === '/mini/company-sheet-snapshot') return Promise.resolve(options.mock())
       if (/\/favorites\/ids$/.test(options.path)) return Promise.resolve([])
       if (/\/favorites(?:\?|$)/.test(options.path)) return Promise.resolve([])
@@ -686,6 +687,10 @@ async function run() {
       ['getNearbyListings', () => apiService.getNearbyListings('L-PUBLIC')]
     ]
     for (const [label, invoke] of publicMethods) await captureCall(label, invoke, true)
+    assert.ok(
+      captured.some((item) => item.path === '/mini/v2/company-sheet-snapshot'),
+      '房源表客户端必须先请求 v2 接口'
+    )
     ;['/mini/listings/match', '/mini/assistant/chat', '/mini/assistant/feedback'].forEach((pathname) => {
       const request = captured.find((item) => item.path === pathname)
       assert.ok(request && request.retryAnonymousOnAuthFailure === true, `${pathname} 必须仅在服务端执行前 401 标记下允许一次匿名重试`)
@@ -709,10 +714,15 @@ async function run() {
       Object.keys(snapshot).sort(),
       [
         'columnCount',
-        'rowCount',
+        'columnKeys',
+        'contentSha256',
+        'contract',
+        'dataRowCount',
+        'minReaderVersion',
         'rows',
         'schemaVersion',
         'sensitiveStripped',
+        'snapshotId',
         'sourceMode',
         'title',
         'unavailable',
@@ -724,6 +734,55 @@ async function run() {
       assert.ok(!Object.prototype.hasOwnProperty.call(snapshot, key), `Mock 飞书快照不得返回 ${key}`)
     }
     assert.ok(!/https?:\/\//i.test(JSON.stringify(snapshot)), 'Mock 飞书快照不得夹带任何表格 URL')
+
+    const fallbackCalls = []
+    apiClient.call = (options) => {
+      fallbackCalls.push(options.path)
+      if (options.path === '/mini/v2/company-sheet-snapshot') {
+        const error = new Error('v2 接口不存在')
+        error.statusCode = 404
+        return Promise.reject(error)
+      }
+      return Promise.resolve(options.mock())
+    }
+    const legacySnapshot = await apiService.getCompanySheetSnapshot()
+    assert.deepStrictEqual(
+      fallbackCalls,
+      ['/mini/v2/company-sheet-snapshot', '/mini/company-sheet-snapshot'],
+      '只有明确 HTTP 404 才允许按固定顺序回退 v1'
+    )
+    assert.strictEqual(legacySnapshot.sourceMode, 'feishu-mini-mirror-v1', '明确 404 回退必须保留旧 v1 契约')
+    assert.strictEqual(legacySnapshot.schemaVersion, 1)
+
+    for (const failure of [
+      { label: '500', error: Object.assign(new Error('服务端错误'), { statusCode: 500 }) },
+      { label: '超时', error: new Error('request:fail timeout') },
+      { label: '仅文案含 404', error: new Error('upstream text says 404 but status is unknown') }
+    ]) {
+      const paths = []
+      apiClient.call = (options) => {
+        paths.push(options.path)
+        return Promise.reject(failure.error)
+      }
+      await assert.rejects(apiService.getCompanySheetSnapshot(), failure.error)
+      assert.deepStrictEqual(paths, ['/mini/v2/company-sheet-snapshot'], `v2 ${failure.label} 必须 fail-closed，不得回退 v1`)
+    }
+
+    const malformedPaths = []
+    apiClient.call = (options) => {
+      malformedPaths.push(options.path)
+      return Promise.resolve({
+        sourceMode: 'feishu-mini-mirror-v2',
+        schemaVersion: 2,
+        rows: [['字段已串位']]
+      })
+    }
+    await assert.rejects(
+      apiService.getCompanySheetSnapshot(),
+      /v2|契约|格式/,
+      'v2 返回坏契约必须拒绝'
+    )
+    assert.deepStrictEqual(malformedPaths, ['/mini/v2/company-sheet-snapshot'], '坏 v2 不能静默回退旧接口')
 
     apiClient.call = originalCall
     mockData.revokeAuthSession(signedServiceSession.token)

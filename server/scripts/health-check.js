@@ -50,6 +50,120 @@ function aggregate(checks) {
   return { ok: failures.length === 0, checks: list, failures }
 }
 
+function evaluateFeishuSyncState(db, options = {}) {
+  const autoSyncEnabled = options.autoSyncEnabled === true
+  const runs = Array.isArray(db && db.feishuSyncRuns) ? db.feishuSyncRuns : []
+  const scheduler = db && db.feishuSyncScheduler && typeof db.feishuSyncScheduler === 'object'
+    ? db.feishuSyncScheduler
+    : {}
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now()
+  const terminalStates = new Set(['dry-succeeded', 'succeeded', 'failed-before-write', 'unknown', 'blocked'])
+  const validLease = (lease) => Boolean(lease) && typeof lease === 'object' && !Array.isArray(lease) &&
+    typeof lease.runId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(lease.runId) &&
+    typeof lease.owner === 'string' && lease.owner.length > 0 && lease.owner.length <= 128 &&
+    Number.isSafeInteger(lease.fence) && lease.fence > 0 &&
+    Number.isFinite(lease.acquiredAt) && lease.acquiredAt >= 0 &&
+    Number.isFinite(lease.expiresAt) && lease.expiresAt > lease.acquiredAt
+  const unresolved = runs.filter((run) => (
+    run && ['unknown', 'blocked'].includes(String(run.state || '')) && !Number(run.resolvedAt || 0)
+  ))
+  // 关闭自动同步通常正是 UNKNOWN/BLOCKED 的处置动作之一；不能因为关闭开关就把事故假报为健康。
+  if (unresolved.length) {
+    return {
+      ok: false,
+      detail: '同步存在未处置的未知或阻断任务',
+      unresolvedCount: unresolved.length,
+      lastState: String(unresolved[0] && unresolved[0].state || '')
+    }
+  }
+  if (String(scheduler.leaseIntegrityBlockedRunId || '').trim()) {
+    return { ok: false, detail: '同步控制器租约完整性异常' }
+  }
+  const activeLease = scheduler.activeLease
+  const activeRun = activeLease && runs.find((run) => run && run.runId === activeLease.runId)
+  const activeRunLease = activeRun && activeRun.lease
+  const activeLeaseConsistent = !activeLease || Boolean(
+    validLease(activeLease) && activeRun && String(activeRun.state || '') !== 'queued' &&
+    !terminalStates.has(String(activeRun.state || '')) &&
+    validLease(activeRunLease) &&
+    String(activeRunLease.runId || '') === String(activeRun.runId || '') &&
+    String(activeLease.runId || '') === String(activeRun.runId || '') &&
+    String(activeRunLease.owner || '') === String(activeLease.owner || '') &&
+    Number(activeRunLease.fence) === Number(activeLease.fence) &&
+    Number(activeRunLease.acquiredAt) === Number(activeLease.acquiredAt) &&
+    Number(activeRunLease.expiresAt) === Number(activeLease.expiresAt) &&
+    Number(activeLease.expiresAt) > nowMs
+  )
+  const orphanedRunLease = runs.some((run) => (
+    run && String(run.state || '') !== 'queued' &&
+    !terminalStates.has(String(run.state || '')) &&
+    (!validLease(run.lease) || String(run.lease.runId || '') !== String(run.runId || '') ||
+      Number(run.lease.expiresAt) <= nowMs || !activeLease || run.runId !== activeLease.runId ||
+      String(run.lease.owner || '') !== String(activeLease.owner || '') ||
+      Number(run.lease.fence) !== Number(activeLease.fence) ||
+      Number(run.lease.acquiredAt) !== Number(activeLease.acquiredAt) ||
+      Number(run.lease.expiresAt) !== Number(activeLease.expiresAt))
+  ))
+  if (!activeLeaseConsistent || orphanedRunLease) {
+    return { ok: false, detail: '同步控制器活动租约不一致' }
+  }
+  if (!autoSyncEnabled) return { ok: true, skipped: '自动同步未启用' }
+  if (options.controllerMode !== 'worker-v2') {
+    return { ok: false, detail: '自动同步未绑定 worker-v2 控制器' }
+  }
+  if (options.schemaApproved !== true || options.resourceApproved !== true) {
+    return { ok: false, detail: '自动同步尚未同时批准字段契约与飞书资源身份' }
+  }
+  if (options.writeLockEnabled !== true) {
+    return { ok: false, detail: '自动同步要求数据库跨进程写锁保持开启' }
+  }
+
+  const intervalMinutes = Number.isFinite(Number(options.intervalMinutes)) && Number(options.intervalMinutes) > 0
+    ? Number(options.intervalMinutes)
+    : 30
+  const runTimestamp = (run) => Number(run && (run.updatedAt || run.finishedAt || run.createdAt) || 0)
+  const latestRuns = runs.slice().sort((left, right) => {
+    return runTimestamp(right) - runTimestamp(left)
+  })
+  const latestRun = latestRuns[0]
+  const latestFullRun = latestRuns.find((run) => (
+    run && run.dryRun !== true && run.state !== 'dry-succeeded'
+  ))
+  const lastSuccess = runs.filter((run) => (
+    run && run.state === 'succeeded' && run.errorCode !== 'MATERIALS_PARTIAL_FAILURE'
+  ))
+    .sort((left, right) => Number(right.finishedAt || 0) - Number(left.finishedAt || 0))[0]
+  const lastSuccessAgeMinutes = lastSuccess && Number.isFinite(Number(lastSuccess.finishedAt))
+    ? Math.floor(Math.max(0, nowMs - Number(lastSuccess.finishedAt)) / 60000)
+    : null
+  if (latestFullRun && latestFullRun.state === 'succeeded' && latestFullRun.errorCode === 'MATERIALS_PARTIAL_FAILURE') {
+    return {
+      ok: false,
+      degraded: true,
+      detail: '最近一次自动同步的素材链路未完整',
+      lastState: 'succeeded',
+      lastSuccessAgeMinutes,
+      maxAgeMinutes: intervalMinutes * 3
+    }
+  }
+  if (!lastSuccess || !Number.isFinite(Number(lastSuccess.finishedAt))) {
+    return {
+      ok: false,
+      detail: '自动同步尚无受信成功记录',
+      lastState: String(latestRun && latestRun.state || '')
+    }
+  }
+  const ageMs = Math.max(0, nowMs - Number(lastSuccess.finishedAt))
+  const maxAgeMs = intervalMinutes * 3 * 60 * 1000
+  return {
+    ok: ageMs <= maxAgeMs,
+    ...(ageMs <= maxAgeMs ? {} : { detail: '自动同步成功记录已超过三个调度周期' }),
+    lastState: String(latestRun && latestRun.state || ''),
+    lastSuccessAgeMinutes: Math.floor(ageMs / 60000),
+    maxAgeMinutes: intervalMinutes * 3
+  }
+}
+
 function resolveDbPath() {
   const env = process.env.DATA_FILE || ''
   if (env && path.isAbsolute(env)) return env
@@ -128,6 +242,29 @@ function checkService() {
   }
 }
 
+function checkFeishuSync() {
+  try {
+    const config = require('../src/config')
+    const dbStore = require('../src/db')
+    const raw = fs.readFileSync(resolveDbPath(), 'utf8')
+    const text = String(raw || '').charCodeAt(0) === 65279 ? String(raw).slice(1) : String(raw || '')
+    const db = JSON.parse(text)
+    return {
+      name: 'feishuSync',
+      ...evaluateFeishuSyncState(db, {
+        autoSyncEnabled: config.feishu.autoSyncEnabled,
+        controllerMode: config.feishu.syncControllerMode,
+        schemaApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedSchemaSha256 || '')),
+        resourceApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedResourceIdentitySha256 || '')),
+        writeLockEnabled: dbStore.writeLockEnabled(),
+        intervalMinutes: config.feishu.syncIntervalMinutes
+      })
+    }
+  } catch (error) {
+    return { name: 'feishuSync', ok: false, detail: '自动同步状态读取失败' }
+  }
+}
+
 function alertIfNeeded(result) {
   if (result.ok) return
   process.stderr.write('[health][ALERT] 巡检失败：' + result.failures.join(',') + '\n')
@@ -149,10 +286,17 @@ function alertIfNeeded(result) {
 }
 
 if (require.main === module) {
-  const result = aggregate([checkDb(), checkDisk(), checkBackup(), checkService()])
+  const result = aggregate([checkDb(), checkDisk(), checkBackup(), checkService(), checkFeishuSync()])
   process.stdout.write('[health] ' + JSON.stringify(result) + '\n')
   alertIfNeeded(result)
   process.exit(result.ok ? 0 : 1)
 }
 
-module.exports = { evaluateDb, parseDfFreePct, aggregate, resolveDbPath, buildAlertEnv }
+module.exports = {
+  evaluateDb,
+  parseDfFreePct,
+  aggregate,
+  evaluateFeishuSyncState,
+  resolveDbPath,
+  buildAlertEnv
+}

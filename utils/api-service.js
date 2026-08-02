@@ -3,6 +3,7 @@ const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const mockData = require('./mock-data')
 const listingDisplay = require('./listing-display')
 const listingFilterOptions = require('./listing-filter-options')
+const companySheetSnapshotContract = require('./company-sheet-snapshot-contract')
 const { anonymousPublicRequestData } = require('./public-request-safety')
 const OFFICIAL_COMMUNITY_KEYS = new Set(require('./gongshu-communities')
   .map((name) => String(name || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase())
@@ -591,7 +592,7 @@ function setFavorite(listingId, desired) {
   })
 }
 
-function buildMockCompanySheetSnapshot() {
+function buildMockCompanySheetSnapshotV1() {
   return {
     title: '寓你住一起房源表',
     updatedAt: '',
@@ -616,14 +617,58 @@ function buildMockCompanySheetSnapshot() {
   }
 }
 
-function getCompanySheetSnapshot() {
+function buildMockCompanySheetSnapshotV2() {
+  const snapshot = {
+    contract: companySheetSnapshotContract.CONTRACT,
+    sourceMode: companySheetSnapshotContract.SOURCE_MODE,
+    schemaVersion: companySheetSnapshotContract.SCHEMA_VERSION,
+    minReaderVersion: companySheetSnapshotContract.MIN_READER_VERSION,
+    columnKeys: companySheetSnapshotContract.COLUMN_KEYS.slice(),
+    title: '寓你住一起房源表',
+    updatedAt: '',
+    unavailable: true,
+    rows: [],
+    dataRowCount: 0,
+    columnCount: 10,
+    contentSha256: '',
+    snapshotId: '',
+    sensitiveStripped: true
+  }
+  snapshot.contentSha256 = companySheetSnapshotContract.contentSha256Of(snapshot)
+  snapshot.snapshotId = `company-sheet-v2:${snapshot.contentSha256}`
+  return snapshot
+}
+
+function getLegacyCompanySheetSnapshot() {
   return apiClient.call({
     path: '/mini/company-sheet-snapshot',
     publicReadAuthFallback: true,
     mock: () => {
       assertMockOptionalAuthorization()
-      return buildMockCompanySheetSnapshot()
+      return buildMockCompanySheetSnapshotV1()
     }
+  })
+}
+
+function getCompanySheetSnapshot() {
+  return apiClient.call({
+    path: '/mini/v2/company-sheet-snapshot',
+    publicReadAuthFallback: true,
+    mock: () => {
+      assertMockOptionalAuthorization()
+      return buildMockCompanySheetSnapshotV2()
+    }
+  }).then((snapshot) => {
+    const parsed = companySheetSnapshotContract.parseCompanySheetSnapshotV2(snapshot)
+    if (parsed) return parsed
+    const error = new Error('房源表 v2 数据契约校验失败')
+    error.code = 'INVALID_COMPANY_SHEET_SNAPSHOT_V2'
+    throw error
+  }).catch((error) => {
+    // 仅“服务器明确返回 HTTP 404”代表旧版本尚未提供 v2 路由；网络错误、5xx 与坏契约
+    // 都可能是发布链路异常，必须原样失败，不能回退旧快照掩盖数据错位。
+    if (!error || Number(error.statusCode) !== 404) throw error
+    return getLegacyCompanySheetSnapshot()
   })
 }
 

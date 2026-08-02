@@ -495,6 +495,133 @@ async function testPreparedMaterialFailureDisposal() {
   }
 }
 
+async function testExactExternalWriteDispatchBoundary() {
+  const asset = { ...syntheticAssets()[0], kind: 'video' }
+  const { sourceBuffer, prepared } = preparedVideoFixture()
+  const downloadToken = async () => ({
+    buffer: Buffer.from(sourceBuffer),
+    size: sourceBuffer.length,
+    contentType: 'video/mp4',
+    contentSha256: crypto.createHash('sha256').update(sourceBuffer).digest('hex')
+  })
+  const prepareMaterial = async () => ({ ...prepared, buffer: Buffer.from(prepared.buffer) })
+  prepareMaterial.profile = {
+    transformProfileVersion: prepared.transformProfileVersion,
+    transformProfileSha256: prepared.transformProfileSha256,
+    transformToolFingerprint: prepared.transformToolFingerprint
+  }
+  const common = {
+    sourceRecordId: 'source-record-write-boundary',
+    assets: [asset],
+    existingMediaAssets: [],
+    uploadDir: 'house-videos',
+    prepareMaterial,
+    disposePreparedMaterial: async () => {}
+  }
+
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder(input) {
+          assert.strictEqual(typeof input.onWriteDispatched, 'function')
+          const error = new Error('synthetic drive list precheck failed')
+          error.statusCode = 503
+          throw error
+        },
+        async materializeAsset() { throw new Error('不得进入素材写入') }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code !== 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN' && error.statusCode === 503,
+    'Drive 纯读取预检失败且零 POST 时必须保持可延期错误，不能误判状态未知'
+  )
+
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder(input) {
+          input.onWriteDispatched()
+          input.onWriteVerified()
+          const error = new Error('synthetic later folder list precheck failed')
+          error.statusCode = 503
+          throw error
+        },
+        async materializeAsset() { throw new Error('不得进入素材写入') }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code !== 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN' && error.statusCode === 503,
+    '前一目录写入已完成回读后，后续纯读取失败不得沿用陈旧的未确认写标记'
+  )
+
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder() { return { token: 'fld-existing-target' } },
+        async materializeAsset(input) {
+          input.onWriteDispatched()
+          const error = new Error('synthetic drive post result unknown')
+          error.statusCode = 504
+          throw error
+        }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+    'Drive POST 已派发后结果不明必须升级为状态未知'
+  )
+
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder() { return { token: 'fld-existing-target' } },
+        async materializeAsset(input) {
+          return {
+            targetToken: 'file-existing-target',
+            targetName: input.targetName,
+            contentType: input.sourceEvidence.contentType,
+            contentSha256: input.sourceEvidence.contentSha256,
+            size: input.sourceEvidence.size,
+            verified: true
+          }
+        }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic(input) {
+          assert.strictEqual(typeof input.onWriteDispatched, 'function')
+          const error = new Error('synthetic oss head precheck failed')
+          error.statusCode = 503
+          throw error
+        }
+      }
+    }),
+    (error) => error && error.code !== 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN' && error.statusCode === 503,
+    'Drive 复用成功后 OSS 纯读取预检失败且零 PUT 时仍必须保持可延期错误'
+  )
+}
+
 function successfulPreparedMaterialTargets(writeCalls, outputBuffer) {
   return {
     drive: {
@@ -1084,6 +1211,7 @@ function assertBoundedMaterialMemory() {
 async function run() {
   await testStreamingMaterialClient()
   await testPreparedMaterialFailureDisposal()
+  await testExactExternalWriteDispatchBoundary()
   await testPreparedMaterialFinallyDisposalRetry()
   await testConfirmedFormalSyncStreamsOneCompressedFileOnce()
   assert.strictEqual(domain.MAX_LISTING_MEDIA_ASSETS, 64, '单套房源视频素材安全上限必须固定为 64')
@@ -1408,6 +1536,7 @@ async function run() {
       existingMediaAssets: [],
       uploadDir: 'house-videos',
       drive: {
+        writeDispatchEvidenceVersion: 1,
         async downloadToken(sourceToken) {
           const readCount = (changingSourceReads.get(sourceToken) || 0) + 1
           changingSourceReads.set(sourceToken, readCount)
@@ -1457,6 +1586,7 @@ async function run() {
       existingMediaAssets: result.mediaAssets,
       uploadDir: 'house-videos',
       drive: {
+        writeDispatchEvidenceVersion: 1,
         async downloadToken(sourceToken) {
           return drive.downloadToken(sourceToken)
         },

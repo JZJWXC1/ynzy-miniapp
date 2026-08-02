@@ -231,6 +231,7 @@ async function runInventory(fixture, options = {}) {
     expectedContentPlanSha256: options.expectedContentPlanSha256,
     expectedContentAssetCount: options.expectedContentAssetCount,
     expectedContentPlanEvidence: options.expectedContentPlanEvidence,
+    expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
     mediaAssetsStateKey: (current) => sha256(JSON.stringify(current.mediaAssets || [])),
     replaceMediaAssets: async (current, mediaAssets) => {
       fixture.calls.dbWrite += 1
@@ -561,6 +562,23 @@ async function testParserAndScheduledGate() {
     { dryRun: true },
     'dry-run 不要求 expected 确认字段'
   )
+  assert.deepStrictEqual(
+    feishuSync.parseAdminSyncRequest({ dryRun: true }, { externalWorkerRequest: true }),
+    { dryRun: true },
+    '异步 worker 的外部请求只允许选择纯预演'
+  )
+  assert.deepStrictEqual(
+    feishuSync.parseAdminSyncRequest({ dryRun: false }, { externalWorkerRequest: true }),
+    { dryRun: false },
+    '异步 worker 的正式请求身份和摘要由服务端生成'
+  )
+  for (const field of ['runId', 'nowMs', 'expectedContentPlanSha256', 'expectedContentAssetCount', 'expectedSchemaSha256', 'expectedResourceIdentitySha256', 'expectedMirrorPlanSha256']) {
+    assert.throws(
+      () => feishuSync.parseAdminSyncRequest({ dryRun: true, [field]: field.includes('Sha256') ? expectedHash : 1 }, { externalWorkerRequest: true }),
+      (error) => Number(error.statusCode) === 400 && /只接受 dryRun|服务端生成/.test(error.message),
+      `外部请求不得注入 ${field}`
+    )
+  }
   assert.deepStrictEqual(
     feishuSync.parseAdminSyncRequest({
       dryRun: false,
@@ -1002,18 +1020,10 @@ async function testNormalizedContentConfirmationBehavior() {
       prepareMaterial: createFakePrepareMaterial({ transformProfileSha256: invalidDigest })
     })
     const before = JSON.stringify(fixture.db)
-    const failedReport = await runInventory(fixture, { dryRun: true })
-    assert.strictEqual(failedReport.complete, false, '无效 transformProfileSha256 必须形成失败报告')
-    assert.ok(failedReport.failed > 0, '无效 transformProfileSha256 必须计入失败素材')
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(failedReport, 'contentPlanSha256'),
-      false,
-      '无效 transformProfileSha256 不得返回可复用内容计划摘要'
-    )
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(failedReport, 'contentPlanAssetCount'),
-      false,
-      '无效 transformProfileSha256 不得返回可复用素材数量'
+    await assert.rejects(
+      () => runInventory(fixture, { dryRun: true }),
+      (error) => error && error.code === 'CONTENT_PLAN_CONFIRMATION_FAILED',
+      '无效 transformProfileSha256 必须整轮阻断且不得降级为逐行延期'
     )
     assert.strictEqual(writeCount(fixture.calls), 0, '无效 transformProfileSha256 不得写 Drive/OSS/DB')
     assert.strictEqual(JSON.stringify(fixture.db), before, '无效 transformProfileSha256 不得改变数据库')
@@ -1076,8 +1086,15 @@ async function testNormalizedContentConfirmationBehavior() {
 
 async function testActualFeishuSyncEndToEndGate() {
   const previous = clone(config.feishu)
+  const previousOss = clone(config.oss)
   try {
     configureE2eSync()
+    Object.assign(config.oss, {
+      bucket: 'synthetic-confirmation-bucket',
+      region: 'oss-cn-hangzhou',
+      accessKeyId: 'synthetic-confirmation-access-key',
+      accessKeySecret: 'synthetic-confirmation-access-secret'
+    })
     assert.strictEqual(
       feishuSync._internal.mirrorConfigurationStatus().ready,
       true,
@@ -1351,6 +1368,122 @@ async function testActualFeishuSyncEndToEndGate() {
     }
 
     {
+      const deferredSourceRecordId = 'source-record-confirm-deferred'
+      const deferredAssetToken = 'tokenVideoConfirmDeferred123'
+      const fixture = e2eSyncFixture({
+        records: [{
+          sourceRecordId: 'source-record-confirm-ready',
+          folderToken: 'folderSourceConfirmReady123',
+          assetToken: 'tokenVideoConfirmReady123',
+          body: Buffer.from('confirmation-ready-v1'),
+          mimeType: 'video/mp4'
+        }, {
+          sourceRecordId: deferredSourceRecordId,
+          folderToken: 'folderSourceConfirmDeferred123',
+          assetToken: deferredAssetToken,
+          body: Buffer.from('confirmation-deferred-v1'),
+          mimeType: 'video/mp4'
+        }]
+      })
+      const originalDownloadToken = fixture.drive.downloadToken
+      let deferredDownloadAttempts = 0
+      fixture.drive.downloadToken = async (assetToken) => {
+        if (assetToken === deferredAssetToken) {
+          deferredDownloadAttempts += 1
+          const error = new Error('synthetic deferred row timeout')
+          error.code = 'ETIMEDOUT'
+          throw error
+        }
+        return originalDownloadToken(assetToken)
+      }
+
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-partial-human` })
+      )
+      assert.strictEqual(humanDry.success, false)
+      assert.strictEqual(humanDry.status, 'inventory-validated-materials-failed')
+      assert.strictEqual(humanDry.validated, true)
+      assert.strictEqual(humanDry.planned, true)
+      assert.strictEqual(humanDry.failed, 1)
+      assert.match(humanDry.noteMaterials.contentPlanSha256, /^[0-9a-f]{64}$/)
+      assert.strictEqual(humanDry.noteMaterials.contentPlanAssetCount, 1)
+      assert.strictEqual(deferredDownloadAttempts, 1, '首次 dry 必须真实识别逐行素材失败')
+      assert.ok(
+        noteMaterial._internal.recallContentPlanConfirmation(
+          humanDry.noteMaterials.contentPlanSha256,
+          humanDry.noteMaterials.contentPlanAssetCount
+        ),
+        '部分素材告警 dry 仍须缓存受信的成功素材计划与延期行身份'
+      )
+
+      const formal = await feishuSync.sync(
+        fixture.db,
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, {
+          runId: `${FIXED_RUN_ID}-partial-formal`,
+          expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+          expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+        })
+      )
+      assert.strictEqual(formal.success, false)
+      assert.strictEqual(formal.status, 'inventory-published-materials-failed')
+      assert.strictEqual(formal.inventoryCommittable, true)
+      assert.strictEqual(formal.inventoryPublished, true)
+      assert.strictEqual(formal.failed, 1)
+      assert.strictEqual(
+        deferredDownloadAttempts,
+        1,
+        '正式预检与 apply 必须按受信延期计划跳过失败行，不得盲目重试或产生未知写入'
+      )
+      assert.strictEqual(targetBaseWriteCount(fixture), 1, '逐行素材失败不得阻断库存目标表发布')
+      assert.strictEqual(
+        fixture.driveWritesBySourceRecord.get('source-record-confirm-ready'),
+        1,
+        '已通过 dry 内容计划的房源素材仍须正常发布'
+      )
+      assert.strictEqual(
+        fixture.driveWritesBySourceRecord.get(deferredSourceRecordId) || 0,
+        0,
+        '延期失败行本轮不得写 Drive'
+      )
+      assert.strictEqual(fixture.db.listings.length, 2, '两套库存与首页数据必须保留在可提交 working DB')
+      assert.strictEqual(
+        (fixture.db.listings.find((item) => (
+          item.feishuRecordId === deferredSourceRecordId
+        )).mediaAssets || []).length,
+        0,
+        '延期失败行不得伪造已同步素材'
+      )
+
+      fixture.drive.downloadToken = originalDownloadToken
+      const retryDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-partial-retry-human` })
+      )
+      assert.strictEqual(retryDry.success, true, '下一轮素材恢复后必须重新进入完整计划')
+      assert.strictEqual(retryDry.noteMaterials.contentPlanAssetCount, 2)
+      const retryFormal = await feishuSync.sync(
+        fixture.db,
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, {
+          runId: `${FIXED_RUN_ID}-partial-retry-formal`,
+          expectedContentPlanSha256: retryDry.noteMaterials.contentPlanSha256,
+          expectedContentAssetCount: retryDry.noteMaterials.contentPlanAssetCount
+        })
+      )
+      assert.strictEqual(retryFormal.success, true)
+      assert.strictEqual(retryFormal.inventoryCommittable, true)
+      assert.strictEqual(
+        fixture.driveWritesBySourceRecord.get(deferredSourceRecordId),
+        1,
+        '延期素材必须在下一轮恢复后自动补齐'
+      )
+    }
+
+    {
       const fixture = e2eSyncFixture()
       const humanDry = await feishuSync.sync(
         clone(fixture.db),
@@ -1445,6 +1578,7 @@ async function testActualFeishuSyncEndToEndGate() {
     }
   } finally {
     restoreObject(config.feishu, previous)
+    restoreObject(config.oss, previousOss)
   }
 }
 
@@ -1550,11 +1684,14 @@ async function testReadOnlyPreflightOrder() {
   const routeStart = indexSource.indexOf("pathname === '/admin/feishu-sync/run'")
   const routeEnd = indexSource.indexOf("pathname === '/admin/listings'", routeStart)
   const routeBlock = indexSource.slice(routeStart, routeEnd)
-  assert.ok(routeBlock.includes('feishuSync.parseAdminSyncRequest(body)'), '后台路由必须调用统一确认字段校验器')
+  assert.ok(routeBlock.includes('feishuSync.parseAdminSyncRequest(body, { externalWorkerRequest: true })'), '后台路由必须使用只接受 dryRun 的外部请求校验器')
   assert.ok(
-    routeBlock.indexOf('feishuSync.parseAdminSyncRequest(body)') < routeBlock.indexOf('if (feishuSyncRunning)'),
-    '后台请求必须在取得同步互斥锁及开始任何飞书操作前完成确认字段 400 校验'
+    routeBlock.indexOf('feishuSync.parseAdminSyncRequest(body, { externalWorkerRequest: true })') < routeBlock.indexOf('feishuSyncWorker.enqueue'),
+    '后台请求必须在持久化任务或开始任何飞书操作前完成字段 400 校验'
   )
+  assert.ok(routeBlock.includes('startFeishuSyncWorkerProcess(queued.runId)'), '后台路由必须把持久化任务交给独立 worker')
+  assert.ok(routeBlock.includes('}, 202)'), '后台路由必须立即返回 202，不能等待长同步完成')
+  assert.ok(!routeBlock.includes('await feishuSync.sync'), '后台 HTTP 请求不得再直接等待同步')
 }
 
 function request(baseUrl, method, targetPath, body, headers = {}) {
@@ -1703,7 +1840,6 @@ async function testAdminHttp400(options = {}) {
     const auth = { Authorization: `Bearer ${token}` }
     const dataAfterLogin = fs.readFileSync(dataFile, 'utf8')
     for (const body of [
-      { dryRun: false },
       { dryRun: false, expectedContentPlanSha256: 'a'.repeat(64) },
       {
         dryRun: false,
@@ -1819,6 +1955,145 @@ async function testHttpHarnessLifecycleBehavior() {
   )
 }
 
+async function testDeferredMaterialActionsAreBoundAndApplied() {
+  const records = [
+    {
+      sourceRecordId: 'source-record-action-clear',
+      folderToken: 'folderActionClear123',
+      assetToken: 'tokenActionClear123',
+      body: Buffer.from('action-clear-source'),
+      mimeType: 'video/mp4'
+    },
+    {
+      sourceRecordId: 'source-record-action-retain',
+      folderToken: 'folderActionRetain123',
+      assetToken: 'tokenActionRetain123',
+      body: Buffer.from('action-retain-source'),
+      mimeType: 'video/mp4'
+    },
+    {
+      sourceRecordId: 'source-record-action-good',
+      folderToken: 'folderActionGood123',
+      assetToken: 'tokenActionGood123',
+      body: Buffer.from('action-good-source'),
+      mimeType: 'video/mp4'
+    }
+  ]
+  function createActionPrepareMaterial() {
+    const base = createFakePrepareMaterial()
+    const prepare = async (input) => {
+      const token = input && input.asset && input.asset.sourceToken
+      if (token === 'tokenActionClear123') {
+        const error = new Error('合成确定性格式失败')
+        error.statusCode = 422
+        throw error
+      }
+      if (token === 'tokenActionRetain123') {
+        const error = new Error('合成临时下载超时')
+        error.code = 'ETIMEDOUT'
+        throw error
+      }
+      return base(input)
+    }
+    prepare.profile = { ...base.profile }
+    return prepare
+  }
+  function seedExistingMaterials(fixture) {
+    for (const [sourceRecordId, folderToken, sameLink] of [
+      ['source-record-action-clear', 'folderActionClear123', false],
+      ['source-record-action-retain', 'folderActionRetain123', true]
+    ]) {
+      const current = fixture.db.listings.find((item) => item.feishuRecordId === sourceRecordId)
+      const asset = {
+        assetId: `MAT-${sha256(`${sourceRecordId}-old`).slice(0, 32)}`,
+        kind: 'video',
+        objectKey: `house-videos/feishu-note-v1/${sourceRecordId}/old.mp4`,
+        contentSha256: sha256(`${sourceRecordId}-old-content`),
+        sourceFingerprint: sha256(`${sourceRecordId}-old-source`),
+        targetDriveFingerprint: sha256(`${sourceRecordId}-old-drive`),
+        displayOrder: 0,
+        mimeType: 'video/mp4',
+        size: 16,
+        verified: true
+      }
+      const physicalFingerprint = sha256([
+        current.district,
+        current.block || current.area,
+        current.community,
+        current.building,
+        current.unit,
+        current.roomNumber
+      ].join('\n'))
+      current.mediaAssets = [asset]
+      current.videoKey = asset.objectKey
+      current.noteMaterialState = {
+        sourceLinkFingerprint: sameLink
+          ? sha256(`https://${HOST}/drive/folder/${folderToken}`)
+          : sha256('different-source-link'),
+        physicalUnitFingerprint: physicalFingerprint,
+        status: 'verified',
+        updatedAt: '2026-07-27T00:00:00.000Z'
+      }
+    }
+  }
+
+  const dryFixture = inventoryFixture({ records, prepareMaterial: createActionPrepareMaterial() })
+  seedExistingMaterials(dryFixture)
+  const dry = await runInventory(dryFixture, { dryRun: true })
+  assert.strictEqual(dry.complete, false)
+  assert.strictEqual(dry.failed, 2)
+  assert.strictEqual(dry.contentPlanAssetCount, 1, '正常行仍须进入可确认素材计划')
+  const dryRows = new Map(dry.rows.map((row) => [row.sourceRecordId, row]))
+  assert.strictEqual(dryRows.get('source-record-action-clear').deferredAction, 'clear')
+  assert.strictEqual(dryRows.get('source-record-action-retain').deferredAction, 'retain')
+  assert.strictEqual(dryRows.get('source-record-action-good').status, 'planned')
+  const confirmation = confirmationFromReport(dry)
+
+  const formalFixture = inventoryFixture({ records, prepareMaterial: createActionPrepareMaterial() })
+  seedExistingMaterials(formalFixture)
+  const formal = await runInventory(formalFixture, {
+    dryRun: false,
+    contentPlanConfirmationRequired: true,
+    ...confirmation
+  })
+  assert.strictEqual(formal.complete, false)
+  assert.strictEqual(formal.failed, 2)
+  const cleared = formalFixture.db.listings.find((item) => (
+    item.feishuRecordId === 'source-record-action-clear'
+  ))
+  const retained = formalFixture.db.listings.find((item) => (
+    item.feishuRecordId === 'source-record-action-retain'
+  ))
+  const published = formalFixture.db.listings.find((item) => (
+    item.feishuRecordId === 'source-record-action-good'
+  ))
+  assert.deepStrictEqual(cleared.mediaAssets, [], '链接变化或确定性失败必须清空旧笔记素材')
+  assert.strictEqual(cleared.videoKey, '')
+  assert.strictEqual(retained.mediaAssets.length, 1, '同链接同房间的临时失败必须保留已验证素材')
+  assert.strictEqual(retained.noteMaterialState.status, 'retained-temporary-failure')
+  assert.strictEqual(published.mediaAssets.length, 1, '正常素材行仍须发布')
+  assert.strictEqual(formalFixture.calls.driveWrite, 1, '延期行不得产生 Drive 写，仅正常行写一次')
+  assert.strictEqual(formalFixture.calls.ossWrite, 1, '延期行不得产生 OSS 写，仅正常行写一次')
+
+  const driftFixture = inventoryFixture({ records, prepareMaterial: createActionPrepareMaterial() })
+  seedExistingMaterials(driftFixture)
+  driftFixture.db.listings.find((item) => (
+    item.feishuRecordId === 'source-record-action-retain'
+  )).noteMaterialState.sourceLinkFingerprint = sha256('changed-after-dry')
+  const beforeDriftApply = JSON.stringify(driftFixture.db)
+  await assert.rejects(
+    () => runInventory(driftFixture, {
+      dryRun: false,
+      contentPlanConfirmationRequired: true,
+      ...confirmation
+    }),
+    (error) => error && error.code === 'CONTENT_PLAN_CONFIRMATION_FAILED',
+    'dry 后仅变更 noteMaterialState 链接也必须在本地处置前阻断'
+  )
+  assert.strictEqual(writeCount(driftFixture.calls), 0)
+  assert.strictEqual(JSON.stringify(driftFixture.db), beforeDriftApply)
+}
+
 async function main() {
   if (process.env.FEISHU_NOTE_CONFIRM_TEST_SCOPE === 'sync') {
     await testActualFeishuSyncEndToEndGate()
@@ -1837,6 +2112,7 @@ async function main() {
   await testParserAndScheduledGate()
   await testInventoryConfirmationBehavior()
   await testNormalizedContentConfirmationBehavior()
+  await testDeferredMaterialActionsAreBoundAndApplied()
   await testActualFeishuSyncEndToEndGate()
   await testReadOnlyPreflightOrder()
   await testHttpHarnessLifecycleBehavior()

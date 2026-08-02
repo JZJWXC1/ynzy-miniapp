@@ -117,9 +117,13 @@ const criticalScripts = [
   'server/scripts/feishu-ai-data-foundation-v1-test.js',
   'server/scripts/feishu-foundation-enrichment-v1-test.js',
   'server/scripts/company-source-snapshot-v1-test.js',
-  // 新员工源表固定十列快照与前端画布：首页只接受专用镜像 v1 契约，行政区/板块/小区三级合并，
-  // 未知结构、迟到响应、画布超限和敏感底座字段全部 fail-closed。
+  // 新员工源表固定十列快照与前端画布：首页优先接受带摘要、无表头数据行的 v2 契约；仅明确 404
+  // 才兼容 v1，未知结构、迟到响应、画布超限和敏感底座字段全部 fail-closed。
+  'server/scripts/company-sheet-snapshot-v2-test.js',
   'server/scripts/home-company-sheet-snapshot-v1-test.js',
+  // 飞书同步统一由持久化 worker 执行：全局单飞、租约/围栏、UNKNOWN 阻断、三摘要审批、
+  // 原子业务提交与半小时 systemd 调度必须同时受行为测试锁定。
+  'server/scripts/feishu-sync-worker-v2-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。
   'server/scripts/feishu-cross-base-source-v1-test.js',

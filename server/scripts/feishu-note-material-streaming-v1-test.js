@@ -49,6 +49,7 @@ let sourcePath = ''
 let wholeFileReadAttempts = 0
 let mutateDuringPut = null
 let earlyPutConflict = null
+let slowDripResponse = false
 
 function sha256FilePattern(size) {
   const hash = crypto.createHash('sha256')
@@ -181,6 +182,7 @@ https.request = (options, callback) => {
     if (request.destroyed) return request
     request.destroyed = true
     request.callRecord.destroyCount += 1
+    if (request.slowDripTimer) clearTimeout(request.slowDripTimer)
     if (request.response) {
       process.nextTick(() => {
         request.response.emit('aborted')
@@ -226,6 +228,25 @@ https.request = (options, callback) => {
             'content-type': 'video/mp4',
             'x-oss-meta-content-sha256': remoteObject.contentSha256
           }, expectedSize + 1)
+          return
+        }
+        if (slowDripResponse) {
+          const response = new EventEmitter()
+          response.statusCode = 200
+          response.headers = {
+            'content-type': 'video/mp4',
+            'x-oss-meta-content-sha256': remoteObject.contentSha256
+          }
+          response.setEncoding = () => response
+          response.resume = () => response
+          request.response = response
+          callback(response)
+          const drip = () => {
+            if (request.destroyed) return
+            response.emit('data', Buffer.from([0x5a]))
+            request.slowDripTimer = setTimeout(drip, 10)
+          }
+          request.slowDripTimer = setTimeout(drip, 10)
           return
         }
         makeResponse(request, callback, 200, {
@@ -283,6 +304,7 @@ async function main() {
 
   try {
     const oss = require('../src/oss')
+    const runtimeConfig = require('../src/config')
     fs.readFileSync = (target, ...args) => {
       guardWholeFileRead(target)
       return originalReadFileSync.call(fs, target, ...args)
@@ -318,6 +340,23 @@ async function main() {
     assert.ok(put.maxWriteBytes <= 128 * 1024, 'PUT 必须以小块流式写入，不能产生接近上限的单块 Buffer')
     assert.strictEqual(put.backpressureCount, 1, 'PUT 文件流必须服从 ClientRequest 背压后再继续')
     assert.strictEqual(wholeFileReadAttempts, 0, '近上限素材不得经过 readFile/readFileSync 整体载入')
+
+    const previousTransferTimeoutMs = runtimeConfig.feishu.materialTransferTimeoutMs
+    runtimeConfig.feishu.materialTransferTimeoutMs = 60
+    remoteMode = 'exact'
+    remoteObject = { ...input }
+    slowDripResponse = true
+    calls.length = 0
+    const slowDripStartedAt = Date.now()
+    await assert.rejects(
+      () => oss.verifyMaterialDeterministic(input),
+      (error) => error && error.code === 'OSS_REQUEST_TIMEOUT' && error.statusCode === 504,
+      '持续有数据但永不结束的 OSS 响应也必须被绝对总时限终止'
+    )
+    assert.ok(Date.now() - slowDripStartedAt < 500, '绝对总时限不得被慢滴流活动无限续期')
+    assert.strictEqual(calls[0].destroyCount, 1, '绝对总时限到期后必须销毁底层 OSS 请求')
+    slowDripResponse = false
+    runtimeConfig.feishu.materialTransferTimeoutMs = previousTransferTimeoutMs
 
     remoteMode = 'giant-header'
     remoteObject = { ...input, contentSha256 }
@@ -458,6 +497,7 @@ async function main() {
     assert.strictEqual(closeCount, 1, '上传途中失败也必须只关闭一次受信文件句柄')
     mutateDuringPut = null
     earlyPutConflict = null
+    slowDripResponse = false
     fs.promises.open = originalPromisesOpen
   } finally {
     https.request = originalRequest
@@ -483,6 +523,7 @@ main().catch((error) => {
   fs.promises.open = originalPromisesOpen
   mutateDuringPut = null
   earlyPutConflict = null
+  slowDripResponse = false
   Buffer.concat = originalBufferConcat
   console.error(error)
   process.exit(1)

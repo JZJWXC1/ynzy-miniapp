@@ -1518,7 +1518,7 @@
               <button id="runFeishuSync">立即同步</button>
               <button class="ghost-button" id="dryRunFeishuSync">预演同步</button>
             </div>
-            <div class="hint">同步规则：房源表为最终状态源；素材库按房号匹配视频。飞书下架或房源表删除会进入废房源池，缺素材会在后台标记“缺视频素材”。</div>
+            <div class="hint">同步请求会立即入队并在后台运行；每次先完整预演，再按同一字段、房源和素材摘要正式写入。出现“状态未知”或“已阻断”时自动同步会停止，必须先人工对账。</div>
           </div>
           <div class="config-card">
             <h3>最近结果</h3>
@@ -4558,66 +4558,88 @@
         materialsReady: false,
         uploadToOss: true,
         feishuListingCount: 0,
-        lastLog: null
+        lastLog: null,
+        controller: {
+          mode: 'manual-only',
+          automaticEnabled: false,
+          schemaApproved: false,
+          resourceApproved: false,
+          scheduler: {},
+          counts: {},
+          runs: []
+        }
       };
     }
 
-    function feishuSyncRunSummary(result) {
-      if (!result || typeof result !== 'object' || typeof result.success !== 'boolean') return '';
-      if (result.success === true) {
-        return result.dryRun ? '飞书同步预演完整通过，尚未写入。' : '飞书库存与素材同步完整成功。';
-      }
-      const statusText = String(result.status || 'failed');
-      if (result.inventoryCommittable === true) {
-        return `飞书同步部分失败：库存已提交，但素材同步未完整成功（${statusText}）。`;
-      }
-      return `${result.dryRun ? '飞书同步预演' : '飞书同步'}失败（${statusText}），库存未提交。`;
+    function formatFeishuSyncTime(value) {
+      if (!value) return '暂无';
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return new Date(numeric).toLocaleString('zh-CN', { hour12: false });
+      return String(value);
+    }
+
+    function feishuSyncRunSummary(run) {
+      if (!run || typeof run !== 'object') return '';
+      const labels = {
+        queued: '同步任务已排队，后台即将开始。',
+        'dry-running': '正在读取源表并做完整预演，尚未写入。',
+        'dry-succeeded': '预演完整通过，尚未写入；请核对字段和摘要。',
+        'ready-to-apply': '预演已通过，正在准备正式写入。',
+        applying: '正在按已确认摘要同步飞书、素材和小程序库存。',
+        committing: '远端阶段已完成，正在原子提交小程序库存和首页快照。',
+        succeeded: '飞书、素材、小程序库存和首页快照已完整同步成功。',
+        'failed-before-write': '同步在任何正式写入前安全停止，可修正后重新运行。',
+        unknown: '同步结果未知：可能已有外部写入，自动同步已停止，请先人工对账。',
+        blocked: '同步已阻断：字段、计划或历史未知任务需要人工确认。'
+      };
+      return labels[String(run.state || '')] || '';
     }
 
     function renderFeishuSyncPayload(payload) {
       const status = payload.status || payload || fallbackFeishuSyncStatus();
-      const lastLog = payload.result || status.lastLog || null;
-      const runSummary = feishuSyncRunSummary(payload.result);
+      const controller = payload.controller || status.controller || fallbackFeishuSyncStatus().controller;
+      const latestRun = payload.run || (Array.isArray(controller.runs) ? controller.runs[0] : null);
+      const lastLog = status.lastLog || null;
+      const runSummary = feishuSyncRunSummary(latestRun);
       document.getElementById('feishuSyncStatus').textContent = runSummary || (status.ready
-        ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；素材${status.materialsReady ? '已配置' : '未配置'}；房源表${status.recordsReady ? '已配置' : '未配置'}。`
+        ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；后台控制器 ${controller.mode || 'manual-only'}。`
         : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`);
+      const unresolvedCount = Number((controller.counts && controller.counts.unknown) || 0) +
+        Number((controller.counts && controller.counts.blocked) || 0);
       document.getElementById('feishuSyncRows').innerHTML = [
-        { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: status.bitableAppToken || '支持飞书多维表或本地导入文件' },
-        { name: '飞书表格', value: status.sheetReady ? '已配置' : '未配置', note: status.sheetToken ? `${status.sheetToken} · ${status.sheetRange || '默认范围'}` : '支持普通飞书表格 Sheets' },
-        { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: status.folderToken || '素材库 Folder Token / 本地素材文件' },
+        { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: '员工源只读；小程序专用 Base 为唯一展示写出口' },
+        { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: '房源笔记素材按本轮内容摘要搬运并回读校验' },
         { name: '房源笔记素材', value: status.noteMaterialsReady ? '已准备' : '未启用/未准备', note: '必须显式启用独立目标目录，并完成 dry-run 后才能正式写入' },
         { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
-        { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
+        { name: '自动同步', value: controller.automaticEnabled ? `${status.syncIntervalMinutes || 30} 分钟/次` : '关闭', note: controller.schemaApproved && controller.resourceApproved ? '已绑定获批字段与飞书资源身份摘要' : '尚未同时批准字段与资源身份，自动写入保持关闭' },
+        { name: '同步控制器', value: controller.mode || 'manual-only', note: '所有手工与定时任务共用持久化单飞锁' },
+        { name: '未知/阻断任务', value: unresolvedCount, note: unresolvedCount ? '必须先人工对账，不能自动重放' : '当前没有待处置的未知写入' },
         { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },
         { name: '缺视频素材', value: status.missingVideoMaterialCount || 0, note: '后台标记缺视频素材，不再因素材缺失自动下架' },
-        { name: '联系电话待补充', value: status.missingLandlordPhoneCount || 0, note: '公开库存继续同步；人工编辑时必须补合法手机号' },
-        { name: '最近执行', value: lastLog && lastLog.finishedAt ? lastLog.finishedAt : '暂无', note: lastLog ? `新增 ${lastLog.created || 0} / 更新 ${lastLog.updated || 0} / 下架 ${lastLog.down || 0}` : '点击立即同步后返回本次结果' }
+        { name: '最近任务', value: latestRun ? String(latestRun.state || '未知') : '暂无', note: latestRun ? formatFeishuSyncTime(latestRun.finishedAt || latestRun.updatedAt || latestRun.createdAt) : '点击后立即入队，页面可随时回来查看' }
       ].map((item) => `
         <tr><td>${safeText(item.name)}</td><td>${safeText(item.value)}</td><td>${safeText(item.note || '', '')}</td></tr>
       `).join('');
-      document.getElementById('feishuSyncResult').textContent = lastLog
+      document.getElementById('feishuSyncResult').textContent = latestRun
         ? JSON.stringify({
-          dryRun: Boolean(lastLog.dryRun),
-          success: lastLog.success,
-          status: lastLog.status,
-          inventoryCommittable: Boolean(lastLog.inventoryCommittable),
-          inventoryPublished: Boolean(lastLog.inventoryPublished),
-          startedAt: lastLog.startedAt,
-          finishedAt: lastLog.finishedAt,
-          sourceRecordCount: lastLog.sourceRecordCount,
-          materialCount: lastLog.materialCount,
-          created: lastLog.created,
-          updated: lastLog.updated,
-          down: lastLog.down,
-          skippedNoMaterial: lastLog.skippedNoMaterial,
-          missingVideoMaterial: lastLog.missingVideoMaterial,
-          missingLandlordPhone: lastLog.missingLandlordPhone,
-          skippedInvalid: lastLog.skippedInvalid,
-          failed: lastLog.failed,
-          noteMaterials: lastLog.noteMaterials || null,
-          messages: lastLog.messages || []
+          runId: latestRun.runId,
+          state: latestRun.state,
+          dryRun: Boolean(latestRun.dryRun),
+          createdAt: formatFeishuSyncTime(latestRun.createdAt),
+          startedAt: formatFeishuSyncTime(latestRun.startedAt),
+          finishedAt: formatFeishuSyncTime(latestRun.finishedAt),
+          externalWritesMayHaveOccurred: Boolean(latestRun.externalWritesMayHaveOccurred),
+          errorCode: latestRun.errorCode || '',
+          message: latestRun.message || '',
+          schemaSha256: latestRun.schemaSha256 || '',
+          resourceIdentitySha256: latestRun.resourceIdentitySha256 || '',
+          mirrorPlanSha256: latestRun.mirrorPlanSha256 || '',
+          contentPlanSha256: latestRun.contentPlanSha256 || '',
+          contentPlanAssetCount: latestRun.contentPlanAssetCount,
+          schemaBindings: latestRun.schemaBindings || [],
+          result: latestRun.result || null
         }, null, 2)
-        : '暂无同步记录';
+        : (lastLog ? JSON.stringify({ status: lastLog.status, finishedAt: lastLog.finishedAt }, null, 2) : '暂无同步记录');
     }
 
     async function renderFeishuSync() {
@@ -4631,18 +4653,33 @@
         return;
       }
       if (!dryRun && !window.confirm('确认按飞书房源表和素材库同步小程序公司房源？已下架或表中删除的公司房源会进入废房源池，缺素材房源会在后台标记。')) return;
-      document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在预演飞书同步...' : '正在执行飞书同步...';
+      document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在提交预演任务...' : '正在提交后台同步任务...';
       const result = await adminRequest('/admin/feishu-sync/run', {
         method: 'POST',
         body: JSON.stringify({ dryRun: Boolean(dryRun) })
       });
       renderFeishuSyncPayload(result);
-      await renderDashboardStats();
-      await renderAreaStats();
-      await renderListings();
-      await renderListingReviews();
-      await renderExpiredListings();
-      await renderLaunchCheck();
+      const runId = result && result.run && result.run.runId;
+      const terminalStates = new Set(['dry-succeeded', 'succeeded', 'failed-before-write', 'unknown', 'blocked']);
+      for (let attempt = 0; runId && attempt < 30; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await getAdminData('/admin/feishu-sync/status', fallbackFeishuSyncStatus);
+        renderFeishuSyncPayload(status);
+        const run = status.controller && Array.isArray(status.controller.runs)
+          ? status.controller.runs.find((item) => item.runId === runId)
+          : null;
+        if (!run || !terminalStates.has(run.state)) continue;
+        if (run.state === 'succeeded') {
+          await renderDashboardStats();
+          await renderAreaStats();
+          await renderListings();
+          await renderListingReviews();
+          await renderExpiredListings();
+          await renderLaunchCheck();
+        }
+        return;
+      }
+      document.getElementById('feishuSyncStatus').textContent = '任务仍在后台执行；可以关闭页面，稍后回来查看，不会中断同步。';
     }
 
     function looksBrokenPrompt(value) {

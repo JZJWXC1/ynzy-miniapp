@@ -55,6 +55,13 @@ function listFromEnv(name, fallback = []) {
     .filter(Boolean)
 }
 
+function sha256FromEnv(name) {
+  const value = String(process.env[name] || '').trim()
+  if (!value) return ''
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`${name} 必须是 64 位小写十六进制 SHA-256`)
+  return value
+}
+
 function fieldBindingsFromEnv(name) {
   const raw = process.env[name]
   if (raw === undefined || raw === '') return {}
@@ -268,7 +275,12 @@ module.exports = {
     ),
     mirrorSyncEnabled: boolFromEnv('FEISHU_MIRROR_SYNC_ENABLED', false),
     syncEnabled: boolFromEnv('FEISHU_SYNC_ENABLED', true),
-    autoSyncEnabled: boolFromEnv('FEISHU_AUTO_SYNC_ENABLED', true),
+    // 自动同步必须显式开启，并且只允许由 worker-v2 持久状态机执行；缺省关闭，避免配置
+    // 丢失后回退到旧的进程内定时器并周期性触发不完整素材同步。
+    autoSyncEnabled: boolFromEnv('FEISHU_AUTO_SYNC_ENABLED', false),
+    syncControllerMode: enumFromEnv('FEISHU_SYNC_CONTROLLER_MODE', ['', 'worker-v2']),
+    approvedSchemaSha256: sha256FromEnv('FEISHU_APPROVED_SCHEMA_SHA256'),
+    approvedResourceIdentitySha256: sha256FromEnv('FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256'),
     sheetUrl: configuredSheetUrl,
     sheetToken: extractSheetToken(configuredSheetToken),
     sheetId: process.env.FEISHU_SHEET_ID || jsonValue(feishuSheetTokenFile, 'sheet_id'),
@@ -277,7 +289,7 @@ module.exports = {
     // 员工源表“房源笔记”只读绑定使用稳定 field_id；显示列名变化不会改变读取目标。
     // 新链路会写飞书云盘、OSS 与私有素材清单，必须在首次 dry-run 和目标目录核验后显式开启。
     noteMaterialSyncEnabled: boolFromEnv('FEISHU_NOTE_MATERIAL_SYNC_ENABLED', false),
-    noteMaterialFieldId: String(process.env.FEISHU_NOTE_MATERIAL_FIELD_ID || 'fldyeAGJHV').trim(),
+    noteMaterialFieldId: String(process.env.FEISHU_NOTE_MATERIAL_FIELD_ID || '').trim(),
     noteMaterialAllowedHosts: listFromEnv('FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS', ['ccn9urs7d60k.feishu.cn']),
     noteMaterialTargetRootFolderToken: String(
       process.env.FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN || ''
@@ -319,7 +331,9 @@ module.exports = {
     materialTransferTimeoutMs: numberFromEnv('FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS', 120000),
     materialTransferRetryCount: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_COUNT', 2),
     materialTransferRetryDelayMs: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS', 800),
-    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 60)
+    syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 30),
+    syncWorkerLeaseSeconds: numberFromEnv('FEISHU_SYNC_WORKER_LEASE_SECONDS', 4 * 60 * 60),
+    syncRunHistoryLimit: numberFromEnv('FEISHU_SYNC_RUN_HISTORY_LIMIT', 50)
   },
   wechatPay: {
     enabled: process.env.RECHARGE_PAYMENT_MODE === 'wechat',

@@ -148,7 +148,63 @@ async function testFieldIdSurvivesDisplayRename() {
   assert.strictEqual(after.schemaFingerprint, before.schemaFingerprint, '只改显示名不得改变按 field_id 建立的契约指纹')
   assert.strictEqual(after.digest, before.digest, '同一语义数据只改显示名不得改变快照摘要')
   assert.strictEqual(after.fieldNames.community, '小区（员工改名后）', '写入映射必须来自本轮 field_id 对应的当前显示名')
+  assert.deepStrictEqual(
+    after.schemaBindings.find((binding) => binding.semantic === 'community'),
+    { semantic: 'community', fieldName: '小区（员工改名后）', type: '1' },
+    'dry-run 人工核对证据只能暴露 semantic、当前显示名与类型'
+  )
+  assert.doesNotMatch(JSON.stringify(after.schemaBindings), /fieldId|field_id|fld-community-canonical/, '公开字段证据不得泄漏稳定 field_id')
   assertOnlyGets(beforeFetch.calls.concat(afterFetch.calls), '字段改名兼容读取')
+}
+
+async function testExpectedSchemaFingerprintStopsBeforeRecordRead() {
+  const approvedFetch = makeRenameSafeFetch({
+    canonicalName: '小区（批准契约）',
+    communityValue: '风雅乐府'
+  })
+  const approved = await makeClient(approvedFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false
+  })
+
+  const renamedFetch = makeRenameSafeFetch({
+    canonicalName: '小区（只改显示名）',
+    communityValue: '风雅乐府'
+  })
+  const renamed = await makeClient(renamedFetch).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    expectedSchemaFingerprint: approved.schemaFingerprint
+  })
+  assert.strictEqual(renamed.schemaFingerprint, approved.schemaFingerprint, '显示名改名必须继续兼容已批准契约')
+
+  const swappedBindings = {
+    ...BINDINGS,
+    community: { ...BINDINGS.community, fieldId: 'fld-community-decoy' }
+  }
+  const swappedFetch = makeRenameSafeFetch({
+    canonicalName: '小区（字段互换）',
+    communityValue: '风雅乐府'
+  })
+  const error = await expectReject(
+    () => makeClient(swappedFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: swappedBindings,
+      allowEmpty: false,
+      expectedSchemaFingerprint: approved.schemaFingerprint
+    }),
+    /契约|schema|变化|指纹/i,
+    '同类型字段互换相对已批准契约也必须在记录读取前阻断'
+  )
+  assert.strictEqual(error.code, 'FIELD_CONTRACT_CHANGED', '字段契约漂移必须返回稳定错误 code')
+  assert.strictEqual(error.safeBeforeWrite, true, '字段契约漂移必须明确标记为写前安全失败')
+  assert.strictEqual(
+    swappedFetch.calls.filter((call) => new URL(call.url).pathname.endsWith('/records')).length,
+    0,
+    '字段元数据与批准指纹不一致时不得继续读取任何业务记录'
+  )
 }
 
 async function testAttachmentDigestIgnoresTemporaryMetadata() {
@@ -333,6 +389,7 @@ async function testBatchWriteRequestContract() {
   assert.strictEqual(calls[0].url.searchParams.get('client_token'), clientToken, '批量新增必须携带 UUIDv4 client_token')
   assert.deepStrictEqual(calls[0].body, { records: [{ fields: { 当前小区列名: '风雅乐府' } }] }, '批量新增请求体必须保持 records/fields 官方结构')
   assert.ok(calls[1].url.pathname.endsWith('/tables/tbl-mini-only/records/batch_update'), '批量更新只能指向显式传入的专用表')
+  assert.match(calls[1].url.searchParams.get('client_token') || '', /^[0-9a-f-]{36}$/i, '批量更新必须自动携带同次调用稳定的幂等令牌')
   assert.deepStrictEqual(calls[1].body.records[0], { record_id: 'mir-one', fields: { 当前租金列名: 3500 } }, '批量更新必须带镜像 record_id')
 
   const beforeInvalidUuid = calls.length
@@ -342,6 +399,12 @@ async function testBatchWriteRequestContract() {
     '非 UUIDv4 client_token 必须在发请求前阻断'
   )
   assert.strictEqual(calls.length, beforeInvalidUuid, '非法 client_token 不得触发远端写')
+  await expectReject(
+    () => client.batchCreateRecords('tbl-mini-only', [{ fields: { 小区: '甲' } }], { clientToken: '   ' }),
+    /UUIDv4|client_token/i,
+    '显式空白 client_token 不得把无幂等写伪装成可重试请求'
+  )
+  assert.strictEqual(calls.length, beforeInvalidUuid, '空白 client_token 必须在网络前失败关闭')
 
   const mismatchClient = makeClient(async () => success({ records: [] }))
   await expectReject(
@@ -351,7 +414,7 @@ async function testBatchWriteRequestContract() {
   )
 }
 
-async function testTransientWriteRetriesAreBounded() {
+async function testOnlyIdempotentWritesRetry() {
   const calls = []
   const client = makeClient(async (url, options = {}) => {
     calls.push({ url: String(url), method: requestMethod(options) })
@@ -359,22 +422,55 @@ async function testTransientWriteRetriesAreBounded() {
     const body = JSON.parse(options.body)
     return success({ records: body.records })
   }, 2, { maxRetries: 2, retryDelayMs: 1 })
-  const result = await client.batchUpdateRecords('tbl-mini-only', [{ record_id: 'mir-retry', fields: { 租金: 3300 } }])
-  assert.strictEqual(result.length, 1, '飞书短暂冲突恢复后必须返回完整批量结果')
-  assert.strictEqual(calls.length, 3, '可重试飞书错误必须有限重试且成功后立即停止')
-  calls.forEach((call) => assert.strictEqual(call.method, 'POST', '批量更新重试必须保持同一写方法'))
-
-  let exhaustedCalls = 0
-  const exhausted = makeClient(async () => {
-    exhaustedCalls += 1
-    return response(504, { code: 504, msg: 'synthetic gateway timeout', data: {} })
-  }, 2, { maxRetries: 2, retryDelayMs: 1 })
-  await expectReject(
-    () => exhausted.batchUpdateRecords('tbl-mini-only', [{ record_id: 'mir-retry', fields: { 租金: 3400 } }]),
-    /504|请求失败/i,
-    '短暂错误超过有限次数后必须失败，不能无限占用同步锁'
+  const result = await client.batchCreateRecords(
+    'tbl-mini-only',
+    [{ fields: { 租金: 3300 } }],
+    { clientToken: '123e4567-e89b-42d3-a456-426614174000' }
   )
-  assert.strictEqual(exhaustedCalls, 3, 'maxRetries=2 时总请求次数必须严格为 3')
+  assert.strictEqual(result.length, 1, '带稳定 client_token 的批量新增短暂失败后必须返回完整结果')
+  assert.strictEqual(calls.length, 3, '仅有幂等令牌的飞书写请求允许有限重试')
+  calls.forEach((call) => assert.strictEqual(call.method, 'POST', '幂等新增重试必须保持同一写方法'))
+
+  const updateUrls = []
+  const responseBodyNeverReturns = makeClient(async (url) => {
+    updateUrls.push(new URL(String(url)))
+    return {
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {})
+    }
+  }, 2, { maxRetries: 2, retryDelayMs: 1, requestTimeoutMs: 30 })
+  await expectReject(
+    () => responseBodyNeverReturns.batchUpdateRecords(
+      'tbl-mini-only',
+      [{ record_id: 'mir-retry', fields: { 租金: 3400 } }]
+    ),
+    /超时/i,
+    '更新已可能落盘但响应未知时只能用同一幂等令牌做有限确认'
+  )
+  assert.strictEqual(updateUrls.length, 3, '带幂等令牌的批量更新只允许配置范围内的有限重试')
+  assert.strictEqual(
+    new Set(updateUrls.map((url) => url.searchParams.get('client_token'))).size,
+    1,
+    '批量更新所有重试必须固定复用同一个 client_token'
+  )
+  assert.match(updateUrls[0].searchParams.get('client_token') || '', /^[0-9a-f-]{36}$/i)
+
+  let createWithoutTokenCalls = 0
+  const createWithoutToken = makeClient(async () => {
+    createWithoutTokenCalls += 1
+    return {
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {})
+    }
+  }, 2, { maxRetries: 2, retryDelayMs: 1, requestTimeoutMs: 30 })
+  await expectReject(
+    () => createWithoutToken.batchCreateRecords('tbl-mini-only', [{ fields: { 租金: 3500 } }]),
+    /超时/i,
+    '未携带幂等令牌的批量新增响应未知时必须停止自动重放'
+  )
+  assert.strictEqual(createWithoutTokenCalls, 1, '无 client_token 的批量新增只能发送一次')
 }
 
 function makePagedFetch(recordPageHandler) {
@@ -1058,6 +1154,7 @@ function testEnvironmentBindingParserRejectsStringBoolean() {
 async function main() {
   testSchemaValidationFailsClosed()
   await testFieldIdSurvivesDisplayRename()
+  await testExpectedSchemaFingerprintStopsBeforeRecordRead()
   await testAttachmentDigestIgnoresTemporaryMetadata()
   await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()
@@ -1066,7 +1163,7 @@ async function main() {
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()
   await testBatchWriteRequestContract()
-  await testTransientWriteRetriesAreBounded()
+  await testOnlyIdempotentWritesRetry()
   await testResponseBodyTimeoutCoversWholeRequest()
   testEnvironmentBindingParserRejectsStringBoolean()
   console.log('feishu-source-contract-v1-test passed')

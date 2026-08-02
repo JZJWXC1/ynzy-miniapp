@@ -5,6 +5,7 @@ const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 const { hashPassword } = require('../src/auth-util')
+const companySheetSnapshotContract = require('../src/company-sheet-snapshot-contract')
 const domain = require('../src/domain')
 const BROKER_PASSWORD = 'broker-pass-123'
 const PUBLIC_FIELD_SECRET_PHONE = '19900007777'
@@ -373,7 +374,23 @@ function seedDb() {
       ],
       rowCount: 3,
       columnCount: 11
-    }
+    },
+    companySheetSnapshotV2: companySheetSnapshotContract.createCompanySheetSnapshotV2({
+      updatedAt: nowText(),
+      rows: [[
+        '拱墅区',
+        '祥符',
+        '游客公司小区',
+        '游客公司小区 1幢1单元101',
+        '两室一厅整租',
+        '两室',
+        '2800',
+        '密码',
+        '水电自理',
+        '待出租'
+      ]],
+      sensitiveStripped: true
+    })
   }
   fs.writeFileSync(dataFile, JSON.stringify(db, null, 2), 'utf8')
 }
@@ -1508,6 +1525,23 @@ async function run() {
       assert.ok(!sheetText.includes(privateMetadata), `匿名飞书快照不得返回内部飞书定位元数据 ${privateMetadata}`)
     })
 
+    const sheetSnapshotV2 = await request('GET', '/mini/v2/company-sheet-snapshot')
+    assert.strictEqual(sheetSnapshotV2.statusCode, 200, '匿名房源表 v2 快照接口应返回 200')
+    const sheetV2 = dataOf(sheetSnapshotV2)
+    assert.strictEqual(companySheetSnapshotContract.validateCompanySheetSnapshotV2(sheetV2), true, '匿名 v2 必须通过完整机器契约校验')
+    assert.strictEqual(sheetV2.dataRowCount, 1, 'v2 数据行数不得把表头计入房源')
+    assert.deepStrictEqual(sheetV2.rows[0].slice(0, 4), ['拱墅区', '祥符', '游客公司小区', '游客公司小区 1幢1单元101'])
+    assert.ok(!sheetV2.rows.some((row) => JSON.stringify(row) === JSON.stringify(companySheetSnapshotContract.DISPLAY_HEADERS)), 'v2 数据区不得混入表头')
+    assert.deepStrictEqual(
+      Object.keys(sheetV2).sort(),
+      [
+        'columnCount', 'columnKeys', 'contentSha256', 'contract', 'dataRowCount', 'minReaderVersion',
+        'rows', 'schemaVersion', 'sensitiveStripped', 'snapshotId', 'sourceMode', 'title', 'unavailable', 'updatedAt'
+      ].sort(),
+      '匿名 v2 只能返回固定白名单字段'
+    )
+    assert.ok(!/https?:\/\//i.test(JSON.stringify(sheetV2)), '匿名 v2 不得夹带表格或素材 URL')
+
     const guestPins = await request('GET', '/mini/map/pins')
     assert.strictEqual(guestPins.statusCode, 200, '匿名地图接口应返回 200')
     const pins = dataOf(guestPins)
@@ -1688,6 +1722,11 @@ async function run() {
     assert.strictEqual(loggedSheetSnapshot.statusCode, 200, '登录飞书快照接口应返回 200')
     assert.deepStrictEqual(dataOf(sheetSnapshot).rows, dataOf(loggedSheetSnapshot).rows, '匿名与登录快照列和数据必须一致')
     assert.ok(JSON.stringify(dataOf(loggedSheetSnapshot)).includes('看房方式密码'), '登录快照应包含看房方式密码列')
+    const loggedSheetSnapshotV2 = await request('GET', '/mini/v2/company-sheet-snapshot', null, {
+      Authorization: `Bearer ${dataOf(login).token}`
+    })
+    assert.strictEqual(loggedSheetSnapshotV2.statusCode, 200, '登录房源表 v2 快照接口应返回 200')
+    assert.deepStrictEqual(dataOf(sheetSnapshotV2), dataOf(loggedSheetSnapshotV2), '匿名与登录 v2 快照必须完全一致')
     const loggedPartnerDetail = await request('GET', '/mini/listings/GUEST_PARTNER', null, {
       Authorization: `Bearer ${dataOf(login).token}`
     })

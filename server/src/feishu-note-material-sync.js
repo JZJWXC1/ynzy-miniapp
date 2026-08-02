@@ -16,7 +16,16 @@ const IMAGE_MIME_TO_EXTENSION = new Map([
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_MAX_ITEMS = 5000
 const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v3'
+const PARTIAL_CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v4-partial'
 const CONTENT_PLAN_EVIDENCE = Symbol('contentPlanEvidence')
+const DEFERRED_MATERIAL_EVIDENCE = Symbol('deferredMaterialEvidence')
+const KNOWN_DEFERRED_MATERIAL_STATUSES = new Set([
+  'listing-missing',
+  'media-limit-exceeded',
+  'unsupported-non-video',
+  'retained-temporary-failure',
+  'failed'
+])
 const CONTENT_PLAN_CONFIRMATION_CACHE_TTL_MS = 15 * 60 * 1000
 const CONTENT_PLAN_CONFIRMATION_CACHE_LIMIT = 16
 const contentPlanConfirmationCache = new Map()
@@ -69,6 +78,13 @@ function cellLink(value) {
   const link = normalizeText(value.link || value.url)
   if (!link) throw new Error('房源笔记超链接缺少 link')
   return link
+}
+
+function noteMaterialSourceValueFingerprint(value) {
+  return digest({
+    schemaVersion: 'feishu-note-source-value-v1',
+    value: value === undefined ? null : canonicalJson(value)
+  })
 }
 
 function parseNoteMaterialLink(value, options = {}) {
@@ -498,15 +514,149 @@ function normalizedContentPlanEvidence(values) {
   ))
 }
 
-function buildContentPlanSummary(values) {
-  const evidence = normalizedContentPlanEvidence(values)
+function normalizeDeferredMaterialEvidence(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const sourceRecordFingerprint = normalizeText(input.sourceRecordFingerprint).toLowerCase()
+  const sourceValueFingerprint = normalizeText(input.sourceValueFingerprint).toLowerCase()
+  const sourceLinkFingerprint = normalizeText(input.sourceLinkFingerprint).toLowerCase()
+  const status = normalizeText(input.status)
+  const deferredAction = normalizeText(input.deferredAction)
+  const mediaStateFingerprint = normalizeText(input.mediaStateFingerprint).toLowerCase()
+  const physicalUnitFingerprint = normalizeText(input.physicalUnitFingerprint).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(sourceRecordFingerprint)) {
+    throw new Error('房源笔记延期素材缺少合法源记录指纹')
+  }
+  if (!KNOWN_DEFERRED_MATERIAL_STATUSES.has(status)) {
+    throw new Error('房源笔记延期素材状态不受信')
+  }
+  if (!/^[0-9a-f]{64}$/.test(sourceValueFingerprint)) {
+    throw new Error('房源笔记延期素材缺少合法源值指纹')
+  }
+  if (sourceLinkFingerprint && !/^[0-9a-f]{64}$/.test(sourceLinkFingerprint)) {
+    throw new Error('房源笔记延期素材源链接指纹无效')
+  }
+  if (!new Set(['none', 'retain', 'clear']).has(deferredAction)) {
+    throw new Error('房源笔记延期素材本地处置动作无效')
+  }
+  if (deferredAction === 'none') {
+    if (status !== 'listing-missing' || mediaStateFingerprint || physicalUnitFingerprint) {
+      throw new Error('无房源延期素材不得绑定本地媒体处置状态')
+    }
+  } else if (!/^[0-9a-f]{64}$/.test(mediaStateFingerprint)) {
+    throw new Error('房源笔记延期素材缺少合法媒体状态指纹')
+  }
+  if (physicalUnitFingerprint && !/^[0-9a-f]{64}$/.test(physicalUnitFingerprint)) {
+    throw new Error('房源笔记延期素材物理房间指纹无效')
+  }
+  if (deferredAction === 'retain' && !physicalUnitFingerprint) {
+    throw new Error('保留旧素材必须绑定非空物理房间指纹')
+  }
   return {
-    contentPlanSha256: digest({
-      schemaVersion: CONTENT_PLAN_SCHEMA_VERSION,
-      assetCount: evidence.length,
-      assets: evidence
-    }),
-    contentPlanAssetCount: evidence.length
+    sourceRecordFingerprint,
+    sourceValueFingerprint,
+    sourceLinkFingerprint,
+    status,
+    deferredAction,
+    mediaStateFingerprint,
+    physicalUnitFingerprint
+  }
+}
+
+function normalizedDeferredMaterialEvidence(values) {
+  if (!Array.isArray(values)) throw new Error('房源笔记延期素材证据必须是数组')
+  const evidence = values.map(normalizeDeferredMaterialEvidence)
+  const fingerprints = evidence.map((item) => item.sourceRecordFingerprint)
+  if (new Set(fingerprints).size !== fingerprints.length) {
+    throw new Error('房源笔记延期素材包含重复源记录身份')
+  }
+  return evidence.sort((left, right) => (
+    left.sourceRecordFingerprint.localeCompare(right.sourceRecordFingerprint) ||
+    left.status.localeCompare(right.status)
+  ))
+}
+
+function materialFailureRowIsDeferred(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false
+  const status = normalizeText(row.status)
+  if (!KNOWN_DEFERRED_MATERIAL_STATUSES.has(status)) return false
+  if (!normalizeText(row.sourceRecordId)) return false
+  if (!/^[0-9a-f]{64}$/.test(normalizeText(row.sourceValueFingerprint).toLowerCase())) return false
+  const sourceLinkFingerprint = normalizeText(row.sourceLinkFingerprint).toLowerCase()
+  if (sourceLinkFingerprint && !/^[0-9a-f]{64}$/.test(sourceLinkFingerprint)) return false
+  try {
+    normalizeDeferredMaterialEvidence({
+      sourceRecordFingerprint: sha256Text(normalizeText(row.sourceRecordId)),
+      sourceValueFingerprint: row.sourceValueFingerprint,
+      sourceLinkFingerprint,
+      status,
+      deferredAction: row.deferredAction,
+      mediaStateFingerprint: row.mediaStateFingerprint,
+      physicalUnitFingerprint: row.physicalUnitFingerprint
+    })
+  } catch (_error) {
+    return false
+  }
+  return row.deferred === true
+}
+
+function isKnownMaterialRowWarningReport(report, options = {}) {
+  if (!report || typeof report !== 'object' || Array.isArray(report) ||
+      report.complete !== false || report.published !== false ||
+      report.externalWriteStateUnknown === true) return false
+  if (Object.prototype.hasOwnProperty.call(options, 'dryRun') &&
+      report.dryRun !== options.dryRun) return false
+  const failed = Number(report.failed)
+  if (!Number.isSafeInteger(failed) || failed <= 0 || !Array.isArray(report.rows)) return false
+  const successStatuses = report.dryRun === true
+    ? new Set(['planned', 'cleared'])
+    : new Set(['verified', 'cleared'])
+  const failureRows = report.rows.filter(materialFailureRowIsDeferred)
+  const rowsKnown = report.rows.every((row) => {
+    const status = normalizeText(row && row.status)
+    return materialFailureRowIsDeferred(row) || successStatuses.has(status)
+  })
+  const reportStatus = normalizeText(report.status)
+  return rowsKnown && failureRows.length === failed &&
+    (!reportStatus || reportStatus === 'unsupported-non-video')
+}
+
+function deferredMaterialEvidenceFromReport(report) {
+  if (!isKnownMaterialRowWarningReport(report)) {
+    throw contentPlanConfirmationError('房源笔记素材失败不属于可延期的逐行告警')
+  }
+  return normalizedDeferredMaterialEvidence(report.rows
+    .filter(materialFailureRowIsDeferred)
+    .map((row) => ({
+      sourceRecordFingerprint: sha256Text(normalizeText(row.sourceRecordId)),
+      sourceValueFingerprint: normalizeText(row.sourceValueFingerprint).toLowerCase(),
+      sourceLinkFingerprint: normalizeText(row.sourceLinkFingerprint).toLowerCase(),
+      status: normalizeText(row.status),
+      deferredAction: normalizeText(row.deferredAction),
+      mediaStateFingerprint: normalizeText(row.mediaStateFingerprint).toLowerCase(),
+      physicalUnitFingerprint: normalizeText(row.physicalUnitFingerprint).toLowerCase()
+    })))
+}
+
+function buildContentPlanSummary(values, deferredValues = []) {
+  const evidence = normalizedContentPlanEvidence(values)
+  const deferred = normalizedDeferredMaterialEvidence(deferredValues)
+  const body = deferred.length
+    ? {
+        schemaVersion: PARTIAL_CONTENT_PLAN_SCHEMA_VERSION,
+        assetCount: evidence.length,
+        assets: evidence,
+        deferredCount: deferred.length,
+        deferredRows: deferred
+      }
+    : {
+        schemaVersion: CONTENT_PLAN_SCHEMA_VERSION,
+        assetCount: evidence.length,
+        assets: evidence
+      }
+  return {
+    contentPlanSha256: digest(body),
+    contentPlanAssetCount: evidence.length,
+    contentPlanDeferredCount: deferred.length
   }
 }
 
@@ -520,6 +670,25 @@ function contentPlanConfirmationError(message, statusCode = 409) {
 
 function isContentPlanConfirmationError(error) {
   return Boolean(error && error.code === 'CONTENT_PLAN_CONFIRMATION_FAILED')
+}
+
+function externalWriteStateUnknownError(error, stage = '') {
+  const wrapped = new Error('房源笔记素材外部写入状态待核对')
+  wrapped.name = 'MaterialExternalWriteStateUnknownError'
+  wrapped.code = 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN'
+  wrapped.externalWriteStateUnknown = true
+  wrapped.stage = normalizeText(stage).slice(0, 48)
+  if (error && error.code === 'CONTENT_PLAN_CONFIRMATION_FAILED') {
+    wrapped.contentPlanConfirmationFailed = true
+  }
+  return wrapped
+}
+
+function isExternalWriteStateUnknownError(error) {
+  return Boolean(error && (
+    error.externalWriteStateUnknown === true ||
+    error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN'
+  ))
 }
 
 function expectedContentPlanFromInput(input = {}) {
@@ -538,24 +707,32 @@ function expectedContentPlanFromInput(input = {}) {
     throw contentPlanConfirmationError('房源笔记素材正式同步缺少同次预检的行级内容计划', 400)
   }
   const evidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
-  const summary = buildContentPlanSummary(evidence)
+  const deferred = normalizedDeferredMaterialEvidence(
+    Array.isArray(input.expectedDeferredMaterialEvidence)
+      ? input.expectedDeferredMaterialEvidence
+      : []
+  )
+  const summary = buildContentPlanSummary(evidence, deferred)
   if (summary.contentPlanSha256 !== hash || summary.contentPlanAssetCount !== count) {
     throw contentPlanConfirmationError('房源笔记素材确认摘要与行级内容计划不一致', 400)
   }
   return {
     expectedContentPlanSha256: hash,
     expectedContentAssetCount: count,
-    expectedContentPlanEvidence: evidence
+    expectedContentPlanEvidence: evidence,
+    expectedDeferredMaterialEvidence: deferred
   }
 }
 
-function assertContentPlanMatchesExpected(values, expected, message) {
+function assertContentPlanMatchesExpected(values, expected, message, deferredValues = []) {
   if (!expected) return
   const evidence = normalizedContentPlanEvidence(values)
-  const summary = buildContentPlanSummary(evidence)
+  const deferred = normalizedDeferredMaterialEvidence(deferredValues)
+  const summary = buildContentPlanSummary(evidence, deferred)
   if (summary.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
       summary.contentPlanAssetCount !== expected.expectedContentAssetCount ||
-      JSON.stringify(evidence) !== JSON.stringify(expected.expectedContentPlanEvidence)) {
+      JSON.stringify(evidence) !== JSON.stringify(expected.expectedContentPlanEvidence) ||
+      JSON.stringify(deferred) !== JSON.stringify(expected.expectedDeferredMaterialEvidence || [])) {
     throw contentPlanConfirmationError(message || '房源笔记素材内容计划与确认预检不一致')
   }
 }
@@ -568,10 +745,17 @@ function expectedEvidenceForSourceRecord(expected, sourceRecordId) {
   ))
 }
 
-function attachContentPlanEvidence(target, values) {
+function attachContentPlanEvidence(target, values, deferredValues = []) {
   const evidence = normalizedContentPlanEvidence(values)
+  const deferred = normalizedDeferredMaterialEvidence(deferredValues)
   Object.defineProperty(target, CONTENT_PLAN_EVIDENCE, {
     value: evidence,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  })
+  Object.defineProperty(target, DEFERRED_MATERIAL_EVIDENCE, {
+    value: deferred,
     enumerable: false,
     configurable: false,
     writable: false
@@ -580,16 +764,21 @@ function attachContentPlanEvidence(target, values) {
 }
 
 function contentPlanConfirmationFromReport(report) {
-  if (!report || report.complete !== true ||
+  const reportAccepted = report && (
+    report.complete === true || isKnownMaterialRowWarningReport(report)
+  )
+  if (!reportAccepted ||
       typeof report.contentPlanSha256 !== 'string' ||
       !/^[0-9a-f]{64}$/.test(report.contentPlanSha256) ||
       !Number.isSafeInteger(report.contentPlanAssetCount) ||
       report.contentPlanAssetCount < 0 ||
-      !Array.isArray(report[CONTENT_PLAN_EVIDENCE])) {
+      !Array.isArray(report[CONTENT_PLAN_EVIDENCE]) ||
+      !Array.isArray(report[DEFERRED_MATERIAL_EVIDENCE])) {
     throw contentPlanConfirmationError('房源笔记素材预检未生成可确认的完整内容计划')
   }
   const evidence = normalizedContentPlanEvidence(report[CONTENT_PLAN_EVIDENCE])
-  const summary = buildContentPlanSummary(evidence)
+  const deferred = normalizedDeferredMaterialEvidence(report[DEFERRED_MATERIAL_EVIDENCE])
+  const summary = buildContentPlanSummary(evidence, deferred)
   if (summary.contentPlanSha256 !== report.contentPlanSha256 ||
       summary.contentPlanAssetCount !== report.contentPlanAssetCount) {
     throw contentPlanConfirmationError('房源笔记素材预检摘要与私有行级计划不一致')
@@ -597,7 +786,8 @@ function contentPlanConfirmationFromReport(report) {
   return {
     expectedContentPlanSha256: summary.contentPlanSha256,
     expectedContentAssetCount: summary.contentPlanAssetCount,
-    expectedContentPlanEvidence: evidence
+    expectedContentPlanEvidence: evidence,
+    expectedDeferredMaterialEvidence: deferred
   }
 }
 
@@ -694,7 +884,12 @@ function cloneContentPlanConfirmation(confirmation) {
       ? confirmation.expectedContentPlanEvidence.map((item) => ({ ...item }))
       : []
   )
-  const summary = buildContentPlanSummary(evidence)
+  const deferred = normalizedDeferredMaterialEvidence(
+    Array.isArray(confirmation.expectedDeferredMaterialEvidence)
+      ? confirmation.expectedDeferredMaterialEvidence.map((item) => ({ ...item }))
+      : []
+  )
+  const summary = buildContentPlanSummary(evidence, deferred)
   if (summary.contentPlanSha256 !== confirmation.expectedContentPlanSha256 ||
       summary.contentPlanAssetCount !== confirmation.expectedContentAssetCount) {
     throw contentPlanConfirmationError('房源笔记素材缓存确认与私有内容计划不一致')
@@ -702,7 +897,8 @@ function cloneContentPlanConfirmation(confirmation) {
   return {
     expectedContentPlanSha256: summary.contentPlanSha256,
     expectedContentAssetCount: summary.contentPlanAssetCount,
-    expectedContentPlanEvidence: evidence
+    expectedContentPlanEvidence: evidence,
+    expectedDeferredMaterialEvidence: deferred
   }
 }
 
@@ -800,15 +996,23 @@ function normalizedPreparedMaterial(asset, prepared) {
       throw new Error('房源笔记处理后素材摘要或大小无效')
     }
   }
-  const transformProfileVersion = normalizeText(prepared.transformProfileVersion)
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(transformProfileVersion)) {
-    throw new Error('房源笔记处理规则版本无效')
-  }
-  const transformProfileSha256 = strictLowercaseSha256(prepared.transformProfileSha256, '房源笔记处理规则')
-  const transformToolFingerprint = contentSha256(prepared.transformToolFingerprint)
-  const transformAction = normalizeText(prepared.transformAction).toLowerCase()
-  if (!['passthrough', 'sanitize', 'transcode', 'compress'].includes(transformAction)) {
-    throw new Error('房源笔记处理动作无效')
+  let transformProfileVersion
+  let transformProfileSha256
+  let transformToolFingerprint
+  let transformAction
+  try {
+    transformProfileVersion = normalizeText(prepared.transformProfileVersion)
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(transformProfileVersion)) {
+      throw new Error('房源笔记处理规则版本无效')
+    }
+    transformProfileSha256 = strictLowercaseSha256(prepared.transformProfileSha256, '房源笔记处理规则')
+    transformToolFingerprint = contentSha256(prepared.transformToolFingerprint)
+    transformAction = normalizeText(prepared.transformAction).toLowerCase()
+    if (!['passthrough', 'sanitize', 'transcode', 'compress'].includes(transformAction)) {
+      throw new Error('房源笔记处理动作无效')
+    }
+  } catch (_error) {
+    throw contentPlanConfirmationError('房源笔记素材处理器合同无效', 500)
   }
   return {
     ...prepared,
@@ -1072,6 +1276,19 @@ async function syncNoteMaterialVideos(input = {}) {
     throw new Error('房源笔记素材同步缺少源内容受限下载适配器')
   }
   const preparedMaterials = []
+  let externalWriteDispatched = false
+  const driveHasExactWriteDispatchEvidence = Boolean(
+    input.drive && input.drive.writeDispatchEvidenceVersion === 1
+  )
+  const ossHasExactWriteDispatchEvidence = Boolean(
+    input.oss && input.oss.writeDispatchEvidenceVersion === 1
+  )
+  const markExternalWriteDispatched = () => {
+    externalWriteDispatched = true
+  }
+  const markExternalWriteVerified = () => {
+    externalWriteDispatched = false
+  }
   try {
   // dry-run 逐件压缩、立即清理，只留下摘要计划；正式同步直接使用人类已确认的同次计划，
   // 先全局复验源文件，真正需要写入的素材才在写前压缩一次并只保留一个临时成品。
@@ -1129,22 +1346,28 @@ async function syncNoteMaterialVideos(input = {}) {
       })
     }
   }
-  const contentPlanEvidence = planned.map((plan) => normalizeContentPlanEvidence({
-    sourceRecordFingerprint: sha256Text(sourceRecordId),
-    assetId: plan.assetId,
-    kind: plan.kind,
-    sourceContentSha256: plan.sourceContentSha256,
-    sourceSize: plan.sourceSize,
-    sourceMimeType: plan.sourceMimeType,
-    contentSha256: plan.contentSha256,
-    size: plan.size,
-    mimeType: plan.contentType,
-    transformProfileVersion: plan.transformProfileVersion,
-    transformProfileSha256: plan.transformProfileSha256,
-    transformToolFingerprint: plan.transformToolFingerprint,
-    transformAction: plan.transformAction,
-    displayOrder: plan.displayOrder
-  }))
+  let contentPlanEvidence
+  try {
+    contentPlanEvidence = planned.map((plan) => normalizeContentPlanEvidence({
+      sourceRecordFingerprint: sha256Text(sourceRecordId),
+      assetId: plan.assetId,
+      kind: plan.kind,
+      sourceContentSha256: plan.sourceContentSha256,
+      sourceSize: plan.sourceSize,
+      sourceMimeType: plan.sourceMimeType,
+      contentSha256: plan.contentSha256,
+      size: plan.size,
+      mimeType: plan.contentType,
+      transformProfileVersion: plan.transformProfileVersion,
+      transformProfileSha256: plan.transformProfileSha256,
+      transformToolFingerprint: plan.transformToolFingerprint,
+      transformAction: plan.transformAction,
+      displayOrder: plan.displayOrder
+    }))
+  } catch (error) {
+    if (isContentPlanConfirmationError(error)) throw error
+    throw contentPlanConfirmationError('房源笔记素材未形成完整内容计划', 500)
+  }
   const contentPlanSummary = buildContentPlanSummary(contentPlanEvidence)
   if (Array.isArray(input.expectedContentPlanEvidence)) {
     const expectedEvidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
@@ -1167,12 +1390,16 @@ async function syncNoteMaterialVideos(input = {}) {
     if (!input.drive || typeof input.drive.ensureListingFolder !== 'function') {
       throw new Error('房源笔记素材同步缺少 Drive 写后回读适配器')
     }
+    if (!driveHasExactWriteDispatchEvidence) externalWriteDispatched = true
     targetFolder = await input.drive.ensureListingFolder({
       parentFolderToken: input.targetRootFolderToken,
       sourceRecordId,
-      ...(input.folderContext || {})
+      ...(input.folderContext || {}),
+      onWriteDispatched: markExternalWriteDispatched,
+      onWriteVerified: markExternalWriteVerified
     })
     if (!targetFolder || !normalizeText(targetFolder.token)) throw new Error('房源笔记目标目录未通过回读')
+    externalWriteDispatched = false
     return targetFolder
   }
 
@@ -1323,11 +1550,14 @@ async function syncNoteMaterialVideos(input = {}) {
       writeEvidence = validatedWriteEvidence.writeEvidence
       const usesPreparedFile = validatedWriteEvidence.usesPreparedFile
       await ensureTargetFolder()
+      if (!driveHasExactWriteDispatchEvidence) externalWriteDispatched = true
       const driveResult = await materializeAsset.call(input.drive, {
         asset: plan.asset,
         targetFolderToken: targetFolder.token,
         targetName: plan.targetName,
-        sourceEvidence: writeEvidence
+        sourceEvidence: writeEvidence,
+        onWriteDispatched: markExternalWriteDispatched,
+        onWriteVerified: markExternalWriteVerified
       })
       if (!driveResult || driveResult.verified !== true ||
           !normalizeText(driveResult.contentSha256) || !normalizeText(driveResult.targetToken) ||
@@ -1337,6 +1567,7 @@ async function syncNoteMaterialVideos(input = {}) {
           normalizeContentMimeType(driveResult.contentType || plan.mimeType).split(';')[0] !== plan.mimeType) {
         throw new Error('房源笔记 Drive 素材未通过内容回读')
       }
+      externalWriteDispatched = false
       driveVerifiedIds.push(plan.assetId)
       const ossWriteInput = {
         kind: plan.kind,
@@ -1347,12 +1578,16 @@ async function syncNoteMaterialVideos(input = {}) {
       }
       if (usesPreparedFile) ossWriteInput.filePath = writeEvidence.filePath
       else ossWriteInput.buffer = writeEvidence.buffer
+      ossWriteInput.onWriteDispatched = markExternalWriteDispatched
+      ossWriteInput.onWriteVerified = markExternalWriteVerified
+      if (!ossHasExactWriteDispatchEvidence) externalWriteDispatched = true
       const saved = await putMaterialDeterministic.call(input.oss, ossWriteInput)
       if (!saved || saved.verified !== true || normalizeText(saved.objectKey) !== plan.objectKey ||
           normalizeText(saved.contentSha256) !== normalizeText(driveResult.contentSha256) ||
           Number(saved.size) !== plan.size) {
         throw new Error('房源笔记 OSS 素材未通过写后回读')
       }
+      externalWriteDispatched = false
       ossVerifiedIds.push(plan.assetId)
       resultAssets.push({
         assetId: plan.assetId,
@@ -1410,6 +1645,11 @@ async function syncNoteMaterialVideos(input = {}) {
     }
   }
   return attachContentPlanEvidence(result, contentPlanEvidence)
+  } catch (error) {
+    if (externalWriteDispatched && !isExternalWriteStateUnknownError(error)) {
+      throw externalWriteStateUnknownError(error, 'material-publish')
+    }
+    throw error
   } finally {
     if (typeof input.disposePreparedMaterial === 'function') {
       let cleanupError = null
@@ -1424,7 +1664,12 @@ async function syncNoteMaterialVideos(input = {}) {
           }
         }
       }
-      if (cleanupError) throw cleanupError
+      if (cleanupError) {
+        if (externalWriteDispatched) {
+          throw externalWriteStateUnknownError(cleanupError, 'prepared-material-cleanup')
+        }
+        throw cleanupError
+      }
     }
   }
 }
@@ -1532,13 +1777,61 @@ function assertMediaAssetsStateUnchanged(listing, expectedStateKey, stateKeyFact
   throw error
 }
 
-function appendStateConflict(report, row, error) {
+function appendStateConflict(report, row, error, options = {}) {
   report.failed += 1
+  if (options.dryRun !== true) report.externalWriteStateUnknown = true
   report.rows.push({
     sourceRecordId: normalizeText(row && row.sourceRecordId),
     status: 'state-conflict',
+    deferred: false,
+    sourceValueFingerprint: normalizeText(row && row.sourceValueFingerprint),
+    sourceLinkFingerprint: normalizeText(row && row.linkFingerprint),
     error: safeFailureMessage(error)
   })
+}
+
+function mediaStateFingerprintForListing(listing = {}, stateKey = '') {
+  const normalizedStateKey = normalizeText(stateKey)
+  return digest({
+    mediaAssetsStateKey: normalizedStateKey || digest(
+      (Array.isArray(listing.mediaAssets) ? listing.mediaAssets : []).map(cloneMediaAsset)
+    ),
+    videoKey: normalizeText(listing.videoKey),
+    noteMaterialState: listing.noteMaterialState && typeof listing.noteMaterialState === 'object'
+      ? canonicalJson(listing.noteMaterialState)
+      : null
+  })
+}
+
+function hasVerifiedNoteManagedMedia(listing = {}) {
+  return (Array.isArray(listing.mediaAssets) ? listing.mediaAssets : []).some((asset) => (
+    asset && asset.verified === true &&
+    /\/feishu-note-v1\//.test(normalizeText(asset.objectKey))
+  ))
+}
+
+function deferredLocalAction(listing, linkFingerprint, expectedStateKey, error, forceClear = false) {
+  if (!listing) {
+    return {
+      deferredAction: 'none',
+      mediaStateFingerprint: '',
+      physicalUnitFingerprint: ''
+    }
+  }
+  const currentPhysical = physicalUnitFingerprint(listing)
+  const previous = listing.noteMaterialState && typeof listing.noteMaterialState === 'object'
+    ? listing.noteMaterialState
+    : {}
+  const mayRetain = !forceClear &&
+    normalizeText(previous.sourceLinkFingerprint) === normalizeText(linkFingerprint) &&
+    normalizeText(previous.physicalUnitFingerprint) === currentPhysical &&
+    Boolean(currentPhysical) && temporaryNoteMaterialFailure(error) &&
+    activeInventoryListing(listing) && hasVerifiedNoteManagedMedia(listing)
+  return {
+    deferredAction: mayRetain ? 'retain' : 'clear',
+    mediaStateFingerprint: mediaStateFingerprintForListing(listing, expectedStateKey),
+    physicalUnitFingerprint: currentPhysical
+  }
 }
 
 async function syncNoteMaterialsForInventory(input = {}) {
@@ -1547,6 +1840,9 @@ async function syncNoteMaterialsForInventory(input = {}) {
   // 正式确认字段必须在源表、工作 DB、Drive 或 OSS 的任何读取/写入之前完成形状校验。
   // dry-run 与未启用确认门的旧链路不会被扩大契约。
   const expectedContentPlan = expectedContentPlanFromInput(input)
+  const expectedDeferredByFingerprint = new Map((
+    expectedContentPlan && expectedContentPlan.expectedDeferredMaterialEvidence || []
+  ).map((item) => [item.sourceRecordFingerprint, item]))
   if (runningInventoryDatabases.has(db)) {
     const error = new Error('房源笔记素材同步正在执行，禁止并发覆盖独立素材状态')
     error.statusCode = 409
@@ -1585,29 +1881,131 @@ async function syncNoteMaterialsForInventory(input = {}) {
     const resolvedRows = []
     const pendingClears = []
     const pendingFailures = []
+    const pendingDeferredActions = []
+    const matchedDeferredFingerprints = new Set()
     for (const row of rows) {
       const sourceRecordId = normalizeText(row && row.sourceRecordId)
       if (!sourceRecordId) throw new Error('房源笔记素材源记录缺少 sourceRecordId')
-      const listing = sourceListing(db, sourceRecordId)
-      if (!listing) {
+      const sourceRecordFingerprint = sha256Text(sourceRecordId)
+      const sourceValueFingerprint = noteMaterialSourceValueFingerprint(row && row.value)
+      const expectedDeferred = expectedDeferredByFingerprint.get(sourceRecordFingerprint)
+      if (expectedDeferred) {
+        if (matchedDeferredFingerprints.has(sourceRecordFingerprint)) {
+          throw contentPlanConfirmationError('房源笔记素材延期计划命中重复源记录')
+        }
+        if (sourceValueFingerprint !== expectedDeferred.sourceValueFingerprint) {
+          throw contentPlanConfirmationError('房源笔记延期素材源值在预检与执行之间发生变化')
+        }
+        let currentLinkFingerprint = ''
+        if (expectedDeferred.sourceLinkFingerprint) {
+          let currentDeferredLink
+          try {
+            currentDeferredLink = parseNoteMaterialLink(row.value, { allowedHosts: input.allowedHosts })
+          } catch (_error) {
+            throw contentPlanConfirmationError('房源笔记延期素材源链接无法重新确认')
+          }
+          currentLinkFingerprint = currentDeferredLink
+            ? sha256Text(currentDeferredLink.canonicalUrl)
+            : ''
+          if (currentLinkFingerprint !== expectedDeferred.sourceLinkFingerprint) {
+            throw contentPlanConfirmationError('房源笔记延期素材源链接在预检与执行之间发生变化')
+          }
+        }
+        const listing = sourceListing(db, sourceRecordId)
+        if (expectedDeferred.deferredAction === 'none') {
+          if (listing) {
+            throw contentPlanConfirmationError('延期计划中的缺失房源在执行时已出现')
+          }
+        } else {
+          if (!listing) {
+            throw contentPlanConfirmationError('延期计划绑定的房源在执行时缺失')
+          }
+          const expectedStateKey = typeof input.mediaAssetsStateKey === 'function'
+            ? input.mediaAssetsStateKey(listing)
+            : ''
+          if (mediaStateFingerprintForListing(listing, expectedStateKey) !==
+                expectedDeferred.mediaStateFingerprint ||
+              physicalUnitFingerprint(listing) !== expectedDeferred.physicalUnitFingerprint) {
+            throw contentPlanConfirmationError('延期素材的房源媒体状态在预检与执行之间发生变化')
+          }
+          if (expectedDeferred.deferredAction === 'retain') report.retained += 1
+          if (input.dryRun !== true) {
+            pendingDeferredActions.push({
+              listing,
+              expectedStateKey,
+              sourceLinkFingerprint: currentLinkFingerprint,
+              ...expectedDeferred
+            })
+          }
+        }
+        matchedDeferredFingerprints.add(sourceRecordFingerprint)
         report.failed += 1
-        report.rows.push({ sourceRecordId, status: 'listing-missing' })
+        report.rows.push({
+          sourceRecordId,
+          status: expectedDeferred.status,
+          deferred: true,
+          sourceValueFingerprint,
+          sourceLinkFingerprint: currentLinkFingerprint,
+          deferredAction: expectedDeferred.deferredAction,
+          mediaStateFingerprint: expectedDeferred.mediaStateFingerprint,
+          physicalUnitFingerprint: expectedDeferred.physicalUnitFingerprint
+        })
         continue
       }
-      const expectedStateKey = typeof input.mediaAssetsStateKey === 'function'
-        ? input.mediaAssetsStateKey(listing)
-        : ''
       let parsed
       let linkFingerprint = ''
       try {
         parsed = parseNoteMaterialLink(row.value, { allowedHosts: input.allowedHosts })
         linkFingerprint = parsed ? sha256Text(parsed.canonicalUrl) : ''
       } catch (error) {
-        pendingFailures.push({ sourceRecordId, listing, linkFingerprint, expectedStateKey, error })
+        const listing = sourceListing(db, sourceRecordId)
+        if (!listing) {
+          report.failed += 1
+          report.rows.push({
+            sourceRecordId,
+            status: 'listing-missing',
+            deferred: true,
+            sourceValueFingerprint,
+            sourceLinkFingerprint: '',
+            deferredAction: 'none',
+            mediaStateFingerprint: '',
+            physicalUnitFingerprint: ''
+          })
+          continue
+        }
+        const expectedStateKey = listing && typeof input.mediaAssetsStateKey === 'function'
+          ? input.mediaAssetsStateKey(listing)
+          : ''
+        pendingFailures.push({
+          sourceRecordId,
+          sourceValueFingerprint,
+          listing,
+          linkFingerprint,
+          expectedStateKey,
+          error
+        })
         continue
       }
+      const listing = sourceListing(db, sourceRecordId)
+      if (!listing) {
+        report.failed += 1
+        report.rows.push({
+          sourceRecordId,
+          status: 'listing-missing',
+          deferred: true,
+          sourceValueFingerprint,
+          sourceLinkFingerprint: linkFingerprint,
+          deferredAction: 'none',
+          mediaStateFingerprint: '',
+          physicalUnitFingerprint: ''
+        })
+        continue
+      }
+      const expectedStateKey = typeof input.mediaAssetsStateKey === 'function'
+        ? input.mediaAssetsStateKey(listing)
+        : ''
       if (!parsed) {
-        pendingClears.push({ sourceRecordId, listing, expectedStateKey })
+        pendingClears.push({ sourceRecordId, sourceValueFingerprint, listing, expectedStateKey })
         continue
       }
       try {
@@ -1618,7 +2016,14 @@ async function syncNoteMaterialsForInventory(input = {}) {
           maxDepth: input.maxDepth,
           maxItems: input.maxItems
         })
-        resolvedRows.push({ sourceRecordId, listing, resolved, linkFingerprint, expectedStateKey })
+        resolvedRows.push({
+          sourceRecordId,
+          sourceValueFingerprint,
+          listing,
+          resolved,
+          linkFingerprint,
+          expectedStateKey
+        })
         report.resolved += 1
         report.video += resolved.counts.video
         report.image += resolved.counts.image
@@ -1626,40 +2031,52 @@ async function syncNoteMaterialsForInventory(input = {}) {
         report.nonVideo += resolved.counts.nonVideo
         report.duplicateReference += resolved.counts.duplicateReference
       } catch (error) {
-        pendingFailures.push({ sourceRecordId, listing, linkFingerprint, expectedStateKey, error })
+        pendingFailures.push({
+          sourceRecordId,
+          sourceValueFingerprint,
+          listing,
+          linkFingerprint,
+          expectedStateKey,
+          error
+        })
       }
+    }
+    if (matchedDeferredFingerprints.size !== expectedDeferredByFingerprint.size) {
+      throw contentPlanConfirmationError('房源笔记素材延期计划与当前源记录集合不一致')
     }
 
     const overLimitRows = resolvedRows.filter((row) => row.resolved.assets.length > MAX_LISTING_MEDIA_ASSETS)
-    if (overLimitRows.length) {
-      report.failed += overLimitRows.length
-      report.complete = false
-      report.published = false
-      report.rows.push(...overLimitRows.map((row) => ({
-        sourceRecordId: row.sourceRecordId,
-        status: 'media-limit-exceeded',
+    overLimitRows.forEach((row) => pendingFailures.push({
+      ...row,
+      failureStatus: 'media-limit-exceeded',
+      forceClear: true,
+      error: new Error(`单套房源视频素材超过安全上限 ${MAX_LISTING_MEDIA_ASSETS}`),
+      failureDetails: {
         mediaCount: row.resolved.assets.length,
         limit: MAX_LISTING_MEDIA_ASSETS
-      })))
-      return report
-    }
+      }
+    }))
 
-    const unsupportedRows = resolvedRows.filter((row) => Number(
+    const withinLimitRows = resolvedRows.filter((row) => row.resolved.assets.length <= MAX_LISTING_MEDIA_ASSETS)
+    const unsupportedRows = withinLimitRows.filter((row) => Number(
       row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0
     ) > 0)
     if (unsupportedRows.length) {
-      report.failed += unsupportedRows.length
-      report.complete = false
-      report.published = false
       report.status = 'unsupported-non-video'
-      report.rows.push(...unsupportedRows.map((row) => ({
-        sourceRecordId: row.sourceRecordId,
-        status: 'unsupported-non-video',
-        unsupported: Number(row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0),
-        nonVideo: Number(row.resolved.counts.nonVideo || 0)
-      })))
-      return report
+      unsupportedRows.forEach((row) => pendingFailures.push({
+        ...row,
+        failureStatus: 'unsupported-non-video',
+        forceClear: true,
+        error: new Error('房源笔记包含不受支持的非图片视频素材'),
+        failureDetails: {
+          unsupported: Number(row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0),
+          nonVideo: Number(row.resolved.counts.nonVideo || 0)
+        }
+      }))
     }
+    const actionableResolvedRows = withinLimitRows.filter((row) => Number(
+      row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0
+    ) === 0)
 
     // 正式同步不再重复转码整批素材：先验证当前工具档案，再对全部源文件做一次流式摘要复验。
     // 只有所有房源、素材身份、顺序和源字节都与人类确认的 dry-run 计划一致，才允许任何写入；
@@ -1681,7 +2098,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
         throw contentPlanConfirmationError('房源笔记素材压缩规则或处理工具在确认后发生变化')
       }
       const inventoryPlanEvidence = []
-      for (const row of resolvedRows) {
+      for (const row of actionableResolvedRows) {
         const evidence = expectedEvidenceForSourceRecord(expectedContentPlan, row.sourceRecordId)
         const orderedAssets = row.resolved.assets.slice().sort((left, right) => (
           Number(left.sourceOrder || 0) - Number(right.sourceOrder || 0) ||
@@ -1706,8 +2123,49 @@ async function syncNoteMaterialsForInventory(input = {}) {
       assertContentPlanMatchesExpected(
         inventoryPlanEvidence,
         expectedContentPlan,
-        '房源笔记素材正式全局预检与已确认内容计划不一致'
+        '房源笔记素材正式全局预检与已确认内容计划不一致',
+        expectedContentPlan.expectedDeferredMaterialEvidence
       )
+    }
+
+    for (const action of pendingDeferredActions) {
+      try {
+        assertMediaAssetsStateUnchanged(
+          action.listing,
+          action.expectedStateKey,
+          input.mediaAssetsStateKey
+        )
+        if (mediaStateFingerprintForListing(action.listing, action.expectedStateKey) !==
+              action.mediaStateFingerprint ||
+            physicalUnitFingerprint(action.listing) !== action.physicalUnitFingerprint) {
+          throw contentPlanConfirmationError('延期素材的房源媒体状态在本地处置前发生变化')
+        }
+        if (action.deferredAction === 'clear') {
+          await clearNoteManagedMedia(action.listing, {
+            sourceLinkFingerprint: action.sourceLinkFingerprint,
+            physicalUnitFingerprint: action.physicalUnitFingerprint,
+            updatedAt: now
+          }, {
+            replaceMediaAssets: input.replaceMediaAssets,
+            expectedStateKey: action.expectedStateKey
+          })
+        } else {
+          const previous = action.listing.noteMaterialState &&
+            typeof action.listing.noteMaterialState === 'object'
+            ? action.listing.noteMaterialState
+            : {}
+          action.listing.noteMaterialState = {
+            ...previous,
+            status: 'retained-temporary-failure',
+            updatedAt: now
+          }
+        }
+      } catch (error) {
+        if (mediaAssetsStateConflict(error) || isContentPlanConfirmationError(error)) {
+          throw externalWriteStateUnknownError(error, 'inventory-state-conflict')
+        }
+        throw error
+      }
     }
 
     for (const row of pendingClears) {
@@ -1724,7 +2182,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           })
         } catch (error) {
           if (!mediaAssetsStateConflict(error)) throw error
-          appendStateConflict(report, row, error)
+          appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
       }
@@ -1734,7 +2192,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
 
     for (const row of pendingFailures) {
       if (mediaAssetsStateConflict(row.error)) {
-        appendStateConflict(report, row, row.error)
+        appendStateConflict(report, row, row.error, { dryRun: input.dryRun === true })
         continue
       }
       if (input.dryRun !== true) {
@@ -1742,7 +2200,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           assertMediaAssetsStateUnchanged(row.listing, row.expectedStateKey, input.mediaAssetsStateKey)
         } catch (error) {
           if (!mediaAssetsStateConflict(error)) throw error
-          appendStateConflict(report, row, error)
+          appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
       }
@@ -1750,12 +2208,14 @@ async function syncNoteMaterialsForInventory(input = {}) {
       const previous = row.listing.noteMaterialState && typeof row.listing.noteMaterialState === 'object'
         ? row.listing.noteMaterialState
         : {}
-      const mayRetain = normalizeText(previous.sourceLinkFingerprint) === row.linkFingerprint &&
-        normalizeText(previous.physicalUnitFingerprint) === currentPhysical &&
-        Boolean(currentPhysical) &&
-        temporaryNoteMaterialFailure(row.error) &&
-        activeInventoryListing(row.listing) &&
-        Array.isArray(row.listing.mediaAssets) && row.listing.mediaAssets.length > 0
+      const deferredActionEvidence = deferredLocalAction(
+        row.listing,
+        row.linkFingerprint,
+        row.expectedStateKey,
+        row.error,
+        row.forceClear === true
+      )
+      const mayRetain = deferredActionEvidence.deferredAction === 'retain'
       if (input.dryRun !== true && !mayRetain) {
         try {
           await clearNoteManagedMedia(row.listing, {
@@ -1768,7 +2228,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           })
         } catch (error) {
           if (!mediaAssetsStateConflict(error)) throw error
-          appendStateConflict(report, row, error)
+          appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
       } else if (input.dryRun !== true && mayRetain) {
@@ -1782,12 +2242,17 @@ async function syncNoteMaterialsForInventory(input = {}) {
       report.failed += 1
       report.rows.push({
         sourceRecordId: row.sourceRecordId,
-        status: mayRetain ? 'retained-temporary-failure' : 'failed',
+        status: row.failureStatus || (mayRetain ? 'retained-temporary-failure' : 'failed'),
+        deferred: true,
+        sourceValueFingerprint: row.sourceValueFingerprint,
+        sourceLinkFingerprint: row.linkFingerprint,
+        ...deferredActionEvidence,
+        ...(row.failureDetails || {}),
         error: safeFailureMessage(row.error)
       })
     }
 
-    for (const row of resolvedRows) {
+    for (const row of actionableResolvedRows) {
       const currentPhysical = physicalUnitFingerprint(row.listing)
       try {
         if (input.dryRun !== true) {
@@ -1902,23 +2367,24 @@ async function syncNoteMaterialsForInventory(input = {}) {
       } catch (error) {
         // 确认预检后的内容漂移是整轮安全门，不得降级为普通素材失败后清空/沿用，
         // 更不得继续处理后续行并产生部分 Drive/OSS 写入。
-        if (isContentPlanConfirmationError(error)) throw error
+        if (isContentPlanConfirmationError(error) || isExternalWriteStateUnknownError(error)) throw error
         if (mediaAssetsStateConflict(error) ||
             (input.dryRun !== true &&
               typeof input.mediaAssetsStateKey === 'function' &&
               normalizeText(input.mediaAssetsStateKey(row.listing)) !== normalizeText(row.expectedStateKey))) {
-          appendStateConflict(report, row, error)
+          appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
         const previous = row.listing.noteMaterialState && typeof row.listing.noteMaterialState === 'object'
           ? row.listing.noteMaterialState
           : {}
-        const mayRetain = normalizeText(previous.sourceLinkFingerprint) === row.linkFingerprint &&
-          normalizeText(previous.physicalUnitFingerprint) === currentPhysical &&
-          Boolean(currentPhysical) &&
-          temporaryNoteMaterialFailure(error) &&
-          activeInventoryListing(row.listing) &&
-          Array.isArray(row.listing.mediaAssets) && row.listing.mediaAssets.length > 0
+        const deferredActionEvidence = deferredLocalAction(
+          row.listing,
+          row.linkFingerprint,
+          row.expectedStateKey,
+          error
+        )
+        const mayRetain = deferredActionEvidence.deferredAction === 'retain'
         if (input.dryRun !== true && mayRetain) {
           row.listing.noteMaterialState = {
             ...previous,
@@ -1937,7 +2403,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
             })
           } catch (clearError) {
             if (!mediaAssetsStateConflict(clearError)) throw clearError
-            appendStateConflict(report, row, clearError)
+            appendStateConflict(report, row, clearError, { dryRun: input.dryRun === true })
             continue
           }
         }
@@ -1946,20 +2412,39 @@ async function syncNoteMaterialsForInventory(input = {}) {
         report.rows.push({
           sourceRecordId: row.sourceRecordId,
           status: mayRetain ? 'retained-temporary-failure' : 'failed',
+          deferred: true,
+          sourceValueFingerprint: row.sourceValueFingerprint,
+          sourceLinkFingerprint: row.linkFingerprint,
+          ...deferredActionEvidence,
           error: safeFailureMessage(error)
         })
       }
     }
     report.complete = report.failed === 0
     report.published = input.dryRun !== true && report.failed === 0
-    if (report.complete) {
+    const committableWarning = isKnownMaterialRowWarningReport(report, {
+      dryRun: input.dryRun === true
+    })
+    if (report.externalWriteStateUnknown === true) {
+      throw externalWriteStateUnknownError(null, 'inventory-state-conflict')
+    }
+    if (expectedContentPlan && !report.complete && !committableWarning) {
+      throw contentPlanConfirmationError('房源笔记素材正式响应包含不可延期失败')
+    }
+    if (report.complete || committableWarning) {
+      const deferredMaterialEvidence = report.complete
+        ? []
+        : (expectedContentPlan
+            ? expectedContentPlan.expectedDeferredMaterialEvidence
+            : deferredMaterialEvidenceFromReport(report))
       assertContentPlanMatchesExpected(
         contentPlanEvidence,
         expectedContentPlan,
-        '房源笔记素材正式响应与已确认内容计划不一致'
+        '房源笔记素材正式响应与已确认内容计划不一致',
+        deferredMaterialEvidence
       )
-      Object.assign(report, buildContentPlanSummary(contentPlanEvidence))
-      attachContentPlanEvidence(report, contentPlanEvidence)
+      Object.assign(report, buildContentPlanSummary(contentPlanEvidence, deferredMaterialEvidence))
+      attachContentPlanEvidence(report, contentPlanEvidence, deferredMaterialEvidence)
     }
     return report
   } finally {
@@ -1984,6 +2469,8 @@ module.exports = {
     digest,
     temporaryNoteMaterialFailure,
     buildContentPlanSummary,
+    isKnownMaterialRowWarningReport,
+    isExternalWriteStateUnknownError,
     contentPlanConfirmationFromReport,
     rememberContentPlanConfirmation,
     recallContentPlanConfirmation,

@@ -563,9 +563,11 @@ async function run() {
   assert.deepStrictEqual(safeSummary(emptyAgain), safeSummary(empty), '零素材必须返回确定且稳定的摘要')
 
   const previousNoteMaterialEnabled = config.feishu.noteMaterialSyncEnabled
+  const previousSourceCompatibilityProfile = config.feishu.sourceCompatibilityProfile
   let wiredEmpty
   try {
     config.feishu.noteMaterialSyncEnabled = true
+    config.feishu.sourceCompatibilityProfile = 'employee-current-stock-v1'
     wiredEmpty = await feishuSync._internal.syncMirrorNoteMaterials(
       { listings: [] },
       { sourceNoteMaterials: [] },
@@ -573,6 +575,7 @@ async function run() {
     )
   } finally {
     config.feishu.noteMaterialSyncEnabled = previousNoteMaterialEnabled
+    config.feishu.sourceCompatibilityProfile = previousSourceCompatibilityProfile
   }
   assert.deepStrictEqual(
     safeSummary(wiredEmpty),
@@ -583,16 +586,13 @@ async function run() {
   const failed = await inventoryPlan({ downloadFailureToken: 'tokenVideoAlpha123' })
   assert.strictEqual(failed.result.complete, false)
   assert.strictEqual(failed.result.failed, 1)
-  assert.strictEqual(
-    Object.prototype.hasOwnProperty.call(failed.result, 'contentPlanSha256'),
-    false,
-    '任一素材失败时不得返回可确认的计划摘要'
+  assert.match(
+    failed.result.contentPlanSha256,
+    /^[0-9a-f]{64}$/,
+    '已知逐行素材失败必须返回包含延期证据的确定计划摘要'
   )
-  assert.strictEqual(
-    Object.prototype.hasOwnProperty.call(failed.result, 'contentPlanAssetCount'),
-    false,
-    '不完整报告不得伪装有效素材数量'
-  )
+  assert.strictEqual(failed.result.contentPlanAssetCount, 1, '素材数量只统计本轮已完成验证的素材')
+  assert.strictEqual(failed.result.contentPlanDeferredCount, 1, '失败房源必须进入延期证据而不是伪装成功')
 
   const sensitiveValues = [
     'source-record-private-alpha',

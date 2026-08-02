@@ -97,4 +97,281 @@ const hc = require('./health-check')
   assert.deepStrictEqual(hc.buildAlertEnv(null, null), {}, 'null 入参返回空对象')
 }
 
+// 6) 自动同步健康：关闭时明确跳过；开启后必须使用 worker-v2、无 UNKNOWN/BLOCKED，
+//    且最近一次成功不能长期陈旧。巡检只输出阶段/时间/计数，不回显任务错误正文或外部标识。
+{
+  const nowMs = Date.parse('2026-08-02T04:00:00.000Z')
+  const disabled = hc.evaluateFeishuSyncState({}, {
+    nowMs,
+    autoSyncEnabled: false,
+    controllerMode: '',
+    intervalMinutes: 30
+  })
+  assert.strictEqual(disabled.ok, true)
+  assert.strictEqual(disabled.skipped, '自动同步未启用')
+
+  for (const state of ['unknown', 'blocked']) {
+    const disabledWithUnresolved = hc.evaluateFeishuSyncState({
+      feishuSyncRuns: [{ id: `RUN-${state}`, state, updatedAt: nowMs - 1000 }]
+    }, {
+      nowMs,
+      autoSyncEnabled: false,
+      controllerMode: '',
+      intervalMinutes: 30
+    })
+    assert.strictEqual(
+      disabledWithUnresolved.ok,
+      false,
+      `关闭自动同步也不得掩盖未处置的 ${state.toUpperCase()} 任务`
+    )
+    assert.strictEqual(disabledWithUnresolved.lastState, state)
+  }
+
+  const integrityBlocked = hc.evaluateFeishuSyncState({
+    feishuSyncScheduler: { leaseIntegrityBlockedRunId: 'controller-state-invalid' },
+    feishuSyncRuns: [{ runId: 'RUN-OK', state: 'succeeded', finishedAt: nowMs - 1000 }]
+  }, {
+    nowMs,
+    autoSyncEnabled: false,
+    controllerMode: '',
+    intervalMinutes: 30
+  })
+  assert.strictEqual(integrityBlocked.ok, false, '关闭自动同步也不得掩盖控制器租约完整性异常')
+  assert.strictEqual(/controller|RUN-OK/i.test(JSON.stringify(integrityBlocked)), false, '健康结果不得回显任务或控制器内部标识')
+
+  const inconsistentLease = hc.evaluateFeishuSyncState({
+    feishuSyncScheduler: {
+      activeLease: { runId: 'RUN-ACTIVE', owner: 'worker-a', fence: 3, acquiredAt: nowMs - 1000, expiresAt: nowMs + 60_000 }
+    },
+    feishuSyncRuns: [{
+      runId: 'RUN-ACTIVE',
+      state: 'dry-running',
+      lease: { runId: 'RUN-ACTIVE', owner: 'worker-b', fence: 3, acquiredAt: nowMs - 1000, expiresAt: nowMs + 60_000 }
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(inconsistentLease.ok, false, '调度器与任务租约身份不一致必须告警')
+  assert.strictEqual(/RUN-ACTIVE|worker-/i.test(JSON.stringify(inconsistentLease)), false, '租约异常告警不得暴露运行身份')
+
+  const wrongEmbeddedRunId = hc.evaluateFeishuSyncState({
+    feishuSyncScheduler: {
+      activeLease: { runId: 'active-run-01', owner: 'worker-a', fence: 3, acquiredAt: nowMs - 1000, expiresAt: nowMs + 60_000 }
+    },
+    feishuSyncRuns: [{
+      runId: 'active-run-01',
+      state: 'dry-running',
+      lease: { runId: 'different-run-02', owner: 'worker-a', fence: 3, acquiredAt: nowMs - 1000, expiresAt: nowMs + 60_000 }
+    }, {
+      runId: 'recent-success-01', state: 'succeeded', finishedAt: nowMs - 1000
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(wrongEmbeddedRunId.ok, false, '任务租约内嵌 runId 与任务身份不同必须告警')
+  assert.strictEqual(/active-run|different-run/i.test(JSON.stringify(wrongEmbeddedRunId)), false, '租约 runId 异常不得暴露内部身份')
+
+  const applyingWithoutLease = hc.evaluateFeishuSyncState({
+    feishuSyncScheduler: { activeLease: null },
+    feishuSyncRuns: [{
+      runId: 'applying-without-lease',
+      state: 'applying',
+      lease: null,
+      updatedAt: nowMs - 1000
+    }, {
+      runId: 'recent-success-before-broken-run',
+      state: 'succeeded',
+      finishedAt: nowMs - 60 * 1000
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(applyingWithoutLease.ok, false, '非 queued 的活动任务缺少租约必须告警')
+  assert.strictEqual(
+    /applying-without-lease|recent-success/i.test(JSON.stringify(applyingWithoutLease)),
+    false,
+    '无租约异常不得暴露内部任务身份'
+  )
+
+  const wrongController = hc.evaluateFeishuSyncState({}, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: '',
+    intervalMinutes: 30
+  })
+  assert.strictEqual(wrongController.ok, false, '自动同步开启但未绑定 worker-v2 必须告警')
+
+  const missingApproval = hc.evaluateFeishuSyncState({}, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: false,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(missingApproval.ok, false, '自动同步缺任一字段/资源身份批准摘要必须告警')
+
+  const missingWriteLock = hc.evaluateFeishuSyncState({}, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: false,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(missingWriteLock.ok, false, '数据库跨进程写锁关闭时自动同步必须告警')
+
+  const unknown = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{
+      id: 'RUN-UNKNOWN',
+      state: 'unknown',
+      updatedAt: nowMs - 1000,
+      errorMessage: 'https://secret.invalid/path?token=never-output'
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(unknown.ok, false, 'UNKNOWN 必须 fail-loud')
+  assert.strictEqual(/secret|token|https?:|path/i.test(JSON.stringify(unknown)), false, '巡检结果不得带任务原始错误或外部地址')
+
+  const fresh = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{ id: 'RUN-OK', state: 'succeeded', finishedAt: nowMs - 20 * 60 * 1000 }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(fresh.ok, true, '最近成功在健康窗口内必须通过')
+  assert.strictEqual(fresh.lastState, 'succeeded')
+
+  const partialAfterOldSuccess = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{
+      id: 'RUN-FULL-OLD',
+      state: 'succeeded',
+      finishedAt: nowMs - 4 * 60 * 60 * 1000,
+      updatedAt: nowMs - 4 * 60 * 60 * 1000
+    }, {
+      id: 'RUN-MATERIAL-WARNING',
+      state: 'succeeded',
+      errorCode: 'MATERIALS_PARTIAL_FAILURE',
+      finishedAt: nowMs - 5 * 60 * 1000,
+      updatedAt: nowMs - 5 * 60 * 1000
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(partialAfterOldSuccess.ok, false, '最新任务仅素材部分失败时不得报告全链路健康')
+  assert.strictEqual(partialAfterOldSuccess.degraded, true, '素材部分失败必须明确标记 degraded')
+  assert.strictEqual(partialAfterOldSuccess.lastState, 'succeeded', '库存提交成功状态仍应如实保留')
+  assert.strictEqual(partialAfterOldSuccess.lastSuccessAgeMinutes, 240, '素材告警不得刷新上一次完整成功时间')
+  assert.match(partialAfterOldSuccess.detail, /素材.*未完整|未完整.*素材/, '健康摘要应明确素材链路未完整')
+
+  const repeatedPartial = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{
+      id: 'RUN-MATERIAL-WARNING-1',
+      state: 'succeeded',
+      errorCode: 'MATERIALS_PARTIAL_FAILURE',
+      finishedAt: nowMs - 40 * 60 * 1000,
+      updatedAt: nowMs - 40 * 60 * 1000
+    }, {
+      id: 'RUN-MATERIAL-WARNING-2',
+      state: 'succeeded',
+      errorCode: 'MATERIALS_PARTIAL_FAILURE',
+      finishedAt: nowMs - 10 * 60 * 1000,
+      updatedAt: nowMs - 10 * 60 * 1000
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(repeatedPartial.ok, false, '连续素材告警不得被当成新鲜完整成功')
+  assert.strictEqual(repeatedPartial.degraded, true, '连续素材告警必须保持 degraded')
+  assert.strictEqual(repeatedPartial.lastSuccessAgeMinutes, null, '从未完整成功时不得伪造成功新鲜度')
+
+  const partialFollowedByDryRun = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{
+      id: 'RUN-FULL-BEFORE-WARNING',
+      state: 'succeeded',
+      finishedAt: nowMs - 30 * 60 * 1000,
+      updatedAt: nowMs - 30 * 60 * 1000
+    }, {
+      id: 'RUN-MATERIAL-WARNING-BEFORE-DRY',
+      state: 'succeeded',
+      errorCode: 'MATERIALS_PARTIAL_FAILURE',
+      finishedAt: nowMs - 20 * 60 * 1000,
+      updatedAt: nowMs - 20 * 60 * 1000
+    }, {
+      id: 'RUN-DRY-AFTER-WARNING',
+      state: 'dry-succeeded',
+      dryRun: true,
+      finishedAt: nowMs - 5 * 60 * 1000,
+      updatedAt: nowMs - 5 * 60 * 1000
+    }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(partialFollowedByDryRun.ok, false, '后续 dry-run 不得遮住最近正式运行的素材告警')
+  assert.strictEqual(partialFollowedByDryRun.degraded, true, '素材告警后的 dry-run 仍必须保持 degraded')
+  assert.strictEqual(partialFollowedByDryRun.lastSuccessAgeMinutes, 30, 'dry-run 不得刷新完整正式成功时间')
+
+  const stale = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{ id: 'RUN-STALE', state: 'succeeded', finishedAt: nowMs - 4 * 60 * 60 * 1000 }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30
+  })
+  assert.strictEqual(stale.ok, false, '超过三个调度周期仍无成功任务必须告警')
+}
+
 console.log('health-check-v1-test passed')

@@ -534,52 +534,84 @@ function createFeishuNoteMaterialClient(options = {}) {
   }
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('飞书素材 maxBytes 无效')
 
-  async function request(apiPath, requestOptions = {}, operation = '请求飞书素材') {
+  async function requestWithDeadline(
+    apiPath,
+    requestOptions = {},
+    operation = '请求飞书素材',
+    consumer = null,
+    deadlineMs = timeoutMs
+  ) {
     if (!String(apiPath || '').startsWith('/')) throw new Error('飞书素材 API 路径无效')
     const controller = new AbortController()
+    const timeoutError = new Error(`${operation}超时`)
+    timeoutError.statusCode = 504
+    timeoutError.code = 'FEISHU_MATERIAL_REQUEST_TIMEOUT'
+    let timedOut = false
     let timer
+    const fetchOptions = { ...requestOptions }
+    const onWriteDispatched = typeof fetchOptions.onWriteDispatched === 'function'
+      ? fetchOptions.onWriteDispatched
+      : null
+    delete fetchOptions.onWriteDispatched
     try {
       const timeoutPromise = new Promise((_, reject) => {
         timer = setTimeout(() => {
+          timedOut = true
           controller.abort()
-          reject(new Error(`${operation}超时`))
-        }, timeoutMs)
+          reject(timeoutError)
+        }, deadlineMs)
       })
       const response = await Promise.race([
-        options.fetchImpl(`${baseUrl}${apiPath}`, {
-          ...requestOptions,
-          redirect: 'error',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            ...(requestOptions.headers || {})
-          },
-          signal: controller.signal
+        Promise.resolve().then(() => {
+          if (onWriteDispatched) onWriteDispatched()
+          return options.fetchImpl(`${baseUrl}${apiPath}`, {
+            ...fetchOptions,
+            redirect: 'error',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              ...(fetchOptions.headers || {})
+            },
+            signal: controller.signal
+          })
         }),
         timeoutPromise
       ])
-      return response
+      if (typeof consumer !== 'function') return response
+      return await Promise.race([
+        Promise.resolve().then(() => consumer(response)),
+        timeoutPromise
+      ])
+    } catch (error) {
+      if (timedOut || (error && error.name === 'AbortError')) throw timeoutError
+      throw error
     } finally {
       clearTimeout(timer)
     }
   }
 
+  async function request(apiPath, requestOptions = {}, operation = '请求飞书素材') {
+    return requestWithDeadline(apiPath, requestOptions, operation)
+  }
+
   async function requestJson(apiPath, requestOptions = {}, operation = '请求飞书素材') {
-    const response = await request(apiPath, requestOptions, operation)
-    let body
-    try {
-      body = await response.json()
-    } catch (error) {
-      const invalid = new Error(`${operation}响应不是有效 JSON`)
-      invalid.statusCode = Number(response && response.status) || 502
-      throw invalid
-    }
-    if (!response.ok || !body || Number(body.code || 0) !== 0) {
-      const failure = new Error(`${operation}失败`)
-      failure.statusCode = Number(response && response.status) || 502
-      failure.apiCode = Number(body && body.code) || 0
-      throw failure
-    }
-    return body.data || {}
+    return requestWithDeadline(apiPath, requestOptions, operation, async (response) => {
+      let body
+      try {
+        body = await response.json()
+      } catch (error) {
+        if (error && error.code === 'FEISHU_MATERIAL_REQUEST_TIMEOUT') throw error
+        const invalid = new Error(`${operation}响应不是有效 JSON`)
+        invalid.statusCode = Number(response && response.status) || 502
+        throw invalid
+      }
+      if (!response.ok || !body || Number(body.code || 0) !== 0) {
+        const failure = new Error(`${operation}失败`)
+        failure.statusCode = Number(response && response.status) || 502
+        failure.apiCode = Number(body && body.code) || 0
+        throw failure
+      }
+      return body.data || {}
+    })
   }
 
   async function readAllPages(apiPathFactory, operation, itemKeys) {
@@ -683,21 +715,22 @@ function createFeishuNoteMaterialClient(options = {}) {
     let lastError = null
     for (const endpoint of endpoints) {
       try {
-        const response = await request(endpoint, { method: 'GET' }, '下载飞书房源素材')
-        if (!response.ok) {
-          const error = new Error('下载飞书房源素材失败')
-          error.statusCode = Number(response.status) || 502
-          throw error
-        }
-        const buffer = await readResponseBufferBounded(response, maxBytes)
-        if (!buffer.length) throw new Error('飞书房源素材为空文件')
-        return {
-          buffer,
-          size: buffer.length,
-          contentType: normalizeText(response.headers && response.headers.get && response.headers.get('content-type')) ||
-            'application/octet-stream',
-          contentSha256: sha256Buffer(buffer)
-        }
+        return await requestWithDeadline(endpoint, { method: 'GET' }, '下载飞书房源素材', async (response) => {
+          if (!response.ok) {
+            const error = new Error('下载飞书房源素材失败')
+            error.statusCode = Number(response.status) || 502
+            throw error
+          }
+          const buffer = await readResponseBufferBounded(response, maxBytes)
+          if (!buffer.length) throw new Error('飞书房源素材为空文件')
+          return {
+            buffer,
+            size: buffer.length,
+            contentType: normalizeText(response.headers && response.headers.get && response.headers.get('content-type')) ||
+              'application/octet-stream',
+            contentSha256: sha256Buffer(buffer)
+          }
+        }, downloadTimeoutMs)
       } catch (error) {
         lastError = error
       }
@@ -864,14 +897,15 @@ function createFeishuNoteMaterialClient(options = {}) {
     throw lastError || new Error('回读飞书目标素材失败')
   }
 
-  async function createFolder(parentToken, name) {
+  async function createFolder(parentToken, name, onWriteDispatched) {
     const data = await requestJson('/drive/v1/files/create_folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         name: normalizeText(name),
         folder_token: tokenText(parentToken)
-      })
+      }),
+      onWriteDispatched
     }, '创建房源素材目录')
     return normalizeDriveItem({
       token: data.token || data.folder_token,
@@ -880,7 +914,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     })
   }
 
-  async function uploadSmall(buffer, targetFolderToken, name) {
+  async function uploadSmall(buffer, targetFolderToken, name, onWriteDispatched) {
     const form = createForm({
       file_name: normalizeText(name),
       parent_type: 'explorer',
@@ -890,12 +924,13 @@ function createFeishuNoteMaterialClient(options = {}) {
     }, buffer)
     const data = await requestJson('/drive/v1/files/upload_all', {
       method: 'POST',
-      body: form
+      body: form,
+      onWriteDispatched
     }, '上传房源视频到专用云盘')
     return tokenText(data.file_token || data.token)
   }
 
-  async function uploadLarge(buffer, targetFolderToken, name) {
+  async function uploadLarge(buffer, targetFolderToken, name, onWriteDispatched) {
     const prepared = await requestJson('/drive/v1/files/upload_prepare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -904,7 +939,8 @@ function createFeishuNoteMaterialClient(options = {}) {
         parent_type: 'explorer',
         parent_node: tokenText(targetFolderToken),
         size: buffer.length
-      })
+      }),
+      onWriteDispatched
     }, '准备分片上传房源视频')
     const uploadId = normalizeText(prepared.upload_id)
     const blockSize = Number(prepared.block_size)
@@ -925,23 +961,25 @@ function createFeishuNoteMaterialClient(options = {}) {
       }, part)
       await requestJson('/drive/v1/files/upload_part', {
         method: 'POST',
-        body: form
+        body: form,
+        onWriteDispatched
       }, `上传房源视频分片 ${seq + 1}/${blockNum}`)
     }
     const finished = await requestJson('/drive/v1/files/upload_finish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ upload_id: uploadId, block_num: blockNum })
+      body: JSON.stringify({ upload_id: uploadId, block_num: blockNum }),
+      onWriteDispatched
     }, '完成分片上传房源视频')
     return tokenText(finished.file_token || finished.token)
   }
 
-  async function uploadFile(buffer, targetFolderToken, name) {
+  async function uploadFile(buffer, targetFolderToken, name, onWriteDispatched) {
     const body = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '')
     if (!body.length || body.length > maxBytes) throw new Error('待上传房源视频大小无效')
     return body.length <= SMALL_UPLOAD_LIMIT
-      ? uploadSmall(body, targetFolderToken, name)
-      : uploadLarge(body, targetFolderToken, name)
+      ? uploadSmall(body, targetFolderToken, name, onWriteDispatched)
+      : uploadLarge(body, targetFolderToken, name, onWriteDispatched)
   }
 
   async function checkedPreparedFileEvidence(sourceEvidence) {
@@ -985,7 +1023,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     }
   }
 
-  async function uploadSmallFile(fileDescriptor, targetFolderToken, name) {
+  async function uploadSmallFile(fileDescriptor, targetFolderToken, name, onWriteDispatched) {
     const checksum = await adler32FileRange(fileDescriptor.filePath, 0, fileDescriptor.size)
     const multipart = createFileMultipart({
       file_name: normalizeText(name),
@@ -998,12 +1036,13 @@ function createFeishuNoteMaterialClient(options = {}) {
       method: 'POST',
       headers: multipart.headers,
       body: multipart.body,
-      duplex: 'half'
+      duplex: 'half',
+      onWriteDispatched
     }, '流式上传房源素材到专用云盘')
     return tokenText(data.file_token || data.token)
   }
 
-  async function uploadLargeFile(fileDescriptor, targetFolderToken, name) {
+  async function uploadLargeFile(fileDescriptor, targetFolderToken, name, onWriteDispatched) {
     const prepared = await requestJson('/drive/v1/files/upload_prepare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -1012,7 +1051,8 @@ function createFeishuNoteMaterialClient(options = {}) {
         parent_type: 'explorer',
         parent_node: tokenText(targetFolderToken),
         size: fileDescriptor.size
-      })
+      }),
+      onWriteDispatched
     }, '准备流式分片上传房源素材')
     const uploadId = normalizeText(prepared.upload_id)
     const blockSize = Number(prepared.block_size)
@@ -1038,26 +1078,28 @@ function createFeishuNoteMaterialClient(options = {}) {
         method: 'POST',
         headers: multipart.headers,
         body: multipart.body,
-        duplex: 'half'
+        duplex: 'half',
+        onWriteDispatched
       }, `流式上传房源素材分片 ${seq + 1}/${blockNum}`)
     }
     const finished = await requestJson('/drive/v1/files/upload_finish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ upload_id: uploadId, block_num: blockNum })
+      body: JSON.stringify({ upload_id: uploadId, block_num: blockNum }),
+      onWriteDispatched
     }, '完成流式分片上传房源素材')
     return tokenText(finished.file_token || finished.token)
   }
 
-  async function uploadCheckedFileDescriptor(fileDescriptor, targetFolderToken, name) {
+  async function uploadCheckedFileDescriptor(fileDescriptor, targetFolderToken, name, onWriteDispatched) {
     return fileDescriptor.size <= SMALL_UPLOAD_LIMIT
-      ? uploadSmallFile(fileDescriptor, targetFolderToken, name)
-      : uploadLargeFile(fileDescriptor, targetFolderToken, name)
+      ? uploadSmallFile(fileDescriptor, targetFolderToken, name, onWriteDispatched)
+      : uploadLargeFile(fileDescriptor, targetFolderToken, name, onWriteDispatched)
   }
 
-  async function uploadFileDescriptor(rawDescriptor, targetFolderToken, name) {
+  async function uploadFileDescriptor(rawDescriptor, targetFolderToken, name, onWriteDispatched) {
     const fileDescriptor = await checkedPreparedFileEvidence(rawDescriptor)
-    return uploadCheckedFileDescriptor(fileDescriptor, targetFolderToken, name)
+    return uploadCheckedFileDescriptor(fileDescriptor, targetFolderToken, name, onWriteDispatched)
   }
 
   function folderNameForRecord(sourceRecordId) {
@@ -1075,7 +1117,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     return normalized || fallback
   }
 
-  async function ensureChildFolder(parentFolderToken, expectedName) {
+  async function ensureChildFolder(parentFolderToken, expectedName, onWriteDispatched, onWriteVerified) {
     const parent = tokenText(parentFolderToken)
     const before = (await listFolder(parent)).filter((item) => item.name === expectedName)
     if (before.length > 1 || (before.length === 1 && before[0].type !== 'folder')) {
@@ -1084,16 +1126,20 @@ function createFeishuNoteMaterialClient(options = {}) {
     if (before.length === 1) return before[0]
     let created
     try {
-      created = await createFolder(parent, expectedName)
+      created = await createFolder(parent, expectedName, onWriteDispatched)
     } catch (error) {
       const afterUncertain = (await listFolder(parent)).filter((item) => item.name === expectedName)
-      if (afterUncertain.length === 1 && afterUncertain[0].type === 'folder') return afterUncertain[0]
+      if (afterUncertain.length === 1 && afterUncertain[0].type === 'folder') {
+        if (typeof onWriteVerified === 'function') onWriteVerified()
+        return afterUncertain[0]
+      }
       throw error
     }
     const after = (await listFolder(parent)).filter((item) => item.name === expectedName)
     if (after.length !== 1 || after[0].type !== 'folder' || after[0].token !== created.token) {
       throw new Error('房源素材目录创建后回读不一致')
     }
+    if (typeof onWriteVerified === 'function') onWriteVerified()
     return after[0]
   }
 
@@ -1106,7 +1152,9 @@ function createFeishuNoteMaterialClient(options = {}) {
     community,
     building,
     unit,
-    roomNumber
+    roomNumber,
+    onWriteDispatched,
+    onWriteVerified
   }) {
     let current = { token: tokenText(parentFolderToken || options.targetRootFolderToken) }
     const locationName = `${safeFolderSegment(locationId, 'LOC')}__${safeFolderSegment(community, '未知小区')}`
@@ -1123,7 +1171,7 @@ function createFeishuNoteMaterialClient(options = {}) {
       roomParts.join('__')
     ]
     for (const segment of pathSegments) {
-      current = await ensureChildFolder(current.token, segment)
+      current = await ensureChildFolder(current.token, segment, onWriteDispatched, onWriteVerified)
     }
     return current
   }
@@ -1161,21 +1209,33 @@ function createFeishuNoteMaterialClient(options = {}) {
     }
   }
 
-  async function materializeAsset({ asset, targetFolderToken, targetName, sourceEvidence }) {
+  async function materializeAsset({
+    asset,
+    targetFolderToken,
+    targetName,
+    sourceEvidence,
+    onWriteDispatched,
+    onWriteVerified
+  }) {
     const preparedFile = sourceEvidence && typeof sourceEvidence.filePath === 'string'
       ? await checkedPreparedFileEvidence(sourceEvidence)
       : null
     // 旧调用方仍可短期使用独占 Buffer；生产标准化链路必须传 filePath 描述符，
     // 这样 Drive 上传和回读全程都不再把成品文件装入整块内存。
     const downloaded = preparedFile || await checkedSourceEvidence(asset, sourceEvidence)
+    let writeDispatched = false
+    const markWriteDispatched = () => {
+      writeDispatched = true
+      if (typeof onWriteDispatched === 'function') onWriteDispatched()
+    }
     let target = await targetFileByName(targetFolderToken, targetName)
     if (!target) {
       try {
         if (preparedFile) {
-          await uploadCheckedFileDescriptor(preparedFile, targetFolderToken, targetName)
+          await uploadCheckedFileDescriptor(preparedFile, targetFolderToken, targetName, markWriteDispatched)
         } else {
           // 兼容旧适配器，但仍禁止按可变 sourceToken 做服务端 copy。
-          await uploadFile(downloaded.buffer, targetFolderToken, targetName)
+          await uploadFile(downloaded.buffer, targetFolderToken, targetName, markWriteDispatched)
         }
       } catch (error) {
         target = await targetFileByName(targetFolderToken, targetName)
@@ -1191,6 +1251,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     if (targetDownloaded.contentSha256 !== downloaded.contentSha256 || targetDownloaded.size !== downloaded.size) {
       throw new Error('房源素材目标文件内容回读不一致')
     }
+    if (writeDispatched && typeof onWriteVerified === 'function') onWriteVerified()
     return {
       targetToken: target.token,
       targetName,
@@ -1225,6 +1286,7 @@ function createFeishuNoteMaterialClient(options = {}) {
   }
 
   return {
+    writeDispatchEvidenceVersion: 1,
     listFolder,
     getFile,
     listDocxBlocks,

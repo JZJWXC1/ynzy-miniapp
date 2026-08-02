@@ -8,6 +8,7 @@ const config = require('./config')
 const dbStore = require('./db')
 const domain = require('./domain')
 const feishuSync = require('./feishu-sync')
+const { createFeishuSyncWorker } = require('./feishu-sync-worker')
 const llm = require('./llm')
 const asrService = require('./asr-service')
 const asrRealtime = require('./asr-realtime')
@@ -25,6 +26,21 @@ const { hashPassword, verifyPassword } = require('./auth-util')
 const { parseMultipartForm } = require('./multipart')
 const requestLog = require('./request-log')
 const appVersion = require('./version')
+
+const feishuSyncWorker = createFeishuSyncWorker({
+  dbStore,
+  feishuSync,
+  commitDeltaChecked: dbStore.commitDeltaChecked,
+  writeLockEnabled: dbStore.writeLockEnabled,
+  config: {
+    approvedSchemaSha256: config.feishu.approvedSchemaSha256,
+    approvedResourceIdentitySha256: config.feishu.approvedResourceIdentitySha256,
+    intervalMinutes: config.feishu.syncIntervalMinutes,
+    leaseMs: Number(config.feishu.syncWorkerLeaseSeconds) * 1000,
+    maxRuns: config.feishu.syncRunHistoryLimit,
+    systemActorId: 'system:feishu-sync-worker'
+  }
+})
 
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -45,6 +61,39 @@ const MINI_AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS = Number(process.env.ASSISTANT_CHAT_FALLBACK_TIMEOUT_MS) || 24000
 const guestRateBuckets = new Map()
 let lastGuestBucketSweep = 0
+let legacySheetSnapshotRefreshRunning = false
+
+function startFeishuSyncWorkerProcess(runId) {
+  const child = spawn(process.execPath, [
+    path.join(__dirname, '..', 'scripts', 'run-feishu-sync-worker.js'),
+    '--run',
+    runId
+  ], {
+    cwd: path.join(__dirname, '..'),
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true
+  })
+  child.unref()
+
+  // 入队已经持久化；若操作系统连子进程都没能拉起，才在当前服务进程异步接管。
+  // HTTP 仍立即返回 202，不再把几十分钟素材搬运绑在网关连接上。
+  let fallbackStarted = false
+  const fallbackIfStillQueued = () => {
+    if (fallbackStarted) return
+    const run = feishuSyncWorker.getStatus({ limit: 100 }).runs.find((item) => item.runId === runId)
+    if (!run || run.state !== 'queued') return
+    fallbackStarted = true
+    feishuSyncWorker.run(runId, { workerId: `api-fallback:${process.pid}` }).catch((error) => {
+      console.error(`飞书同步后台接管失败：${error && error.code ? error.code : 'WORKER_FAILED'}`)
+    })
+  }
+  child.once('error', fallbackIfStillQueued)
+  child.once('exit', (code) => {
+    if (code !== 0) fallbackIfStillQueued()
+  })
+  return { started: Boolean(child.pid) }
+}
 
 // 定期清理过期限流桶：Map 原先只增不删，长期运行内存无界增长（伪造 XFF 时每个 key 留一条）。
 // 每个窗口最多全量清扫一次，删除已过窗的桶，成本可控。
@@ -1354,7 +1403,19 @@ function buildMissingEnvTemplate(db) {
     if (!Object.keys(config.feishu.sourceFieldBindings || {}).length) feishuMissing.push('FEISHU_SOURCE_FIELD_BINDINGS')
     if (!Object.keys(config.feishu.miniFieldBindings || {}).length) feishuMissing.push('FEISHU_MINI_FIELD_BINDINGS')
     if (!Object.keys(config.feishu.locationFieldBindings || {}).length) feishuMissing.push('FEISHU_LOCATION_FIELD_BINDINGS')
-    if (!config.feishu.folderToken && !config.feishu.materialsFile && !(config.feishu.sourceFieldBindings || {}).video) {
+    if (config.feishu.noteMaterialSyncEnabled || config.feishu.autoSyncEnabled) {
+      if (!['employee-current-stock-v1', 'employee-ai-foundation-v1'].includes(config.feishu.sourceCompatibilityProfile)) {
+        feishuMissing.push('FEISHU_SOURCE_COMPATIBILITY_PROFILE')
+      }
+      if (!config.feishu.noteMaterialSyncEnabled) feishuMissing.push('FEISHU_NOTE_MATERIAL_SYNC_ENABLED')
+      if (!config.feishu.noteMaterialFieldId) feishuMissing.push('FEISHU_NOTE_MATERIAL_FIELD_ID')
+      if (!Array.isArray(config.feishu.noteMaterialAllowedHosts) || !config.feishu.noteMaterialAllowedHosts.length) {
+        feishuMissing.push('FEISHU_NOTE_MATERIAL_ALLOWED_HOSTS')
+      }
+      if (!config.feishu.noteMaterialTargetRootFolderToken) {
+        feishuMissing.push('FEISHU_NOTE_MATERIAL_TARGET_ROOT_FOLDER_TOKEN')
+      }
+    } else if (!config.feishu.folderToken && !config.feishu.materialsFile && !(config.feishu.sourceFieldBindings || {}).video) {
       feishuMissing.push('FEISHU_MATERIAL_FOLDER_TOKEN')
     }
   } else if (config.feishu.syncEnabled) {
@@ -1827,6 +1888,15 @@ async function handleMini(req, res, pathname, searchParams) {
     return sendPublicListingJson(res, db, domain.homeListings(db))
   }
 
+  if (method === 'GET' && pathname === '/mini/v2/company-sheet-snapshot') {
+    const guest = isGuestUser(userId)
+    if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot-v2', 30)
+    // v2 只读最后一次已完整提交的固定十列快照。公开 GET 永不联网读取飞书、永不触发同步，
+    // 缓存缺失或损坏时返回可验证的 unavailable 契约，让客户端 fail-closed。
+    const cached = feishuSync.cachedSheetSnapshotV2(db)
+    return sendJson(res, cached || feishuSync.unavailableSheetSnapshotV2())
+  }
+
   if (method === 'GET' && pathname === '/mini/company-sheet-snapshot') {
     const guest = isGuestUser(userId)
     if (guest) assertGuestRateLimit(req, 'mini-company-sheet-snapshot', 30)
@@ -1839,10 +1909,10 @@ async function handleMini(req, res, pathname, searchParams) {
     }
     // 已有全量/快照同步在跑：两者都写 companySheetSnapshot，并发起第二份会互相覆盖。无缓存时
     // 返回空快照占位，等运行中的同步落库后下次请求即命中缓存，不与其争抢。
-    if (feishuSyncRunning) {
+    if (legacySheetSnapshotRefreshRunning) {
       return sendJson(res, feishuSync.sanitizeSheetSnapshot({ rows: [] }))
     }
-    feishuSyncRunning = true
+    legacySheetSnapshotRefreshRunning = true
     try {
       // clone 私有副本 + commitDelta 增量回写：readDb 命中缓存返回共享对象，直接交给跨长 await 的
       // refreshSheetSnapshot 就地改会让并发读看到半成品；commitDelta 只回写快照键，保住并发写。
@@ -1852,7 +1922,7 @@ async function handleMini(req, res, pathname, searchParams) {
       dbStore.commitDelta(baseSnapshot, nextDb)
       return sendJson(res, snapshot)
     } finally {
-      feishuSyncRunning = false
+      legacySheetSnapshotRefreshRunning = false
     }
   }
 
@@ -2491,49 +2561,33 @@ async function handleAdmin(req, res, pathname, searchParams) {
   }
   if (method === 'GET' && pathname === '/admin/feishu-sync/status') {
     assertAdminCapability(adminAccount)
-    return sendJson(res, feishuSync.status(db))
+    return sendJson(res, {
+      ...feishuSync.status(db),
+      controller: {
+        mode: config.feishu.syncControllerMode || 'manual-only',
+        automaticEnabled: config.feishu.autoSyncEnabled === true,
+        schemaApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedSchemaSha256 || '')),
+        resourceApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedResourceIdentitySha256 || '')),
+        ...feishuSyncWorker.getStatus()
+      }
+    })
   }
   if (method === 'POST' && pathname === '/admin/feishu-sync/run') {
     assertAdminCapability(adminAccount)
     const body = await parseBody(req)
-    const syncOptions = feishuSync.parseAdminSyncRequest(body)
-    const dryRun = syncOptions.dryRun
-    // dry-run 也必须与正式/定时同步共用互斥锁；否则会读取正在分批写入、尚未回校完成的副表。
-    if (feishuSyncRunning) {
-      const busy = new Error('已有飞书同步任务进行中，请稍候再试')
-      busy.statusCode = 409
-      throw busy
-    }
-    feishuSyncRunning = true
-    try {
-      if (dryRun) {
-        const previewDb = dbStore.clone(db)
-        const result = await feishuSync.sync(previewDb, adminAccount.userId || adminAccount.id, {
-          ...syncOptions,
-          dryRun: true
-        })
-        return sendJson(res, {
-          result,
-          status: feishuSync.status(previewDb)
-        })
-      }
-      // clone 私有副本 + commitDelta 增量回写：见 runScheduledFeishuSync 注释。
-      const baseSnapshot = dbStore.clone(dbStore.readDb())
-      const nextDb = dbStore.clone(baseSnapshot)
-      const result = await feishuSync.sync(nextDb, adminAccount.userId || adminAccount.id, syncOptions)
-      if (!feishuSync.isCommittableSyncResult(result)) {
-        const blocked = new Error(`飞书镜像同步未完整发布：${result.status || 'failed'}`)
-        blocked.statusCode = 502
-        throw blocked
-      }
-      dbStore.commitDelta(baseSnapshot, nextDb)
-      return sendJson(res, {
-        result,
-        status: feishuSync.status(nextDb)
-      })
-    } finally {
-      feishuSyncRunning = false
-    }
+    const syncOptions = feishuSync.parseAdminSyncRequest(body, { externalWorkerRequest: true })
+    const queued = feishuSyncWorker.enqueue({
+      trigger: 'manual',
+      dryRun: syncOptions.dryRun,
+      actorId: adminAccount.userId || adminAccount.id
+    })
+    const dispatch = startFeishuSyncWorkerProcess(queued.runId)
+    return sendJson(res, {
+      accepted: true,
+      run: queued,
+      dispatch,
+      controller: feishuSyncWorker.getStatus()
+    }, 202)
   }
   if (method === 'GET' && pathname === '/admin/listings') {
     return sendJson(res, withSignedListingVideoUrls(domain.adminListings(db, {
@@ -3143,46 +3197,6 @@ async function router(req, res) {
   }
 }
 
-let feishuSyncRunning = false
-
-async function runScheduledFeishuSync() {
-  if (feishuSyncRunning) return
-  if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return
-  const currentDb = dbStore.readDb()
-  if (!feishuSync.status(currentDb).ready) return
-  feishuSyncRunning = true
-  try {
-    // 在 clone 的私有副本上跑同步：baseSnapshot 是同步开始前的不可变基线，nextDb 是同步就地改动
-    // 的私有副本，共享缓存对象在长 await 期间零写入。落盘用 commitDelta 只回写同步真正改动的键，
-    // 保住 await 窗口内并发 updateDb 落盘的成交/反馈/留痕，避免整库回写把它们静默覆盖。
-    const baseSnapshot = dbStore.clone(currentDb)
-    const nextDb = dbStore.clone(baseSnapshot)
-    const result = await feishuSync.sync(nextDb, 'system-feishu-sync', { scheduled: true })
-    if (!feishuSync.isCommittableSyncResult(result)) {
-      throw new Error(`镜像同步未完整发布：${result.status || 'failed'}`)
-    }
-    dbStore.commitDelta(baseSnapshot, nextDb)
-    if (result.success !== true) {
-      console.error(`飞书房源自动同步部分失败：库存已提交，但素材同步未完整成功（${result.status || 'materials-failed'}）`)
-    } else {
-      console.log(result.noop ? '飞书房源自动同步完成：无变化' : '飞书房源自动同步完成')
-    }
-  } catch (error) {
-    console.error(`飞书房源自动同步失败：${error.message}`)
-  } finally {
-    feishuSyncRunning = false
-  }
-}
-
-function startFeishuSyncTimer() {
-  if (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled) return
-  const minutes = Number(config.feishu.syncIntervalMinutes || 0)
-  if (!Number.isFinite(minutes) || minutes <= 0) return
-  const interval = minutes * 60 * 1000
-  setInterval(runScheduledFeishuSync, interval)
-  console.log(`飞书房源自动同步已开启：每 ${minutes} 分钟执行一次`)
-}
-
 // 实时 ASR 升级鉴权：每条连接都用服务端密钥开一路付费 DashScope 上游。与 HTTP
 // /mini/asr/transcribe 对齐——登录用户放行，游客按 IP 限流——避免未认证客户端白嫖付费
 // 语音识别并放大成本/资源 DoS。无 token 的游客 miniUserIdFromRequest 返回 ''，无效/过期/
@@ -3231,5 +3245,4 @@ server.listen(config.port, config.host, () => {
   console.log(`版本 ${v.version} commit ${v.shortCommit}${v.branch ? ` (${v.branch})` : ''} built ${v.builtAt || '-'} [来源 ${v.source}]`)
   console.log(`管理后台：http://${config.host}:${config.port}/admin-web/`)
   resumePendingRegistrationNotifications()
-  startFeishuSyncTimer()
 })

@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 const config = require('./config')
 
 function clone(value) {
@@ -312,7 +313,20 @@ function isIdObjectArray(value) {
 // \u4EE5 fresh \u4E3A\u5E95\uFF0C\u53EA\u628A sync \u76F8\u5BF9 base \u771F\u6B63\u6539\u52A8\u8FC7\u7684\u5B57\u6BB5\u8986\u76D6\u4E0A\u53BB\uFF08sync \u5220\u9664\u7684\u5B57\u6BB5\u5219\u5220\u6389\uFF09\uFF0C\u4ECE\u800C
 // \u4FDD\u7559 fresh \u5BF9 sync \u672A\u78B0\u5B57\u6BB5\u7684\u5E76\u53D1\u6539\u52A8\u3002\u7528\u4E8E\u300C\u540C\u4E00\u5143\u7D20\u88AB sync \u4E0E\u5E76\u53D1\u5199\u540C\u65F6\u6539\u52A8\uFF08\u4E0D\u540C\u5B57\u6BB5\uFF09\u300D\uFF1A
 // \u5426\u5219\u300Csync \u52A8\u8FC7\u8BE5\u5143\u7D20\u5C31\u6574\u4EFD\u80DC\u51FA\u300D\u4F1A\u9759\u9ED8\u56DE\u6EDA\u5E76\u53D1\u5199\uFF08\u5982 sync \u5237 syncedAt \u7684\u540C\u65F6\u5E76\u53D1\u786E\u8BA4\u4E86\u6210\u4EA4\uFF09\u3002
-const TERMINAL_STATUS_FIELDS = new Set(['status', 'lifecycleStatus', 'expiredAt', 'expiredBy', 'expiredPool', 'expiredReason', 'expiredStaleDays'])
+const TERMINAL_STATUS_FIELDS = new Set([
+  'status',
+  'listingStatus',
+  'lifecycleStatus',
+  'lifecycleStatusText',
+  'published',
+  'enabled',
+  'sourcePresent',
+  'expiredAt',
+  'expiredBy',
+  'expiredPool',
+  'expiredReason',
+  'expiredStaleDays'
+])
 
 function isTerminalDealState(value) {
   return /成交|签单|sold/i.test(String(value || ''))
@@ -322,12 +336,14 @@ function freshTerminalStatusWins(key, mutated, fresh) {
   if (!TERMINAL_STATUS_FIELDS.has(key)) return false
   const safeMutated = mutated || {}
   const safeFresh = fresh || {}
-  const freshStatus = key === 'status' ? safeFresh[key] : safeFresh.status
-  const syncStatus = key === 'status' ? safeMutated[key] : safeMutated.status
-  const freshLifecycle = key === 'lifecycleStatus' ? safeFresh[key] : safeFresh.lifecycleStatus
-  const syncLifecycle = key === 'lifecycleStatus' ? safeMutated[key] : safeMutated.lifecycleStatus
-  const freshTerminal = isTerminalDealState(freshStatus) || isTerminalDealState(freshLifecycle)
-  const syncTerminal = isTerminalDealState(syncStatus) || isTerminalDealState(syncLifecycle)
+  const terminalValues = (listing) => [
+    listing.status,
+    listing.listingStatus,
+    listing.lifecycleStatus,
+    listing.lifecycleStatusText
+  ]
+  const freshTerminal = terminalValues(safeFresh).some(isTerminalDealState)
+  const syncTerminal = terminalValues(safeMutated).some(isTerminalDealState)
   return freshTerminal && !syncTerminal
 }
 
@@ -393,27 +409,105 @@ function mergeById(base, mutated, fresh) {
 // \u6309\u5143\u7D20\u7EA7\u4E09\u65B9\u5408\u5E76\uFF0C\u53EA\u8986\u76D6 sync \u52A8\u8FC7\u7684\u5143\u7D20\u3001\u4FDD\u7559 fresh \u91CC sync \u6CA1\u78B0\u7684\u5143\u7D20\uFF08\u5E76\u53D1\u5199\uFF09\uFF1B\u5176\u4F59\u952E\u505A\u6574\u952E
 // \u589E\u91CF\uFF08sync \u6539\u8FC7\u5219\u8986\u76D6\u3001\u672A\u6539\u5219\u4FDD\u7559\u5E76\u53D1\u5199\uFF09\u3002\u8FD9\u6837\u540C\u6B65\u5BF9\u81EA\u5DF1\u623F\u6E90\u7684\u6539\u52A8\u7167\u5E38\u843D\u5730\uFF0C\u800C\u7A97\u53E3\u5185\u5E76\u53D1\u7684\u6210\u4EA4
 // \u786E\u8BA4/\u8DB3\u8FF9/\u7F16\u8F91\u4E0D\u518D\u56E0\u201C\u540C\u6B65\u78B0\u4E86\u540C\u4E00\u4E2A\u9876\u5C42\u6570\u7EC4\u201D\u88AB\u6574\u5757\u56DE\u6EDA\u3002sync \u6570\u636E\u6C38\u4E0D\u4E22\u5931\uFF08\u5B83\u52A8\u8FC7\u7684\u5143\u7D20\u603B\u662F\u80DC\u51FA\uFF09\u3002
-function commitDelta(base, mutated) {
+function applyDelta(freshDb, base, mutated, options = {}) {
   const safeBase = base || {}
   const safeMutated = mutated || {}
-  return updateDb((freshDb) => {
-    const keys = new Set([...Object.keys(safeBase), ...Object.keys(safeMutated)])
-    for (const key of keys) {
-      const hasNext = Object.prototype.hasOwnProperty.call(safeMutated, key)
-      const before = JSON.stringify(safeBase[key])
-      const after = hasNext ? JSON.stringify(safeMutated[key]) : undefined
-      if (before === after) continue // \u540C\u6B65\u672A\u6539\u8BE5\u952E\uFF0C\u4FDD\u7559 freshDb \u4E2D\u7684\u5E76\u53D1\u5199
-      if (!hasNext) { delete freshDb[key]; continue } // \u540C\u6B65\u5220\u9664\u4E86\u8BE5\u9876\u5C42\u952E
-      // \u7F3A\u5931\u7684 base \u89C6\u4F5C\u7A7A\u96C6\uFF0C\u4F7F\u300C\u9996\u6B21\u540C\u6B65\uFF08base \u65E0\u6B64\u952E/\u4E3A\u7A7A\uFF09+ \u5E76\u53D1\u5199\u300D\u4E5F\u8D70\u5143\u7D20\u7EA7\u5408\u5E76\u3001\u4E0D\u6574\u5757\u8986\u76D6\u3002
-      const baseArr = safeBase[key] === undefined ? [] : safeBase[key]
-      if (isIdObjectArray(baseArr) && isIdObjectArray(safeMutated[key])) {
-        const freshArr = Array.isArray(freshDb[key]) ? freshDb[key] : []
-        freshDb[key] = mergeById(baseArr, safeMutated[key], freshArr)
-      } else {
-        freshDb[key] = safeMutated[key] // \u975E id \u5BF9\u8C61\u6570\u7EC4\uFF1A\u6574\u952E\u8986\u76D6\uFF08\u4E0E\u65E7\u884C\u4E3A\u4E00\u81F4\uFF09
-      }
+  const excludedKeys = new Set(Array.isArray(options.excludedTopLevelKeys) ? options.excludedTopLevelKeys : [])
+  const keys = new Set([...Object.keys(safeBase), ...Object.keys(safeMutated)])
+  for (const key of keys) {
+    if (excludedKeys.has(key)) continue
+    const hasNext = Object.prototype.hasOwnProperty.call(safeMutated, key)
+    const before = JSON.stringify(safeBase[key])
+    const after = hasNext ? JSON.stringify(safeMutated[key]) : undefined
+    if (before === after) continue // \u540C\u6B65\u672A\u6539\u8BE5\u952E\uFF0C\u4FDD\u7559 freshDb \u4E2D\u7684\u5E76\u53D1\u5199
+    if (!hasNext) { delete freshDb[key]; continue } // \u540C\u6B65\u5220\u9664\u4E86\u8BE5\u9876\u5C42\u952E
+    // \u7F3A\u5931\u7684 base \u89C6\u4F5C\u7A7A\u96C6\uFF0C\u4F7F\u300C\u9996\u6B21\u540C\u6B65\uFF08base \u65E0\u6B64\u952E/\u4E3A\u7A7A\uFF09+ \u5E76\u53D1\u5199\u300D\u4E5F\u8D70\u5143\u7D20\u7EA7\u5408\u5E76\u3001\u4E0D\u6574\u5757\u8986\u76D6\u3002
+    const baseArr = safeBase[key] === undefined ? [] : safeBase[key]
+    if (isIdObjectArray(baseArr) && isIdObjectArray(safeMutated[key])) {
+      const freshArr = Array.isArray(freshDb[key]) ? freshDb[key] : []
+      freshDb[key] = mergeById(baseArr, safeMutated[key], freshArr)
+    } else {
+      freshDb[key] = safeMutated[key] // \u975E id \u5BF9\u8C61\u6570\u7EC4\uFF1A\u6574\u952E\u8986\u76D6\uFF08\u4E0E\u65E7\u884C\u4E3A\u4E00\u81F4\uFF09
     }
-    return freshDb
+  }
+  return freshDb
+}
+
+function commitDelta(base, mutated) {
+  return updateDb((freshDb) => applyDelta(freshDb, base, mutated))
+}
+
+// 后台长任务在外部写入后提交本地库存时，租约检查与增量落盘必须共享同一个文件锁临界区。
+// guard 只接收隔离副本，不能借校验回调污染 freshDb；返回值必须严格为 true，旧 fence 或
+// 异步伪校验一律 fail-closed，且在 applyDelta 之前抛错，保证业务数据与提交标记都不部分落盘。
+function guardedCommitError(message) {
+  const error = new Error(message)
+  error.code = 'DB_COMMIT_GUARD_REJECTED'
+  return error
+}
+
+function validateCommitMarker(marker, runId, fence) {
+  if (!marker || marker.runId !== runId || Number(marker.fence) !== Number(fence)) return false
+  if (!/^[0-9a-f]{64}$/.test(String(marker.markerSha256 || ''))) return false
+  const body = clone(marker)
+  const expected = String(body.markerSha256)
+  delete body.markerSha256
+  const actual = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex')
+  return actual === expected
+}
+
+function commitDeltaChecked(base, mutated, guardOrOptions) {
+  // 旧调用保留纯 guard 契约，避免影响其他已有长任务。
+  if (typeof guardOrOptions === 'function') {
+    return updateDb((freshDb) => {
+      const accepted = guardOrOptions(clone(freshDb))
+      if (accepted && typeof accepted.then === 'function') {
+        throw new TypeError('受保护增量提交 guard 必须是同步函数')
+      }
+      if (accepted !== true) throw guardedCommitError('受保护增量提交的租约或 fence 已失效')
+      return applyDelta(freshDb, base, mutated)
+    })
+  }
+
+  // 同步 worker 使用对象契约：校验租约、合并业务增量、写提交标记和收口任务状态
+  // 全部位于同一次 updateDb/文件锁内，任一步抛错都不会留下半次提交。
+  const options = guardOrOptions && typeof guardOrOptions === 'object' ? guardOrOptions : null
+  if (!options || !options.runId || !options.workerId ||
+      !Number.isSafeInteger(Number(options.fence)) || typeof options.finalize !== 'function') {
+    throw new TypeError('受保护增量提交缺少完整的一次性任务身份或同步 finalize')
+  }
+
+  return updateDb((freshDb) => {
+    const run = Array.isArray(freshDb.feishuSyncRuns)
+      ? freshDb.feishuSyncRuns.find((item) => item && item.runId === options.runId)
+      : null
+    const lease = run && run.lease
+    if (!run || run.state !== 'committing' || !lease ||
+        lease.owner !== options.workerId || Number(lease.fence) !== Number(options.fence)) {
+      throw guardedCommitError('受保护增量提交的任务、租约或 fence 已失效')
+    }
+    if (!validateCommitMarker(options.commitMarker, options.runId, options.fence)) {
+      throw guardedCommitError('受保护增量提交的提交标记无效')
+    }
+
+    applyDelta(freshDb, base, mutated, {
+      excludedTopLevelKeys: Array.isArray(options.excludedTopLevelKeys)
+        ? options.excludedTopLevelKeys
+        : []
+    })
+    if (!freshDb.feishuSyncCommitMarkers || Array.isArray(freshDb.feishuSyncCommitMarkers)) {
+      freshDb.feishuSyncCommitMarkers = {}
+    }
+    if (freshDb.feishuSyncCommitMarkers[options.runId]) {
+      throw guardedCommitError('受保护增量提交的一次性提交标记已存在')
+    }
+    freshDb.feishuSyncCommitMarkers[options.runId] = clone(options.commitMarker)
+
+    const finalized = options.finalize(freshDb)
+    if (finalized && typeof finalized.then === 'function') {
+      throw new TypeError('受保护增量提交 finalize 必须是同步函数')
+    }
+    return { committed: true, marker: clone(options.commitMarker) }
   })
 }
 
@@ -423,5 +517,7 @@ module.exports = {
   writeDb,
   updateDb,
   inspectDb,
-  commitDelta
+  commitDelta,
+  commitDeltaChecked,
+  writeLockEnabled: lockEnabled
 }

@@ -44,6 +44,10 @@ const db = {
     lifecycleStatus: 'active',
     reviewStatus: '无需审核',
     communityMatched: true,
+    missingVideoMaterial: true,
+    videoMaterialStatus: '缺视频素材',
+    syncStatus: '缺视频素材',
+    videoMaterialFailureReason: 'synthetic-old-failure',
     videoKey: 'house-videos/legacy/old.mp4',
     videoUrl: 'https://example.invalid/legacy.mp4'
   }]
@@ -70,12 +74,22 @@ assert.throws(
 )
 
 const result = domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', incoming, {
-  updatedAt: '2026-07-26 03:00:00'
+  // 公开详情受真实 7 天维护窗口约束；夹具必须相对当前测试时钟保持新鲜，不能把某个
+  // 日历日期永久写死后随时间自然过期，造成与媒体持久化无关的假红。
+  updatedAt: new Date(Date.now() - 60 * 1000).toISOString()
 })
 assert.strictEqual(result.mediaAssetCount, 2)
 assert.strictEqual(db.listings[0].videoKey, incoming[1].objectKey, '旧单视频索引必须只指向首个视频，不能把排在前面的图片伪装成视频')
 assert.strictEqual(db.listings[0].videoUrl, '', '新清单落库后不得保留绕过代理的旧直链')
 assert.deepStrictEqual(db.listings[0].mediaAssets, incoming, '私有清单必须完整持久化已校验摘要和对象键')
+assert.strictEqual(db.listings[0].missingVideoMaterial, false, '已验证视频落库后必须清除旧缺视频标记')
+assert.strictEqual(db.listings[0].videoMaterialStatus, '已匹配视频素材')
+assert.strictEqual(db.listings[0].syncStatus, '已同步飞书')
+assert.strictEqual(
+  Object.prototype.hasOwnProperty.call(db.listings[0], 'videoMaterialFailureReason'),
+  false,
+  '已验证素材必须清除上一轮搬运失败原因'
+)
 
 const detail = domain.listingDetail(db, 'L-MEDIA-PERSIST')
 assert.strictEqual(detail.mediaAssets.length, 2)
@@ -138,6 +152,9 @@ const imageOnly = {
 assert.strictEqual(domain.hasListingVideo(imageOnly), false, '只有图片的清单不得被 hasListingVideo 误判为视频')
 domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', imageOnly.mediaAssets)
 assert.strictEqual(db.listings[0].videoKey, '', '纯图片清单不得把图片对象键写进旧单视频索引')
+assert.strictEqual(db.listings[0].missingVideoMaterial, true, '纯图片清单必须恢复缺视频标记')
+assert.strictEqual(db.listings[0].videoMaterialStatus, '缺视频素材')
+assert.strictEqual(db.listings[0].syncStatus, '缺视频素材')
 assert.throws(
   () => domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', incoming, { expectedStateKey: 'stale-state' }),
   /最新状态重试/,
@@ -168,6 +185,7 @@ assert.notStrictEqual(
 domain.replaceListingMediaAssets(db, 'L-MEDIA-PERSIST', [])
 assert.deepStrictEqual(db.listings[0].mediaAssets, [], '显式空清单必须真正清空素材')
 assert.strictEqual(db.listings[0].videoKey, '', '显式清空不得继续暴露旧单视频')
+assert.strictEqual(db.listings[0].missingVideoMaterial, true, '显式清空素材后必须恢复缺视频标记')
 assert.strictEqual(domain.listingDetail(db, 'L-MEDIA-PERSIST').hasVideo, false)
 
 console.log('listing-media-persistence-v1-test: PASS')

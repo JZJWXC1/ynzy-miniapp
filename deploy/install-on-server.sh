@@ -165,8 +165,14 @@ cp "$APP_DIR/deploy/ynzy-health-check.timer" /etc/systemd/system/ynzy-health-che
 # 经营指标每日快照（增长层装准星，只读 db 出聚合快照追加 JSONL，无 PII）
 cp "$APP_DIR/deploy/ynzy-metric-snapshot.service" /etc/systemd/system/ynzy-metric-snapshot.service
 cp "$APP_DIR/deploy/ynzy-metric-snapshot.timer" /etc/systemd/system/ynzy-metric-snapshot.timer
+# 飞书房源同步使用独立 oneshot worker；应用进程不再持有内存定时器。
+cp "$APP_DIR/deploy/ynzy-feishu-sync.service" /etc/systemd/system/ynzy-feishu-sync.service
+cp "$APP_DIR/deploy/ynzy-feishu-sync.timer" /etc/systemd/system/ynzy-feishu-sync.timer
 ensure_backup_env
 systemctl daemon-reload
+# 自动同步必须在首次预演、正式同步和人工对账全部通过后再显式开启。升级机器若
+# 曾残留启用状态，也先在这里停用，避免旧 .env 的 true 在部署窗口直接触发写入。
+systemctl disable --now ynzy-feishu-sync.timer
 systemctl enable "$SERVICE_NAME"
 systemctl enable --now ynzy-db-backup.timer
 # 异地备份/演练定时器（在 /etc/default/ynzy-backup 填好密钥+异地目标前会 fail-loud，属预期）
@@ -177,6 +183,7 @@ systemctl enable --now ynzy-feishu-drill.timer
 systemctl enable --now ynzy-health-check.timer
 # 经营指标每日快照定时器（每天 02:30：只读 db 追加聚合快照到 metrics-snapshots.jsonl）
 systemctl enable --now ynzy-metric-snapshot.timer
+# unit 已安装但保持停用；首次验收后按生产运维手册显式 enable --now。
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
