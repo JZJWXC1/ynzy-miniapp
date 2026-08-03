@@ -273,6 +273,21 @@ const hc = require('./health-check')
   assert.strictEqual(fresh.ok, true, '最近成功在健康窗口内必须通过')
   assert.strictEqual(fresh.lastState, 'succeeded')
 
+  const dailyScheduleFresh = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{ id: 'RUN-DAILY-FRESH', state: 'succeeded', finishedAt: nowMs - 12 * 60 * 60 * 1000 }]
+  }, {
+    nowMs,
+    autoSyncEnabled: true,
+    controllerMode: 'worker-v2',
+    schemaApproved: true,
+    resourceApproved: true,
+    writeLockEnabled: true,
+    intervalMinutes: 30,
+    maxAgeMinutes: 18 * 60
+  })
+  assert.strictEqual(dailyScheduleFresh.ok, true, '每日三次最长 12 小时间隔不得被 30 分钟防重桶误判为过期')
+  assert.strictEqual(dailyScheduleFresh.maxAgeMinutes, 18 * 60, '健康窗口必须使用独立配置而不是防重桶的三倍')
+
   const partialAfterOldSuccess = hc.evaluateFeishuSyncState({
     feishuSyncRuns: [{
       id: 'RUN-FULL-OLD',
@@ -361,7 +376,7 @@ const hc = require('./health-check')
   assert.strictEqual(partialFollowedByDryRun.lastSuccessAgeMinutes, 30, 'dry-run 不得刷新完整正式成功时间')
 
   const stale = hc.evaluateFeishuSyncState({
-    feishuSyncRuns: [{ id: 'RUN-STALE', state: 'succeeded', finishedAt: nowMs - 4 * 60 * 60 * 1000 }]
+    feishuSyncRuns: [{ id: 'RUN-STALE', state: 'succeeded', finishedAt: nowMs - 19 * 60 * 60 * 1000 }]
   }, {
     nowMs,
     autoSyncEnabled: true,
@@ -369,9 +384,10 @@ const hc = require('./health-check')
     schemaApproved: true,
     resourceApproved: true,
     writeLockEnabled: true,
-    intervalMinutes: 30
+    intervalMinutes: 30,
+    maxAgeMinutes: 18 * 60
   })
-  assert.strictEqual(stale.ok, false, '超过三个调度周期仍无成功任务必须告警')
+  assert.strictEqual(stale.ok, false, '超过每日三次独立健康窗口仍无成功任务必须告警')
 }
 
 console.log('health-check-v1-test passed')

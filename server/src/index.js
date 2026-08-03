@@ -1353,10 +1353,10 @@ function buildLaunchCheck(db) {
       '飞书房源同步',
       feishuStatus.ready ? '通过' : '需处理',
       feishuStatus.ready
-        ? `${feishuStatus.mode} 已配置，当前同步公司房源 ${feishuStatus.feishuListingCount} 套，自动同步周期 ${feishuStatus.syncIntervalMinutes} 分钟`
+        ? `${feishuStatus.mode} 已配置，当前同步公司房源 ${feishuStatus.feishuListingCount} 套，自动同步由独立 worker 定时器触发`
         : '缺少飞书应用、房源表或素材库配置，暂不能自动同步公司房源',
       feishuStatus.ready
-        ? '后台可在“飞书同步”里手动执行；服务启动后会按配置周期自动刷新房态'
+        ? '后台可在“飞书同步”里手动执行；自动任务按服务器受控日历刷新房态'
         : '镜像模式补齐 FEISHU_SOURCE_BITABLE_APP_TOKEN、FEISHU_TARGET_BITABLE_APP_TOKEN、三张表与素材库配置；旧单 Base 模式仍可使用 FEISHU_BITABLE_APP_TOKEN'
     )
   ]

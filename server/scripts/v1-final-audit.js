@@ -122,7 +122,7 @@ const criticalScripts = [
   'server/scripts/company-sheet-snapshot-v2-test.js',
   'server/scripts/home-company-sheet-snapshot-v1-test.js',
   // 飞书同步统一由持久化 worker 执行：全局单飞、租约/围栏、UNKNOWN 阻断、三摘要审批、
-  // 原子业务提交与半小时 systemd 调度必须同时受行为测试锁定。
+  // 原子业务提交与每日三次 systemd 调度必须同时受行为测试锁定。
   'server/scripts/feishu-sync-worker-v2-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。

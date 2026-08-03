@@ -118,9 +118,9 @@ function evaluateFeishuSyncState(db, options = {}) {
     return { ok: false, detail: '自动同步要求数据库跨进程写锁保持开启' }
   }
 
-  const intervalMinutes = Number.isFinite(Number(options.intervalMinutes)) && Number(options.intervalMinutes) > 0
-    ? Number(options.intervalMinutes)
-    : 30
+  const maxAgeMinutes = Number.isFinite(Number(options.maxAgeMinutes)) && Number(options.maxAgeMinutes) > 0
+    ? Number(options.maxAgeMinutes)
+    : 18 * 60
   const runTimestamp = (run) => Number(run && (run.updatedAt || run.finishedAt || run.createdAt) || 0)
   const latestRuns = runs.slice().sort((left, right) => {
     return runTimestamp(right) - runTimestamp(left)
@@ -143,7 +143,7 @@ function evaluateFeishuSyncState(db, options = {}) {
       detail: '最近一次自动同步的素材链路未完整',
       lastState: 'succeeded',
       lastSuccessAgeMinutes,
-      maxAgeMinutes: intervalMinutes * 3
+      maxAgeMinutes
     }
   }
   if (!lastSuccess || !Number.isFinite(Number(lastSuccess.finishedAt))) {
@@ -154,13 +154,13 @@ function evaluateFeishuSyncState(db, options = {}) {
     }
   }
   const ageMs = Math.max(0, nowMs - Number(lastSuccess.finishedAt))
-  const maxAgeMs = intervalMinutes * 3 * 60 * 1000
+  const maxAgeMs = maxAgeMinutes * 60 * 1000
   return {
     ok: ageMs <= maxAgeMs,
-    ...(ageMs <= maxAgeMs ? {} : { detail: '自动同步成功记录已超过三个调度周期' }),
+    ...(ageMs <= maxAgeMs ? {} : { detail: '自动同步成功记录已超过健康窗口' }),
     lastState: String(latestRun && latestRun.state || ''),
     lastSuccessAgeMinutes: Math.floor(ageMs / 60000),
-    maxAgeMinutes: intervalMinutes * 3
+    maxAgeMinutes
   }
 }
 
@@ -257,7 +257,7 @@ function checkFeishuSync() {
         schemaApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedSchemaSha256 || '')),
         resourceApproved: /^[a-f0-9]{64}$/.test(String(config.feishu.approvedResourceIdentitySha256 || '')),
         writeLockEnabled: dbStore.writeLockEnabled(),
-        intervalMinutes: config.feishu.syncIntervalMinutes
+        maxAgeMinutes: config.feishu.syncHealthMaxAgeMinutes
       })
     }
   } catch (error) {

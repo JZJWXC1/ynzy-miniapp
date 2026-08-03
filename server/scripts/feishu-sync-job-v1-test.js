@@ -44,7 +44,8 @@ function testFailClosedSyncDefaults() {
     'FEISHU_NOTE_MATERIAL_FIELD_ID',
     'FEISHU_SYNC_CONTROLLER_MODE',
     'FEISHU_APPROVED_SCHEMA_SHA256',
-    'FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256'
+    'FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256',
+    'FEISHU_SYNC_HEALTH_MAX_AGE_MINUTES'
   ].forEach((name) => { delete env[name] })
   const script = [
     "const config = require('./src/config')",
@@ -54,7 +55,8 @@ function testFailClosedSyncDefaults() {
     '  syncControllerMode: config.feishu.syncControllerMode,',
     '  approvedSchemaSha256: config.feishu.approvedSchemaSha256,',
     '  approvedResourceIdentitySha256: config.feishu.approvedResourceIdentitySha256,',
-    '  syncIntervalMinutes: config.feishu.syncIntervalMinutes',
+    '  syncIntervalMinutes: config.feishu.syncIntervalMinutes,',
+    '  syncHealthMaxAgeMinutes: config.feishu.syncHealthMaxAgeMinutes',
     '}))'
   ].join('\n')
   const child = spawnSync(process.execPath, ['-e', script], {
@@ -70,10 +72,19 @@ function testFailClosedSyncDefaults() {
   assert.strictEqual(actual.approvedSchemaSha256, '', '字段契约摘要不得由代码伪造默认值')
   assert.strictEqual(actual.approvedResourceIdentitySha256, '', '飞书资源身份摘要不得由代码伪造默认值')
   assert.strictEqual(actual.syncIntervalMinutes, 30, 'V2 自动同步默认时间桶必须固定为半小时')
+  assert.strictEqual(actual.syncHealthMaxAgeMinutes, 18 * 60, '每日三次自动同步的完整成功健康窗口必须固定为 18 小时')
 }
 
 function testIndexWiringContract() {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'index.js'), 'utf8')
+  assert.ok(
+    source.includes('自动同步由独立 worker 定时器触发'),
+    '管理状态必须描述真实 systemd 调度，不得继续宣称按 30 分钟自动同步'
+  )
+  assert.ok(
+    !source.includes('自动同步周期 ${feishuStatus.syncIntervalMinutes} 分钟'),
+    '管理状态不得把内部防重时间桶展示成自动同步周期'
+  )
   const publicV2Start = source.indexOf("pathname === '/mini/v2/company-sheet-snapshot'")
   const publicV2End = source.indexOf("pathname === '/mini/company-sheet-snapshot'", publicV2Start)
   const publicV2Block = source.slice(publicV2Start, publicV2End)
@@ -205,6 +216,14 @@ function testIndexWiringContract() {
   )
 
   const adminSource = fs.readFileSync(path.resolve(__dirname, '..', '..', 'admin-web', 'index.html'), 'utf8')
+  assert.ok(
+    adminSource.includes("controller.automaticEnabled ? '北京时间每日 08:00、14:00、20:00' : '关闭'"),
+    '后台自动同步状态必须显示真实的北京时间每日三次日历'
+  )
+  assert.ok(
+    !adminSource.includes('${status.syncIntervalMinutes || 30} 分钟/次'),
+    '后台不得再把 30 分钟防重桶展示成真实同步频率'
+  )
   assert.ok(
     adminSource.includes('出现“状态未知”或“已阻断”时自动同步会停止'),
     '后台同步面板必须明确提示未知或阻断状态不会自动重放'

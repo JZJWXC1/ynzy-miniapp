@@ -1099,7 +1099,7 @@ function testRunHistoryAlsoBoundsCommitMarkers() {
   assert.deepStrictEqual(
     Object.keys(snapshot.feishuSyncCommitMarkers),
     [terminalRuns[0].runId],
-    '裁剪历史 run 时必须同步清理孤儿 commit marker，避免半小时任务长期无界增长'
+    '裁剪历史 run 时必须同步清理孤儿 commit marker，避免定时任务长期无界增长'
   )
 
   const blocker = {
@@ -1543,7 +1543,7 @@ async function testRecoveryRules() {
   assert.ok(!store.snapshot().feishuSyncScheduler.activeLease, '恢复只能释放与旧任务 owner/fence 匹配的全局 lease')
 }
 
-function testCliAndHalfHourlyTimerStayNoopWhenDisabled() {
+function testCliAndDailyTimerStayNoopWhenDisabled() {
   const repoRoot = path.join(__dirname, '..', '..')
   const cliPath = path.join(__dirname, 'run-feishu-sync-worker.js')
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-sync-worker-cli-'))
@@ -1573,11 +1573,22 @@ function testCliAndHalfHourlyTimerStayNoopWhenDisabled() {
     const service = fs.readFileSync(path.join(repoRoot, 'deploy', 'ynzy-feishu-sync.service'), 'utf8')
     const timer = fs.readFileSync(path.join(repoRoot, 'deploy', 'ynzy-feishu-sync.timer'), 'utf8')
     const installer = fs.readFileSync(path.join(repoRoot, 'deploy', 'install-on-server.sh'), 'utf8')
+    const operationsGuide = fs.readFileSync(path.join(repoRoot, 'docs', '生产运维手册.md'), 'utf8')
     assert.ok(service.includes('scripts/run-feishu-sync-worker.js --schedule'), 'systemd 必须只调用统一 worker 入口')
-    assert.ok(/OnCalendar=\*-\*-\* \*:00,30:00/.test(timer), '自动同步检查周期必须固定为每个墙钟半小时')
+    assert.ok(/TimeoutStartSec=5h(?:\r?\n|$)/.test(service), '单轮最多运行 5 小时，必须给相邻日历点留出至少 1 小时余量')
+    assert.ok(operationsGuide.includes('单次最长 5 小时'), '运维手册必须与 service 的 5 小时上限一致')
+    assert.ok(!operationsGuide.includes('单次最长 6 小时'), '运维手册不得保留已失效的 6 小时上限')
+    const calendarRules = timer.match(/^OnCalendar=.*$/gm) || []
+    assert.deepStrictEqual(
+      calendarRules,
+      ['OnCalendar=*-*-* 08,14,20:00:00 Asia/Shanghai'],
+      '自动同步必须且只能按北京时间每天 08:00、14:00、20:00 触发'
+    )
+    assert.ok(!/OnBootSec=/.test(timer), '每天三次不得额外保留开机触发，避免出现第四轮计划外同步')
     assert.ok(!/OnUnitActiveSec=/.test(timer), '长同步不得因 OnUnitActiveSec 到点时服务仍 active 而丢失后续调度')
-    assert.ok(/Persistent=true/.test(timer), '关机期间错过的检查必须在启动后补触发')
-    assert.ok(/RandomizedDelaySec=90/.test(timer), '定时器应避免与其他整点任务同时抢资源')
+    assert.ok(/Persistent=false/.test(timer), '每日仅三次不得在启用或开机后补跑并形成第四轮')
+    assert.ok(/AccuracySec=1s/.test(timer), '每日三次应按明确日历点触发，不保留分钟级漂移')
+    assert.ok(!/RandomizedDelaySec=/.test(timer), '相邻任务必须保留完整运行余量，不得额外随机延迟')
     assert.ok(
       installer.includes('systemctl disable --now ynzy-feishu-sync.timer'),
       '安装脚本必须先停用自动 timer，等待首次人工验收后再显式开启'
@@ -1620,7 +1631,7 @@ async function main() {
   await testCommitFailureKeepsBusinessDbUntouchedAndUnknown()
   await testStatusIsSanitized()
   await testRecoveryRules()
-  testCliAndHalfHourlyTimerStayNoopWhenDisabled()
+  testCliAndDailyTimerStayNoopWhenDisabled()
   console.log('feishu-sync-worker-v2-test passed')
 }
 

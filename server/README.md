@@ -534,11 +534,13 @@ worker-v2 接管了手工与自动同步。后台 HTTP 请求体**只接受**一
 处置的情况进入 `BLOCKED`。两者都会阻断后续正式任务和自动重试，必须先做只读对账，禁止为了
 “跑通”而重复点击、重启后盲目重发或清空状态。
 
-同步间隔默认值来自 `server/src/config.js`，当前为 `30` 分钟；真正调度由 systemd
-`ynzy-feishu-sync.timer` 触发独立 oneshot worker，不再由常驻 Node 进程内定时器触发：
+`FEISHU_SYNC_INTERVAL_MINUTES` 当前固定为 `30` 分钟，只用于把同一短时间窗口内的重复唤醒归并为一个任务，
+不再表示真实运行频率。真正调度由 systemd `ynzy-feishu-sync.timer` 按北京时间每天
+`08:00 / 14:00 / 20:00` 触发独立 oneshot worker；完整成功的新鲜度使用独立的 18 小时健康窗口：
 
 ```env
 FEISHU_SYNC_INTERVAL_MINUTES=30
+FEISHU_SYNC_HEALTH_MAX_AGE_MINUTES=1080
 FEISHU_SYNC_CONTROLLER_MODE=worker-v2
 FEISHU_APPROVED_SCHEMA_SHA256=
 FEISHU_APPROVED_RESOURCE_IDENTITY_SHA256=
@@ -886,7 +888,7 @@ working DB 的隔离 clone、同一源/目标表只读适配器和同一素材�
 已知的单行素材失败不再阻塞其他房源、目标 Base、库存和首页 v2 快照：dry-run 把该行写入延期计划，
 正式阶段先复验完全相同的计划，再执行 `retain` 或 `clear`，正常房源继续发布；worker 以
 `succeeded + MATERIALS_PARTIAL_FAILURE` 结束并记录真实失败数，健康检查保持 `degraded`，不刷新
-`lastSuccessAt`。下一次半小时任务会从员工源重新生成完整计划并重试失败行，恢复后自动补齐 Drive、
+`lastSuccessAt`。下一次计划任务会从员工源重新生成完整计划并重试失败行，恢复后自动补齐 Drive、
 OSS 与私有媒体清单。任何延期证据或本地状态变化都必须在外部写前关闭，不能沿用旧计划。
 
 飞书和 OSS 适配器只在真正调用创建目录、上传文件或 PUT 时回报“写已派发”；写前的目录查询、目标
@@ -926,7 +928,7 @@ NOTE_MATERIAL_MIN_FREE_MB=256
 租户白名单和压缩工具 → 显式开启笔记素材链 → 通过后台排队一次只读 dry-run → 核对素材数量、
 压缩后内容计划、schema/resource/mirror 摘要以及目标 Base/Drive/OSS/数据库零写 → 分别批准本轮
 `schemaSha256/resourceIdentitySha256` → 排队一次完整任务并对账 Drive、OSS、私有清单、库存与首页 v2 快照。完成首轮且
-状态无 `UNKNOWN/BLOCKED` 后，才可启用 worker-v2 的半小时自动调度。自动任务仍会重新生成计划，
+状态无 `UNKNOWN/BLOCKED` 后，才可启用 worker-v2 的北京时间每日三次自动调度。自动任务仍会重新生成计划，
 不接受或复用客户端确认摘要；源字段、资源、内容或处理工具变化都会在 apply 前停止。
 
 生产启用前还必须在目标服务器只读确认上述绝对路径可执行，`ffprobe` 可用，`ffmpeg` 同时具备
@@ -1003,6 +1005,7 @@ FEISHU_MATERIAL_TRANSFER_TIMEOUT_MS=120000
 FEISHU_MATERIAL_TRANSFER_RETRY_COUNT=2
 FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS=800
 FEISHU_SYNC_INTERVAL_MINUTES=30
+FEISHU_SYNC_HEALTH_MAX_AGE_MINUTES=1080
 FEISHU_SYNC_WORKER_LEASE_SECONDS=14400
 FEISHU_SYNC_RUN_HISTORY_LIMIT=50
 ```

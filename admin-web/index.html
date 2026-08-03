@@ -4611,7 +4611,7 @@
         { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: '房源笔记素材按本轮内容摘要搬运并回读校验' },
         { name: '房源笔记素材', value: status.noteMaterialsReady ? '已准备' : '未启用/未准备', note: '必须显式启用独立目标目录，并完成 dry-run 后才能正式写入' },
         { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
-        { name: '自动同步', value: controller.automaticEnabled ? `${status.syncIntervalMinutes || 30} 分钟/次` : '关闭', note: controller.schemaApproved && controller.resourceApproved ? '已绑定获批字段与飞书资源身份摘要' : '尚未同时批准字段与资源身份，自动写入保持关闭' },
+        { name: '自动同步', value: controller.automaticEnabled ? '北京时间每日 08:00、14:00、20:00' : '关闭', note: controller.schemaApproved && controller.resourceApproved ? '已绑定获批字段与飞书资源身份摘要' : '尚未同时批准字段与资源身份，自动写入保持关闭' },
         { name: '同步控制器', value: controller.mode || 'manual-only', note: '所有手工与定时任务共用持久化单飞锁' },
         { name: '未知/阻断任务', value: unresolvedCount, note: unresolvedCount ? '必须先人工对账，不能自动重放' : '当前没有待处置的未知写入' },
         { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },

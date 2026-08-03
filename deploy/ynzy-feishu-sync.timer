@@ -1,14 +1,12 @@
 [Unit]
-Description=每 30 分钟检查一次 Ynzy 飞书房源同步
+Description=每天三次检查 Ynzy 飞书房源同步
 
 [Timer]
-OnBootSec=10min
-# 固定墙钟每半小时检查；即使上一轮运行超过 30 分钟，后续日历触发仍会继续存在，
-# 不会像 OnUnitActiveSec 那样因“触发时服务仍 active”而失去下一次调度。
-OnCalendar=*-*-* *:00,30:00
-AccuracySec=1min
-RandomizedDelaySec=90
-Persistent=true
+# 显式绑定北京时间，每天只在 08:00、14:00、20:00 触发三次。
+# 不设置 OnBootSec，也不补跑关机期间错过的日历任务，确保每个自然日最多只有三个自动触发点。
+OnCalendar=*-*-* 08,14,20:00:00 Asia/Shanghai
+AccuracySec=1s
+Persistent=false
 Unit=ynzy-feishu-sync.service
 
 [Install]

@@ -70,7 +70,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   // 先接续已经排队的手工任务，避免 API 进程刚入队便重启时任务永久悬空；本次 tick
-  // 只执行一个完整任务，下一次半小时调度再生成新时间桶，杜绝同一进程连续双写。
+  // 只执行一个完整任务，下一次计划任务再生成新时间桶，杜绝同一进程连续双写。
   const queued = await worker.runNext({ workerId: `scheduled-cli:${process.pid}` })
   if (queued) {
     process.stdout.write(`${JSON.stringify(publicResult(queued, { resumedQueuedRun: true }))}\n`)

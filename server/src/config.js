@@ -332,6 +332,7 @@ module.exports = {
     materialTransferRetryCount: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_COUNT', 2),
     materialTransferRetryDelayMs: numberFromEnv('FEISHU_MATERIAL_TRANSFER_RETRY_DELAY_MS', 800),
     syncIntervalMinutes: numberFromEnv('FEISHU_SYNC_INTERVAL_MINUTES', 30),
+    syncHealthMaxAgeMinutes: numberFromEnv('FEISHU_SYNC_HEALTH_MAX_AGE_MINUTES', 18 * 60),
     syncWorkerLeaseSeconds: numberFromEnv('FEISHU_SYNC_WORKER_LEASE_SECONDS', 4 * 60 * 60),
     syncRunHistoryLimit: numberFromEnv('FEISHU_SYNC_RUN_HISTORY_LIMIT', 50)
   },
