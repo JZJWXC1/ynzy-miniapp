@@ -71,8 +71,12 @@ function fakeClientResponse() {
   res.headersSent = false
   res.writableEnded = false
   res.destroyed = false
+  res.bytesWritten = 0
   res.writeHead = () => { res.headersSent = true }
-  res.write = () => true
+  res.write = (chunk) => {
+    res.bytesWritten += Buffer.byteLength(chunk)
+    return true
+  }
   res.end = () => { res.writableEnded = true }
   res.destroy = () => {
     if (res.destroyed) return
@@ -186,6 +190,64 @@ async function assertPerClientConcurrencyFairness(listing) {
     await cleanupDirectAttempts(attempts)
   }
   assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '连接全部结束后不得残留客户端并发桶')
+}
+
+async function assertCoverHeadUsesMetadataGetOnly(listing) {
+  const signMethods = []
+  const upstreamCalls = []
+  let upstreamReq = null
+  let upstreamRes = null
+  let dataListenerCount = 0
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    signCoverUrl: (objectKey, method) => {
+      signMethods.push(method)
+      return 'http://127.0.0.1:18080/cover'
+    },
+    requestImpl: (url, requestOptions, callback) => {
+      upstreamReq = new EventEmitter()
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        upstreamCalls.push({ method: requestOptions.method })
+        upstreamRes = new EventEmitter()
+        upstreamRes.statusCode = 200
+        upstreamRes.headers = {
+          'content-type': 'image/jpeg',
+          'content-length': String(COVER_BODY.length)
+        }
+        upstreamRes.destroyed = false
+        upstreamRes.destroy = () => { upstreamRes.destroyed = true }
+        upstreamRes.resume = () => {}
+        const originalOn = upstreamRes.on.bind(upstreamRes)
+        upstreamRes.on = (eventName, listener) => {
+          if (eventName === 'data') dataListenerCount += 1
+          return originalOn(eventName, listener)
+        }
+        callback(upstreamRes)
+      }
+      return upstreamReq
+    }
+  })
+  const capability = service.urlsForListing(listing).coverUrl
+  const attempt = startDirectServe(service, listing, capability, {
+    clientKey: 'cover-head-metadata-only',
+    method: 'HEAD',
+    kind: 'cover'
+  })
+  const outcome = await nextTurnOutcome(attempt.promise)
+  assert.notStrictEqual(outcome, PENDING, '封面 HEAD 收到合法上游响应头后必须立即结束，不能等待或消费正文')
+  assert.strictEqual(outcome.ok, true, '封面 HEAD 必须成功完成')
+  assert.deepStrictEqual(signMethods, ['GET'], '封面 HEAD 必须使用 GET 生成 OSS 截帧签名')
+  assert.deepStrictEqual(upstreamCalls, [{ method: 'GET' }], '封面 HEAD 必须只发一次上游 GET')
+  assert.strictEqual(upstreamReq && upstreamReq.destroyed, true, '取得封面响应头后必须立即销毁上游请求')
+  assert.strictEqual(upstreamRes && upstreamRes.destroyed, true, '取得封面响应头后必须立即销毁上游响应')
+  assert.strictEqual(dataListenerCount, 0, '封面 HEAD 不得注册正文 data 监听器')
+  assert.strictEqual(attempt.res.bytesWritten, 0, '封面 HEAD 不得向客户端写入图片正文')
+  assert.strictEqual(attempt.res.writableEnded, true, '封面 HEAD 必须正常结束客户端响应')
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '封面 HEAD 完成后不得残留并发槽')
 }
 
 async function assertSynchronousFailureReleasesSlot(listing, stage) {
@@ -362,8 +424,10 @@ async function run() {
     )
   })
 
+  const upstreamRequests = []
   const upstream = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
+    upstreamRequests.push({ method: req.method, kind: url.searchParams.get('kind') || '' })
     if (url.pathname === '/redirect') {
       res.writeHead(302, { Location: `http://127.0.0.1:${upstream.address().port}/${encodeURIComponent(SECRET_OBJECT_KEY)}` })
       res.end()
@@ -396,6 +460,7 @@ async function run() {
   })
   const upstreamPort = await listen(upstream)
   let now = Date.UTC(2026, 6, 14, 2, 0, 0)
+  const coverSignMethods = []
   const service = createPublicListingMediaService({
     secret: 'synthetic-public-media-secret',
     baseUrl: 'https://api.example.test/',
@@ -410,7 +475,10 @@ async function run() {
         ? 'image'
         : (String(objectKey).endsWith('.gif') ? 'gif' : (String(objectKey).endsWith('.mov') ? 'octet' : 'video'))
     }`,
-    signCoverUrl: () => `http://127.0.0.1:${upstreamPort}/object?kind=cover`
+    signCoverUrl: (objectKey, method) => {
+      coverSignMethods.push(method)
+      return `http://127.0.0.1:${upstreamPort}/object?kind=cover`
+    }
   })
   const listing = {
     id: 'L-MEDIA-1',
@@ -418,6 +486,7 @@ async function run() {
     lifecycleStatus: 'active',
     status: '在租'
   }
+  await assertCoverHeadUsesMetadataGetOnly(listing)
   const urls = service.urlsForListing(listing)
   const ownerCapabilityOptions = {
     scope: 'owner',
@@ -714,10 +783,16 @@ async function run() {
     assert.ok(!full.headers['x-upstream-object-key'], '代理不得透传上游对象键响应头')
     assert.ok(!JSON.stringify(full.headers).includes(SECRET_OBJECT_KEY), '代理响应头不得包含对象键')
 
+    const videoRequestCountBeforeHead = upstreamRequests.length
     const head = await request(mediaPort, videoPath, { method: 'HEAD' })
     assert.strictEqual(head.statusCode, 200, '匿名 HEAD 必须返回媒体元数据')
     assert.strictEqual(head.body.length, 0, 'HEAD 不得返回视频体')
     assert.strictEqual(Number(head.headers['content-length']), VIDEO_BODY.length)
+    assert.deepStrictEqual(
+      upstreamRequests.slice(videoRequestCountBeforeHead),
+      [{ method: 'HEAD', kind: 'video' }],
+      '普通视频 HEAD 必须继续使用上游 HEAD，不能扩大兼容转换范围'
+    )
 
     const partial = await request(mediaPort, videoPath, { headers: { Range: 'bytes=2-7' } })
     assert.strictEqual(partial.statusCode, 206, '单段 Range 必须返回 206')
@@ -732,6 +807,22 @@ async function run() {
     assert.strictEqual(cover.statusCode, 200, '匿名封面能力 URL 必须可读取')
     assert.strictEqual(cover.headers['content-type'], 'image/jpeg')
     assert.deepStrictEqual(cover.body, COVER_BODY)
+    const coverRequestCountBeforeHead = upstreamRequests.length
+    const coverSignCountBeforeHead = coverSignMethods.length
+    const coverHead = await request(mediaPort, coverPath, { method: 'HEAD' })
+    assert.strictEqual(coverHead.statusCode, 200, '匿名封面 HEAD 必须返回图片元数据')
+    assert.strictEqual(coverHead.body.length, 0, '匿名封面 HEAD 不得向客户端返回图片正文')
+    assert.strictEqual(Number(coverHead.headers['content-length']), COVER_BODY.length, '匿名封面 HEAD 必须保留真实图片长度')
+    assert.deepStrictEqual(
+      upstreamRequests.slice(coverRequestCountBeforeHead),
+      [{ method: 'GET', kind: 'cover' }],
+      '客户端封面 HEAD 必须转换为一次上游 GET，兼容 OSS 视频截帧处理链'
+    )
+    assert.deepStrictEqual(
+      coverSignMethods.slice(coverSignCountBeforeHead),
+      ['GET'],
+      '封面 HEAD 的 OSS 签名方法必须与上游 GET 一致'
+    )
 
     const imagePath = `${mixedImageCapability.pathname}${mixedImageCapability.search}`
     const image = await request(mediaPort, imagePath)
@@ -739,6 +830,15 @@ async function run() {
     assert.strictEqual(image.headers['content-type'], 'image/jpeg')
     assert.strictEqual(image.headers['content-disposition'], 'inline; filename="listing-image.jpg"')
     assert.deepStrictEqual(image.body, IMAGE_BODY)
+    const imageRequestCountBeforeHead = upstreamRequests.length
+    const imageHead = await request(mediaPort, imagePath, { method: 'HEAD' })
+    assert.strictEqual(imageHead.statusCode, 200, '匿名图片 HEAD 必须返回媒体元数据')
+    assert.strictEqual(imageHead.body.length, 0, '匿名图片 HEAD 不得返回图片正文')
+    assert.deepStrictEqual(
+      upstreamRequests.slice(imageRequestCountBeforeHead),
+      [{ method: 'HEAD', kind: 'image' }],
+      '普通图片 HEAD 必须继续使用上游 HEAD，不能扩大兼容转换范围'
+    )
     const imageAsVideo = await request(mediaPort, imagePath.replace('/media/image', '/media/video'))
     assert.strictEqual(imageAsVideo.statusCode, 404, '图片能力不得篡改路径后伪装成视频能力')
     const gifPath = `${gifImageCapability.pathname}${gifImageCapability.search}`

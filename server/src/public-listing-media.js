@@ -473,11 +473,14 @@ function createPublicListingMediaService(options = {}) {
       return Promise.resolve()
     }
     let upstreamUrl
+    const upstreamMethod = method === 'HEAD' && kind === 'cover' ? 'GET' : method
     let releaseConcurrency = null
     try {
       // 公共/owner、游客/登录、GET/HEAD、视频/封面和 Range 全部共享同一可信网络桶。
       releaseConcurrency = acquireConcurrency(input.clientKey)
-      upstreamUrl = upstreamSignedUrl(objectKey, kind, method)
+      // OSS 视频截帧处理链对 HEAD 并不稳定；封面元数据请求改用 GET 签名与上游方法，
+      // 收到合法响应头后仍走下方客户端 HEAD 分支立即销毁正文，不下载整张图片。
+      upstreamUrl = upstreamSignedUrl(objectKey, kind, upstreamMethod)
     } catch (error) {
       if (releaseConcurrency) releaseConcurrency()
       return Promise.reject(error)
@@ -670,7 +673,7 @@ function createPublicListingMediaService(options = {}) {
       }
 
       try {
-        upstreamReq = requestImpl(upstreamUrl, { method, headers }, handleUpstreamResponse)
+        upstreamReq = requestImpl(upstreamUrl, { method: upstreamMethod, headers }, handleUpstreamResponse)
         if (!upstreamReq || typeof upstreamReq.on !== 'function' || typeof upstreamReq.end !== 'function') {
           throw new Error('invalid upstream request')
         }
