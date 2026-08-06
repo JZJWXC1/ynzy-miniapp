@@ -9,8 +9,15 @@ const {
 
 function parseArgs(argv = []) {
   if (argv.length === 1 && argv[0] === '--schedule') return { mode: 'schedule' }
-  if (argv.length === 2 && argv[0] === '--run' && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(argv[1])) {
+  const validRunId = (value) => (
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(String(value || '')) &&
+    !/(?:token|secret|password|passwd|bearer|appsecret)/i.test(String(value || ''))
+  )
+  if (argv.length === 2 && argv[0] === '--run' && validRunId(argv[1])) {
     return { mode: 'run', runId: argv[1] }
+  }
+  if (argv.length === 2 && argv[0] === '--continue-reconciled-partial' && validRunId(argv[1])) {
+    return { mode: 'continue-reconciled-partial', runId: argv[1] }
   }
   const error = new Error('同步 worker 参数无效')
   error.code = 'WORKER_ARGUMENT_INVALID'
@@ -49,23 +56,47 @@ function exitCodeFor(result) {
   return result && (result.state === STATES.SUCCEEDED || result.state === STATES.DRY_SUCCEEDED) ? 0 : 1
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), runtime = {}) {
+  const createWorker = runtime.createWorker || createConfiguredWorker
+  const writeOutput = runtime.writeOutput || ((value) => process.stdout.write(value))
+  if (typeof createWorker !== 'function' || typeof writeOutput !== 'function') {
+    const error = new Error('同步 worker 运行时依赖无效')
+    error.code = 'WORKER_CONFIGURATION_INVALID'
+    throw error
+  }
   const args = parseArgs(argv)
+  if (args.mode === 'continue-reconciled-partial' && config.feishu.autoSyncEnabled) {
+    const error = new Error('部分写入恢复前必须先关闭自动同步')
+    error.code = 'WORKER_CONFIGURATION_INVALID'
+    throw error
+  }
   if (args.mode === 'schedule' && (!config.feishu.syncEnabled || !config.feishu.autoSyncEnabled)) {
-    process.stdout.write(`${JSON.stringify({ ok: true, skipped: true, reason: 'automatic-sync-disabled' })}\n`)
+    writeOutput(`${JSON.stringify({ ok: true, skipped: true, reason: 'automatic-sync-disabled' })}\n`)
     return 0
   }
   if (args.mode === 'schedule' && !feishuSync.automaticWorkerConfigurationStatus().ready) {
-    process.stdout.write(`${JSON.stringify({ ok: false, skipped: true, reason: 'automatic-sync-not-approved' })}\n`)
+    writeOutput(`${JSON.stringify({ ok: false, skipped: true, reason: 'automatic-sync-not-approved' })}\n`)
     return 1
   }
 
-  const worker = createConfiguredWorker()
+  const worker = createWorker()
+  if (args.mode === 'continue-reconciled-partial') {
+    const resolved = await worker.resolveAndEnqueueReconciledPartial(args.runId)
+    writeOutput(`${JSON.stringify({
+      ok: true,
+      skipped: false,
+      reconciledRunId: resolved.resolvedRun.runId,
+      resolvedState: resolved.resolvedRun.state,
+      runId: resolved.continuationRun.runId,
+      state: resolved.continuationRun.state
+    })}\n`)
+    return 0
+  }
   worker.recover()
 
   if (args.mode === 'run') {
     const result = await worker.run(args.runId, { workerId: `manual-cli:${process.pid}` })
-    process.stdout.write(`${JSON.stringify(publicResult(result))}\n`)
+    writeOutput(`${JSON.stringify(publicResult(result))}\n`)
     return exitCodeFor(result)
   }
 
@@ -73,11 +104,11 @@ async function main(argv = process.argv.slice(2)) {
   // 只执行一个完整任务，下一次计划任务再生成新时间桶，杜绝同一进程连续双写。
   const queued = await worker.runNext({ workerId: `scheduled-cli:${process.pid}` })
   if (queued) {
-    process.stdout.write(`${JSON.stringify(publicResult(queued, { resumedQueuedRun: true }))}\n`)
+    writeOutput(`${JSON.stringify(publicResult(queued, { resumedQueuedRun: true }))}\n`)
     return exitCodeFor(queued)
   }
   const result = await worker.tick({ workerId: `scheduled-cli:${process.pid}` })
-  process.stdout.write(`${JSON.stringify(publicResult(result))}\n`)
+  writeOutput(`${JSON.stringify(publicResult(result))}\n`)
   return exitCodeFor(result && result.result)
 }
 

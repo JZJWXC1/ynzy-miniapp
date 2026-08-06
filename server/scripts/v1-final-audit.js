@@ -124,6 +124,7 @@ const criticalScripts = [
   // 飞书同步统一由持久化 worker 执行：全局单飞、租约/围栏、UNKNOWN 阻断、三摘要审批、
   // 原子业务提交与每日三次 systemd 调度必须同时受行为测试锁定。
   'server/scripts/feishu-sync-worker-v2-test.js',
+  'server/scripts/feishu-sync-partial-reconcile-v1-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。
   'server/scripts/feishu-cross-base-source-v1-test.js',
@@ -634,6 +635,46 @@ function checkRunnableV1Scripts() {
   return criticalScripts.map((script) => `${script} => ${runNodeScript(script)}`).join('；')
 }
 
+function checkFeishuPartialReconciliationContract() {
+  const clientSource = readText('server/src/feishu-bitable-client.js')
+  const syncSource = readText('server/src/feishu-sync.js')
+  const workerSource = readText('server/src/feishu-sync-worker.js')
+  const cliSource = readText('server/scripts/run-feishu-sync-worker.js')
+  assertOk(
+    clientSource.includes('function rebuildValidatedTableSnapshot') &&
+      clientSource.includes('includeCreatedTime'),
+    '部分写入对账必须复用正式 Base 快照摘要算法，禁止拼接混合态摘要'
+  )
+  assertOk(
+    syncSource.includes('async function reconcilePartialBaseWrites') &&
+      syncSource.includes('reconcilePartialBaseWritesWithConfiguredSync') &&
+      syncSource.includes('const first = await readRound()') &&
+      syncSource.includes('const second = await readRound()'),
+    '部分写入解阻前必须连续两次读取并形成同一份服务端证据'
+  )
+  assertOk(
+    syncSource.includes('function stableUpdateClientToken') &&
+      syncSource.includes('runNowMs') &&
+      (syncSource.match(/clientToken: stableUpdateClientToken/g) || []).length >= 3,
+    '所有飞书主档更新批次必须使用绑定 run 作用域的跨进程稳定幂等号'
+  )
+  assertOk(
+    workerSource.includes("RECONCILED_PARTIAL: 'reconciled-partial'") &&
+      workerSource.includes('async function resolveAndEnqueueReconciledPartial') &&
+      workerSource.includes('sourceUnknownRunSha256') &&
+      workerSource.includes('continuationSeedSha256') &&
+      workerSource.includes('stableSha256(businessSnapshot(db)) !== frozenBusinessSha256'),
+    '旧 UNKNOWN 只能在业务快照不变时原子转为 reconciled-partial 并排队 fresh run'
+  )
+  const continueIndex = cliSource.indexOf("args.mode === 'continue-reconciled-partial'")
+  const recoverIndex = cliSource.indexOf('worker.recover()')
+  assertOk(
+    continueIndex >= 0 && recoverIndex > continueIndex,
+    '显式部分写入解阻必须在 recover 之前独立执行，失败路径不得修改控制状态'
+  )
+  return '部分写入恢复已锁定同源摘要、双读证据、稳定幂等号、原子解阻与只排队不执行'
+}
+
 function checkFeishuNoteMaterialNormalizationContract() {
   const integrationSource = readText('server/src/feishu-sync.js')
   const syncSource = readText('server/src/feishu-note-material-sync.js')
@@ -701,6 +742,7 @@ const checks = [
   ['我的页面退出登录存在', checkProfileLogout],
   ['小程序登录已接账号密码校验', checkMiniLoginPassword],
   ['30 天滑动登录与公开 FAQ', checkSlidingAuthAndPublicFaq],
+  ['飞书部分写入安全恢复契约', checkFeishuPartialReconciliationContract],
   ['房源笔记素材压缩与内容身份契约', checkFeishuNoteMaterialNormalizationContract],
   ['地图/助手/后端契约脚本可运行', checkRunnableV1Scripts]
 ]

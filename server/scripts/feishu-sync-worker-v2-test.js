@@ -36,6 +36,23 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((result, key) => {
+      if (value[key] !== undefined) result[key] = stableValue(value[key])
+      return result
+    }, {})
+  }
+  return value
+}
+
+function stableSha256(value) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stableValue(value)))
+    .digest('hex')
+}
+
 function deferred() {
   let resolve
   let reject
@@ -246,6 +263,7 @@ function dryMaterialWarningResult(patch = {}) {
 function makeWorker({
   store = createStore(),
   sync,
+  reconcilePartialBaseWrites,
   now = () => 1_800_000_000_000,
   ids = [],
   leaseMs = 60_000,
@@ -265,7 +283,7 @@ function makeWorker({
     commitCalls,
     worker: createFeishuSyncWorker({
       dbStore: store,
-      feishuSync: { sync },
+      feishuSync: { sync, reconcilePartialBaseWrites },
       commitDeltaChecked: commitDeltaChecked || createCommitDeltaChecked(store, commitCalls),
       config: {
         approvedSchemaSha256,
@@ -281,6 +299,64 @@ function makeWorker({
       setInterval: setIntervalFn,
       clearInterval: clearIntervalFn
     })
+  }
+}
+
+function partialReconciliationEvidence(runId, patch = {}) {
+  const body = {
+    contract: 'feishu-partial-base-write-reconciliation-v1',
+    runIdSha256: crypto.createHash('sha256').update(runId).digest('hex'),
+    priorMirrorPlanSha256: SHA.mirror,
+    currentMirrorPlanSha256: '5'.repeat(64),
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    archiveCount: 3,
+    historyCount: 10,
+    archiveEvidenceSha256: '7'.repeat(64),
+    historyEvidenceSha256: '8'.repeat(64),
+    currentOperationsSha256: '9'.repeat(64),
+    currentPlan: {
+      create: 6,
+      update: 37,
+      deactivate: 3,
+      restore: 0,
+      noop: 0
+    },
+    ...patch
+  }
+  return {
+    ...body,
+    evidenceSha256: stableSha256(body)
+  }
+}
+
+function exactPartialUnknownRun(runId, nowMs, patch = {}) {
+  return {
+    version: 3,
+    runId,
+    runNowMs: nowMs - 30_000,
+    state: STATES.UNKNOWN,
+    trigger: 'manual',
+    dryRun: false,
+    actorType: 'manual',
+    actorId: 'admin:partial-reconcile',
+    errorCode: 'UNKNOWN_ERROR',
+    mirrorPlanSha256: SHA.mirror,
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    contentPlanSha256: SHA.content,
+    contentPlanAssetCount: 4,
+    externalWritesMayHaveOccurred: true,
+    applyIntentAt: nowMs - 20_000,
+    externalWriteIntentAt: nowMs - 20_000,
+    writeIntentEvidenceVersion: 1,
+    attemptCount: 1,
+    recoveryCount: 0,
+    createdAt: nowMs - 30_000,
+    updatedAt: nowMs - 10_000,
+    finishedAt: nowMs - 10_000,
+    lease: null,
+    ...patch
   }
 }
 
@@ -1874,6 +1950,437 @@ function testLegacyMirrorDigestUnknownNeedsExplicitExactResolution() {
   }
 }
 
+async function testReconciledPartialUnknownAtomicallyQueuesOneFreshRun() {
+  const nowMs = 1_800_000_000_000
+  const runId = 'feishu-sync-partial-base-unknown'
+  const oldRun = {
+    version: 3,
+    runId,
+    runNowMs: nowMs - 30_000,
+    state: STATES.UNKNOWN,
+    trigger: 'manual',
+    dryRun: false,
+    actorType: 'manual',
+    actorId: 'admin:partial-reconcile',
+    errorCode: 'UNKNOWN_ERROR',
+    mirrorPlanSha256: SHA.mirror,
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    contentPlanSha256: SHA.content,
+    contentPlanAssetCount: 4,
+    externalWritesMayHaveOccurred: true,
+    applyIntentAt: nowMs - 20_000,
+    externalWriteIntentAt: nowMs - 20_000,
+    writeIntentEvidenceVersion: 1,
+    attemptCount: 1,
+    recoveryCount: 0,
+    createdAt: nowMs - 30_000,
+    updatedAt: nowMs - 10_000,
+    finishedAt: nowMs - 10_000,
+    lease: null
+  }
+  const store = createStore({
+    listings: [{ id: 'business-data-must-stay-untouched' }],
+    feishuSyncRuns: [oldRun],
+    feishuSyncScheduler: { blockedRunId: runId, activeLease: null },
+    feishuSyncCommitMarkers: {}
+  })
+  let reconcileCalls = 0
+  let syncCalls = 0
+  const expectedEvidence = partialReconciliationEvidence(runId)
+  const { worker } = makeWorker({
+    store,
+    now: () => nowMs,
+    ids: ['partial-continuation'],
+    sync: async () => {
+      syncCalls += 1
+      throw new Error('对账解阻只能排队，不得隐式执行同步')
+    },
+    reconcilePartialBaseWrites: async (businessDb, input) => {
+      reconcileCalls += 1
+      assert.deepStrictEqual(businessDb.listings, [{ id: 'business-data-must-stay-untouched' }])
+      assert.strictEqual(input.runId, runId)
+      assert.strictEqual(input.runNowMs, oldRun.runNowMs)
+      assert.strictEqual(input.expectedMirrorPlanSha256, SHA.mirror)
+      return clone(expectedEvidence)
+    }
+  })
+
+  const resolved = await worker.resolveAndEnqueueReconciledPartial(runId)
+  assert.strictEqual(resolved.resolvedRun.state, STATES.RECONCILED_PARTIAL)
+  assert.strictEqual(resolved.resolvedRun.externalWritesMayHaveOccurred, true, '旧任务的外部写事实不得被抹成 false')
+  assert.strictEqual(resolved.resolvedRun.errorCode, 'UNKNOWN_ERROR', '旧任务原始未知错误必须保留')
+  assert.strictEqual(resolved.resolvedRun.resolutionCode, 'PARTIAL_BASE_WRITES_RECONCILED')
+  assert.strictEqual(resolved.continuationRun.state, STATES.QUEUED)
+  assert.strictEqual(resolved.continuationRun.runId, 'feishu-sync-partial-continuation')
+  assert.strictEqual(syncCalls, 0, '对账解阻不得执行 fresh run')
+
+  const persisted = store.snapshot()
+  const persistedOld = persisted.feishuSyncRuns.find((run) => run.runId === runId)
+  const continuation = persisted.feishuSyncRuns.find((run) => run.runId === resolved.continuationRun.runId)
+  assert.strictEqual(persistedOld.state, STATES.RECONCILED_PARTIAL)
+  assert.strictEqual(persistedOld.reconciliationEvidenceSha256, expectedEvidence.evidenceSha256)
+  assert.strictEqual(persistedOld.continuationRunId, continuation.runId)
+  assert.match(persistedOld.sourceUnknownRunSha256, /^[0-9a-f]{64}$/)
+  assert.match(persistedOld.continuationSeedSha256, /^[0-9a-f]{64}$/)
+  assert.strictEqual(continuation.continuationOfRunId, runId)
+  assert.strictEqual(continuation.sourceUnknownRunSha256, persistedOld.sourceUnknownRunSha256)
+  assert.strictEqual(continuation.reconciliationEvidenceSha256, expectedEvidence.evidenceSha256)
+  assert.strictEqual(continuation.requestKeySha256.length, 64)
+  assert.strictEqual(persisted.feishuSyncScheduler.blockedRunId, '')
+  assert.strictEqual(persisted.feishuSyncScheduler.lastRunId, continuation.runId)
+  assert.deepStrictEqual(persisted.listings, [{ id: 'business-data-must-stay-untouched' }])
+
+  const repeated = await worker.resolveAndEnqueueReconciledPartial(runId)
+  assert.strictEqual(repeated.continuationRun.runId, continuation.runId, '重复调用只能返回同一个续跑任务')
+  assert.strictEqual(reconcileCalls, 1, '已经原子解阻后不得再次联网对账')
+  assert.strictEqual(store.snapshot().feishuSyncRuns.length, 2, '重复调用不得生成第二个 fresh run')
+
+  const pristineResolvedState = store.snapshot()
+  for (const corruption of [
+    {
+      label: 'continuation 伪造 succeeded 但没有 commit marker',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === continuation.runId).state = STATES.SUCCEEDED
+      }
+    },
+    {
+      label: 'continuation 伪造 unknown 但没有外写事实和 blocker',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === continuation.runId).state = STATES.UNKNOWN
+      }
+    },
+    {
+      label: 'continuation 原子入队记录被改动',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === continuation.runId).createdAt += 1
+      }
+    },
+    {
+      label: '已解阻旧任务的 runNowMs 被改动',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === runId).runNowMs += 1
+      }
+    },
+    {
+      label: '已解阻旧任务的原始外写事实被抹除',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === runId).externalWritesMayHaveOccurred = false
+      }
+    }
+  ]) {
+    const corruptStore = createStore(pristineResolvedState)
+    corruptStore.updateDb(corruption.mutate)
+    let unexpectedReads = 0
+    const corruptWorker = makeWorker({
+      store: corruptStore,
+      sync: async () => { throw new Error('快路径不得执行同步') },
+      reconcilePartialBaseWrites: async () => {
+        unexpectedReads += 1
+        return clone(expectedEvidence)
+      }
+    }).worker
+    await assert.rejects(
+      corruptWorker.resolveAndEnqueueReconciledPartial(runId),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `已解阻快路径必须拒绝：${corruption.label}`
+    )
+    assert.strictEqual(unexpectedReads, 0, `已解阻证据损坏时不得重新联网：${corruption.label}`)
+  }
+
+  worker.recover()
+  assert.strictEqual(store.snapshot().feishuSyncScheduler.blockedRunId, '', '合法对账终态不得被 recover 重新设为 blocker')
+  assert.strictEqual(
+    worker.enqueue({ trigger: 'manual' }).runId,
+    continuation.runId,
+    'fresh run 未完成前，普通正式入队只能命中同一个续跑任务'
+  )
+}
+
+async function testPartialReconciliationRejectsDriftWithoutChangingDb() {
+  const nowMs = 1_800_000_000_000
+  const runId = 'feishu-sync-partial-drift'
+  const oldRun = {
+    version: 3,
+    runId,
+    runNowMs: nowMs - 30_000,
+    state: STATES.UNKNOWN,
+    trigger: 'manual',
+    dryRun: false,
+    actorType: 'manual',
+    actorId: 'admin:partial-reconcile',
+    errorCode: 'UNKNOWN_ERROR',
+    mirrorPlanSha256: SHA.mirror,
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    contentPlanSha256: SHA.content,
+    contentPlanAssetCount: 4,
+    externalWritesMayHaveOccurred: true,
+    applyIntentAt: nowMs - 20_000,
+    externalWriteIntentAt: nowMs - 20_000,
+    writeIntentEvidenceVersion: 1,
+    attemptCount: 1,
+    recoveryCount: 0,
+    createdAt: nowMs - 30_000,
+    updatedAt: nowMs - 10_000,
+    finishedAt: nowMs - 10_000,
+    lease: null
+  }
+  const unsafeCases = [
+    {
+      label: 'evidence-old-mirror',
+      patchEvidence: { priorMirrorPlanSha256: '9'.repeat(64) }
+    },
+    {
+      label: 'evidence-run-identity',
+      patchEvidence: { runIdSha256: '8'.repeat(64) }
+    },
+    {
+      label: 'evidence-self-signature',
+      rawEvidencePatch: { evidenceSha256: '0'.repeat(64) }
+    },
+    {
+      label: 'no-outstanding-main-write-plan',
+      patchEvidence: {
+        currentPlan: { create: 0, update: 0, deactivate: 0, restore: 0, noop: 43 }
+      }
+    },
+    {
+      label: 'strict-attempt-type',
+      runPatch: { attemptCount: '1' }
+    },
+    {
+      label: 'strict-version-type',
+      runPatch: { version: '3' },
+      expectNoReconciliationRead: true
+    },
+    {
+      label: 'strict-updated-at-type',
+      runPatch: { updatedAt: String(nowMs - 10_000) },
+      expectNoReconciliationRead: true
+    },
+    {
+      label: 'created-at-must-match-run-coordinate',
+      runPatch: { createdAt: nowMs - 29_999 },
+      expectNoReconciliationRead: true
+    },
+    {
+      label: 'stale-reconciliation-evidence-key',
+      runPatch: { reconciliationEvidence: { stale: true } },
+      expectNoReconciliationRead: true
+    },
+    {
+      label: 'explicit-empty-resolution-code-key',
+      runPatch: { resolutionCode: '' },
+      expectNoReconciliationRead: true
+    },
+    {
+      label: 'write-intent-times-differ',
+      runPatch: { externalWriteIntentAt: nowMs - 19_999 }
+    },
+    {
+      label: 'active-lease',
+      activeLease: {
+        runId: 'another-active-run',
+        owner: 'another-owner',
+        fence: 2,
+        acquiredAt: nowMs - 1_000,
+        expiresAt: nowMs + 60_000
+      }
+    },
+    {
+      label: 'another-unknown',
+      extraRun: {
+        version: 3,
+        runId: 'another-unknown-run',
+        state: STATES.UNKNOWN,
+        dryRun: false,
+        createdAt: nowMs - 1,
+        updatedAt: nowMs - 1,
+        lease: null
+      }
+    },
+    {
+      label: 'duplicate-exact-run-id',
+      extraRun: clone(oldRun),
+      expectNoReconciliationRead: true
+    }
+  ]
+
+  for (const unsafeCase of unsafeCases) {
+    const store = createStore({
+      listings: [{ id: 'must-not-change' }],
+      feishuSyncRuns: [{ ...oldRun, ...(unsafeCase.runPatch || {}) }]
+        .concat(unsafeCase.extraRun ? [unsafeCase.extraRun] : []),
+      feishuSyncScheduler: {
+        blockedRunId: runId,
+        activeLease: unsafeCase.activeLease || null
+      },
+      feishuSyncCommitMarkers: {}
+    })
+    const before = store.snapshot()
+    let syncCalls = 0
+    let reconciliationReads = 0
+    const worker = makeWorker({
+      store,
+      now: () => nowMs,
+      ids: [`must-not-create-${unsafeCase.label}`],
+      sync: async () => { syncCalls += 1 },
+      reconcilePartialBaseWrites: async () => {
+        reconciliationReads += 1
+        return {
+          ...partialReconciliationEvidence(runId, unsafeCase.patchEvidence || {}),
+          ...(unsafeCase.rawEvidencePatch || {})
+        }
+      }
+    }).worker
+    await assert.rejects(
+      worker.resolveAndEnqueueReconciledPartial(runId),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `不安全部分写入对账必须拒绝：${unsafeCase.label}`
+    )
+    assert.deepStrictEqual(store.snapshot(), before, `拒绝后数据库必须逐字节不变：${unsafeCase.label}`)
+    assert.strictEqual(syncCalls, 0)
+    if (unsafeCase.expectNoReconciliationRead) {
+      assert.strictEqual(reconciliationReads, 0, `初始控制面歧义必须在联网前拒绝：${unsafeCase.label}`)
+    }
+  }
+}
+
+async function testPartialReconciliationAtomicRollbackAndConcurrentDriftGuards() {
+  const nowMs = 1_800_000_100_000
+  const runId = 'feishu-sync-partial-atomic'
+  const seed = {
+    listings: [{ id: 'business-before' }],
+    feishuSyncRuns: [exactPartialUnknownRun(runId, nowMs)],
+    feishuSyncScheduler: { blockedRunId: runId, activeLease: null },
+    feishuSyncCommitMarkers: {}
+  }
+  const baseStore = createStore(seed)
+  let failAfterMutation = true
+  const atomicStore = {
+    readDb: baseStore.readDb,
+    snapshot: baseStore.snapshot,
+    updateDb(mutator) {
+      return baseStore.updateDb((working) => {
+        const result = mutator(working)
+        if (failAfterMutation && working.feishuSyncRuns.some((run) => (
+          run && run.state === STATES.RECONCILED_PARTIAL
+        ))) {
+          failAfterMutation = false
+          throw new Error('合成的原子提交失败')
+        }
+        return result
+      })
+    }
+  }
+  const evidence = partialReconciliationEvidence(runId)
+  let reconciliationReads = 0
+  const worker = makeWorker({
+    store: atomicStore,
+    now: () => nowMs,
+    ids: ['partial-rolled-back', 'partial-after-retry'],
+    maxRuns: 1,
+    sync: async () => { throw new Error('解阻阶段不得运行 fresh 同步') },
+    reconcilePartialBaseWrites: async () => {
+      reconciliationReads += 1
+      return clone(evidence)
+    }
+  }).worker
+  const before = atomicStore.snapshot()
+  await assert.rejects(
+    worker.resolveAndEnqueueReconciledPartial(runId),
+    /原子提交失败/,
+    '旧任务解阻和 fresh run 入队必须同事务失败'
+  )
+  assert.deepStrictEqual(atomicStore.snapshot(), before, '原子提交失败后数据库必须逐字节不变')
+  const resolved = await worker.resolveAndEnqueueReconciledPartial(runId)
+  assert.strictEqual(resolved.continuationRun.runId, 'feishu-sync-partial-after-retry')
+  assert.strictEqual(
+    atomicStore.snapshot().feishuSyncRuns.length,
+    2,
+    'maxRuns=1 时也必须同时保留对账旧任务与 continuation 审计链'
+  )
+  atomicStore.updateDb((db) => {
+    const old = db.feishuSyncRuns.find((run) => run.runId === runId)
+    old.reconciliationEvidence.archiveCount += 1
+  })
+  await assert.rejects(
+    worker.resolveAndEnqueueReconciledPartial(runId),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '已解阻审计证据被篡改时不得假装幂等成功'
+  )
+  assert.strictEqual(reconciliationReads, 2, '幂等快速检查失败不得再次联网取证')
+
+  for (const driftCase of [
+    {
+      label: 'business-snapshot',
+      mutate(db) { db.listings.push({ id: 'concurrent-business-change' }) }
+    },
+    {
+      label: 'full-old-run',
+      mutate(db) {
+        const old = db.feishuSyncRuns.find((run) => run.runId === runId)
+        old.schemaBindings = [{ role: 'mini', semantic: 'community', fieldName: '板块', type: 1 }]
+      }
+    }
+  ]) {
+    const driftStore = createStore(seed)
+    const driftWorker = makeWorker({
+      store: driftStore,
+      now: () => nowMs,
+      ids: [`must-not-create-${driftCase.label}`],
+      sync: async () => { throw new Error('不得执行') },
+      reconcilePartialBaseWrites: async () => {
+        driftStore.updateDb(driftCase.mutate)
+        return clone(evidence)
+      }
+    }).worker
+    await assert.rejects(
+      driftWorker.resolveAndEnqueueReconciledPartial(runId),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `对账期间漂移必须拒绝：${driftCase.label}`
+    )
+    const after = driftStore.snapshot()
+    const old = after.feishuSyncRuns.find((run) => run.runId === runId)
+    assert.strictEqual(old.state, STATES.UNKNOWN)
+    assert.strictEqual(after.feishuSyncRuns.length, 1)
+    assert.strictEqual(after.feishuSyncScheduler.blockedRunId, runId)
+  }
+}
+
+async function testConcurrentPartialResolversCreateOneContinuation() {
+  const nowMs = 1_800_000_200_000
+  const runId = 'feishu-sync-partial-concurrent'
+  const store = createStore({
+    listings: [{ id: 'stable-business' }],
+    feishuSyncRuns: [exactPartialUnknownRun(runId, nowMs)],
+    feishuSyncScheduler: { blockedRunId: runId, activeLease: null },
+    feishuSyncCommitMarkers: {}
+  })
+  const gate = deferred()
+  let calls = 0
+  const worker = makeWorker({
+    store,
+    now: () => nowMs,
+    ids: ['partial-concurrent-continuation', 'must-not-be-used'],
+    sync: async () => { throw new Error('不得执行') },
+    reconcilePartialBaseWrites: async () => {
+      calls += 1
+      await gate.promise
+      return partialReconciliationEvidence(runId)
+    }
+  }).worker
+  const firstPromise = worker.resolveAndEnqueueReconciledPartial(runId)
+  const secondPromise = worker.resolveAndEnqueueReconciledPartial(runId)
+  await flush()
+  assert.strictEqual(calls, 2, '并发 resolver 可以各自只读，但都必须在最终事务重新确认')
+  gate.resolve()
+  const [first, second] = await Promise.all([firstPromise, secondPromise])
+  assert.strictEqual(first.continuationRun.runId, second.continuationRun.runId)
+  assert.strictEqual(store.snapshot().feishuSyncRuns.length, 2, '并发解阻只能原子生成一个 continuation')
+}
+
 function testCliAndDailyTimerStayNoopWhenDisabled() {
   const repoRoot = path.join(__dirname, '..', '..')
   const cliPath = path.join(__dirname, 'run-feishu-sync-worker.js')
@@ -1965,6 +2472,10 @@ async function main() {
   await testCommitFailureKeepsBusinessDbUntouchedAndUnknown()
   await testStatusIsSanitized()
   await testRecoveryRules()
+  await testReconciledPartialUnknownAtomicallyQueuesOneFreshRun()
+  await testPartialReconciliationRejectsDriftWithoutChangingDb()
+  await testPartialReconciliationAtomicRollbackAndConcurrentDriftGuards()
+  await testConcurrentPartialResolversCreateOneContinuation()
   testLegacyMirrorDigestUnknownNeedsExplicitExactResolution()
   testCliAndDailyTimerStayNoopWhenDisabled()
   console.log('feishu-sync-worker-v2-test passed')

@@ -9,7 +9,9 @@ const oss = require('./oss')
 const { refreshRecommendationProfile } = require('./listing-recommendation-profile')
 const { normalizeListingFeatures } = require('./listing-features')
 const { resolveManagedVideoObjectKey } = require('./public-listing-media')
-const { createBitableClient } = require('./feishu-bitable-client')
+const bitableClient = require('./feishu-bitable-client')
+const { createBitableClient } = bitableClient
+const { rebuildValidatedTableSnapshot } = bitableClient._internal
 const { createFeishuNoteMaterialClient } = require('./feishu-note-material-client')
 const { createFeishuNoteMaterialNormalizer } = require('./feishu-note-material-normalizer')
 const noteMaterialSync = require('./feishu-note-material-sync')
@@ -2767,6 +2769,43 @@ function stableCreateClientToken(tableId, operation) {
   return stableUuidV4(`ynzy-feishu-create-v1\u0000${normalizedTableId}\u0000${semanticCreateOperationKey(operation)}`)
 }
 
+function stableUpdateClientToken(tableId, records, scope) {
+  const normalizedTableId = normalizeResourceIdentifier(tableId)
+  const normalizedScope = scope && typeof scope === 'object' && !Array.isArray(scope)
+    ? scope
+    : null
+  const scopeKeys = normalizedScope ? Object.keys(normalizedScope).sort() : []
+  const phase = normalizeText(normalizedScope && normalizedScope.phase)
+  const runId = normalizeText(normalizedScope && normalizedScope.runId)
+  const runNowMs = normalizedScope && normalizedScope.runNowMs
+  if (!normalizedTableId || !Array.isArray(records) || records.length === 0) {
+    throw new Error('飞书更新批次缺少目标表 ID 或记录')
+  }
+  if (JSON.stringify(scopeKeys) !== JSON.stringify(['phase', 'runId', 'runNowMs']) ||
+      !/^[a-z][a-z0-9-]{2,63}$/.test(phase) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(runId) ||
+      !Number.isSafeInteger(runNowMs) || runNowMs <= 0) {
+    throw new Error('飞书更新批次缺少完整持久 run 作用域（phase/runId/runNowMs）')
+  }
+  const seenRecordIds = new Set()
+  const normalizedRecords = records.map((record) => {
+    const recordId = normalizeText(record && (record.record_id || record.recordId))
+    const fields = record && record.fields && typeof record.fields === 'object' &&
+      !Array.isArray(record.fields)
+      ? record.fields
+      : null
+    if (!recordId || !fields || seenRecordIds.has(recordId)) {
+      throw new Error('飞书更新批次存在无效或重复 record_id')
+    }
+    seenRecordIds.add(recordId)
+    return { recordId, fields: stablePlanValue(fields) }
+  }).sort((left, right) => left.recordId.localeCompare(right.recordId))
+  return stableUuidV4(
+    `ynzy-feishu-update-v2\u0000${phase}\u0000${runId}\u0000${runNowMs}\u0000` +
+      `${normalizedTableId}\u0000${JSON.stringify(normalizedRecords)}`
+  )
+}
+
 function flattenLocationSnapshot(snapshot) {
   return (snapshot.records || []).map((record) => ({
     recordId: record.recordId,
@@ -3731,10 +3770,18 @@ async function writeFoundationCurrentRecords(targetClient, tableId, snapshot, op
   const updates = operations.filter((operation) => operation.type !== 'create')
   await createSemanticRecords(targetClient, tableId, snapshot, creates, options)
   for (const batch of chunksOf(updates)) {
-    await targetClient.batchUpdateRecords(tableId, batch.map((operation) => ({
+    const records = batch.map((operation) => ({
       record_id: operation.recordId,
       fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
-    })), externalWriteOptions(options))
+    }))
+    await targetClient.batchUpdateRecords(tableId, records, {
+      clientToken: stableUpdateClientToken(tableId, records, {
+        phase: 'foundation-current',
+        runId: options.runId,
+        runNowMs: options.nowMs
+      }),
+      ...externalWriteOptions(options)
+    })
   }
 }
 
@@ -4270,10 +4317,17 @@ async function executeFoundationEnrichment({
   }
 
   for (const batch of chunksOf(plan.updateOperations)) {
-    await targetClient.batchUpdateRecords(normalizedMiniTableId, batch.map((operation) => ({
+    const records = batch.map((operation) => ({
       record_id: operation.recordId,
       fields: semanticFieldsForWrite(currentSnapshot.fieldNames, operation.fields)
-    })))
+    }))
+    await targetClient.batchUpdateRecords(normalizedMiniTableId, records, {
+      clientToken: stableUpdateClientToken(normalizedMiniTableId, records, {
+        phase: 'foundation-enrichment-current',
+        runId: effectiveRunId,
+        runNowMs: effectiveNowMs
+      })
+    })
   }
   const readback = await targetClient.readValidatedTableSnapshot({
     tableId: normalizedMiniTableId,
@@ -4376,6 +4430,32 @@ async function executeAiFoundationSync({
   // dry-run 与 apply 都产出同一组三摘要；调用方提供确认摘要时，任何漂移都必须在
   // 飞书首个目标写请求前失败。这样同类型字段互换也不能伪装成合法业务变化。
   assertMirrorSafetyDigestConfirmation(options, safetyDigests)
+  if (options._capturePartialReconciliationState != null) {
+    if (options.dryRun !== true || typeof options._capturePartialReconciliationState !== 'function') {
+      const error = new Error('部分写入对账快照捕获只允许内部 dry-run 同步函数')
+      error.code = 'PARTIAL_RECONCILIATION_FAILED'
+      error.safeBeforeWrite = true
+      throw error
+    }
+    const captureResult = options._capturePartialReconciliationState(clone({
+      sourceSnapshot,
+      locationSnapshot,
+      mirrorSnapshot,
+      rentedSnapshot,
+      historySnapshot,
+      resources: mirrorSafetyResources(options),
+      legacyMaterialEvidence: options.legacyMaterialEvidence,
+      safetyDigests,
+      baseline
+    }))
+    if (captureResult && typeof captureResult.then === 'function') {
+      Promise.resolve(captureResult).catch(() => {})
+      const error = new Error('部分写入对账快照捕获不得异步执行')
+      error.code = 'PARTIAL_RECONCILIATION_FAILED'
+      error.safeBeforeWrite = true
+      throw error
+    }
+  }
   if (options.dryRun === true) {
     return {
       complete: true,
@@ -4461,7 +4541,7 @@ async function executeAiFoundationSync({
     options.miniTableId,
     mirrorSnapshot,
     plan.operations,
-    options
+    { ...options, runId, nowMs }
   )
   const mirrorReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
@@ -4536,6 +4616,343 @@ async function executeAiFoundationSync({
     records: clone(remainingPlan.plannedRecords),
     materials: options.materials || []
   }
+}
+
+function partialReconciliationError(message) {
+  const error = new Error(message || '飞书部分写入只读对账失败')
+  error.code = 'PARTIAL_RECONCILIATION_FAILED'
+  error.statusCode = 409
+  error.safeBeforeWrite = true
+  return error
+}
+
+function normalizedExpectedOperationFields(snapshot, fields) {
+  const bindings = snapshot && Array.isArray(snapshot.schemaBindings)
+    ? snapshot.schemaBindings
+    : []
+  const source = fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {}
+  if (!bindings.length) throw partialReconciliationError('部分写入对账缺少字段类型绑定')
+  return bindings.slice().sort((left, right) => (
+    normalizeText(left && left.semantic).localeCompare(normalizeText(right && right.semantic))
+  )).reduce((result, binding) => {
+    const semantic = normalizeText(binding && binding.semantic)
+    const type = normalizeText(binding && binding.type)
+    if (!semantic || !type || Object.prototype.hasOwnProperty.call(result, semantic)) {
+      throw partialReconciliationError('部分写入对账字段类型绑定无效')
+    }
+    result[semantic] = Object.prototype.hasOwnProperty.call(source, semantic)
+      ? clone(source[semantic])
+      : (['4', '17'].includes(type) ? [] : '')
+    return result
+  }, {})
+}
+
+function indexedUniqueRecords(records, semantic, label) {
+  const indexed = new Map()
+  ;(records || []).forEach((record) => {
+    const key = normalizeText(record && record.fields && record.fields[semantic])
+    if (!key || indexed.has(key)) {
+      throw partialReconciliationError(`部分写入对账${label}身份缺失或重复`)
+    }
+    indexed.set(key, record)
+  })
+  return indexed
+}
+
+function assertPartialPrefixMatchesOperations(snapshot, records, operations, semantic, label) {
+  const actual = indexedUniqueRecords(records, semantic, label)
+  const expected = new Map()
+  ;(operations || []).forEach((operation) => {
+    const key = normalizeText(
+      operation && (operation[semantic] || (operation.fields && operation.fields[semantic]))
+    )
+    if (!key || expected.has(key)) {
+      throw partialReconciliationError(`部分写入对账预期${label}身份缺失或重复`)
+    }
+    expected.set(key, operation)
+  })
+  if (actual.size !== expected.size || [...actual.keys()].some((key) => !expected.has(key))) {
+    throw partialReconciliationError(`部分写入对账${label}身份集合不一致`)
+  }
+  for (const [key, record] of actual.entries()) {
+    const expectedFields = normalizedExpectedOperationFields(snapshot, expected.get(key).fields)
+    if (!secureDigestEqual(stableSha256(record.fields || {}), stableSha256(expectedFields))) {
+      throw partialReconciliationError(`部分写入对账${label}字段不一致`)
+    }
+  }
+}
+
+function buildPartialBaseReconciliationEvidence(input = {}) {
+  const run = input.run && typeof input.run === 'object' && !Array.isArray(input.run)
+    ? input.run
+    : {}
+  const capture = input.capture && typeof input.capture === 'object' && !Array.isArray(input.capture)
+    ? input.capture
+    : {}
+  const runId = normalizeText(run.runId)
+  const runNowMs = Number(run.runNowMs)
+  const expectedMirrorPlanSha256 = normalizeText(run.expectedMirrorPlanSha256).toLowerCase()
+  const expectedSchemaSha256 = normalizeText(run.expectedSchemaSha256).toLowerCase()
+  const expectedResourceIdentitySha256 = normalizeText(
+    run.expectedResourceIdentitySha256
+  ).toLowerCase()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(runId) ||
+      !Number.isSafeInteger(runNowMs) || runNowMs <= 0 ||
+      !/^[0-9a-f]{64}$/.test(expectedMirrorPlanSha256) ||
+      !/^[0-9a-f]{64}$/.test(expectedSchemaSha256) ||
+      !/^[0-9a-f]{64}$/.test(expectedResourceIdentitySha256)) {
+    throw partialReconciliationError('部分写入对账缺少旧 run 的完整冻结证据')
+  }
+  const requiredSnapshots = [
+    'sourceSnapshot',
+    'locationSnapshot',
+    'mirrorSnapshot',
+    'rentedSnapshot',
+    'historySnapshot'
+  ]
+  requiredSnapshots.forEach((key) => {
+    const snapshot = capture[key]
+    if (!snapshot || snapshot.complete !== true || !Array.isArray(snapshot.records) ||
+        !Number.isSafeInteger(snapshot.recordCount) || !/^[0-9a-f]{64}$/.test(String(snapshot.digest || ''))) {
+      throw partialReconciliationError(`部分写入对账缺少完整 ${key}`)
+    }
+  })
+  if (capture.baseline === true) {
+    throw partialReconciliationError('初始化基线任务不得使用部分写入解阻')
+  }
+
+  const locationCatalog = buildLocationCatalog(flattenLocationSnapshot(capture.locationSnapshot))
+  const currentPlan = buildFoundationMirrorPlan({
+    sourceSnapshot: capture.sourceSnapshot,
+    mirrorSnapshot: capture.mirrorSnapshot,
+    rentedSnapshot: capture.rentedSnapshot,
+    locationCatalog,
+    runId,
+    nowMs: runNowMs,
+    baseline: false
+  })
+  const normalizedCurrent = normalizedFoundationCurrentSnapshot(capture.mirrorSnapshot, runNowMs)
+  const currentHistory = lifecycleHistoryOperations(
+    normalizedCurrent,
+    currentPlan.operations,
+    capture.historySnapshot,
+    runId,
+    runNowMs,
+    {
+      archiveOperations: currentPlan.archiveOperations,
+      rentedSnapshot: capture.rentedSnapshot,
+      suppressEvents: false
+    }
+  )
+  if (currentPlan.archiveOperations.length !== 0 || currentHistory.length !== 0) {
+    throw partialReconciliationError('当前 Base 仍存在未落盘的归档或流水前缀')
+  }
+  const outstandingMainWriteCount = ['create', 'update', 'restore', 'deactivate']
+    .reduce((sum, key) => sum + Number(currentPlan.counts && currentPlan.counts[key] || 0), 0)
+  if (!Number.isSafeInteger(outstandingMainWriteCount) || outstandingMainWriteCount <= 0) {
+    throw partialReconciliationError('当前 Base 没有可证明尚未推进的主表写计划')
+  }
+
+  const archiveRecords = capture.rentedSnapshot.records.filter((record) => (
+    Number(record && record.fields && record.fields.archivedAt) === runNowMs
+  ))
+  const historyRecords = capture.historySnapshot.records.filter((record) => (
+    normalizeText(record && record.fields && record.fields.runId) === runId
+  ))
+  if (archiveRecords.length + historyRecords.length === 0) {
+    throw partialReconciliationError('当前 Base 未发现旧 run 的部分写入前缀')
+  }
+  const archiveRecordIds = new Set(archiveRecords.map((record) => record.recordId))
+  const historyRecordIds = new Set(historyRecords.map((record) => record.recordId))
+  const priorRentedSnapshot = rebuildValidatedTableSnapshot(
+    capture.rentedSnapshot,
+    capture.rentedSnapshot.records.filter((record) => !archiveRecordIds.has(record.recordId)),
+    { includeCreatedTime: false }
+  )
+  const priorHistorySnapshot = rebuildValidatedTableSnapshot(
+    capture.historySnapshot,
+    capture.historySnapshot.records.filter((record) => !historyRecordIds.has(record.recordId)),
+    { includeCreatedTime: false }
+  )
+  const priorPlan = buildFoundationMirrorPlan({
+    sourceSnapshot: capture.sourceSnapshot,
+    mirrorSnapshot: capture.mirrorSnapshot,
+    rentedSnapshot: priorRentedSnapshot,
+    locationCatalog,
+    runId,
+    nowMs: runNowMs,
+    baseline: false
+  })
+  const priorHistory = lifecycleHistoryOperations(
+    normalizedCurrent,
+    priorPlan.operations,
+    priorHistorySnapshot,
+    runId,
+    runNowMs,
+    {
+      archiveOperations: priorPlan.archiveOperations,
+      rentedSnapshot: priorRentedSnapshot,
+      suppressEvents: false
+    }
+  )
+  assertPartialPrefixMatchesOperations(
+    capture.rentedSnapshot,
+    archiveRecords,
+    priorPlan.archiveOperations,
+    'archiveKey',
+    '归档'
+  )
+  assertPartialPrefixMatchesOperations(
+    capture.historySnapshot,
+    historyRecords,
+    priorHistory,
+    'historyEventId',
+    '流水'
+  )
+  const currentOperationsSha256 = stableSha256(operationsForPlanDigest(currentPlan.operations))
+  const priorOperationsSha256 = stableSha256(operationsForPlanDigest(priorPlan.operations))
+  if (!secureDigestEqual(currentOperationsSha256, priorOperationsSha256)) {
+    throw partialReconciliationError('部分写入前后主表计划不一致')
+  }
+
+  const currentSafety = buildMirrorSafetyDigests({
+    sourceSnapshot: capture.sourceSnapshot,
+    locationSnapshot: capture.locationSnapshot,
+    mirrorSnapshot: capture.mirrorSnapshot,
+    rentedSnapshot: capture.rentedSnapshot,
+    historySnapshot: capture.historySnapshot,
+    resources: capture.resources,
+    legacyMaterialEvidence: capture.legacyMaterialEvidence,
+    operations: currentPlan.operations,
+    archiveOperations: currentPlan.archiveOperations,
+    historyOperations: currentHistory,
+    baselineMarkerOperation: null,
+    plannedRecords: currentPlan.plannedRecords
+  })
+  const priorSafety = buildMirrorSafetyDigests({
+    sourceSnapshot: capture.sourceSnapshot,
+    locationSnapshot: capture.locationSnapshot,
+    mirrorSnapshot: capture.mirrorSnapshot,
+    rentedSnapshot: priorRentedSnapshot,
+    historySnapshot: priorHistorySnapshot,
+    resources: capture.resources,
+    legacyMaterialEvidence: capture.legacyMaterialEvidence,
+    operations: priorPlan.operations,
+    archiveOperations: priorPlan.archiveOperations,
+    historyOperations: priorHistory,
+    baselineMarkerOperation: null,
+    plannedRecords: priorPlan.plannedRecords
+  })
+  if (!capture.safetyDigests ||
+      !secureDigestEqual(currentSafety.schemaSha256, capture.safetyDigests.schemaSha256) ||
+      !secureDigestEqual(currentSafety.resourceIdentitySha256, capture.safetyDigests.resourceIdentitySha256) ||
+      !secureDigestEqual(currentSafety.mirrorPlanSha256, capture.safetyDigests.mirrorPlanSha256) ||
+      !secureDigestEqual(priorSafety.schemaSha256, expectedSchemaSha256) ||
+      !secureDigestEqual(priorSafety.resourceIdentitySha256, expectedResourceIdentitySha256) ||
+      !secureDigestEqual(priorSafety.mirrorPlanSha256, expectedMirrorPlanSha256)) {
+    throw partialReconciliationError('部分写入对账摘要未命中旧 run 权威 B')
+  }
+
+  const evidenceBody = {
+    contract: 'feishu-partial-base-write-reconciliation-v1',
+    runIdSha256: crypto.createHash('sha256').update(runId).digest('hex'),
+    priorMirrorPlanSha256: priorSafety.mirrorPlanSha256,
+    currentMirrorPlanSha256: currentSafety.mirrorPlanSha256,
+    schemaSha256: currentSafety.schemaSha256,
+    resourceIdentitySha256: currentSafety.resourceIdentitySha256,
+    archiveCount: archiveRecords.length,
+    historyCount: historyRecords.length,
+    archiveEvidenceSha256: stableSha256(archiveRecords.map((record) => ({
+      archiveKey: normalizeText(record.fields && record.fields.archiveKey),
+      fields: stablePlanValue(record.fields || {})
+    })).sort((left, right) => left.archiveKey.localeCompare(right.archiveKey))),
+    historyEvidenceSha256: stableSha256(historyRecords.map((record) => ({
+      historyEventId: normalizeText(record.fields && record.fields.historyEventId),
+      fields: stablePlanValue(record.fields || {})
+    })).sort((left, right) => left.historyEventId.localeCompare(right.historyEventId))),
+    currentOperationsSha256,
+    currentPlan: clone(currentPlan.counts)
+  }
+  return {
+    ...evidenceBody,
+    evidenceSha256: stableSha256(evidenceBody)
+  }
+}
+
+async function reconcilePartialBaseWritesWithConfiguredSync(db, input = {}, configuredSync) {
+  if (!db || typeof db !== 'object' || Array.isArray(db)) {
+    throw partialReconciliationError('部分写入对账缺少业务数据库快照')
+  }
+  if (typeof configuredSync !== 'function') {
+    throw partialReconciliationError('部分写入对账缺少正式 configured 同步入口')
+  }
+  const expectedKeys = [
+    'externalWriteIntentAt',
+    'expectedMirrorPlanSha256',
+    'expectedResourceIdentitySha256',
+    'expectedSchemaSha256',
+    'runId',
+    'runNowMs'
+  ]
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      JSON.stringify(Object.keys(input).sort()) !== JSON.stringify(expectedKeys.slice().sort())) {
+    throw partialReconciliationError('部分写入对账输入字段不符合内部契约')
+  }
+  const externalWriteIntentAt = input.externalWriteIntentAt
+  if (!Number.isSafeInteger(externalWriteIntentAt) ||
+      !Number.isSafeInteger(input.runNowMs) ||
+      externalWriteIntentAt < input.runNowMs) {
+    throw partialReconciliationError('部分写入对账缺少有效首写时间')
+  }
+  const run = {
+    runId: input.runId,
+    runNowMs: input.runNowMs,
+    expectedMirrorPlanSha256: input.expectedMirrorPlanSha256,
+    expectedSchemaSha256: input.expectedSchemaSha256,
+    expectedResourceIdentitySha256: input.expectedResourceIdentitySha256
+  }
+  const baselinePublishedSourceIds = activeFeishuSourceRecordIds(db)
+  const baselinePublishedFoundationIdentityKeys = activeFeishuFoundationIdentityKeys(db)
+  let feishuToken = ''
+  const readRound = async () => {
+    let captured = null
+    let captureCount = 0
+    const result = await configuredSync({
+      dryRun: true,
+      disableLegacyMaterials: true,
+      runId: input.runId,
+      nowMs: input.runNowMs,
+      expectedSchemaSha256: input.expectedSchemaSha256,
+      expectedResourceIdentitySha256: input.expectedResourceIdentitySha256,
+      baselinePublishedSourceIds,
+      baselinePublishedFoundationIdentityKeys,
+      feishuToken,
+      _capturePartialReconciliationState(value) {
+        captureCount += 1
+        captured = value
+      }
+    })
+    feishuToken = result && result.feishuToken || feishuToken
+    if (captureCount !== 1 || !captured || !result || result.complete !== true ||
+        result.dryRun !== true || result.failed !== 0) {
+      throw partialReconciliationError('部分写入对账未形成唯一完整只读快照')
+    }
+    const evidence = buildPartialBaseReconciliationEvidence({ run, capture: captured })
+    if (!secureDigestEqual(evidence.currentMirrorPlanSha256, result.mirrorPlanSha256)) {
+      throw partialReconciliationError('部分写入对账当前镜像摘要与正式 dry-run 不一致')
+    }
+    return evidence
+  }
+  const first = await readRound()
+  const second = await readRound()
+  if (!secureDigestEqual(first.evidenceSha256, second.evidenceSha256)) {
+    throw partialReconciliationError('部分写入对账连续两次只读结果不一致')
+  }
+  return second
+}
+
+async function reconcilePartialBaseWrites(db, input = {}) {
+  return reconcilePartialBaseWritesWithConfiguredSync(db, input, configuredMirrorTableSync)
 }
 
 function sourceNoteMaterialRows(sourceSnapshot = {}) {
@@ -4762,12 +5179,20 @@ async function executeMirrorTableSync(options = {}) {
     })
   }
   for (const batch of chunksOf(updates)) {
-    await targetClient.batchUpdateRecords(options.miniTableId, batch.map((operation) => ({
+    const records = batch.map((operation) => ({
       record_id: operation.recordId,
       fields: semanticFieldsForWrite(writableFieldNames, operation.fields, {
         full: operation.type !== 'deactivate'
       })
-    })), externalWriteOptions(options))
+    }))
+    await targetClient.batchUpdateRecords(options.miniTableId, records, {
+      clientToken: stableUpdateClientToken(options.miniTableId, records, {
+        phase: 'legacy-current',
+        runId,
+        runNowMs: nowMs
+      }),
+      ...externalWriteOptions(options)
+    })
   }
 
   const readback = await targetClient.readValidatedTableSnapshot({
@@ -4915,6 +5340,7 @@ async function configuredMirrorTableSync(options = {}) {
     expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
     expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
     onExternalWriteDispatched: options.onExternalWriteDispatched,
+    _capturePartialReconciliationState: options._capturePartialReconciliationState,
     mirrorSafetyResources: {
       sourceBaseToken,
       targetBaseToken,
@@ -5966,6 +6392,7 @@ module.exports = {
   parseAdminSyncRequest,
   sanitizeSheetSnapshot,
   configuredFoundationEnrichment,
+  reconcilePartialBaseWrites,
   _internal: {
     roomIdentityKey,
     existingByExternalId,
@@ -6000,11 +6427,14 @@ module.exports = {
     runMirrorContentPlanPreflight,
     enforceFormalContentPlanResult,
     stableCreateClientToken,
+    stableUpdateClientToken,
     foundationBaselineCompleted,
     foundationArchiveFields,
     lifecycleHistoryOperations,
     foundationEnrichmentPlanSha256,
     buildMirrorSafetyDigests,
+    buildPartialBaseReconciliationEvidence,
+    reconcilePartialBaseWritesWithConfiguredSync,
     assertMirrorSafetyDigestConfirmation,
     executeFoundationEnrichment
   }

@@ -4,6 +4,7 @@ const assert = require('assert')
 const crypto = require('crypto')
 
 const config = require('../src/config')
+const bitableClient = require('../src/feishu-bitable-client')
 const feishuSync = require('../src/feishu-sync')
 const {
   syncNoteMaterialsForInventory
@@ -198,15 +199,76 @@ function restoreObject(target, value) {
   Object.assign(target, value)
 }
 
+function stableFixtureValue(value) {
+  if (Array.isArray(value)) return value.map(stableFixtureValue)
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((result, key) => {
+      if (value[key] !== undefined) result[key] = stableFixtureValue(value[key])
+      return result
+    }, {})
+  }
+  return value
+}
+
+function fixtureSha256(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(stableFixtureValue(value))).digest('hex')
+}
+
 function snapshot(records, fieldNames = {}) {
+  const normalizedRecords = clone(records).sort((left, right) => (
+    String(left && left.recordId || '').localeCompare(String(right && right.recordId || ''))
+  ))
   return {
     complete: true,
-    records: clone(records),
-    recordCount: records.length,
-    digest: `digest-${records.length}`,
-    schemaFingerprint: 'schema-foundation-v1',
+    records: normalizedRecords,
+    recordCount: normalizedRecords.length,
+    digest: fixtureSha256(normalizedRecords),
+    schemaFingerprint: fixtureSha256({ fieldNames }),
     fieldNames: clone(fieldNames)
   }
+}
+
+function fixtureFieldType(semantic) {
+  if (semantic === 'tags') return '4'
+  if (semantic === 'video') return '17'
+  if ([
+    'latitude',
+    'longitude',
+    'monthlyRent',
+    'availabilityCycleNo',
+    'lifecycleDays',
+    'lifecycleVersion',
+    'archivedAt',
+    'eventAt'
+  ].includes(semantic)) return '2'
+  return '1'
+}
+
+function validatedTargetSnapshot(records, bindings) {
+  const fieldNames = semanticFieldNames(bindings)
+  const schemaBindings = Object.keys(bindings).sort().map((semantic) => ({
+    semantic,
+    fieldId: bindings[semantic].fieldId,
+    type: fixtureFieldType(semantic)
+  }))
+  const normalizedRecords = records.map((record) => ({
+    ...clone(record),
+    fields: schemaBindings.reduce((result, binding) => {
+      const value = record && record.fields && record.fields[binding.semantic]
+      result[binding.semantic] = value === undefined || value === null || value === ''
+        ? (['4', '17'].includes(binding.type) ? [] : '')
+        : clone(value)
+      return result
+    }, {})
+  }))
+  const base = {
+    ...snapshot([], fieldNames),
+    schemaBindings,
+    schemaFingerprint: fixtureSha256(schemaBindings)
+  }
+  return bitableClient._internal.rebuildValidatedTableSnapshot(base, normalizedRecords, {
+    includeCreatedTime: false
+  })
 }
 
 function semanticFieldNames(bindings) {
@@ -371,9 +433,9 @@ function makeLifecycleClients(options = {}) {
         hidden.remainingReads -= 1
         visibleRecords = visibleRecords.filter((record) => !hidden.recordIds.has(record.recordId))
       }
-      return snapshot(
+      return validatedTargetSnapshot(
         visibleRecords,
-        semanticFieldNames(tableBindings[readOptions.tableId])
+        tableBindings[readOptions.tableId]
       )
     },
     async batchCreateRecords(tableId, records, writeOptions = {}) {
@@ -823,6 +885,56 @@ function testConfiguredFoundationRequiresAllResources() {
     const missingHistory = feishuSync._internal.mirrorConfigurationStatus()
     assert.strictEqual(missingHistory.ready, false, '缺少状态流水表不得把数据底座标记为 ready')
     assert.strictEqual(missingHistory.historyTableReady, false, '缺失诊断必须精确落到状态流水表')
+  } finally {
+    restoreObject(config.feishu, previous)
+  }
+}
+
+async function testConfiguredFoundationForwardsPartialReconciliationCapture() {
+  const previous = clone(config.feishu)
+  const clients = makeLifecycleClients()
+  let captureCount = 0
+  try {
+    Object.assign(config.feishu, {
+      appId: 'synthetic-app-id',
+      appSecret: 'synthetic-app-secret',
+      sourceBitableAppToken: 'synthetic-source-base',
+      targetBitableAppToken: 'synthetic-target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: clients.tableIds.source,
+      locationTableId: clients.tableIds.location,
+      miniTableId: clients.tableIds.mini,
+      rentedTableId: clients.tableIds.rented,
+      historyTableId: clients.tableIds.history,
+      sourceCompatibilityProfile: PROFILE,
+      sourceFieldBindings: sourceBindings(),
+      locationFieldBindings: locationBindings(),
+      miniFieldBindings: miniBindings(),
+      rentedFieldBindings: rentedBindings(),
+      historyFieldBindings: historyBindings(),
+      noteMaterialSyncEnabled: false,
+      folderToken: 'synthetic-material-folder',
+      materialsFile: ''
+    })
+    const result = await feishuSync._internal.configuredMirrorTableSync({
+      feishuToken: 'synthetic-tenant-token',
+      sourceClient: clients.sourceClient,
+      targetClient: clients.targetClient,
+      disableLegacyMaterials: true,
+      dryRun: true,
+      runId: 'foundation-configured-partial-capture',
+      nowMs: FIXED_NOW_MS,
+      _capturePartialReconciliationState(capture) {
+        captureCount += 1
+        assert.strictEqual(capture.sourceSnapshot.complete, true)
+        assert.strictEqual(capture.mirrorSnapshot.complete, true)
+        assert.strictEqual(capture.rentedSnapshot.complete, true)
+        assert.strictEqual(capture.historySnapshot.complete, true)
+      }
+    })
+    assert.strictEqual(result.dryRun, true)
+    assert.strictEqual(captureCount, 1, '真实 configured 入口必须把内部对账捕获回调精确转发一次')
+    assertNoWrites(clients.calls, 'configured 对账捕获只能读取五表，禁止写入')
   } finally {
     restoreObject(config.feishu, previous)
   }
@@ -1371,6 +1483,286 @@ async function testArchiveFirstCurrentWriteFailureCanRecover() {
     )).length,
     1,
     '补偿重跑不得重复新增已出租流水'
+  )
+}
+
+async function testExactPartialPrefixKeepsStableReadOnlyContinuationPlan() {
+  const initialSources = Array.from({ length: 40 }, (_, index) => (
+    sourceRecord(`source-exact-partial-${index + 1}`, String(1101 + index))
+  ))
+  const clients = makeLifecycleClients({
+    sourceSnapshot: sourceSnapshotOf(initialSources)
+  })
+  await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false,
+    runId: 'foundation-exact-partial-baseline',
+    nowMs: FIXED_NOW_MS,
+    maxDeactivateRatio: 0.75
+  }))
+  const miniBeforePartial = clone(clients.tableRecords['tbl-mini'])
+  const rentedBeforePartial = clients.tableRecords['tbl-rented'].length
+  const historyBeforePartial = clients.tableRecords['tbl-history'].length
+
+  const retainedSources = initialSources.slice(0, 37).map((record, index) => (
+    sourceRecord(record.recordId, String(1101 + index), {
+      monthlyRent: 3300,
+      ...(index === 0 ? { viewingMethod: '8.10空出，看房提前联系' } : {})
+    })
+  ))
+  const addedSources = Array.from({ length: 6 }, (_, index) => (
+    sourceRecord(`source-exact-partial-new-${index + 1}`, String(2101 + index), {
+      monthlyRent: 3300
+    })
+  ))
+  clients.setSourceSnapshot(sourceSnapshotOf([...retainedSources, ...addedSources]))
+
+  const oldRunId = 'foundation-exact-partial-run-20260807'
+  const oldRunNowMs = FIXED_NOW_MS + 60_000
+  const expectedMainCounts = { create: 6, update: 37, restore: 0, deactivate: 3, noop: 0 }
+  clients.calls.length = 0
+  const authorizedPlan = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    runId: oldRunId,
+    nowMs: oldRunNowMs,
+    maxDeactivateRatio: 0.75
+  }))
+  assert.deepStrictEqual(
+    authorizedPlan.counts,
+    expectedMainCounts,
+    '旧 run 的权威计划必须精确为新增 6、更新 37、撤下 3'
+  )
+  assert.deepStrictEqual(
+    authorizedPlan.lifecycleCounts,
+    { rentedArchived: 3, historyAppended: 10, baselineInitialized: 0 },
+    '旧 run 首次计划必须精确生成 3 条归档和 10 条流水'
+  )
+  assertNoWrites(clients.calls, '旧 run 的权威 dry-run 只能读取五表，不能提前写入')
+
+  clients.calls.length = 0
+  clients.failNextCreate('tbl-mini')
+  await assert.rejects(
+    feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+      dryRun: false,
+      runId: oldRunId,
+      nowMs: oldRunNowMs,
+      maxDeactivateRatio: 0.75
+    })),
+    /目标表新增失败/,
+    '3 条归档和 10 条流水落盘后，第一条 mini 新增失败必须立即停止'
+  )
+  assert.deepStrictEqual(
+    clients.tableRecords['tbl-mini'],
+    miniBeforePartial,
+    '部分写入失败窗口不得让 mini 主表落盘任何新增、更新或撤下'
+  )
+  assert.strictEqual(
+    clients.tableRecords['tbl-rented'].length - rentedBeforePartial,
+    3,
+    '部分写入失败窗口必须且只能落盘 3 条归档'
+  )
+  assert.strictEqual(
+    clients.tableRecords['tbl-history'].length - historyBeforePartial,
+    10,
+    '部分写入失败窗口必须且只能落盘 10 条状态流水'
+  )
+  assert.strictEqual(
+    clients.tableRecords['tbl-rented'].filter((record) => (
+      Number(record.fields.archivedAt) === oldRunNowMs
+    )).length,
+    3,
+    '3 条归档必须绑定旧 run 的精确 nowMs'
+  )
+  assert.strictEqual(
+    clients.tableRecords['tbl-history'].filter((record) => (
+      record.fields.runId === oldRunId
+    )).length,
+    10,
+    '10 条流水必须绑定同一个旧 runId'
+  )
+  const failedApplyMiniWrites = clients.calls.filter((call) => (
+    ['create', 'update', 'delete'].includes(call.action) && call.tableId === 'tbl-mini'
+  ))
+  assert.strictEqual(failedApplyMiniWrites.length, 1, '失败窗口只能派发第一条 mini 新增请求')
+  assert.strictEqual(failedApplyMiniWrites[0].action, 'create', 'mini 必须在第一条新增落盘前失败')
+
+  clients.calls.length = 0
+  let firstCapture = null
+  const firstContinuationPlan = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    runId: oldRunId,
+    nowMs: oldRunNowMs,
+    maxDeactivateRatio: 0.75,
+    _capturePartialReconciliationState(value) {
+      assert.strictEqual(firstCapture, null, '单次 dry-run 只能捕获一份部分写入对账快照')
+      firstCapture = value
+    }
+  }))
+  let secondCapture = null
+  const secondContinuationPlan = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    runId: oldRunId,
+    nowMs: oldRunNowMs,
+    maxDeactivateRatio: 0.75,
+    _capturePartialReconciliationState(value) {
+      assert.strictEqual(secondCapture, null, '第二次 dry-run 也只能捕获一份部分写入对账快照')
+      secondCapture = value
+    }
+  }))
+  assert.ok(firstCapture && secondCapture, '连续两次 dry-run 都必须形成完整对账快照')
+  assert.deepStrictEqual(
+    secondContinuationPlan,
+    firstContinuationPlan,
+    '同一旧 runId/nowMs 连续两次 dry-run 必须返回完全相同的续跑计划'
+  )
+  assert.deepStrictEqual(
+    firstContinuationPlan.counts,
+    expectedMainCounts,
+    '识别已落盘前缀后，mini 剩余计划仍必须是新增 6、更新 37、撤下 3'
+  )
+  assert.deepStrictEqual(
+    firstContinuationPlan.lifecycleCounts,
+    { rentedArchived: 0, historyAppended: 0, baselineInitialized: 0 },
+    '已落盘的 3 条归档和 10 条流水必须全部幂等识别，续跑生命周期计划为 0/0'
+  )
+  assertNoWrites(clients.calls, '连续两次续跑 dry-run 必须保持所有目标表零写')
+  assert.deepStrictEqual(
+    clients.tableRecords['tbl-mini'],
+    miniBeforePartial,
+    '连续只读对账不得改变仍未推进的 mini 主表'
+  )
+
+  assert.strictEqual(
+    typeof feishuSync._internal.buildPartialBaseReconciliationEvidence,
+    'function',
+    '部分写入恢复必须提供纯内存证据构建器供行为测试复验'
+  )
+  const frozenRunEvidence = {
+    runId: oldRunId,
+    runNowMs: oldRunNowMs,
+    expectedMirrorPlanSha256: authorizedPlan.mirrorPlanSha256,
+    expectedSchemaSha256: authorizedPlan.schemaSha256,
+    expectedResourceIdentitySha256: authorizedPlan.resourceIdentitySha256
+  }
+  const firstEvidence = feishuSync._internal.buildPartialBaseReconciliationEvidence({
+    run: frozenRunEvidence,
+    capture: firstCapture
+  })
+  const secondEvidence = feishuSync._internal.buildPartialBaseReconciliationEvidence({
+    run: frozenRunEvidence,
+    capture: secondCapture
+  })
+  assert.deepStrictEqual(secondEvidence, firstEvidence, '连续两次快照必须生成同一份部分写入对账证据')
+  assert.strictEqual(firstEvidence.archiveCount, 3, '对账证据必须精确确认已落盘 3 条归档')
+  assert.strictEqual(firstEvidence.historyCount, 10, '对账证据必须精确确认已落盘 10 条流水')
+  assert.deepStrictEqual(
+    firstEvidence.currentPlan,
+    expectedMainCounts,
+    '过滤回写前快照命中旧权威摘要后，证据必须保留完整 mini 续跑计划'
+  )
+
+  for (const tamper of [
+    {
+      label: '已出租前缀非身份字段',
+      mutate(capture) {
+        const record = capture.rentedSnapshot.records.find((item) => (
+          Number(item.fields.archivedAt) === oldRunNowMs
+        ))
+        record.fields.remark = `${record.fields.remark || ''}-tampered`
+      }
+    },
+    {
+      label: '状态流水前缀非身份字段',
+      mutate(capture) {
+        const record = capture.historySnapshot.records.find((item) => item.fields.runId === oldRunId)
+        record.fields.eventType = `${record.fields.eventType}-tampered`
+      }
+    }
+  ]) {
+    const tamperedCapture = clone(firstCapture)
+    tamper.mutate(tamperedCapture)
+    assert.throws(
+      () => feishuSync._internal.buildPartialBaseReconciliationEvidence({
+        run: frozenRunEvidence,
+        capture: tamperedCapture
+      }),
+      /字段不一致|对账.*失败|摘要未命中/i,
+      `${tamper.label}被改动时不得只靠身份和旧 B 假装对账成功`
+    )
+  }
+
+  assert.strictEqual(
+    typeof feishuSync._internal.reconcilePartialBaseWritesWithConfiguredSync,
+    'function',
+    '顶层部分写入恢复必须可行为验证两次真实 configured 读取'
+  )
+  clients.calls.length = 0
+  let configuredRounds = 0
+  const serviceEvidence = await feishuSync._internal.reconcilePartialBaseWritesWithConfiguredSync(
+    { listings: [] },
+    {
+      externalWriteIntentAt: oldRunNowMs + 1,
+      expectedMirrorPlanSha256: authorizedPlan.mirrorPlanSha256,
+      expectedResourceIdentitySha256: authorizedPlan.resourceIdentitySha256,
+      expectedSchemaSha256: authorizedPlan.schemaSha256,
+      runId: oldRunId,
+      runNowMs: oldRunNowMs
+    },
+    async (options) => {
+      configuredRounds += 1
+      return feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+        ...options,
+        maxDeactivateRatio: 0.75
+      }))
+    }
+  )
+  assert.deepStrictEqual(serviceEvidence, firstEvidence, '服务端双读入口必须返回同一份已验证证据')
+  assert.strictEqual(configuredRounds, 2, '服务端必须真实执行两轮 configured dry-run，不得复用首轮缓存')
+  assert.strictEqual(
+    clients.calls.filter((call) => call.action === 'read').length,
+    10,
+    '每轮必须分别读取员工源、位置、主表、已出租、流水五表'
+  )
+  assertNoWrites(clients.calls, '服务端双读对账不得产生任何目标写入')
+
+  const freshRunId = 'foundation-exact-partial-fresh-20260807'
+  const freshRunNowMs = oldRunNowMs + 120_000
+  clients.calls.length = 0
+  const freshDryRun = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    runId: freshRunId,
+    nowMs: freshRunNowMs,
+    maxDeactivateRatio: 0.75
+  }))
+  assert.deepStrictEqual(freshDryRun.counts, expectedMainCounts, '全新 run 必须继承同一份剩余主表计划')
+  assert.deepStrictEqual(
+    freshDryRun.lifecycleCounts,
+    { rentedArchived: 0, historyAppended: 0, baselineInitialized: 0 },
+    '生命周期幂等身份不得绑定旧 runId/nowMs，全新 run 也必须识别 3/10 已落盘前缀'
+  )
+  assertNoWrites(clients.calls, '全新 run 的预演必须保持零写')
+
+  clients.calls.length = 0
+  const freshApply = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false,
+    runId: freshRunId,
+    nowMs: freshRunNowMs,
+    maxDeactivateRatio: 0.75
+  }))
+  assert.strictEqual(freshApply.published, true, '全新 run 必须能完成剩余主表写入')
+  assert.deepStrictEqual(freshApply.lifecycleCounts, {
+    rentedArchived: 0,
+    historyAppended: 0,
+    baselineInitialized: 0
+  })
+  assert.strictEqual(
+    clients.tableRecords['tbl-rented'].length - rentedBeforePartial,
+    3,
+    '全新 run 完成后已出租表仍只能保留原 3 条前缀'
+  )
+  assert.strictEqual(
+    clients.tableRecords['tbl-history'].length - historyBeforePartial,
+    10,
+    '全新 run 完成后状态流水仍只能保留原 10 条前缀'
   )
 }
 
@@ -2576,6 +2968,7 @@ async function main() {
     ['看房方式空出说明与门锁密码分流', testViewingMethodDerivesVacancyNoteWithoutConfusingDoorCodes],
     ['基线标记真实性与流水 ID 唯一性', testBaselineMarkerAndHistoryIdsFailClosed],
     ['生产配置五表完整性', testConfiguredFoundationRequiresAllResources],
+    ['configured 入口转发部分写入对账快照', testConfiguredFoundationForwardsPartialReconciliationCapture],
     ['三张目标业务表资源独立', testLifecycleTableResourcesMustBeDistinct],
     ['负责人部门与内部 ID 不进入公开投影', testInternalFoundationFieldsStayOutOfPublicProjection],
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
@@ -2586,6 +2979,7 @@ async function main() {
     ['旧 profile 回退不清空底座字段', testLegacyProfileCannotEraseFoundationFields],
     ['出租归档幂等与重新进入待租', testArchiveIdempotencyAndReappearance],
     ['出租事件先落盘后的失败补偿', testArchiveFirstCurrentWriteFailureCanRecover],
+    ['精确部分写入前缀保持只读续跑计划稳定', testExactPartialPrefixKeepsStableReadOnlyContinuationPlan],
     ['批量撤下熔断三表零写', testDeactivateFuseBlocksAllThreeWrites],
     ['源表 record_id 轮换按稳定物理身份熔断', testFoundationFuseUsesStablePhysicalIdentityAcrossSourceRecordRotation],
     ['目标主档身份与责任字段保留', testTargetIdentityAndResponsibilityEnrichmentIsPreserved],

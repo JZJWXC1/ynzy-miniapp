@@ -539,6 +539,21 @@ schema、资源身份和包含“房源笔记”源字段的内容计划；素�
 处置的情况进入 `BLOCKED`。两者都会阻断后续正式任务和自动重试，必须先做只读对账，禁止为了
 “跑通”而重复点击、重启后盲目重发或清空状态。
 
+当 v3 正式任务已经用精确 `runId/runNowMs` 在目标 Base 落下可识别的生命周期前缀，但主表、Drive、OSS
+和数据库尚未推进时，只能使用服务端的部分写入恢复门。它会用正式 Base 摘要算法去掉该前缀，要求重建的
+写前镜像逐字节命中旧任务冻结的权威计划 B，再对当前五表连续读取两次；归档/流水的身份与完整字段、剩余
+主表计划、schema、资源身份和业务数据库快照任一变化都会拒绝。通过后，旧任务保留
+`externalWritesMayHaveOccurred=true` 和原始错误，终态改为 `reconciled-partial`；同一个数据库事务只新建
+一个全新时间坐标的正式任务并解除 blocker，**只排队、不执行**。旧 run 永不重跑，更新批次使用按目标表、
+任务阶段、持久 `runId/runNowMs`、记录身份和字段内容生成的稳定幂等号：同一 run 的传输重试保持一致，
+不同 run 即使出现 A→B→A 的相同请求体也不会误用旧令牌。运维入口仅为
+`node scripts/run-feishu-sync-worker.js --continue-reconciled-partial <exact-run-id>`，不得通过后台参数或直接改库
+伪造证据；CLI 会先硬校验 `FEISHU_AUTO_SYNC_ENABLED=false`，只执行对账与入队，绝不顺带运行 continuation。
+自动开关已开启时会在创建 worker 和读取五表前失败关闭，避免定时器立即拾取刚排队的任务。仅当 continuation 仍是原子创建、尚未经过
+recover 或执行的 pristine queued 记录时，重复入口才会原样返回同一任务；一旦状态已推进则失败关闭并改用
+状态查询。新任务使用全新 runId/nowMs，但生命周期稳定事件身份不得随批次变化；完整成功并完成五端回读前，
+自动同步仍须关闭。
+
 `FEISHU_SYNC_INTERVAL_MINUTES` 当前固定为 `30` 分钟，只用于把同一短时间窗口内的重复唤醒归并为一个任务，
 不再表示真实运行频率。真正调度由 systemd `ynzy-feishu-sync.timer` 按北京时间每天
 `08:00 / 14:00 / 20:00` 触发独立 oneshot worker；完整成功的新鲜度使用独立的 18 小时健康窗口：

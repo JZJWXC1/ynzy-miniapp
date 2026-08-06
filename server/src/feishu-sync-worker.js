@@ -10,6 +10,7 @@ const STATES = Object.freeze({
   SUCCEEDED: 'succeeded',
   FAILED_BEFORE_WRITE: 'failed-before-write',
   UNKNOWN: 'unknown',
+  RECONCILED_PARTIAL: 'reconciled-partial',
   BLOCKED: 'blocked'
 })
 
@@ -18,6 +19,7 @@ const TERMINAL_STATES = new Set([
   STATES.SUCCEEDED,
   STATES.FAILED_BEFORE_WRITE,
   STATES.UNKNOWN,
+  STATES.RECONCILED_PARTIAL,
   STATES.BLOCKED
 ])
 
@@ -104,6 +106,7 @@ const SAFE_MESSAGES = Object.freeze({
   EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED: '外部写入意图未能在写请求前持久化，已安全中止',
   WORKER_CONFIGURATION_INVALID: '同步工作器配置不完整',
   LEGACY_PREWRITE_EVIDENCE_MISMATCH: '旧任务写前证据不完整，拒绝解除未知态',
+  PARTIAL_RECONCILIATION_FAILED: '部分写入只读对账未通过，旧任务继续保持阻断',
   UNKNOWN_ERROR: '同步异常，详细信息仅保留在受控服务日志中'
 })
 
@@ -128,6 +131,121 @@ function sha256(value) {
 
 function validSha256(value) {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((result, key) => {
+      if (value[key] !== undefined) result[key] = stableValue(value[key])
+      return result
+    }, {})
+  }
+  return value
+}
+
+function stableSha256(value) {
+  return sha256(JSON.stringify(stableValue(value)))
+}
+
+function exactObjectKeys(value, expectedKeys) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(expectedKeys.slice().sort())
+}
+
+function partialReconciliationFailure() {
+  return new WorkerError('PARTIAL_RECONCILIATION_FAILED', '', {
+    safeBeforeWrite: true,
+    blocked: true
+  })
+}
+
+function validatePartialReconciliationEvidence(evidence, run) {
+  const evidenceKeys = [
+    'archiveCount',
+    'archiveEvidenceSha256',
+    'contract',
+    'currentMirrorPlanSha256',
+    'currentOperationsSha256',
+    'currentPlan',
+    'evidenceSha256',
+    'historyCount',
+    'historyEvidenceSha256',
+    'priorMirrorPlanSha256',
+    'resourceIdentitySha256',
+    'runIdSha256',
+    'schemaSha256'
+  ]
+  const planKeys = ['create', 'deactivate', 'noop', 'restore', 'update']
+  if (!exactObjectKeys(evidence, evidenceKeys) ||
+      !exactObjectKeys(evidence.currentPlan, planKeys) ||
+      evidence.contract !== 'feishu-partial-base-write-reconciliation-v1' ||
+      evidence.runIdSha256 !== sha256(run.runId) ||
+      evidence.priorMirrorPlanSha256 !== run.mirrorPlanSha256 ||
+      evidence.schemaSha256 !== run.schemaSha256 ||
+      evidence.resourceIdentitySha256 !== run.resourceIdentitySha256 ||
+      !validSha256(evidence.currentMirrorPlanSha256) ||
+      !validSha256(evidence.archiveEvidenceSha256) ||
+      !validSha256(evidence.historyEvidenceSha256) ||
+      !validSha256(evidence.currentOperationsSha256) ||
+      !validSha256(evidence.evidenceSha256) ||
+      !Number.isSafeInteger(evidence.archiveCount) || evidence.archiveCount < 0 ||
+      !Number.isSafeInteger(evidence.historyCount) || evidence.historyCount < 0 ||
+      evidence.archiveCount + evidence.historyCount <= 0 ||
+      planKeys.some((key) => !Number.isSafeInteger(evidence.currentPlan[key]) || evidence.currentPlan[key] < 0) ||
+      ['create', 'update', 'restore', 'deactivate']
+        .reduce((sum, key) => sum + evidence.currentPlan[key], 0) <= 0) {
+    throw partialReconciliationFailure()
+  }
+  const evidenceBody = {
+    contract: evidence.contract,
+    runIdSha256: evidence.runIdSha256,
+    priorMirrorPlanSha256: evidence.priorMirrorPlanSha256,
+    currentMirrorPlanSha256: evidence.currentMirrorPlanSha256,
+    schemaSha256: evidence.schemaSha256,
+    resourceIdentitySha256: evidence.resourceIdentitySha256,
+    archiveCount: evidence.archiveCount,
+    historyCount: evidence.historyCount,
+    archiveEvidenceSha256: evidence.archiveEvidenceSha256,
+    historyEvidenceSha256: evidence.historyEvidenceSha256,
+    currentOperationsSha256: evidence.currentOperationsSha256,
+    currentPlan: clone(evidence.currentPlan)
+  }
+  if (stableSha256(evidenceBody) !== evidence.evidenceSha256) {
+    throw partialReconciliationFailure()
+  }
+  return { ...evidenceBody, evidenceSha256: evidence.evidenceSha256 }
+}
+
+function partialContinuationRequestKey(runId, sourceUnknownRunSha256, evidenceSha256) {
+  return stableSha256({
+    contract: 'feishu-reconciled-partial-continuation-v1',
+    continuationOfRunId: runId,
+    sourceUnknownRunSha256,
+    reconciliationEvidenceSha256: evidenceSha256
+  })
+}
+
+function sourceUnknownRunIdentityFromResolved(run) {
+  if (!run || !Number.isSafeInteger(run.sourceUnknownUpdatedAt) ||
+      !validSha256(run.sourceUnknownRunSha256)) {
+    throw partialReconciliationFailure()
+  }
+  const original = clone(run)
+  const originalUpdatedAt = original.sourceUnknownUpdatedAt
+  ;[
+    'continuationRunId',
+    'continuationSeedSha256',
+    'reconciliationEvidence',
+    'reconciliationEvidenceSha256',
+    'resolutionCode',
+    'resolvedAt',
+    'sourceUnknownRunSha256',
+    'sourceUnknownUpdatedAt'
+  ].forEach((key) => delete original[key])
+  original.state = STATES.UNKNOWN
+  original.updatedAt = originalUpdatedAt
+  return stableSha256(original)
 }
 
 function numberOr(value, fallback) {
@@ -378,6 +496,10 @@ function trimRuns(db, maxRuns) {
     const retainedIds = new Set()
     db.feishuSyncRuns.forEach((run) => {
       if (run && !TERMINAL_STATES.has(run.state)) retainedIds.add(run.runId)
+      if (run && run.state === STATES.RECONCILED_PARTIAL) {
+        retainedIds.add(run.runId)
+        if (run.continuationRunId) retainedIds.add(run.continuationRunId)
+      }
     })
     const protectedRunIds = [
       db.feishuSyncScheduler.blockedRunId,
@@ -444,6 +566,11 @@ function sanitizeRun(run) {
       : null,
     resolvedAt: Number(run.resolvedAt || 0) || null,
     resolutionCode: safeErrorCode({ code: run.resolutionCode || '' }, ''),
+    reconciliationEvidenceSha256: validSha256(run.reconciliationEvidenceSha256)
+      ? run.reconciliationEvidenceSha256
+      : '',
+    continuationRunId: run.continuationRunId ? String(run.continuationRunId) : '',
+    continuationOfRunId: run.continuationOfRunId ? String(run.continuationOfRunId) : '',
     errorCode: safeErrorCode({ code: run.errorCode || '' }, ''),
     message: run.errorCode ? safeErrorMessage(run.errorCode) : '',
     result: run.resultSummary ? clone(run.resultSummary) : null,
@@ -1046,6 +1173,219 @@ function createFeishuSyncWorker(dependencies = {}) {
     return sanitizeRun(resolved)
   }
 
+  function resolvedPartialContinuation(db, runId) {
+    const resolvedRun = runById(db, runId)
+    if (!resolvedRun || resolvedRun.state !== STATES.RECONCILED_PARTIAL) return null
+    const continuation = runById(db, resolvedRun.continuationRunId)
+    const scheduler = db.feishuSyncScheduler || {}
+    const commitMarkers = db.feishuSyncCommitMarkers || {}
+    let verifiedEvidence
+    let verifiedSourceUnknownSha256
+    try {
+      verifiedEvidence = validatePartialReconciliationEvidence(
+        resolvedRun.reconciliationEvidence,
+        resolvedRun
+      )
+      verifiedSourceUnknownSha256 = sourceUnknownRunIdentityFromResolved(resolvedRun)
+    } catch (error) {
+      throw partialReconciliationFailure()
+    }
+    const expectedRequestKey = partialContinuationRequestKey(
+      runId,
+      resolvedRun.sourceUnknownRunSha256,
+      resolvedRun.reconciliationEvidenceSha256
+    )
+    if (resolvedRun.version !== 3 || resolvedRun.trigger !== 'manual' ||
+        resolvedRun.actorType !== 'manual' || resolvedRun.dryRun !== false ||
+        resolvedRun.errorCode !== 'UNKNOWN_ERROR' ||
+        resolvedRun.externalWritesMayHaveOccurred !== true ||
+        resolvedRun.resolutionCode !== 'PARTIAL_BASE_WRITES_RECONCILED' ||
+        !Number.isSafeInteger(resolvedRun.resolvedAt) || resolvedRun.resolvedAt <= 0 ||
+        resolvedRun.updatedAt !== resolvedRun.resolvedAt ||
+        resolvedRun.sourceUnknownRunSha256 !== verifiedSourceUnknownSha256 ||
+        resolvedRun.reconciliationEvidenceSha256 !== verifiedEvidence.evidenceSha256 ||
+        !validSha256(resolvedRun.continuationSeedSha256) ||
+        db.feishuSyncRuns.filter((run) => run && run.runId === runId).length !== 1 ||
+        db.feishuSyncRuns.filter((run) => run && run.runId === resolvedRun.continuationRunId).length !== 1 ||
+        !continuation || continuation.continuationOfRunId !== runId ||
+        continuation.version !== 3 || continuation.trigger !== 'manual' ||
+        continuation.actorType !== 'manual' || continuation.actorId !== resolvedRun.actorId ||
+        continuation.dryRun !== false || continuation.state !== STATES.QUEUED ||
+        continuation.sourceUnknownRunSha256 !== resolvedRun.sourceUnknownRunSha256 ||
+        continuation.reconciliationEvidenceSha256 !== resolvedRun.reconciliationEvidenceSha256 ||
+        continuation.requestKeySha256 !== expectedRequestKey ||
+        stableSha256(continuation) !== resolvedRun.continuationSeedSha256 ||
+        scheduler.blockedRunId || scheduler.activeLease || scheduler.leaseIntegrityBlockedRunId ||
+        scheduler.lastRunId !== continuation.runId ||
+        commitMarkers[runId] || commitMarkers[continuation.runId]) {
+      throw partialReconciliationFailure()
+    }
+    return {
+      resolvedRun: sanitizeRun(resolvedRun),
+      continuationRun: sanitizeRun(continuation)
+    }
+  }
+
+  function exactPartialUnknownRun(db, runId) {
+    ensureState(db)
+    const run = runById(db, runId)
+    const exactRunCount = db.feishuSyncRuns.filter((item) => item && item.runId === runId).length
+    const scheduler = db.feishuSyncScheduler
+    const commitMarker = db.feishuSyncCommitMarkers && db.feishuSyncCommitMarkers[runId]
+    const resolutionFieldsAbsent = [
+      'continuationRunId',
+      'continuationSeedSha256',
+      'reconciliationEvidence',
+      'reconciliationEvidenceSha256',
+      'resolutionCode',
+      'resolvedAt',
+      'sourceUnknownRunSha256',
+      'sourceUnknownUpdatedAt'
+    ].every((key) => !Object.prototype.hasOwnProperty.call(run || {}, key))
+    const otherUnsafeRun = db.feishuSyncRuns.find((item) => (
+      item && item.runId !== runId && (
+        !TERMINAL_STATES.has(item.state) ||
+        [STATES.UNKNOWN, STATES.BLOCKED].includes(item.state)
+      )
+    ))
+    const exact = exactRunCount === 1 && run && run.version === 3 &&
+      run.state === STATES.UNKNOWN && run.trigger === 'manual' && run.actorType === 'manual' &&
+      run.dryRun === false && run.errorCode === 'UNKNOWN_ERROR' &&
+      run.externalWritesMayHaveOccurred === true &&
+      run.writeIntentEvidenceVersion === 1 &&
+      run.attemptCount === 1 && run.recoveryCount === 0 &&
+      Number.isSafeInteger(run.runNowMs) && run.runNowMs > 0 &&
+      Number.isSafeInteger(run.createdAt) && run.createdAt === run.runNowMs &&
+      Number.isSafeInteger(run.applyIntentAt) && run.applyIntentAt >= run.runNowMs &&
+      Number.isSafeInteger(run.externalWriteIntentAt) &&
+      run.externalWriteIntentAt === run.applyIntentAt &&
+      Number.isSafeInteger(run.finishedAt) && run.finishedAt >= run.externalWriteIntentAt &&
+      Number.isSafeInteger(run.updatedAt) && run.updatedAt === run.finishedAt &&
+      validSha256(run.schemaSha256) && validSha256(run.resourceIdentitySha256) &&
+      validSha256(run.mirrorPlanSha256) && validSha256(run.contentPlanSha256) &&
+      Number.isSafeInteger(run.contentPlanAssetCount) && run.contentPlanAssetCount >= 0 &&
+      !run.lease && !run.commitMarkerSha256 && !commitMarker &&
+      !run.applyResultSummary && !run.resultSummary &&
+      resolutionFieldsAbsent &&
+      scheduler.blockedRunId === runId && !scheduler.activeLease &&
+      !scheduler.leaseIntegrityBlockedRunId && !otherUnsafeRun
+    if (!exact) throw partialReconciliationFailure()
+    try {
+      normalizeActorId(run.actorId, '')
+    } catch (error) {
+      throw partialReconciliationFailure()
+    }
+    return run
+  }
+
+  function partialUnknownIdentity(run) {
+    return stableSha256(run)
+  }
+
+  async function resolveAndEnqueueReconciledPartial(runIdInput) {
+    assertWriteLockEnabled()
+    const runId = normalizeRunId(runIdInput)
+    const initialDb = clone(dbStore.readDb())
+    ensureState(initialDb)
+    const alreadyResolved = resolvedPartialContinuation(initialDb, runId)
+    if (alreadyResolved) return alreadyResolved
+    const frozenRun = clone(exactPartialUnknownRun(initialDb, runId))
+    const frozenBusinessSha256 = stableSha256(businessSnapshot(initialDb))
+    if (typeof feishuSync.reconcilePartialBaseWrites !== 'function') {
+      throw partialReconciliationFailure()
+    }
+
+    let evidence
+    try {
+      evidence = validatePartialReconciliationEvidence(
+        await feishuSync.reconcilePartialBaseWrites(businessSnapshot(initialDb), {
+          externalWriteIntentAt: frozenRun.externalWriteIntentAt,
+          expectedMirrorPlanSha256: frozenRun.mirrorPlanSha256,
+          expectedResourceIdentitySha256: frozenRun.resourceIdentitySha256,
+          expectedSchemaSha256: frozenRun.schemaSha256,
+          runId: frozenRun.runId,
+          runNowMs: frozenRun.runNowMs
+        }),
+        frozenRun
+      )
+    } catch (error) {
+      throw partialReconciliationFailure()
+    }
+
+    let resolved = null
+    dbStore.updateDb((db) => {
+      ensureState(db)
+      const concurrentResolution = resolvedPartialContinuation(db, runId)
+      if (concurrentResolution) {
+        resolved = concurrentResolution
+        return
+      }
+      const currentRun = exactPartialUnknownRun(db, runId)
+      if (partialUnknownIdentity(currentRun) !== partialUnknownIdentity(frozenRun)) {
+        throw partialReconciliationFailure()
+      }
+      if (stableSha256(businessSnapshot(db)) !== frozenBusinessSha256) {
+        throw partialReconciliationFailure()
+      }
+      const confirmedEvidence = validatePartialReconciliationEvidence(evidence, currentRun)
+      const atMs = Number(now())
+      if (!Number.isSafeInteger(atMs) || atMs <= currentRun.externalWriteIntentAt) {
+        throw partialReconciliationFailure()
+      }
+      const continuationRunId = nextRunId()
+      if (runById(db, continuationRunId)) throw partialReconciliationFailure()
+      const sourceUnknownRunSha256 = stableSha256(frozenRun)
+      const requestKeySha256 = partialContinuationRequestKey(
+        runId,
+        sourceUnknownRunSha256,
+        confirmedEvidence.evidenceSha256
+      )
+      const continuation = {
+        version: 3,
+        runId: continuationRunId,
+        state: STATES.QUEUED,
+        trigger: 'manual',
+        dryRun: false,
+        actorType: 'manual',
+        actorId: normalizeActorId(currentRun.actorId, ''),
+        bucket: null,
+        requestKeySha256,
+        continuationOfRunId: runId,
+        sourceUnknownRunSha256,
+        reconciliationEvidenceSha256: confirmedEvidence.evidenceSha256,
+        runNowMs: atMs,
+        createdAt: atMs,
+        updatedAt: atMs,
+        attemptCount: 0,
+        recoveryCount: 0,
+        externalWritesMayHaveOccurred: false,
+        writeIntentEvidenceVersion: 1,
+        lease: null,
+        errorCode: ''
+      }
+      currentRun.state = STATES.RECONCILED_PARTIAL
+      currentRun.resolutionCode = 'PARTIAL_BASE_WRITES_RECONCILED'
+      currentRun.resolvedAt = atMs
+      currentRun.updatedAt = atMs
+      currentRun.reconciliationEvidenceSha256 = confirmedEvidence.evidenceSha256
+      currentRun.reconciliationEvidence = clone(confirmedEvidence)
+      currentRun.continuationRunId = continuationRunId
+      currentRun.sourceUnknownRunSha256 = sourceUnknownRunSha256
+      currentRun.sourceUnknownUpdatedAt = frozenRun.updatedAt
+      currentRun.continuationSeedSha256 = stableSha256(continuation)
+      db.feishuSyncRuns.unshift(continuation)
+      db.feishuSyncScheduler.blockedRunId = ''
+      db.feishuSyncScheduler.lastRunId = continuationRunId
+      trimRuns(db, maxRuns)
+      resolved = {
+        resolvedRun: sanitizeRun(currentRun),
+        continuationRun: sanitizeRun(continuation)
+      }
+    })
+    if (!resolved) throw partialReconciliationFailure()
+    return resolved
+  }
+
   function claim(runId, workerId) {
     assertWriteLockEnabled()
     const atMs = Number(now())
@@ -1433,6 +1773,7 @@ function createFeishuSyncWorker(dependencies = {}) {
     run,
     recover,
     resolveLegacyPrewriteDigestUnknown,
+    resolveAndEnqueueReconciledPartial,
     getStatus,
     status: getStatus
   }
@@ -1451,6 +1792,7 @@ module.exports = {
     sanitizeRun,
     sanitizeSchemaBindings,
     markerMatches,
+    validatePartialReconciliationEvidence,
     safeErrorCode
   }
 }

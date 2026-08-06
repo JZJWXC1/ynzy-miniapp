@@ -179,6 +179,78 @@ function stableDigestValue(value, fieldType) {
   }).sort((left, right) => left.file_token.localeCompare(right.file_token))
 }
 
+function rebuildValidatedTableSnapshot(snapshot, records, options = {}) {
+  const source = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    ? snapshot
+    : null
+  if (!source || !Array.isArray(records) || !Array.isArray(source.schemaBindings)) {
+    throw new Error('飞书快照摘要重建缺少完整 snapshot、records 或 schemaBindings')
+  }
+  if (typeof options.includeCreatedTime !== 'boolean') {
+    throw new Error('飞书快照摘要重建 includeCreatedTime 必须是布尔值')
+  }
+  const types = new Map()
+  source.schemaBindings.forEach((binding) => {
+    const semantic = normalizeFieldId(binding && binding.semantic)
+    const type = normalizeFieldType(binding && binding.type)
+    if (!semantic || !type || types.has(semantic)) {
+      throw new Error('飞书快照摘要重建的字段类型绑定不完整或重复')
+    }
+    types.set(semantic, type)
+  })
+  if (!types.size) throw new Error('飞书快照摘要重建缺少字段类型绑定')
+
+  const seenRecordIds = new Set()
+  const normalizedRecords = records.map((record) => {
+    const recordId = normalizeFieldId(record && record.recordId)
+    const fields = record && record.fields && typeof record.fields === 'object' &&
+      !Array.isArray(record.fields)
+      ? record.fields
+      : null
+    if (!recordId || !fields || seenRecordIds.has(recordId)) {
+      throw new Error('飞书快照摘要重建存在无效或重复 recordId')
+    }
+    seenRecordIds.add(recordId)
+    const normalized = {
+      recordId,
+      fields: Object.keys(fields).sort().reduce((result, semantic) => {
+        if (!types.has(semantic)) {
+          throw new Error(`飞书快照摘要重建缺少字段类型绑定：${semantic}`)
+        }
+        result[semantic] = fields[semantic]
+        return result
+      }, {})
+    }
+    if (Object.prototype.hasOwnProperty.call(record, 'createdTimeMs')) {
+      normalized.createdTimeMs = normalizePositiveIntegerMillis(
+        record.createdTimeMs,
+        `飞书记录 ${recordId} createdTimeMs`
+      )
+    }
+    return normalized
+  })
+  const digestRecords = normalizedRecords.map((record) => {
+    const digestRecord = {
+      recordId: record.recordId,
+      fields: Object.keys(record.fields).sort().reduce((result, semantic) => {
+        result[semantic] = stableDigestValue(record.fields[semantic], types.get(semantic))
+        return result
+      }, {})
+    }
+    if (options.includeCreatedTime === true && record.createdTimeMs !== undefined) {
+      digestRecord.createdTimeMs = record.createdTimeMs
+    }
+    return digestRecord
+  }).sort((left, right) => left.recordId.localeCompare(right.recordId))
+
+  return {
+    ...source,
+    records: normalizedRecords,
+    recordCount: normalizedRecords.length,
+    digest: sha256(digestRecords)
+  }
+}
+
 function normalizeCellValue(value, fieldType, semantic, recordId, required) {
   const normalizedType = String(fieldType)
   if (required !== true && isEmptyRequiredValue(value)) {
@@ -513,17 +585,6 @@ function createBitableClient(options) {
       throw new Error('飞书源表为空，已阻断同步')
     }
 
-    const digestRecords = records.map((record) => {
-      const digestRecord = {
-        recordId: record.recordId,
-        fields: Object.keys(record.fields).sort().reduce((result, semantic) => {
-          result[semantic] = stableDigestValue(record.fields[semantic], contract.bySemantic[semantic].type)
-          return result
-        }, {})
-      }
-      if (record.createdTimeMs !== undefined) digestRecord.createdTimeMs = record.createdTimeMs
-      return digestRecord
-    }).sort((left, right) => left.recordId.localeCompare(right.recordId))
     const fieldNames = Object.keys(contract.bySemantic).sort().reduce((result, semantic) => {
       result[semantic] = contract.bySemantic[semantic].fieldName
       return result
@@ -533,11 +594,8 @@ function createBitableClient(options) {
       fieldName: contract.bySemantic[semantic].fieldName,
       type: contract.bySemantic[semantic].type
     }))
-    return {
+    return rebuildValidatedTableSnapshot({
       complete: true,
-      records,
-      recordCount: records.length,
-      digest: sha256(digestRecords),
       schemaFingerprint: contract.schemaFingerprint,
       schemaBindings,
       ...(normalizedCreatedTimeCutoffMs == null
@@ -546,7 +604,7 @@ function createBitableClient(options) {
       // 飞书记录写接口仍以当前显示名为 fields 键；该映射每轮由稳定 field_id
       // 重新解析，员工改列名不会让镜像写回绑到同名诱饵列。
       fieldNames
-    }
+    }, records, { includeCreatedTime: requireCreatedTime })
   }
 
   function validateBatchRecords(records, operation) {
@@ -673,5 +731,8 @@ function createBitableClient(options) {
 
 module.exports = {
   validateFieldContract,
-  createBitableClient
+  createBitableClient,
+  _internal: {
+    rebuildValidatedTableSnapshot
+  }
 }
