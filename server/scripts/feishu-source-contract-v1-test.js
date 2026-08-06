@@ -15,6 +15,15 @@ const BINDINGS = Object.freeze({
   video: { fieldId: 'fld-video-canonical', type: 17, required: false }
 })
 
+const SEMANTIC_DIGEST_BINDINGS = Object.freeze({
+  requiredName: { fieldId: 'fld-required-name', type: 1, required: true },
+  requiredTags: { fieldId: 'fld-required-tags', type: 4, required: true },
+  optionalText: { fieldId: 'fld-optional-text', type: 1, required: false },
+  optionalNumber: { fieldId: 'fld-optional-number', type: 2, required: false },
+  optionalTags: { fieldId: 'fld-optional-tags', type: 4, required: false },
+  optionalVideo: { fieldId: 'fld-optional-video', type: 17, required: false }
+})
+
 function response(status, body) {
   return {
     ok: status >= 200 && status < 300,
@@ -106,6 +115,56 @@ function makeRenameSafeFetch({ canonicalName, communityValue, videoValue, rentVa
   }
   fetchImpl.calls = calls
   return fetchImpl
+}
+
+function makeSemanticDigestFetch(values = {}) {
+  return async (url) => {
+    const parsed = new URL(String(url))
+    if (parsed.pathname.endsWith('/fields')) {
+      return success({
+        items: [
+          field('fld-required-name', '房源名称', 1),
+          field('fld-required-tags', '必填标签', 4),
+          field('fld-optional-text', '可选文本', 1),
+          field('fld-optional-number', '可选数字', 2),
+          field('fld-optional-tags', '可选标签', 4),
+          field('fld-optional-video', '可选视频', 17)
+        ],
+        has_more: false
+      })
+    }
+    if (parsed.pathname.endsWith('/records')) {
+      const requiredName = Object.prototype.hasOwnProperty.call(values, 'requiredName')
+        ? values.requiredName
+        : '风雅乐府 1 幢 101'
+      const requiredTags = Object.prototype.hasOwnProperty.call(values, 'requiredTags')
+        ? values.requiredTags
+        : ['基础标签']
+      return success({
+        items: [{
+          record_id: 'rec-semantic-digest',
+          fields: {
+            房源名称: requiredName,
+            必填标签: requiredTags,
+            可选文本: values.optionalText,
+            可选数字: values.optionalNumber,
+            可选标签: values.optionalTags,
+            可选视频: values.optionalVideo
+          }
+        }],
+        has_more: false
+      })
+    }
+    throw new Error(`测试触达了非预期接口：${parsed.pathname}`)
+  }
+}
+
+async function readSemanticDigestSnapshot(values) {
+  return makeClient(makeSemanticDigestFetch(values)).readValidatedTableSnapshot({
+    tableId: 'tbl-semantic-digest',
+    bindings: SEMANTIC_DIGEST_BINDINGS,
+    allowEmpty: false
+  })
 }
 
 async function testFieldIdSurvivesDisplayRename() {
@@ -220,6 +279,98 @@ async function testAttachmentDigestIgnoresTemporaryMetadata() {
   })).readValidatedTableSnapshot({ tableId: 'tbl-source', bindings: BINDINGS, allowEmpty: false })
   assert.notDeepStrictEqual(first.records[0].fields.video, second.records[0].fields.video, '测试前置必须真的改变附件临时元数据')
   assert.strictEqual(first.digest, second.digest, '完整快照摘要只能依赖稳定 file_token，不能被 tmp_url、文件名或大小制造假变化')
+}
+
+async function testSemanticDigestNormalizesOptionalEmptyAndMultiSelectValues() {
+  const emptyRepresentations = [undefined, null, '', [], {}]
+  const emptySnapshots = []
+  for (const emptyValue of emptyRepresentations) {
+    emptySnapshots.push(await readSemanticDigestSnapshot({
+      optionalText: emptyValue,
+      optionalNumber: emptyValue,
+      optionalTags: emptyValue,
+      optionalVideo: emptyValue
+    }))
+  }
+
+  const expectedEmptyFields = {
+    optionalNumber: '',
+    optionalTags: [],
+    optionalText: '',
+    optionalVideo: [],
+    requiredName: '风雅乐府 1 幢 101',
+    requiredTags: ['基础标签']
+  }
+  emptySnapshots.forEach((snapshot) => {
+    assert.deepStrictEqual(
+      snapshot.records[0].fields,
+      expectedEmptyFields,
+      '可选空值必须按字段类型归一，不能把飞书物理空表示泄漏给业务规划器'
+    )
+    assert.strictEqual(
+      snapshot.digest,
+      emptySnapshots[0].digest,
+      'undefined/null/空字符串/空数组/空对象必须得到同一语义摘要'
+    )
+  })
+
+  await expectReject(
+    () => readSemanticDigestSnapshot({ requiredName: [], optionalTags: [] }),
+    /必填|requiredName|为空/i,
+    '可选空值归一不得放宽必填字段的逐行校验'
+  )
+  await expectReject(
+    () => readSemanticDigestSnapshot({ requiredTags: ['   ', null] }),
+    /必填|requiredTags|归一后为空/i,
+    '必填多选不能用只有空白项的非空数组绕过校验'
+  )
+
+  const first = await readSemanticDigestSnapshot({
+    optionalText: '  已维护  ',
+    optionalNumber: '3200',
+    optionalTags: [' 带阳台 ', '免押金', '带阳台', ''],
+    optionalVideo: [
+      { file_token: 'video-b', name: 'second.mp4', tmp_url: 'https://temporary.invalid/b' },
+      { file_token: 'video-a', name: 'first.mp4', tmp_url: 'https://temporary.invalid/a' }
+    ]
+  })
+  const reordered = await readSemanticDigestSnapshot({
+    optionalText: '  已维护  ',
+    optionalNumber: 3200,
+    optionalTags: ['免押金', '带阳台'],
+    optionalVideo: [
+      { file_token: 'video-a', name: 'renamed.mp4', size: 999 },
+      { file_token: 'video-b', name: 'renamed-again.mp4', size: 1000 }
+    ]
+  })
+  assert.deepStrictEqual(
+    first.records[0].fields.optionalTags,
+    ['免押金', '带阳台'],
+    '多选字段必须规范文本、过滤空项、去重并稳定排序'
+  )
+  assert.strictEqual(first.digest, reordered.digest, '多选顺序/重复项与附件顺序/临时元数据不得制造假漂移')
+
+  const changed = await readSemanticDigestSnapshot({
+    optionalText: '  已维护  ',
+    optionalNumber: 3200,
+    optionalTags: ['免押金', '带阳台', '燃气'],
+    optionalVideo: [
+      { file_token: 'video-a' },
+      { file_token: 'video-b' }
+    ]
+  })
+  assert.notStrictEqual(changed.digest, first.digest, '真实非空业务值变化必须继续改变摘要')
+
+  const changedAttachment = await readSemanticDigestSnapshot({
+    optionalText: '  已维护  ',
+    optionalNumber: 3200,
+    optionalTags: ['免押金', '带阳台'],
+    optionalVideo: [
+      { file_token: 'video-a' },
+      { file_token: 'video-c' }
+    ]
+  })
+  assert.notStrictEqual(changedAttachment.digest, first.digest, '真实附件 file_token 变化必须继续改变摘要')
 }
 
 async function testNumberFieldStringReadbackNormalizesAtContractBoundary() {
@@ -471,6 +622,92 @@ async function testOnlyIdempotentWritesRetry() {
     '未携带幂等令牌的批量新增响应未知时必须停止自动重放'
   )
   assert.strictEqual(createWithoutTokenCalls, 1, '无 client_token 的批量新增只能发送一次')
+}
+
+async function testWriteDispatchCallbackRunsSynchronouslyBeforeFirstPost() {
+  const events = []
+  const fetchImpl = async (url, options = {}) => {
+    assert.strictEqual(events[events.length - 1], 'dispatch', 'POST 前必须已经同步记录写派发意图')
+    events.push('fetch')
+    const body = JSON.parse(options.body)
+    return success({ records: body.records })
+  }
+  const client = makeClient(fetchImpl)
+  assert.strictEqual(client.writeDispatchEvidenceVersion, 1, '目标 Base 客户端必须声明精确写派发证据版本')
+  const clientToken = '123e4567-e89b-42d3-a456-426614174000'
+  const onWriteDispatched = (evidence) => {
+    assert.deepStrictEqual(events, [], '写派发回调触发时底层 fetch 必须尚未执行')
+    assert.deepStrictEqual(
+      evidence,
+      { operation: '新增', tableId: 'tbl-mini-only', recordCount: 1, clientToken },
+      '写派发回调必须提供本批次的最小稳定证据'
+    )
+    events.push('dispatch')
+  }
+  await client.batchCreateRecords(
+    'tbl-mini-only',
+    [{ fields: { 小区: '风雅乐府' } }],
+    { clientToken, onWriteDispatched }
+  )
+  assert.deepStrictEqual(events, ['dispatch', 'fetch'], '写派发回调与真正 POST 的顺序必须稳定')
+
+  let blockedFetches = 0
+  let blockedCallbacks = 0
+  const blockedClient = makeClient(async () => {
+    blockedFetches += 1
+    return success({ records: [] })
+  })
+  const countCallback = () => { blockedCallbacks += 1 }
+
+  await assert.rejects(
+    () => blockedClient.batchCreateRecords('tbl-mini-only', [{ fields: {} }], {
+      clientToken: 'not-a-uuid',
+      onWriteDispatched: countCallback
+    }),
+    /UUIDv4|client_token/i
+  )
+  await assert.rejects(
+    () => blockedClient.batchUpdateRecords('tbl-mini-only', [{ fields: {} }], {
+      clientToken,
+      onWriteDispatched: countCallback
+    }),
+    /record_id/i
+  )
+  assert.deepStrictEqual(
+    await blockedClient.batchCreateRecords('tbl-mini-only', [], { clientToken, onWriteDispatched: countCallback }),
+    [],
+    '空批次必须直接返回且不产生写派发意图'
+  )
+  assert.strictEqual(blockedCallbacks, 0, '参数、批次、client_token 校验完成前以及空批次都不得触发回调')
+  assert.strictEqual(blockedFetches, 0, '所有写前阻断场景都不得触发 fetch')
+
+  await assert.rejects(
+    () => blockedClient.batchCreateRecords('tbl-mini-only', [{ fields: { 小区: '甲' } }], {
+      clientToken,
+      onWriteDispatched: () => { throw new Error('synthetic write-intent persistence failure') }
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '同步回调抛错必须统一标记为可安全中止的写前错误'
+  )
+  await assert.rejects(
+    () => blockedClient.batchCreateRecords('tbl-mini-only', [{ fields: { 小区: '乙' } }], {
+      clientToken,
+      onWriteDispatched: async () => {}
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '异步 Promise 回调无法证明意图先落盘，必须失败关闭'
+  )
+  await assert.rejects(
+    () => blockedClient.batchCreateRecords('tbl-mini-only', [{ fields: { 小区: '丙' } }], {
+      clientToken,
+      onWriteDispatched: 'not-a-function'
+    }),
+    /onWriteDispatched|函数/i,
+    '非函数回调必须在网络前阻断'
+  )
+  assert.strictEqual(blockedFetches, 0, '回调抛错、异步回调和非法回调都不得派发 POST')
 }
 
 function makePagedFetch(recordPageHandler) {
@@ -1156,6 +1393,7 @@ async function main() {
   await testFieldIdSurvivesDisplayRename()
   await testExpectedSchemaFingerprintStopsBeforeRecordRead()
   await testAttachmentDigestIgnoresTemporaryMetadata()
+  await testSemanticDigestNormalizesOptionalEmptyAndMultiSelectValues()
   await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()
   await testRecordCreatedTimeContract()
@@ -1163,6 +1401,7 @@ async function main() {
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()
   await testBatchWriteRequestContract()
+  await testWriteDispatchCallbackRunsSynchronouslyBeforeFirstPost()
   await testOnlyIdempotentWritesRetry()
   await testResponseBodyTimeoutCoversWholeRequest()
   testEnvironmentBindingParserRejectsStringBoolean()

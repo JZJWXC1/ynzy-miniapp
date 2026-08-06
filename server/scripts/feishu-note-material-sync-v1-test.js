@@ -13,7 +13,8 @@ const {
   assertIsolatedStatePaths,
   assertMaterialSetEquality,
   stableAssetId,
-  syncNoteMaterialVideos
+  syncNoteMaterialVideos,
+  syncNoteMaterialsForInventory
 } = noteMaterialSync
 
 function syntheticAssets() {
@@ -519,6 +520,174 @@ async function testExactExternalWriteDispatchBoundary() {
     disposePreparedMaterial: async () => {}
   }
 
+  const exactDispatchOrder = []
+  const exactResult = await syncNoteMaterialVideos({
+    ...common,
+    onExternalWriteDispatched() {
+      exactDispatchOrder.push('outer')
+    },
+    drive: {
+      writeDispatchEvidenceVersion: 1,
+      downloadToken,
+      async ensureListingFolder() { return { token: 'fld-exact-dispatch-target' } },
+      async materializeAsset(input) {
+        input.onWriteDispatched()
+        exactDispatchOrder.push('drive-write')
+        input.onWriteVerified()
+        return {
+          targetToken: 'file-exact-dispatch-target',
+          targetName: input.targetName,
+          contentType: input.sourceEvidence.contentType,
+          contentSha256: input.sourceEvidence.contentSha256,
+          size: input.sourceEvidence.size,
+          verified: true
+        }
+      }
+    },
+    oss: {
+      writeDispatchEvidenceVersion: 1,
+      async putMaterialDeterministic(input) {
+        input.onWriteDispatched()
+        exactDispatchOrder.push('oss-write')
+        input.onWriteVerified()
+        return {
+          objectKey: input.objectKey,
+          contentSha256: input.contentSha256,
+          size: input.size,
+          verified: true
+        }
+      }
+    }
+  })
+  assert.strictEqual(exactResult.counts.transferred, 1, '精确证据适配器应完成一件素材传输')
+  assert.deepStrictEqual(
+    exactDispatchOrder,
+    ['outer', 'drive-write', 'outer', 'oss-write'],
+    'Drive/OSS 精确写派发必须先同步通知外层，再进入适配器的实际写动作'
+  )
+
+  let exactWriteCalls = 0
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      onExternalWriteDispatched() {
+        throw new Error('synthetic outer write-intent persistence failed')
+      },
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder() { return { token: 'fld-exact-outer-failure' } },
+        async materializeAsset(input) {
+          input.onWriteDispatched()
+          exactWriteCalls += 1
+          throw new Error('外层写意图落盘失败后不得执行 Drive 写入')
+        }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '外层写意图回调失败必须被标记为可安全中止的写前错误'
+  )
+  assert.strictEqual(exactWriteCalls, 0, '外层写意图未落盘时不得越过精确派发回调执行实际 Drive 写入')
+
+  let asyncBoundaryWriteCalls = 0
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      onExternalWriteDispatched: async () => {},
+      drive: {
+        writeDispatchEvidenceVersion: 1,
+        downloadToken,
+        async ensureListingFolder() { return { token: 'fld-async-boundary' } },
+        async materializeAsset(input) {
+          input.onWriteDispatched()
+          asyncBoundaryWriteCalls += 1
+          throw new Error('异步外层回调后不得执行 Drive 写入')
+        }
+      },
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '异步外层回调无法证明先落盘，必须在适配器真实写入前失败关闭'
+  )
+  assert.strictEqual(asyncBoundaryWriteCalls, 0)
+
+  const conservativeDriveFailure = new Error('synthetic conservative drive intent failed')
+  let conservativeDriveCalls = 0
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      ...common,
+      onExternalWriteDispatched() {
+        throw conservativeDriveFailure
+      },
+      drive: {
+        downloadToken,
+        async ensureListingFolder() {
+          conservativeDriveCalls += 1
+          throw new Error('保守 Drive 适配器不得在外层写意图失败后执行')
+        },
+        async materializeAsset() { throw new Error('不得进入素材写入') }
+      },
+      oss: {
+        async putMaterialDeterministic() { throw new Error('不得进入 OSS 写入') }
+      }
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '没有精确证据的 Drive 适配器必须在可能写方法调用前同步通知外层'
+  )
+  assert.strictEqual(conservativeDriveCalls, 0, '保守 Drive 写意图未落盘时不得调用可能写方法')
+
+  let noWriteNotifications = 0
+  const dryPlan = await syncNoteMaterialVideos({
+    ...common,
+    dryRun: true,
+    onExternalWriteDispatched() {
+      noWriteNotifications += 1
+    },
+    drive: {
+      writeDispatchEvidenceVersion: 1,
+      downloadToken,
+      async ensureListingFolder() { throw new Error('dry-run 不得访问目标目录') },
+      async materializeAsset() { throw new Error('dry-run 不得写 Drive') }
+    },
+    oss: {
+      writeDispatchEvidenceVersion: 1,
+      async putMaterialDeterministic() { throw new Error('dry-run 不得写 OSS') }
+    }
+  })
+  assert.strictEqual(noWriteNotifications, 0, 'dry-run 不得通知外层发生写派发')
+  const reused = await syncNoteMaterialVideos({
+    ...common,
+    existingMediaAssets: dryPlan.mediaAssets,
+    onExternalWriteDispatched() {
+      noWriteNotifications += 1
+    },
+    drive: {
+      writeDispatchEvidenceVersion: 1,
+      downloadToken,
+      async ensureListingFolder() { return { token: 'fld-reused-read-only-target' } },
+      async materializeAsset() { throw new Error('复用素材不得写 Drive') }
+    },
+    oss: {
+      writeDispatchEvidenceVersion: 1,
+      async putMaterialDeterministic() { throw new Error('复用素材不得写 OSS') }
+    },
+    async verifyExisting() {
+      return { sourceVerified: true, driveVerified: true, ossVerified: true }
+    }
+  })
+  assert.strictEqual(reused.counts.reused, 1, '已存在且回读一致的素材必须走复用链路')
+  assert.strictEqual(noWriteNotifications, 0, '复用与纯读取链路不得通知外层发生写派发')
+
   await assert.rejects(
     () => syncNoteMaterialVideos({
       ...common,
@@ -620,6 +789,79 @@ async function testExactExternalWriteDispatchBoundary() {
     (error) => error && error.code !== 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN' && error.statusCode === 503,
     'Drive 复用成功后 OSS 纯读取预检失败且零 PUT 时仍必须保持可延期错误'
   )
+}
+
+async function testInventoryForwardsExternalWriteDispatchBoundary() {
+  const listing = {
+    id: 'listing-inventory-write-boundary',
+    feishuRecordId: 'record-inventory-write-boundary',
+    status: '上架',
+    district: '拱墅区',
+    block: '新天地',
+    community: '测试小区',
+    building: '1幢',
+    unit: '1单元',
+    roomNumber: '101',
+    mediaAssets: []
+  }
+  const sourceBuffer = Buffer.from('inventory-write-boundary-source')
+  const outerFailure = new Error('synthetic inventory outer write-intent failure')
+  let outerNotifications = 0
+  let possibleWriteCalls = 0
+  await assert.rejects(
+    () => syncNoteMaterialsForInventory({
+    db: { users: [], listings: [listing] },
+    sourceRows: [{
+      sourceRecordId: listing.feishuRecordId,
+      value: 'https://example.test/drive/folder/fldInventoryBoundary123'
+    }],
+    allowedHosts: ['example.test'],
+    uploadDir: 'house-videos',
+    onExternalWriteDispatched() {
+      outerNotifications += 1
+      throw outerFailure
+    },
+    drive: {
+      async listFolder() {
+        return [{
+          token: 'fileInventoryBoundary123',
+          name: '看房视频.mp4',
+          type: 'file',
+          modifiedTime: '10',
+          size: sourceBuffer.length
+        }]
+      },
+      async downloadToken() {
+        return {
+          buffer: Buffer.from(sourceBuffer),
+          contentType: 'video/mp4',
+          contentSha256: crypto.createHash('sha256').update(sourceBuffer).digest('hex'),
+          size: sourceBuffer.length
+        }
+      },
+      async ensureListingFolder() {
+        possibleWriteCalls += 1
+        throw new Error('外层写意图失败后库存链路不得调用可能写方法')
+      },
+      async materializeAsset() {
+        possibleWriteCalls += 1
+        throw new Error('不得进入 Drive 素材写入')
+      }
+    },
+    oss: {
+      async putMaterialDeterministic() {
+        possibleWriteCalls += 1
+        throw new Error('不得进入 OSS 素材写入')
+      }
+    },
+    nowText: '2026-08-06T00:00:00.000Z'
+    }),
+    (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+      error.safeBeforeWrite === true,
+    '库存链路必须把写意图持久化失败提升为整轮致命写前错误'
+  )
+  assert.strictEqual(outerNotifications, 1, '库存入口必须把外层写意图回调传递到逐套素材同步')
+  assert.strictEqual(possibleWriteCalls, 0, '库存入口的外层写意图未落盘时不得调用任何可能写适配器')
 }
 
 function successfulPreparedMaterialTargets(writeCalls, outputBuffer) {
@@ -1212,6 +1454,7 @@ async function run() {
   await testStreamingMaterialClient()
   await testPreparedMaterialFailureDisposal()
   await testExactExternalWriteDispatchBoundary()
+  await testInventoryForwardsExternalWriteDispatchBoundary()
   await testPreparedMaterialFinallyDisposalRetry()
   await testConfirmedFormalSyncStreamsOneCompressedFileOnce()
   assert.strictEqual(domain.MAX_LISTING_MEDIA_ASSETS, 64, '单套房源视频素材安全上限必须固定为 64')

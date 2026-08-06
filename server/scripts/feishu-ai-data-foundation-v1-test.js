@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('assert')
+const crypto = require('crypto')
 
 const config = require('../src/config')
 const feishuSync = require('../src/feishu-sync')
@@ -356,6 +357,7 @@ function makeLifecycleClients(options = {}) {
   }
 
   const targetClient = {
+    writeDispatchEvidenceVersion: 1,
     async readValidatedTableSnapshot(readOptions) {
       calls.push({ client: 'target', action: 'read', tableId: readOptions.tableId })
       if (readOptions.tableId === tableIds.location) return locationSnapshot()
@@ -375,6 +377,9 @@ function makeLifecycleClients(options = {}) {
       )
     },
     async batchCreateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') {
+        writeOptions.onWriteDispatched()
+      }
       calls.push({
         client: 'target',
         action: 'create',
@@ -422,7 +427,10 @@ function makeLifecycleClients(options = {}) {
       }
       return clone(created)
     },
-    async batchUpdateRecords(tableId, records) {
+    async batchUpdateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') {
+        writeOptions.onWriteDispatched()
+      }
       calls.push({
         client: 'target',
         action: 'update',
@@ -1064,8 +1072,12 @@ async function testEmptyTemplateCannotPoisonNoteMaterialSync() {
 
 async function testApplyWritesOnlyTargetClient() {
   const clients = makeLifecycleClients()
+  let writeIntentCount = 0
   const result = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
-    dryRun: false
+    dryRun: false,
+    onExternalWriteDispatched() {
+      writeIntentCount += 1
+    }
   }))
 
   assert.ok(/^success(?:-|$)/.test(result.status), '正式数据底座同步必须完成写后回读')
@@ -1085,6 +1097,11 @@ async function testApplyWritesOnlyTargetClient() {
     call.client === 'target' && ['create', 'update', 'delete'].includes(call.action)
   ))
   assert.ok(targetWrites.length >= 1, '正式同步必须真实走目标客户端写入当前状态或流水')
+  assert.strictEqual(
+    writeIntentCount,
+    targetWrites.length,
+    '每个目标 Base 写请求都必须先上报精确外部写意图'
+  )
   targetWrites.forEach((call) => {
     assert.ok(
       ['tbl-mini', 'tbl-rented', 'tbl-history'].includes(call.tableId),
@@ -1099,6 +1116,32 @@ async function testApplyWritesOnlyTargetClient() {
     targetWrites.some((call) => call.tableId === 'tbl-history'),
     '首次正式同步必须写目标状态流水表'
   )
+
+  const unsupported = makeLifecycleClients()
+  delete unsupported.targetClient.writeDispatchEvidenceVersion
+  let unsupportedIntents = 0
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync(executeOptions(unsupported, {
+      dryRun: false,
+      onExternalWriteDispatched() { unsupportedIntents += 1 }
+    })),
+    (error) => error && error.code === 'TARGET_WRITE_DISPATCH_EVIDENCE_REQUIRED',
+    'worker 正式链路不得接受无法证明写派发时点的目标 Base 适配器'
+  )
+  assert.deepStrictEqual(unsupported.calls, [], '证据能力缺失必须在读取或写入任何表前失败关闭')
+  assert.strictEqual(unsupportedIntents, 0)
+
+  const invalidCallback = makeLifecycleClients()
+  await assert.rejects(
+    () => feishuSync._internal.executeMirrorTableSync(executeOptions(invalidCallback, {
+      dryRun: false,
+      onExternalWriteDispatched: 'not-a-function'
+    })),
+    (error) => error && error.code === 'EXTERNAL_WRITE_DISPATCH_CALLBACK_INVALID' &&
+      error.safeBeforeWrite === true,
+    '非法写派发回调必须在读取或写入任何表前失败关闭'
+  )
+  assert.deepStrictEqual(invalidCallback.calls, [])
 }
 
 async function testLegacyProfileCannotEraseFoundationFields() {
@@ -2289,6 +2332,127 @@ function testRentedReappearanceHistoryKeepsOrderAfterPartialRetry() {
   )
 }
 
+async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
+  const configKeys = [
+    'noteMaterialSyncEnabled',
+    'sourceCompatibilityProfile',
+    'noteMaterialFieldId',
+    'noteMaterialTargetRootFolderToken',
+    'noteMaterialAllowedHosts',
+    'folderToken'
+  ]
+  const savedConfig = Object.fromEntries(configKeys.map((key) => [key, config.feishu[key]]))
+  const sourceBuffer = Buffer.from('mirror-material-intent-source')
+  const outputBuffer = Buffer.from('mirror-material-intent-output')
+  const sourceSha256 = crypto.createHash('sha256').update(sourceBuffer).digest('hex')
+  const outputSha256 = crypto.createHash('sha256').update(outputBuffer).digest('hex')
+  const profileText = 'mirror-material-intent-profile-v1'
+  const prepareMaterial = async () => ({
+    buffer: Buffer.from(outputBuffer),
+    sourceContentSha256: sourceSha256,
+    sourceSize: sourceBuffer.length,
+    sourceMimeType: 'video/mp4',
+    kind: 'video',
+    extension: 'mp4',
+    contentSha256: outputSha256,
+    size: outputBuffer.length,
+    contentType: 'video/mp4',
+    transformProfileVersion: profileText,
+    transformProfileSha256: crypto.createHash('sha256').update(profileText).digest('hex'),
+    transformToolFingerprint: crypto.createHash('sha256').update('synthetic-tool').digest('hex'),
+    transformAction: 'compress'
+  })
+  prepareMaterial.profile = {
+    transformProfileVersion: profileText,
+    transformProfileSha256: crypto.createHash('sha256').update(profileText).digest('hex'),
+    transformToolFingerprint: crypto.createHash('sha256').update('synthetic-tool').digest('hex')
+  }
+  let possibleWrites = 0
+  try {
+    Object.assign(config.feishu, {
+      noteMaterialSyncEnabled: true,
+      sourceCompatibilityProfile: PROFILE,
+      noteMaterialFieldId: 'fldNoteMaterialTest123',
+      noteMaterialTargetRootFolderToken: 'fldTargetRootTest123',
+      noteMaterialAllowedHosts: ['example.test'],
+      folderToken: 'fldLegacyRootTest123'
+    })
+    await assert.rejects(
+      () => feishuSync._internal.syncMirrorNoteMaterials(
+        {
+          users: [],
+          listings: [{
+            id: 'listing-material-intent',
+            feishuRecordId: 'record-material-intent',
+            status: '上架',
+            district: '拱墅区',
+            block: '新天地',
+            community: '测试小区',
+            building: '1幢',
+            unit: '1单元',
+            roomNumber: '101',
+            mediaAssets: []
+          }]
+        },
+        {
+          sourceNoteMaterials: [{
+            sourceRecordId: 'record-material-intent',
+            value: 'https://example.test/drive/folder/fldSourceMaterial123'
+          }]
+        },
+        {
+          dryRun: false,
+          prepareMaterial,
+          onExternalWriteDispatched() {
+            throw new Error('synthetic write-intent persistence failure')
+          },
+          noteMaterialDrive: {
+            async listFolder() {
+              return [{
+                token: 'fileMaterialIntent123',
+                name: '看房视频.mp4',
+                type: 'file',
+                modifiedTime: '10',
+                size: sourceBuffer.length
+              }]
+            },
+            async downloadToken() {
+              return {
+                buffer: Buffer.from(sourceBuffer),
+                contentType: 'video/mp4',
+                contentSha256: sourceSha256,
+                size: sourceBuffer.length
+              }
+            },
+            async ensureListingFolder() {
+              possibleWrites += 1
+              throw new Error('写意图持久化失败后不得调用 Drive 写方法')
+            },
+            async materializeVideo() {
+              possibleWrites += 1
+              throw new Error('不得进入 Drive 素材写入')
+            },
+            async verifyMaterializedVideo() { return true }
+          },
+          noteMaterialOss: {
+            async putVideoDeterministic() {
+              possibleWrites += 1
+              throw new Error('不得进入 OSS 素材写入')
+            },
+            async verifyVideoDeterministic() { return true }
+          }
+        }
+      ),
+      (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+        error.safeBeforeWrite === true,
+      '素材总同步层不得把写意图持久化失败降级为普通 pipeline-failed 报告'
+    )
+    assert.strictEqual(possibleWrites, 0, '写意图未落盘时不得调用任何可能写适配器')
+  } finally {
+    Object.assign(config.feishu, savedConfig)
+  }
+}
+
 async function main() {
   const failures = []
   const cases = [
@@ -2301,6 +2465,7 @@ async function main() {
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
     ['源表实时校验时钟与批次截止分离', testSourceSnapshotSeparatesCutoffFromLiveValidationClock],
     ['全空模板不污染房源笔记素材同步', testEmptyTemplateCannotPoisonNoteMaterialSync],
+    ['素材写意图落盘失败整轮中止', testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded],
     ['正式写只走目标客户端', testApplyWritesOnlyTargetClient],
     ['旧 profile 回退不清空底座字段', testLegacyProfileCannotEraseFoundationFields],
     ['出租归档幂等与重新进入待租', testArchiveIdempotencyAndReappearance],

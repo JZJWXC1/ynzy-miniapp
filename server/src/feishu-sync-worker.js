@@ -80,6 +80,10 @@ const SAFE_MESSAGES = Object.freeze({
   RESOURCE_IDENTITY_MISMATCH: '目标资源身份摘要与批准版本不一致',
   SCHEMA_DIGEST_MISSING: '预演未返回完整字段契约摘要',
   SCHEMA_DIGEST_MISMATCH: '字段契约摘要与批准版本不一致',
+  MIRROR_SCHEMA_CHANGED: '正式写入前字段契约发生变化',
+  MIRROR_PLAN_CHANGED: '正式写入前源数据或镜像计划发生变化',
+  MIRROR_RESOURCE_CHANGED: '正式写入前目标资源身份发生变化',
+  MIRROR_PREFLIGHT_FAILED: '正式镜像只读预检未形成完整摘要',
   MIRROR_PLAN_DIGEST_MISSING: '预演未返回完整镜像计划摘要',
   RESOURCE_IDENTITY_DIGEST_MISSING: '预演未返回完整目标资源身份摘要',
   CONTENT_PLAN_DIGEST_MISSING: '预演未返回完整素材计划摘要',
@@ -96,7 +100,10 @@ const SAFE_MESSAGES = Object.freeze({
   DB_WRITE_LOCK_REQUIRED: '数据库跨进程写锁未启用，已安全阻断同步',
   WORKER_MIRROR_MODE_REQUIRED: '自动同步未启用字段契约明确的镜像模式',
   WORKER_NOTE_MATERIAL_MODE_REQUIRED: '自动同步未启用配置完整的房源笔记素材管线',
+  TARGET_WRITE_DISPATCH_EVIDENCE_REQUIRED: '目标 Base 客户端缺少精确写派发证据',
+  EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED: '外部写入意图未能在写请求前持久化，已安全中止',
   WORKER_CONFIGURATION_INVALID: '同步工作器配置不完整',
+  LEGACY_PREWRITE_EVIDENCE_MISMATCH: '旧任务写前证据不完整，拒绝解除未知态',
   UNKNOWN_ERROR: '同步异常，详细信息仅保留在受控服务日志中'
 })
 
@@ -422,6 +429,10 @@ function sanitizeRun(run) {
     recoveryCount: Math.max(0, Number(run.recoveryCount || 0)),
     fence: Math.max(0, Number(run.lease && run.lease.fence || run.lastFence || 0)),
     externalWritesMayHaveOccurred: run.externalWritesMayHaveOccurred === true,
+    writeIntentEvidenceVersion: Number.isSafeInteger(Number(run.writeIntentEvidenceVersion))
+      ? Number(run.writeIntentEvidenceVersion)
+      : null,
+    externalWriteIntentAt: Number(run.externalWriteIntentAt || 0) || null,
     resourceIdentitySha256: validSha256(run.resourceIdentitySha256)
       ? run.resourceIdentitySha256
       : '',
@@ -432,6 +443,7 @@ function sanitizeRun(run) {
       ? run.contentPlanAssetCount
       : null,
     resolvedAt: Number(run.resolvedAt || 0) || null,
+    resolutionCode: safeErrorCode({ code: run.resolutionCode || '' }, ''),
     errorCode: safeErrorCode({ code: run.errorCode || '' }, ''),
     message: run.errorCode ? safeErrorMessage(run.errorCode) : '',
     result: run.resultSummary ? clone(run.resultSummary) : null,
@@ -800,7 +812,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       const runId = suppliedRunId || nextRunId()
       if (runById(db, runId)) throw new WorkerError('WORKER_CONFIGURATION_INVALID', 'runId 已存在')
       const run = {
-        version: 2,
+        version: 3,
         runId,
         state: STATES.QUEUED,
         trigger,
@@ -817,6 +829,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         attemptCount: 0,
         recoveryCount: 0,
         externalWritesMayHaveOccurred: false,
+        writeIntentEvidenceVersion: 1,
         lease: null,
         errorCode: ''
       }
@@ -940,6 +953,68 @@ function createFeishuSyncWorker(dependencies = {}) {
     assertWriteLockEnabled()
     dbStore.updateDb((db) => reconcileInDb(db, Number(now())))
     return getStatus()
+  }
+
+  function resolveLegacyPrewriteDigestUnknown(input = {}) {
+    assertWriteLockEnabled()
+    const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+    const exactKeys = [
+      'evidenceContract',
+      'expectedErrorCode',
+      'expectedMirrorPlanSha256',
+      'runId'
+    ]
+    const receivedKeys = Object.keys(source).sort()
+    const evidenceValid = JSON.stringify(receivedKeys) === JSON.stringify(exactKeys) &&
+      source.evidenceContract === 'worker-v2-mirror-digest-before-first-write-v1' &&
+      source.expectedErrorCode === 'MIRROR_PLAN_CHANGED' &&
+      validSha256(source.expectedMirrorPlanSha256)
+    if (!evidenceValid) {
+      throw new WorkerError('LEGACY_PREWRITE_EVIDENCE_MISMATCH')
+    }
+    const runId = normalizeRunId(source.runId)
+    let resolved = null
+    dbStore.updateDb((db) => {
+      ensureState(db)
+      const run = runById(db, runId)
+      const scheduler = db.feishuSyncScheduler
+      const commitMarker = db.feishuSyncCommitMarkers && db.feishuSyncCommitMarkers[runId]
+      const exactLegacyPrewriteEvidence = run &&
+        Number(run.version) === 2 &&
+        run.state === STATES.UNKNOWN &&
+        run.dryRun !== true &&
+        run.errorCode === source.expectedErrorCode &&
+        run.mirrorPlanSha256 === source.expectedMirrorPlanSha256 &&
+        run.externalWritesMayHaveOccurred === true &&
+        Number.isSafeInteger(Number(run.applyIntentAt)) && Number(run.applyIntentAt) > 0 &&
+        !Number(run.externalWriteIntentAt || 0) &&
+        !Number(run.writeIntentEvidenceVersion || 0) &&
+        Number(run.attemptCount) === 1 &&
+        Number(run.recoveryCount || 0) === 0 &&
+        !run.lease &&
+        !run.commitMarkerSha256 &&
+        !commitMarker &&
+        !run.applyResultSummary &&
+        !run.resultSummary &&
+        scheduler.blockedRunId === runId &&
+        !scheduler.activeLease
+      if (!exactLegacyPrewriteEvidence) {
+        throw new WorkerError('LEGACY_PREWRITE_EVIDENCE_MISMATCH')
+      }
+      const atMs = Number(now())
+      run.state = STATES.FAILED_BEFORE_WRITE
+      run.externalWritesMayHaveOccurred = false
+      run.resolutionCode = 'LEGACY_MIRROR_DIGEST_PREWRITE_CONFIRMED'
+      run.resolvedAt = atMs
+      run.updatedAt = atMs
+      scheduler.blockedRunId = ''
+      const unresolved = db.feishuSyncRuns.find((item) => (
+        item && item.runId !== runId && [STATES.UNKNOWN, STATES.BLOCKED].includes(item.state)
+      ))
+      if (unresolved) scheduler.blockedRunId = unresolved.runId
+      resolved = clone(run)
+    })
+    return sanitizeRun(resolved)
   }
 
   function claim(runId, workerId) {
@@ -1164,13 +1239,6 @@ function createFeishuSyncWorker(dependencies = {}) {
         run.dryResultSummary = summarizeResult(dryResult)
       })
 
-      // 先持久化“外部写入可能已发生”，再进入任何正式同步调用；进程此后中断只能进入 UNKNOWN。
-      mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY], (run) => {
-        run.state = STATES.APPLYING
-        run.externalWritesMayHaveOccurred = true
-        run.applyIntentAt = Number(now())
-      })
-
       let applyBase
       try {
         applyBase = businessSnapshot(dbStore.readDb())
@@ -1178,6 +1246,19 @@ function createFeishuSyncWorker(dependencies = {}) {
         throw markSafeBeforeWrite(error, 'SOURCE_READ_FAILED')
       }
       const nextDb = clone(applyBase)
+      // 正式函数允许先执行只读复验。只有 Base、Drive 或 OSS 即将派发首个真实写请求时，
+      // 适配器才同步调用此门；门先原子持久化，失败则抛错并阻止外部请求发出。
+      const onExternalWriteDispatched = () => {
+        if (heartbeat.lost()) throw new WorkerError('LEASE_LOST', '', { safeBeforeWrite: true })
+        mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], (run, db, atMs) => {
+          if (run.externalWritesMayHaveOccurred === true) return
+          run.state = STATES.APPLYING
+          run.externalWritesMayHaveOccurred = true
+          run.applyIntentAt = atMs
+          run.externalWriteIntentAt = atMs
+          run.writeIntentEvidenceVersion = 1
+        })
+      }
       const applyResult = await feishuSync.sync(nextDb, actorId, {
         dryRun: false,
         syncController: 'worker-v2',
@@ -1188,17 +1269,18 @@ function createFeishuSyncWorker(dependencies = {}) {
         expectedResourceIdentitySha256: digests.resourceIdentitySha256,
         expectedMirrorPlanSha256: digests.mirrorPlanSha256,
         expectedContentPlanSha256: digests.contentPlanSha256,
-        expectedContentAssetCount: digests.contentPlanAssetCount
+        expectedContentAssetCount: digests.contentPlanAssetCount,
+        onExternalWriteDispatched
       })
       if (heartbeat.lost()) throw new WorkerError('LEASE_LOST')
-      mutateClaimed(runId, claimInfo, [STATES.APPLYING], () => true)
+      mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], () => true)
       const applyValidation = validateApplyResult(applyResult, digests)
       const applyWarningCode = applyValidation.committableMaterialWarning
         ? 'MATERIALS_PARTIAL_FAILURE'
         : ''
 
       let marker = null
-      mutateClaimed(runId, claimInfo, [STATES.APPLYING], (run, db, atMs) => {
+      mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], (run, db, atMs) => {
         run.state = STATES.COMMITTING
         run.applyResultSummary = summarizeResult(applyResult)
         marker = makeCommitMarker(run, claimInfo, atMs)
@@ -1299,6 +1381,7 @@ function createFeishuSyncWorker(dependencies = {}) {
     runNext,
     run,
     recover,
+    resolveLegacyPrewriteDigestUnknown,
     getStatus,
     status: getStatus
   }

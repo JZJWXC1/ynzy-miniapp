@@ -19,7 +19,8 @@ const {
   recallContentPlanConfirmation,
   isContentPlanConfirmationError,
   isKnownMaterialRowWarningReport,
-  isExternalWriteStateUnknownError
+  isExternalWriteStateUnknownError,
+  isExternalWriteIntentPersistenceError
 } = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
 const {
@@ -3680,7 +3681,21 @@ function canonicalMirrorRecordToSyncRow(record, index) {
   }
 }
 
-async function createSemanticRecords(targetClient, tableId, snapshot, operations) {
+function externalWriteOptions(options = {}) {
+  if (options.onExternalWriteDispatched != null &&
+      typeof options.onExternalWriteDispatched !== 'function') {
+    const error = new Error('外部写派发回调必须是同步函数')
+    error.code = 'EXTERNAL_WRITE_DISPATCH_CALLBACK_INVALID'
+    error.statusCode = 400
+    error.safeBeforeWrite = true
+    throw error
+  }
+  return typeof options.onExternalWriteDispatched === 'function'
+    ? { onWriteDispatched: options.onExternalWriteDispatched }
+    : {}
+}
+
+async function createSemanticRecords(targetClient, tableId, snapshot, operations, options = {}) {
   // batch_create 只有一个 client_token。若把多条业务记录合在同一个随机批次，
   // “服务端已落盘但响应丢失”后下一进程无法稳定重建同一批次，可能重复建行。
   // 因此创建阶段按业务幂等键逐条提交；吞吐让位于跨进程确定性。
@@ -3688,20 +3703,21 @@ async function createSemanticRecords(targetClient, tableId, snapshot, operations
     await targetClient.batchCreateRecords(tableId, [{
       fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
     }], {
-      clientToken: stableCreateClientToken(tableId, operation)
+      clientToken: stableCreateClientToken(tableId, operation),
+      ...externalWriteOptions(options)
     })
   }
 }
 
-async function writeFoundationCurrentRecords(targetClient, tableId, snapshot, operations) {
+async function writeFoundationCurrentRecords(targetClient, tableId, snapshot, operations, options = {}) {
   const creates = operations.filter((operation) => operation.type === 'create')
   const updates = operations.filter((operation) => operation.type !== 'create')
-  await createSemanticRecords(targetClient, tableId, snapshot, creates)
+  await createSemanticRecords(targetClient, tableId, snapshot, creates, options)
   for (const batch of chunksOf(updates)) {
     await targetClient.batchUpdateRecords(tableId, batch.map((operation) => ({
       record_id: operation.recordId,
       fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
-    })))
+    })), externalWriteOptions(options))
   }
 }
 
@@ -4371,13 +4387,15 @@ async function executeAiFoundationSync({
     targetClient,
     options.rentedTableId,
     rentedSnapshot,
-    plan.archiveOperations
+    plan.archiveOperations,
+    options
   )
   await createSemanticRecords(
     targetClient,
     options.historyTableId,
     historySnapshot,
-    historyOperations
+    historyOperations,
+    options
   )
 
   const rentedReadback = await targetClient.readValidatedTableSnapshot({
@@ -4421,7 +4439,8 @@ async function executeAiFoundationSync({
     targetClient,
     options.miniTableId,
     mirrorSnapshot,
-    plan.operations
+    plan.operations,
+    options
   )
   const mirrorReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
@@ -4463,7 +4482,8 @@ async function executeAiFoundationSync({
       targetClient,
       options.historyTableId,
       historyReadback,
-      [baselineMarkerOperation]
+      [baselineMarkerOperation],
+      options
     )
     finalHistorySnapshot = await targetClient.readValidatedTableSnapshot({
       tableId: options.historyTableId,
@@ -4556,6 +4576,15 @@ async function executeMirrorTableSync(options = {}) {
   }
   if (!targetClient || typeof targetClient.readValidatedTableSnapshot !== 'function') {
     throw new Error('飞书镜像同步缺少小程序目标 Base 只读客户端')
+  }
+  externalWriteOptions(options)
+  if (options.dryRun !== true && typeof options.onExternalWriteDispatched === 'function' &&
+      targetClient.writeDispatchEvidenceVersion !== 1) {
+    const error = new Error('飞书目标 Base 客户端缺少精确写派发证据')
+    error.code = 'TARGET_WRITE_DISPATCH_EVIDENCE_REQUIRED'
+    error.statusCode = 503
+    error.safeBeforeWrite = true
+    throw error
   }
   const nowMs = options.nowMs == null ? Date.now() : Number(options.nowMs)
   if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('飞书同步 nowMs 必须是正整数毫秒时间戳')
@@ -4681,7 +4710,8 @@ async function executeMirrorTableSync(options = {}) {
     await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
       fields: semanticFieldsForWrite(writableFieldNames, operation.fields, { full: true })
     })), {
-      clientToken: crypto.randomUUID()
+      clientToken: crypto.randomUUID(),
+      ...externalWriteOptions(options)
     })
   }
   for (const batch of chunksOf(updates)) {
@@ -4690,7 +4720,7 @@ async function executeMirrorTableSync(options = {}) {
       fields: semanticFieldsForWrite(writableFieldNames, operation.fields, {
         full: operation.type !== 'deactivate'
       })
-    })))
+    })), externalWriteOptions(options))
   }
 
   const readback = await targetClient.readValidatedTableSnapshot({
@@ -5091,7 +5121,8 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedContentPlanSha256: options.expectedContentPlanSha256,
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
-      expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence
+      expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
+      onExternalWriteDispatched: options.onExternalWriteDispatched
     })
     emptyPlan.skipped = true
     return emptyPlan
@@ -5168,6 +5199,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
       expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
+      onExternalWriteDispatched: options.onExternalWriteDispatched,
       mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
       replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
         workingDb,
@@ -5180,6 +5212,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       )
     })
   } catch (error) {
+    if (isExternalWriteIntentPersistenceError(error)) throw error
     const externalWriteStateUnknown = isExternalWriteStateUnknownError(error)
     const status = externalWriteStateUnknown
       ? 'external-write-state-unknown'

@@ -691,6 +691,19 @@ function isExternalWriteStateUnknownError(error) {
   ))
 }
 
+function externalWriteIntentPersistenceError() {
+  const error = new Error('房源笔记素材写入意图未能在外部写请求前持久化')
+  error.name = 'ExternalWriteIntentPersistenceError'
+  error.code = 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED'
+  error.statusCode = 503
+  error.safeBeforeWrite = true
+  return error
+}
+
+function isExternalWriteIntentPersistenceError(error) {
+  return Boolean(error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED')
+}
+
 function expectedContentPlanFromInput(input = {}) {
   const verificationDryRun = input.dryRun === true && input.verifyExpectedContentPlan === true
   if (input.contentPlanConfirmationRequired !== true ||
@@ -1255,6 +1268,10 @@ function cloneMediaAsset(asset) {
 }
 
 async function syncNoteMaterialVideos(input = {}) {
+  if (input.onExternalWriteDispatched != null &&
+      typeof input.onExternalWriteDispatched !== 'function') {
+    throw new Error('房源笔记 onExternalWriteDispatched 必须是同步函数')
+  }
   const sourceRecordId = normalizeText(input.sourceRecordId)
   if (!sourceRecordId) throw new Error('房源笔记素材同步缺少 sourceRecordId')
   if (!Array.isArray(input.assets)) throw new Error('房源笔记素材同步缺少素材数组')
@@ -1284,6 +1301,21 @@ async function syncNoteMaterialVideos(input = {}) {
     input.oss && input.oss.writeDispatchEvidenceVersion === 1
   )
   const markExternalWriteDispatched = () => {
+    // 外层工作器必须先把“写请求即将离开本进程”原子落盘；该回调若失败，
+    // 适配器收到异常后不得继续真实写入，因此只能在外层通知成功后标记未知态。
+    if (typeof input.onExternalWriteDispatched === 'function') {
+      try {
+        const result = input.onExternalWriteDispatched()
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(() => {})
+          throw new Error('房源笔记 onExternalWriteDispatched 必须同步完成，不得返回 Promise')
+        }
+      } catch (_) {
+        // 仍处于真实 Drive/OSS 请求之前。统一改写为可识别的写前错误，
+        // 让库存层和总同步层整轮中止，不能降级成“某一行素材失败”后继续提交。
+        throw externalWriteIntentPersistenceError()
+      }
+    }
     externalWriteDispatched = true
   }
   const markExternalWriteVerified = () => {
@@ -1390,7 +1422,7 @@ async function syncNoteMaterialVideos(input = {}) {
     if (!input.drive || typeof input.drive.ensureListingFolder !== 'function') {
       throw new Error('房源笔记素材同步缺少 Drive 写后回读适配器')
     }
-    if (!driveHasExactWriteDispatchEvidence) externalWriteDispatched = true
+    if (!driveHasExactWriteDispatchEvidence) markExternalWriteDispatched()
     targetFolder = await input.drive.ensureListingFolder({
       parentFolderToken: input.targetRootFolderToken,
       sourceRecordId,
@@ -1550,7 +1582,7 @@ async function syncNoteMaterialVideos(input = {}) {
       writeEvidence = validatedWriteEvidence.writeEvidence
       const usesPreparedFile = validatedWriteEvidence.usesPreparedFile
       await ensureTargetFolder()
-      if (!driveHasExactWriteDispatchEvidence) externalWriteDispatched = true
+      if (!driveHasExactWriteDispatchEvidence) markExternalWriteDispatched()
       const driveResult = await materializeAsset.call(input.drive, {
         asset: plan.asset,
         targetFolderToken: targetFolder.token,
@@ -1580,7 +1612,7 @@ async function syncNoteMaterialVideos(input = {}) {
       else ossWriteInput.buffer = writeEvidence.buffer
       ossWriteInput.onWriteDispatched = markExternalWriteDispatched
       ossWriteInput.onWriteVerified = markExternalWriteVerified
-      if (!ossHasExactWriteDispatchEvidence) externalWriteDispatched = true
+      if (!ossHasExactWriteDispatchEvidence) markExternalWriteDispatched()
       const saved = await putMaterialDeterministic.call(input.oss, ossWriteInput)
       if (!saved || saved.verified !== true || normalizeText(saved.objectKey) !== plan.objectKey ||
           normalizeText(saved.contentSha256) !== normalizeText(driveResult.contentSha256) ||
@@ -2280,6 +2312,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           openPreparedFile: input.openPreparedFile,
           disposePreparedMaterial: input.disposePreparedMaterial,
           verifySource: input.verifySource,
+          onExternalWriteDispatched: input.onExternalWriteDispatched,
           requireStreamingSource: input.requireStreamingSource === true,
           dryRun: input.dryRun === true,
           verifyExpectedContentPlan: input.verifyExpectedContentPlan === true,
@@ -2367,7 +2400,9 @@ async function syncNoteMaterialsForInventory(input = {}) {
       } catch (error) {
         // 确认预检后的内容漂移是整轮安全门，不得降级为普通素材失败后清空/沿用，
         // 更不得继续处理后续行并产生部分 Drive/OSS 写入。
-        if (isContentPlanConfirmationError(error) || isExternalWriteStateUnknownError(error)) throw error
+        if (isContentPlanConfirmationError(error) ||
+            isExternalWriteStateUnknownError(error) ||
+            isExternalWriteIntentPersistenceError(error)) throw error
         if (mediaAssetsStateConflict(error) ||
             (input.dryRun !== true &&
               typeof input.mediaAssetsStateKey === 'function' &&
@@ -2471,6 +2506,7 @@ module.exports = {
     buildContentPlanSummary,
     isKnownMaterialRowWarningReport,
     isExternalWriteStateUnknownError,
+    isExternalWriteIntentPersistenceError,
     contentPlanConfirmationFromReport,
     rememberContentPlanConfirmation,
     recallContentPlanConfirmation,

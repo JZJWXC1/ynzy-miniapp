@@ -143,8 +143,34 @@ function isEmptyRequiredValue(value) {
   return false
 }
 
+function stableTextValue(value, semantic, recordId) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+    throw new Error(`飞书记录 ${recordId} 的多选字段 ${semantic} 类型无效`)
+  }
+  return String(value).normalize('NFKC').trim().replace(/\s+/g, ' ')
+}
+
+function normalizeMultiSelectValue(value, semantic, recordId) {
+  if (!Array.isArray(value)) {
+    throw new Error(`飞书记录 ${recordId} 的多选字段 ${semantic} 必须是数组`)
+  }
+  return [...new Set(value.map((item) => stableTextValue(item, semantic, recordId)).filter(Boolean))]
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+}
+
+function normalizedOptionalEmptyValue(fieldType) {
+  return ['4', '17'].includes(String(fieldType)) ? [] : ''
+}
+
 function stableDigestValue(value, fieldType) {
-  if (String(fieldType) !== '17' || value === undefined || value === null || value === '') return value
+  const normalizedType = String(fieldType)
+  if (normalizedType === '4') {
+    return Array.isArray(value)
+      ? [...new Set(value)].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+      : value
+  }
+  if (normalizedType !== '17' || value === undefined || value === null || value === '') return value
   const attachments = Array.isArray(value) ? value : [value]
   return attachments.map((attachment) => {
     const token = normalizeFieldId(attachment && (attachment.file_token || attachment.token || attachment.obj_token))
@@ -153,8 +179,13 @@ function stableDigestValue(value, fieldType) {
   }).sort((left, right) => left.file_token.localeCompare(right.file_token))
 }
 
-function normalizeCellValue(value, fieldType, semantic, recordId) {
-  if (String(fieldType) !== '2' || value === undefined || value === null || value === '') return value
+function normalizeCellValue(value, fieldType, semantic, recordId, required) {
+  const normalizedType = String(fieldType)
+  if (required !== true && isEmptyRequiredValue(value)) {
+    return normalizedOptionalEmptyValue(normalizedType)
+  }
+  if (normalizedType === '4') return normalizeMultiSelectValue(value, semantic, recordId)
+  if (normalizedType !== '2' || value === undefined || value === null || value === '') return value
   if (typeof value !== 'number' && typeof value !== 'string') {
     throw new Error(`飞书记录 ${recordId} 的数值字段 ${semantic} 类型无效`)
   }
@@ -448,7 +479,17 @@ function createBitableClient(options) {
         if (contractField.required && isEmptyRequiredValue(value)) {
           throw new Error(`飞书记录 ${recordId} 的必填字段 ${semantic} 为空`)
         }
-        semanticFields[semantic] = normalizeCellValue(value, contractField.type, semantic, recordId)
+        const normalizedValue = normalizeCellValue(
+          value,
+          contractField.type,
+          semantic,
+          recordId,
+          contractField.required
+        )
+        if (contractField.required && isEmptyRequiredValue(normalizedValue)) {
+          throw new Error(`飞书记录 ${recordId} 的必填字段 ${semantic} 归一后为空`)
+        }
+        semanticFields[semantic] = normalizedValue
       })
       const createdTimeMs = normalizeRecordCreatedTime(record, recordId, {
         requireCreatedTime,
@@ -524,48 +565,106 @@ function createBitableClient(options) {
     })
   }
 
-  async function writeBatch(tableId, records, suffix, operation, clientToken) {
+  function validateWriteDispatchCallback(onWriteDispatched) {
+    if (onWriteDispatched == null) return null
+    if (typeof onWriteDispatched !== 'function') {
+      throw new Error('飞书批量写 onWriteDispatched 必须是同步函数')
+    }
+    return onWriteDispatched
+  }
+
+  function writeIntentPersistenceError() {
+    const error = new Error('飞书目标 Base 写入意图未能在 POST 前持久化')
+    error.name = 'ExternalWriteIntentPersistenceError'
+    error.code = 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED'
+    error.statusCode = 503
+    error.safeBeforeWrite = true
+    return error
+  }
+
+  function dispatchWriteIntent(onWriteDispatched, evidence) {
+    if (!onWriteDispatched) return
+    try {
+      const result = onWriteDispatched(Object.freeze(evidence))
+      if (result && typeof result.then === 'function') {
+        // 写意图必须在真正 POST 前同步持久化。异步回调无法证明先后顺序，且其
+        // Promise 即使稍后拒绝也不能让进程产生未处理拒绝，因此在此失败关闭。
+        Promise.resolve(result).catch(() => {})
+        throw new Error('飞书批量写 onWriteDispatched 必须同步完成，不得返回 Promise')
+      }
+    } catch (_) {
+      throw writeIntentPersistenceError()
+    }
+  }
+
+  async function writeBatch(tableId, records, suffix, operation, clientToken, onWriteDispatched) {
     if (config.readOnly) {
       const error = new Error('员工源表客户端为硬只读，禁止任何新增或更新请求')
       error.statusCode = 403
       throw error
     }
     validateBatchRecords(records, operation)
+    const normalizedTableId = safeTableId(tableId)
     if (records.length === 0) return []
-    const url = new URL(endpoint(tableId, suffix))
+    const url = new URL(endpoint(normalizedTableId, suffix))
     const normalizedClientToken = clientToken == null ? '' : String(clientToken).trim()
     if (normalizedClientToken) {
       url.searchParams.set('client_token', normalizedClientToken)
     }
-    const data = await requestJson(url.toString(), {
+    const requestOptions = {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
       body: JSON.stringify({ records })
-    }, `批量${operation}`, Boolean(normalizedClientToken))
+    }
+    dispatchWriteIntent(onWriteDispatched, {
+      operation,
+      tableId: normalizedTableId,
+      recordCount: records.length,
+      clientToken: normalizedClientToken
+    })
+    const data = await requestJson(
+      url.toString(),
+      requestOptions,
+      `批量${operation}`,
+      Boolean(normalizedClientToken)
+    )
     if (!Array.isArray(data.records)) throw new Error(`飞书批量${operation}响应缺少 records`)
     if (data.records.length !== records.length) throw new Error(`飞书批量${operation}响应数量不一致`)
     return data.records
   }
 
-  async function batchCreateRecords(tableId, records, { clientToken } = {}) {
+  async function batchCreateRecords(tableId, records, { clientToken, onWriteDispatched } = {}) {
     if (clientToken != null &&
         !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(clientToken).trim())) {
       throw new Error('飞书批量新增 client_token 必须是 UUIDv4')
     }
-    return writeBatch(tableId, records, 'records/batch_create', '新增', clientToken)
+    const normalizedCallback = validateWriteDispatchCallback(onWriteDispatched)
+    return writeBatch(tableId, records, 'records/batch_create', '新增', clientToken, normalizedCallback)
   }
 
-  async function batchUpdateRecords(tableId, records, { clientToken = crypto.randomUUID() } = {}) {
+  async function batchUpdateRecords(tableId, records, {
+    clientToken = crypto.randomUUID(),
+    onWriteDispatched
+  } = {}) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(clientToken).trim())) {
       throw new Error('飞书批量更新 client_token 必须是 UUIDv4')
     }
+    const normalizedCallback = validateWriteDispatchCallback(onWriteDispatched)
     // batch_update 同样支持 client_token。一次调用只生成一个令牌并在有限重试中固定复用，
     // 因此“远端已提交、响应超时”不会把同一批更新及其自动化副作用重复执行。
-    return writeBatch(tableId, records, 'records/batch_update', '更新', clientToken)
+    return writeBatch(
+      tableId,
+      records,
+      'records/batch_update',
+      '更新',
+      clientToken,
+      normalizedCallback
+    )
   }
 
   return {
     readOnly: config.readOnly,
+    writeDispatchEvidenceVersion: 1,
     readValidatedTableSnapshot,
     batchCreateRecords,
     batchUpdateRecords

@@ -352,14 +352,21 @@ async function testSuccessIsAtomicAndReturnsExpectedDigests() {
       if (options.dryRun) return dryResult()
       assert.strictEqual(
         store.snapshot().feishuSyncRuns[0].externalWritesMayHaveOccurred,
-        true,
-        '任何正式调用前必须先持久化外部写入可能已发生'
+        false,
+        '正式函数可以先做只读预检，首个真实写请求前不得过早标记外部写入'
       )
+      assert.strictEqual(typeof options.onExternalWriteDispatched, 'function')
       assert.strictEqual(options.expectedSchemaSha256, SHA.schema)
       assert.strictEqual(options.expectedResourceIdentitySha256, SHA.resource)
       assert.strictEqual(options.expectedMirrorPlanSha256, SHA.mirror)
       assert.strictEqual(options.expectedContentPlanSha256, SHA.content)
       assert.strictEqual(options.expectedContentAssetCount, 4)
+      options.onExternalWriteDispatched()
+      assert.strictEqual(
+        store.snapshot().feishuSyncRuns[0].externalWritesMayHaveOccurred,
+        true,
+        '首个真实写请求前必须同步持久化精确写意图'
+      )
       db.listings = [{ id: 'L-1', title: '公开房源' }]
       db.companySheetSnapshot = { schemaVersion: 2, rowCount: 1 }
       return applyResult()
@@ -1313,6 +1320,7 @@ async function testApplyExceptionBecomesUnknownAndNeverReplays() {
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
       applyCalls += 1
+      options.onExternalWriteDispatched()
       throw new Error('网关超时，远端是否完成未知')
     }
   })
@@ -1360,6 +1368,7 @@ async function testSafeLabelsCannotDowngradePostIntentFailure() {
         syncCalls += 1
         if (options.dryRun) return dryResult()
         applyCalls += 1
+        options.onExternalWriteDispatched()
         throw variant.makeError()
       }
     })
@@ -1379,6 +1388,33 @@ async function testSafeLabelsCannotDowngradePostIntentFailure() {
     assert.strictEqual(syncCalls, 2, '后续 tick 不得重放 dry 或 apply')
     assert.strictEqual(applyCalls, 1, '后续 tick 绝不得再次进入 apply')
   }
+}
+
+async function testMirrorPlanDriftBeforeWriteIntentIsSafeAndDoesNotBlock() {
+  let applyCalls = 0
+  const { worker, store } = makeWorker({
+    ids: ['run-mirror-prewrite-safe'],
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      applyCalls += 1
+      assert.strictEqual(typeof options.onExternalWriteDispatched, 'function')
+      assert.strictEqual(store.snapshot().feishuSyncRuns[0].state, STATES.READY_TO_APPLY)
+      assert.strictEqual(store.snapshot().feishuSyncRuns[0].externalWritesMayHaveOccurred, false)
+      const error = new Error('飞书镜像源数据或写入计划已变化，已在写入前阻断')
+      error.name = 'MirrorSafetyDigestError'
+      error.code = 'MIRROR_PLAN_CHANGED'
+      error.safeBeforeWrite = true
+      throw error
+    }
+  })
+  const queued = worker.enqueue({ trigger: 'manual' })
+  const failed = await worker.run(queued.runId, { workerId: 'worker-mirror-prewrite-safe' })
+  assert.strictEqual(applyCalls, 1)
+  assert.strictEqual(failed.state, STATES.FAILED_BEFORE_WRITE)
+  assert.strictEqual(failed.errorCode, 'MIRROR_PLAN_CHANGED')
+  assert.strictEqual(failed.externalWritesMayHaveOccurred, false)
+  assert.strictEqual(store.snapshot().feishuSyncScheduler.blockedRunId, '')
+  assert.ok(!store.snapshot().feishuSyncScheduler.activeLease)
 }
 
 async function testCommitFailureKeepsBusinessDbUntouchedAndUnknown() {
@@ -1543,6 +1579,132 @@ async function testRecoveryRules() {
   assert.ok(!store.snapshot().feishuSyncScheduler.activeLease, '恢复只能释放与旧任务 owner/fence 匹配的全局 lease')
 }
 
+function testLegacyMirrorDigestUnknownNeedsExplicitExactResolution() {
+  const nowMs = 1_800_000_000_000
+  const runId = 'feishu-sync-legacy-prewrite-digest'
+  const legacyRun = {
+    version: 2,
+    runId,
+    state: STATES.UNKNOWN,
+    dryRun: false,
+    errorCode: 'MIRROR_PLAN_CHANGED',
+    mirrorPlanSha256: SHA.mirror,
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    contentPlanSha256: SHA.content,
+    contentPlanAssetCount: 4,
+    externalWritesMayHaveOccurred: true,
+    applyIntentAt: nowMs - 10_000,
+    attemptCount: 1,
+    recoveryCount: 0,
+    createdAt: nowMs - 20_000,
+    updatedAt: nowMs - 5_000,
+    finishedAt: nowMs - 5_000,
+    lease: null
+  }
+  const store = createStore({
+    feishuSyncRuns: [legacyRun],
+    feishuSyncScheduler: { blockedRunId: runId },
+    feishuSyncCommitMarkers: {}
+  })
+  const { worker } = makeWorker({
+    store,
+    now: () => nowMs,
+    sync: async () => { throw new Error('显式解阻不得调用同步') }
+  })
+  const evidence = {
+    runId,
+    expectedErrorCode: 'MIRROR_PLAN_CHANGED',
+    expectedMirrorPlanSha256: SHA.mirror,
+    evidenceContract: 'worker-v2-mirror-digest-before-first-write-v1'
+  }
+  assert.throws(
+    () => worker.resolveLegacyPrewriteDigestUnknown({
+      ...evidence,
+      expectedMirrorPlanSha256: 'f'.repeat(64)
+    }),
+    (error) => error && error.code === 'LEGACY_PREWRITE_EVIDENCE_MISMATCH'
+  )
+  assert.strictEqual(store.snapshot().feishuSyncRuns[0].state, STATES.UNKNOWN)
+
+  const resolved = worker.resolveLegacyPrewriteDigestUnknown(evidence)
+  assert.strictEqual(resolved.state, STATES.FAILED_BEFORE_WRITE)
+  assert.strictEqual(resolved.externalWritesMayHaveOccurred, false)
+  assert.strictEqual(store.snapshot().feishuSyncScheduler.blockedRunId, '')
+  const persisted = store.snapshot().feishuSyncRuns[0]
+  assert.strictEqual(persisted.resolutionCode, 'LEGACY_MIRROR_DIGEST_PREWRITE_CONFIRMED')
+  assert.strictEqual(persisted.resolvedAt, nowMs)
+
+  const unsafeCases = [
+    { label: 'version', run: { version: 3 } },
+    { label: 'state', run: { state: STATES.BLOCKED } },
+    { label: 'dry-run', run: { dryRun: true } },
+    { label: 'external-write-flag', run: { externalWritesMayHaveOccurred: false } },
+    { label: 'apply-intent', run: { applyIntentAt: 0 } },
+    { label: 'exact-intent', run: { externalWriteIntentAt: nowMs - 9_000 } },
+    { label: 'intent-evidence', run: { writeIntentEvidenceVersion: 1 } },
+    { label: 'attempt', run: { attemptCount: 2 } },
+    { label: 'recovery', run: { recoveryCount: 1 } },
+    { label: 'run-lease', run: { lease: { owner: 'other', fence: 1, expiresAt: nowMs + 1_000 } } },
+    { label: 'run-marker', run: { commitMarkerSha256: 'a'.repeat(64) } },
+    { label: 'apply-summary', run: { applyResultSummary: { complete: false } } },
+    { label: 'result-summary', run: { resultSummary: { complete: false } } },
+    { label: 'error-code', run: { errorCode: 'APPLY_FAILED' } },
+    { label: 'db-marker', commitMarker: { markerSha256: 'b'.repeat(64) } },
+    { label: 'blocked-run', blockedRunId: 'another-unknown-run' },
+    {
+      label: 'active-lease',
+      activeLease: {
+        runId: 'another-run',
+        owner: 'other',
+        fence: 2,
+        acquiredAt: nowMs - 1_000,
+        expiresAt: nowMs + 1_000
+      }
+    },
+    { label: 'extra-input', evidence: { extra: true } }
+  ]
+  for (const unsafeCase of unsafeCases) {
+    const unsafeRunId = `unsafe-${unsafeCase.label}`
+    const unsafeErrorCode = unsafeCase.run && unsafeCase.run.errorCode || 'MIRROR_PLAN_CHANGED'
+    const unsafeStore = createStore({
+      feishuSyncRuns: [{ ...legacyRun, ...(unsafeCase.run || {}), runId: unsafeRunId }],
+      feishuSyncScheduler: {
+        blockedRunId: unsafeCase.blockedRunId || unsafeRunId,
+        activeLease: unsafeCase.activeLease || null
+      },
+      feishuSyncCommitMarkers: unsafeCase.commitMarker
+        ? { [unsafeRunId]: unsafeCase.commitMarker }
+        : {}
+    })
+    const unsafeWorker = makeWorker({
+      store: unsafeStore,
+      now: () => nowMs,
+      sync: async () => { throw new Error('不安全证据不得调用同步') }
+    }).worker
+    assert.throws(
+      () => unsafeWorker.resolveLegacyPrewriteDigestUnknown({
+        ...evidence,
+        ...(unsafeCase.evidence || {}),
+        runId: unsafeRunId,
+        expectedErrorCode: unsafeErrorCode
+      }),
+      (error) => error && error.code === 'LEGACY_PREWRITE_EVIDENCE_MISMATCH',
+      `旧任务不安全解阻证据必须被拒绝：${unsafeCase.label}`
+    )
+    assert.strictEqual(
+      unsafeStore.snapshot().feishuSyncRuns[0].state,
+      unsafeCase.run && unsafeCase.run.state || STATES.UNKNOWN,
+      '拒绝解阻时必须保持原任务状态'
+    )
+    assert.strictEqual(
+      unsafeStore.snapshot().feishuSyncScheduler.blockedRunId,
+      unsafeCase.blockedRunId || unsafeRunId,
+      '拒绝解阻时必须保持原 scheduler blocker'
+    )
+  }
+}
+
 function testCliAndDailyTimerStayNoopWhenDisabled() {
   const repoRoot = path.join(__dirname, '..', '..')
   const cliPath = path.join(__dirname, 'run-feishu-sync-worker.js')
@@ -1628,9 +1790,11 @@ async function main() {
   await testResourceApprovalAndNarrowAutomaticUnblock()
   await testApplyExceptionBecomesUnknownAndNeverReplays()
   await testSafeLabelsCannotDowngradePostIntentFailure()
+  await testMirrorPlanDriftBeforeWriteIntentIsSafeAndDoesNotBlock()
   await testCommitFailureKeepsBusinessDbUntouchedAndUnknown()
   await testStatusIsSanitized()
   await testRecoveryRules()
+  testLegacyMirrorDigestUnknownNeedsExplicitExactResolution()
   testCliAndDailyTimerStayNoopWhenDisabled()
   console.log('feishu-sync-worker-v2-test passed')
 }
