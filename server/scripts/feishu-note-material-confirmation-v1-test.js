@@ -232,6 +232,8 @@ async function runInventory(fixture, options = {}) {
     expectedContentAssetCount: options.expectedContentAssetCount,
     expectedContentPlanEvidence: options.expectedContentPlanEvidence,
     expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
+    expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
     mediaAssetsStateKey: (current) => sha256(JSON.stringify(current.mediaAssets || [])),
     replaceMediaAssets: async (current, mediaAssets) => {
       fixture.calls.dbWrite += 1
@@ -246,12 +248,16 @@ function confirmationFromReport(report) {
   return noteMaterial._internal.contentPlanConfirmationFromReport(report)
 }
 
-function confirmationForEvidence(evidence) {
-  const summary = noteMaterial._internal.buildContentPlanSummary(evidence)
+function confirmationForEvidence(evidence, sourceFieldPlan) {
+  const effectiveSourceFieldPlan = sourceFieldPlan ||
+    noteMaterial._internal.buildNoteMaterialSourceFieldPlan([])
+  const summary = noteMaterial._internal.buildContentPlanSummary(evidence, [], effectiveSourceFieldPlan)
   return {
     expectedContentPlanSha256: summary.contentPlanSha256,
     expectedContentAssetCount: summary.contentPlanAssetCount,
-    expectedContentPlanEvidence: evidence
+    expectedContentPlanEvidence: evidence,
+    expectedSourceMaterialFieldSha256: effectiveSourceFieldPlan.sourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: effectiveSourceFieldPlan.sourceMaterialFieldRecordCount
   }
 }
 
@@ -380,6 +386,7 @@ function e2eLocationSnapshot() {
 function e2eSyncFixture(options = {}) {
   const inventory = inventoryFixture(options)
   const sourceRecords = e2eSourceRecords(inventory.records)
+  let sourceReadCount = 0
   let mirrorRecords = []
   const baseCalls = []
   const driveWritesBySourceRecord = new Map()
@@ -388,7 +395,11 @@ function e2eSyncFixture(options = {}) {
     async readValidatedTableSnapshot(readOptions) {
       baseCalls.push({ client: 'source', action: 'read', tableId: readOptions.tableId })
       assert.strictEqual(readOptions.tableId, 'tbl-source-confirmation')
-      return e2eSnapshot(sourceRecords)
+      sourceReadCount += 1
+      const effectiveSourceRecords = typeof options.sourceRecordsForRead === 'function'
+        ? options.sourceRecordsForRead(clone(sourceRecords), sourceReadCount)
+        : sourceRecords
+      return e2eSnapshot(effectiveSourceRecords)
     },
     async batchCreateRecords() {
       baseCalls.push({ client: 'source', action: 'create' })
@@ -404,13 +415,15 @@ function e2eSyncFixture(options = {}) {
     }
   }
   const targetClient = {
+    writeDispatchEvidenceVersion: 1,
     async readValidatedTableSnapshot(readOptions) {
       baseCalls.push({ client: 'target', action: 'read', tableId: readOptions.tableId })
       if (readOptions.tableId === 'tbl-location-confirmation') return e2eLocationSnapshot()
       assert.strictEqual(readOptions.tableId, 'tbl-mini-confirmation')
       return e2eSnapshot(mirrorRecords, e2eMirrorFieldNames())
     },
-    async batchCreateRecords(tableId, records) {
+    async batchCreateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
       baseCalls.push({ client: 'target', action: 'create', tableId, count: records.length })
       assert.strictEqual(tableId, 'tbl-mini-confirmation')
       const created = records.map((record, index) => ({
@@ -420,7 +433,8 @@ function e2eSyncFixture(options = {}) {
       mirrorRecords.push(...created)
       return { records: clone(created) }
     },
-    async batchUpdateRecords(tableId, records) {
+    async batchUpdateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
       baseCalls.push({ client: 'target', action: 'update', tableId, count: records.length })
       assert.strictEqual(tableId, 'tbl-mini-confirmation')
       const byId = new Map(mirrorRecords.map((record) => [record.recordId, record]))
@@ -457,6 +471,7 @@ function e2eSyncFixture(options = {}) {
     targetClient,
     baseCalls,
     driveWritesBySourceRecord,
+    getSourceReadCount: () => sourceReadCount,
     getMirrorRecords: () => clone(mirrorRecords)
   }
 }
@@ -780,6 +795,31 @@ async function testInventoryConfirmationBehavior() {
     const fixture = inventoryFixture({
       records: [{
         sourceRecordId: 'source-record-confirm-alpha',
+        folderToken: 'folderSourceConfirmChanged456',
+        assetToken: 'tokenVideoConfirmAlpha123',
+        body: Buffer.from('confirmation-alpha-v1'),
+        mimeType: 'video/mp4'
+      }]
+    })
+    const before = JSON.stringify(fixture.db)
+    await assert.rejects(
+      () => runInventory(fixture, {
+        dryRun: false,
+        contentPlanConfirmationRequired: true,
+        ...confirmation
+      }),
+      (error) => assertConfirmationError(error, '源表房源笔记链接发生变化'),
+      '素材字节相同但源表房源笔记链接变化时必须在任何素材读取或写入前阻断'
+    )
+    assert.strictEqual(fixture.calls.list + fixture.calls.download, 0, '源字段漂移必须在读取 Drive 前阻断')
+    assert.strictEqual(writeCount(fixture.calls), 0, '源字段漂移不得产生 DB/Drive/OSS 写入')
+    assert.strictEqual(JSON.stringify(fixture.db), before, '源字段漂移不得改变工作数据库')
+  }
+
+  {
+    const fixture = inventoryFixture({
+      records: [{
+        sourceRecordId: 'source-record-confirm-alpha',
         folderToken: 'folderSourceConfirmAlpha123',
         assetToken: 'tokenVideoConfirmAlpha123',
         body: Buffer.from('confirmation-alpha-v2'),
@@ -961,7 +1001,10 @@ async function testNormalizedContentConfirmationBehavior() {
     const tamperedEvidence = confirmation.expectedContentPlanEvidence.map((item, index) => (
       index === 0 ? { ...item, [field]: value } : { ...item }
     ))
-    const tamperedConfirmation = confirmationForEvidence(tamperedEvidence)
+    const tamperedConfirmation = confirmationForEvidence(tamperedEvidence, {
+      sourceMaterialFieldSha256: confirmation.expectedSourceMaterialFieldSha256,
+      sourceMaterialFieldRecordCount: confirmation.expectedSourceMaterialFieldRecordCount
+    })
     const state = { calls: 0, preparedBuffers: [] }
     const fixture = inventoryFixture({
       records: dryFixture.records,
@@ -1367,6 +1410,174 @@ async function testActualFeishuSyncEndToEndGate() {
       assert.strictEqual(fixture.db.listings[0].mediaAssets.length, 1, '确认一致后工作 DB 必须原子替换素材清单')
     }
 
+    for (const scenario of [{ name: 'S1 到 B', changeAtSourceRead: 3 }, { name: 'B 到 C', changeAtSourceRead: 4 }]) {
+      const fixture = e2eSyncFixture({
+        sourceRecordsForRead(records, readCount) {
+          if (readCount >= scenario.changeAtSourceRead) {
+            records[0].fields.noteMaterialLink = `https://${HOST}/drive/folder/folderSourceChangedAfterConfirmation456`
+          }
+          return records
+        }
+      })
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-source-field-${scenario.changeAtSourceRead}-human` })
+      )
+      assert.strictEqual(humanDry.success, true, `${scenario.name} 场景必须先取得合法内容计划`)
+      assert.strictEqual(fixture.getSourceReadCount(), 1, '人类 dry-run 必须只读取一次员工源快照')
+      const before = JSON.stringify(fixture.db)
+      await assert.rejects(
+        () => feishuSync.sync(
+          fixture.db,
+          'A-CONFIRM',
+          e2eSyncOptions(fixture, {
+            runId: `${FIXED_RUN_ID}-source-field-${scenario.changeAtSourceRead}-formal`,
+            expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+            expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+          })
+        ),
+        (error) => error && error.code === 'NOTE_MATERIAL_SOURCE_FIELD_CHANGED' && error.safeBeforeWrite === true,
+        `${scenario.name} 的房源笔记源字段漂移必须由真实镜像链在首笔写前阻断`
+      )
+      assert.strictEqual(targetBaseWriteCount(fixture), 0, `${scenario.name} 漂移时目标 Base 必须零写`)
+      assert.strictEqual(fixture.calls.folderWrite, 0, `${scenario.name} 漂移时目标 Drive 目录必须零创建`)
+      assert.strictEqual(fixture.calls.driveWrite, 0, `${scenario.name} 漂移时目标 Drive 文件必须零写`)
+      assert.strictEqual(fixture.calls.ossWrite, 0, `${scenario.name} 漂移时 OSS 必须零写`)
+      assert.strictEqual(JSON.stringify(fixture.db), before, `${scenario.name} 漂移不得改变工作 DB`)
+    }
+
+    {
+      const fixture = e2eSyncFixture({
+        sourceRecordsForRead(records, readCount) {
+          if (readCount >= 2) records[0].fields.monthlyRent = 3900
+          return records
+        }
+      })
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-mirror-refresh-human` })
+      )
+      const frozenPlans = []
+      let writeDispatchCount = 0
+      const formal = await feishuSync.sync(
+        fixture.db,
+        'A-CONFIRM',
+        {
+          ...e2eSyncOptions(fixture, {
+            runId: `${FIXED_RUN_ID}-mirror-refresh-formal`,
+            expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+            expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+          }),
+          syncController: 'worker-v2',
+          expectedSchemaSha256: humanDry.mirror.schemaSha256,
+          expectedResourceIdentitySha256: humanDry.mirror.resourceIdentitySha256,
+          expectedMirrorPlanSha256: humanDry.mirror.mirrorPlanSha256,
+          onApplyPlanFrozen(plan) {
+            frozenPlans.push(clone(plan))
+          },
+          onExternalWriteDispatched() {
+            if (writeDispatchCount === 0) {
+              assert.strictEqual(targetBaseWriteCount(fixture), 0, '首个 Base 写请求前必须先持久化写意图')
+            }
+            writeDispatchCount += 1
+          }
+        }
+      )
+      assert.strictEqual(formal.success, true, '非素材业务字段在慢素材窗口变化后必须按权威 B 正常提交')
+      assert.strictEqual(frozenPlans.length, 1, '临写前权威镜像计划必须且只能冻结一次')
+      assert.notStrictEqual(
+        frozenPlans[0].mirrorPlanSha256,
+        humanDry.mirror.mirrorPlanSha256,
+        '业务字段已变化时 B 必须替换较早的 A 镜像摘要'
+      )
+      assert.strictEqual(formal.mirror.mirrorPlanSha256, frozenPlans[0].mirrorPlanSha256)
+      assert.strictEqual(frozenPlans[0].schemaSha256, humanDry.mirror.schemaSha256)
+      assert.strictEqual(frozenPlans[0].resourceIdentitySha256, humanDry.mirror.resourceIdentitySha256)
+      assert.ok(writeDispatchCount > 0, '正式 Base/Drive/OSS 写阶段必须实际触发写派发回调')
+      assert.strictEqual(fixture.db.listings[0].rent, 3900, '正式库存必须消费 B/C 的最新业务值')
+    }
+
+    {
+      const fixture = e2eSyncFixture()
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-dispatch-failure-human` })
+      )
+      const before = JSON.stringify(fixture.db)
+      await assert.rejects(
+        () => feishuSync.sync(
+          fixture.db,
+          'A-CONFIRM',
+          {
+            ...e2eSyncOptions(fixture, {
+              runId: `${FIXED_RUN_ID}-dispatch-failure-formal`,
+              expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+              expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+            }),
+            syncController: 'worker-v2',
+            expectedSchemaSha256: humanDry.mirror.schemaSha256,
+            expectedResourceIdentitySha256: humanDry.mirror.resourceIdentitySha256,
+            expectedMirrorPlanSha256: humanDry.mirror.mirrorPlanSha256,
+            onApplyPlanFrozen() {},
+            onExternalWriteDispatched() {
+              const error = new Error('合成写意图持久化失败')
+              error.code = 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED'
+              error.safeBeforeWrite = true
+              throw error
+            }
+          }
+        ),
+        (error) => error && error.code === 'EXTERNAL_WRITE_INTENT_PERSISTENCE_FAILED' &&
+          error.safeBeforeWrite === true,
+        '写意图持久化失败必须由真实镜像链在 Base 请求前原样中止'
+      )
+      assert.strictEqual(targetBaseWriteCount(fixture), 0, '写意图回调失败时目标 Base 必须零写')
+      assert.strictEqual(fixture.calls.folderWrite + fixture.calls.driveWrite + fixture.calls.ossWrite, 0)
+      assert.strictEqual(JSON.stringify(fixture.db), before, '写意图回调失败不得改变工作 DB')
+    }
+
+    {
+      const fixture = e2eSyncFixture()
+      const humanDry = await feishuSync.sync(
+        clone(fixture.db),
+        'A-CONFIRM',
+        e2eSyncOptions(fixture, { dryRun: true, runId: `${FIXED_RUN_ID}-async-freeze-human` })
+      )
+      const before = JSON.stringify(fixture.db)
+      await assert.rejects(
+        () => feishuSync.sync(
+          fixture.db,
+          'A-CONFIRM',
+          {
+            ...e2eSyncOptions(fixture, {
+              runId: `${FIXED_RUN_ID}-async-freeze-formal`,
+              expectedContentPlanSha256: humanDry.noteMaterials.contentPlanSha256,
+              expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
+            }),
+            syncController: 'worker-v2',
+            expectedSchemaSha256: humanDry.mirror.schemaSha256,
+            expectedResourceIdentitySha256: humanDry.mirror.resourceIdentitySha256,
+            expectedMirrorPlanSha256: humanDry.mirror.mirrorPlanSha256,
+            onApplyPlanFrozen() {
+              return Promise.reject(new Error('异步冻结不得被接受'))
+            },
+            onExternalWriteDispatched() {
+              throw new Error('异步冻结失败后不得到达写派发门')
+            }
+          }
+        ),
+        (error) => error && error.code === 'MIRROR_PREFLIGHT_FAILED' && error.safeBeforeWrite === true,
+        '异步冻结回调必须被安全吸收并在外部写前拒绝'
+      )
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.strictEqual(targetBaseWriteCount(fixture), 0, '异步冻结回调不得产生目标 Base 写入')
+      assert.strictEqual(fixture.calls.folderWrite + fixture.calls.driveWrite + fixture.calls.ossWrite, 0)
+      assert.strictEqual(JSON.stringify(fixture.db), before, '异步冻结回调不得改变工作 DB')
+    }
+
     {
       const deferredSourceRecordId = 'source-record-confirm-deferred'
       const deferredAssetToken = 'tokenVideoConfirmDeferred123'
@@ -1582,6 +1793,53 @@ async function testActualFeishuSyncEndToEndGate() {
   }
 }
 
+function testSourceFieldPlanDigestIsDeterministicAndComplete() {
+  const buildPlan = noteMaterial._internal.buildNoteMaterialSourceFieldPlan
+  assert.strictEqual(
+    typeof buildPlan,
+    'function',
+    '内容计划必须提供房源笔记源字段集合摘要'
+  )
+  const first = buildPlan([
+    {
+      sourceRecordId: 'source-B',
+      value: { text: '素材 B', link: 'https://tenant.example/drive/folder/folderBBBB1234' }
+    },
+    { sourceRecordId: 'source-A', value: null }
+  ])
+  const reordered = buildPlan([
+    { sourceRecordId: 'source-A', value: undefined },
+    {
+      sourceRecordId: 'source-B',
+      value: { link: 'https://tenant.example/drive/folder/folderBBBB1234', text: '素材 B' }
+    }
+  ])
+  assert.deepStrictEqual(reordered, first, 'API 行顺序、对象键顺序和 undefined/null 空值语义不得改变源字段摘要')
+  assert.match(first.sourceMaterialFieldSha256, /^[0-9a-f]{64}$/)
+  assert.strictEqual(first.sourceMaterialFieldRecordCount, 2)
+
+  const changed = buildPlan([
+    { sourceRecordId: 'source-A', value: null },
+    {
+      sourceRecordId: 'source-B',
+      value: { text: '素材 B', link: 'https://tenant.example/drive/folder/folderCCCC1234?from=changed' }
+    }
+  ])
+  assert.notStrictEqual(changed.sourceMaterialFieldSha256, first.sourceMaterialFieldSha256)
+  assert.notStrictEqual(
+    buildPlan([{ sourceRecordId: 'source-A', value: '' }]).sourceMaterialFieldSha256,
+    buildPlan([{ sourceRecordId: 'source-A', value: 'https://tenant.example/file/fileAAAA1234' }]).sourceMaterialFieldSha256,
+    '空值与非空值互换必须改变源字段摘要'
+  )
+  assert.throws(
+    () => buildPlan([
+      { sourceRecordId: 'duplicate-source', value: null },
+      { sourceRecordId: 'duplicate-source', value: 'https://tenant.example/file/fileAAAA1234' }
+    ]),
+    /重复源记录身份/
+  )
+}
+
 async function testReadOnlyPreflightOrder() {
   assert.strictEqual(
     typeof feishuSync._internal.prepareMirrorContentPlanConfirmation,
@@ -1592,8 +1850,14 @@ async function testReadOnlyPreflightOrder() {
     expectedContentPlanSha256: 'c'.repeat(64),
     expectedContentAssetCount: 2
   }
+  const sourceFieldPlan = noteMaterial._internal.buildNoteMaterialSourceFieldPlan([
+    { sourceRecordId: 'source-confirm-a', value: 'https://tenant.example/file/fileAAAA1234' },
+    { sourceRecordId: 'source-confirm-b', value: '' }
+  ])
   const cachedConfirmation = {
     ...expected,
+    expectedSourceMaterialFieldSha256: sourceFieldPlan.sourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: sourceFieldPlan.sourceMaterialFieldRecordCount,
     expectedContentPlanEvidence: [{
       sourceRecordFingerprint: 'd'.repeat(64),
       assetId: 'MAT-11111111111111111111111111111111',
@@ -1664,6 +1928,34 @@ async function testReadOnlyPreflightOrder() {
     '正式同步只读预检必须精确匹配人类确认'
   )
   assert.strictEqual(formalWriteCount, 0, '预检不匹配时不得进入任何正式写阶段')
+
+  const currentDigests = {
+    schemaSha256: '2'.repeat(64),
+    resourceIdentitySha256: '3'.repeat(64),
+    mirrorPlanSha256: '4'.repeat(64)
+  }
+  for (const scenario of [{
+    field: 'expectedSchemaSha256',
+    code: 'MIRROR_SCHEMA_CHANGED',
+    blocked: true
+  }, {
+    field: 'expectedResourceIdentitySha256',
+    code: 'MIRROR_RESOURCE_CHANGED',
+    blocked: true
+  }, {
+    field: 'expectedMirrorPlanSha256',
+    code: 'MIRROR_PLAN_CHANGED',
+    blocked: false
+  }]) {
+    assert.throws(
+      () => feishuSync._internal.assertMirrorSafetyDigestConfirmation({
+        [scenario.field]: '9'.repeat(64)
+      }, currentDigests),
+      (error) => error && error.code === scenario.code &&
+        (error.blocked === true) === scenario.blocked && error.safeBeforeWrite === true,
+      `${scenario.code} 必须保持正确的写前失败与调度阻断分级`
+    )
+  }
 
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'feishu-sync.js'), 'utf8')
   const start = source.indexOf('async function syncViaMirror')
@@ -2095,6 +2387,7 @@ async function testDeferredMaterialActionsAreBoundAndApplied() {
 }
 
 async function main() {
+  testSourceFieldPlanDigestIsDeterministicAndComplete()
   if (process.env.FEISHU_NOTE_CONFIRM_TEST_SCOPE === 'sync') {
     await testActualFeishuSyncEndToEndGate()
     console.log('feishu-note-material-confirmation-v1-test sync scope passed')

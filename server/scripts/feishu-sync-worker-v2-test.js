@@ -140,6 +140,18 @@ function applyResult(patch = {}) {
   }
 }
 
+function freezeApplyPlan(options, patch = {}) {
+  assert.strictEqual(typeof options.onApplyPlanFrozen, 'function')
+  const frozen = {
+    schemaSha256: SHA.schema,
+    resourceIdentitySha256: SHA.resource,
+    mirrorPlanSha256: SHA.mirror,
+    ...patch
+  }
+  options.onApplyPlanFrozen(frozen)
+  return frozen
+}
+
 function committableMaterialWarningResult(patch = {}) {
   return applyResult({
     success: false,
@@ -361,6 +373,7 @@ async function testSuccessIsAtomicAndReturnsExpectedDigests() {
       assert.strictEqual(options.expectedMirrorPlanSha256, SHA.mirror)
       assert.strictEqual(options.expectedContentPlanSha256, SHA.content)
       assert.strictEqual(options.expectedContentAssetCount, 4)
+      freezeApplyPlan(options)
       options.onExternalWriteDispatched()
       assert.strictEqual(
         store.snapshot().feishuSyncRuns[0].externalWritesMayHaveOccurred,
@@ -399,6 +412,126 @@ async function testSuccessIsAtomicAndReturnsExpectedDigests() {
   assert.ok(!JSON.stringify(worker.getStatus()).includes('admin-1'), '公共任务状态不得输出内部发起人身份')
 }
 
+async function testSlowPreparationFreezesAuthoritativeMirrorBeforeFirstWrite() {
+  const authoritativeMirror = '6'.repeat(64)
+  const { worker, store, commitCalls } = makeWorker({
+    ids: ['run-authoritative-mirror'],
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      assert.strictEqual(
+        typeof options.onApplyPlanFrozen,
+        'function',
+        '正式同步必须提供临写前权威计划冻结回调'
+      )
+      options.onApplyPlanFrozen({
+        schemaSha256: SHA.schema,
+        resourceIdentitySha256: SHA.resource,
+        mirrorPlanSha256: authoritativeMirror
+      })
+      const frozen = store.snapshot().feishuSyncRuns[0]
+      assert.strictEqual(frozen.state, STATES.READY_TO_APPLY)
+      assert.strictEqual(frozen.externalWritesMayHaveOccurred, false)
+      assert.strictEqual(frozen.mirrorPlanSha256, authoritativeMirror)
+      assert.strictEqual(frozen.schemaSha256, SHA.schema)
+      assert.strictEqual(frozen.resourceIdentitySha256, SHA.resource)
+      assert.strictEqual(frozen.contentPlanSha256, SHA.content)
+      assert.strictEqual(frozen.contentPlanAssetCount, 4)
+
+      options.onExternalWriteDispatched()
+      assert.strictEqual(store.snapshot().feishuSyncRuns[0].state, STATES.APPLYING)
+      db.listings = [{ id: 'L-AUTHORITATIVE-MIRROR' }]
+      db.companySheetSnapshot = { schemaVersion: 2, rowCount: 1 }
+      return applyResult({ mirrorPlanSha256: authoritativeMirror })
+    }
+  })
+
+  const queued = worker.enqueue({ trigger: 'manual', actorId: 'admin-authoritative-mirror' })
+  const completed = await worker.run(queued.runId, { workerId: 'worker-authoritative-mirror' })
+  assert.strictEqual(completed.state, STATES.SUCCEEDED)
+  assert.strictEqual(completed.mirrorPlanSha256, authoritativeMirror)
+  assert.strictEqual(commitCalls.length, 1)
+  assert.strictEqual(commitCalls[0].marker.mirrorPlanSha256, authoritativeMirror)
+  assert.strictEqual(store.snapshot().feishuSyncRuns[0].mirrorPlanSha256, authoritativeMirror)
+}
+
+async function testApplyPlanFreezeGateFailsClosed() {
+  const variants = [
+    {
+      name: 'missing-freeze',
+      expectedState: STATES.FAILED_BEFORE_WRITE,
+      expectedCode: 'MIRROR_PREFLIGHT_FAILED',
+      invoke(options) {}
+    },
+    {
+      name: 'duplicate-freeze',
+      expectedState: STATES.FAILED_BEFORE_WRITE,
+      expectedCode: 'MIRROR_PREFLIGHT_FAILED',
+      invoke(options) {
+        freezeApplyPlan(options)
+        freezeApplyPlan(options)
+      }
+    },
+    {
+      name: 'schema-drift',
+      expectedState: STATES.BLOCKED,
+      expectedCode: 'MIRROR_SCHEMA_CHANGED',
+      invoke(options) {
+        freezeApplyPlan(options, { schemaSha256: '7'.repeat(64) })
+      }
+    },
+    {
+      name: 'resource-drift',
+      expectedState: STATES.BLOCKED,
+      expectedCode: 'MIRROR_RESOURCE_CHANGED',
+      invoke(options) {
+        freezeApplyPlan(options, { resourceIdentitySha256: '8'.repeat(64) })
+      }
+    },
+    {
+      name: 'malformed-mirror',
+      expectedState: STATES.FAILED_BEFORE_WRITE,
+      expectedCode: 'MIRROR_PREFLIGHT_FAILED',
+      invoke(options) {
+        freezeApplyPlan(options, { mirrorPlanSha256: 'not-a-digest' })
+      }
+    },
+    {
+      name: 'extra-key',
+      expectedState: STATES.FAILED_BEFORE_WRITE,
+      expectedCode: 'MIRROR_PREFLIGHT_FAILED',
+      invoke(options) {
+        freezeApplyPlan(options, { unexpected: true })
+      }
+    },
+    {
+      name: 'write-before-freeze',
+      expectedState: STATES.FAILED_BEFORE_WRITE,
+      expectedCode: 'MIRROR_PREFLIGHT_FAILED',
+      invoke(options) {
+        options.onExternalWriteDispatched()
+      }
+    }
+  ]
+
+  for (const variant of variants) {
+    const { worker, store, commitCalls } = makeWorker({
+      ids: [`run-freeze-gate-${variant.name}`],
+      sync: async (db, actorId, options) => {
+        if (options.dryRun) return dryResult()
+        variant.invoke(options)
+        return applyResult()
+      }
+    })
+    const queued = worker.enqueue({ trigger: 'manual' })
+    const failed = await worker.run(queued.runId, { workerId: `worker-${variant.name}` })
+    assert.strictEqual(failed.state, variant.expectedState, `${variant.name} 必须安全停在写前`)
+    assert.strictEqual(failed.errorCode, variant.expectedCode)
+    assert.strictEqual(failed.externalWritesMayHaveOccurred, false)
+    assert.strictEqual(commitCalls.length, 0, `${variant.name} 不得提交业务数据`)
+    assert.deepStrictEqual(store.snapshot().listings, [])
+  }
+}
+
 async function testCommittableInventoryWithKnownMaterialFailuresCommitsWithWarning() {
   let syncCalls = 0
   const { worker, store, commitCalls } = makeWorker({
@@ -406,6 +539,7 @@ async function testCommittableInventoryWithKnownMaterialFailuresCommitsWithWarni
     sync: async (db, actorId, options) => {
       syncCalls += 1
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'L-MATERIAL-WARNING', mediaAssets: [] }]
       db.companySheetSnapshot = { schemaVersion: 2, rowCount: 1 }
       return committableMaterialWarningResult()
@@ -450,6 +584,7 @@ async function testDryMaterialWarningContinuesToApplyAndAtomicCommit() {
     sync: async (db, actorId, options) => {
       calls.push({ actorId, options: clone(options) })
       if (options.dryRun) return dryMaterialWarningResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'L-DRY-MATERIAL-WARNING', mediaAssets: [] }]
       db.companySheetSnapshot = { schemaVersion: 2, rowCount: 1 }
       return committableMaterialWarningResult()
@@ -528,6 +663,7 @@ async function testCommittableWarningStillRejectsUnknownFailureAndDigestDrift() 
     ids: ['run-global-material-failure'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'MUST-NOT-COMMIT-GLOBAL-FAILURE' }]
       return committableMaterialWarningResult({
         failed: 1,
@@ -556,6 +692,7 @@ async function testCommittableWarningStillRejectsUnknownFailureAndDigestDrift() 
     ids: ['run-material-warning-digest-drift'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'MUST-NOT-COMMIT-DIGEST-DRIFT' }]
       return committableMaterialWarningResult({ contentPlanSha256: '9'.repeat(64) })
     }
@@ -576,6 +713,7 @@ async function testExternalWriteUnknownAndStateConflictNeverCommit() {
     ids: ['run-material-external-write-unknown'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'MUST-NOT-COMMIT-EXTERNAL-UNKNOWN' }]
       const result = committableMaterialWarningResult({ externalWriteStateUnknown: true })
       result.noteMaterials.externalWriteStateUnknown = true
@@ -629,6 +767,7 @@ async function testExternalWriteUnknownAndStateConflictNeverCommit() {
     ids: ['run-apply-material-state-conflict'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'MUST-NOT-COMMIT-STATE-CONFLICT' }]
       return committableMaterialWarningResult({
         failed: 1,
@@ -676,7 +815,9 @@ async function testManualActorSurvivesWorkerRestart() {
     store,
     sync: async (db, actorId, options) => {
       observedActors.push(actorId)
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
     }
   }).worker
   const completed = await consumer.run(queued.runId, { workerId: 'fresh-cli-process' })
@@ -701,6 +842,7 @@ async function testTwoWorkersUseLeaseAndFence() {
       return dryResult()
     }
     applyCalls += 1
+    freezeApplyPlan(options)
     db.listings = [{ id: 'FENCED' }]
     return applyResult()
   }
@@ -743,7 +885,9 @@ async function testDifferentRunsShareOneGlobalLease() {
     enteredRuns.push(options.runId)
     try {
       if (options.runId === firstRunId && options.dryRun) await firstDry.promise
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
     } finally {
       activeSyncCalls -= 1
     }
@@ -774,7 +918,9 @@ async function testEnqueueDeduplicatesEveryNonTerminalMode() {
     ids: ['dedupe-full', 'dedupe-dry'],
     sync: async (db, actorId, options) => {
       if (!options.dryRun) applyCalls += 1
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
     }
   })
   const full = worker.enqueue({ trigger: 'manual' })
@@ -814,8 +960,12 @@ async function testHeartbeatRenewsRunAndGlobalLeaseTogether() {
     },
     clearInterval() {},
     sync: async (db, actorId, options) => {
-      if (options.dryRun) await gate.promise
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) {
+        await gate.promise
+        return dryResult()
+      }
+      freezeApplyPlan(options)
+      return applyResult()
     }
   })
   const queued = worker.enqueue({ trigger: 'manual' })
@@ -851,7 +1001,9 @@ async function testStaleOwnerCannotReleaseReplacementGlobalLease() {
   const sync = async (db, actorId, options) => {
     if (options.dryRun && options.runId === firstRunId) await firstGate.promise
     if (options.dryRun && options.runId === secondRunId) await secondGate.promise
-    return options.dryRun ? dryResult() : applyResult()
+    if (options.dryRun) return dryResult()
+    freezeApplyPlan(options)
+    return applyResult()
   }
   const first = makeWorker({ store, sync, now: () => nowMs, leaseMs: 1_000, ids: ['stale-a'] }).worker
   const second = makeWorker({ store, sync, now: () => nowMs, leaseMs: 1_000, ids: ['fresh-b'] }).worker
@@ -1000,7 +1152,9 @@ async function testBlockedRunStopsFullBacklogButAllowsExplicitDryOnly() {
       if (options.runId === blockedRunId) {
         return dryResult({ schemaSha256: '9'.repeat(64) })
       }
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
     }
   })
   const first = worker.enqueue({ trigger: 'manual' })
@@ -1069,7 +1223,9 @@ async function testScheduleBucketIsIdempotent() {
     ids: ['scheduled-run'],
     sync: async (db, actorId, options) => {
       syncCalls += 1
-      return options.dryRun ? dryResult() : applyResult()
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
     }
   })
   const first = await worker.tick({ workerId: 'timer-a' })
@@ -1205,6 +1361,7 @@ async function testResourceIdentityIsRequiredAndBoundAcrossApply() {
     ids: ['resource-apply-drift'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       return applyResult({ resourceIdentitySha256: '5'.repeat(64) })
     }
   }).worker
@@ -1253,7 +1410,11 @@ async function testResourceApprovalAndNarrowAutomaticUnblock() {
     ids: ['approval-blocked'],
     approvedSchemaSha256: '9'.repeat(64),
     approvedResourceIdentitySha256: SHA.resource,
-    sync: async (db, actorId, options) => options.dryRun ? dryResult() : applyResult()
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
+    }
   }).worker
   const blocked = unapproved.enqueue({ trigger: 'manual' })
   assert.strictEqual(
@@ -1278,7 +1439,11 @@ async function testResourceApprovalAndNarrowAutomaticUnblock() {
     ids: ['approval-resolved'],
     approvedSchemaSha256: SHA.schema,
     approvedResourceIdentitySha256: SHA.resource,
-    sync: async (db, actorId, options) => options.dryRun ? dryResult() : applyResult()
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      return applyResult()
+    }
   }).worker
   const next = approved.enqueue({ trigger: 'manual' })
   assert.notStrictEqual(next.runId, blocked.runId)
@@ -1320,6 +1485,7 @@ async function testApplyExceptionBecomesUnknownAndNeverReplays() {
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
       applyCalls += 1
+      freezeApplyPlan(options)
       options.onExternalWriteDispatched()
       throw new Error('网关超时，远端是否完成未知')
     }
@@ -1368,6 +1534,7 @@ async function testSafeLabelsCannotDowngradePostIntentFailure() {
         syncCalls += 1
         if (options.dryRun) return dryResult()
         applyCalls += 1
+        freezeApplyPlan(options)
         options.onExternalWriteDispatched()
         throw variant.makeError()
       }
@@ -1400,6 +1567,7 @@ async function testMirrorPlanDriftBeforeWriteIntentIsSafeAndDoesNotBlock() {
       assert.strictEqual(typeof options.onExternalWriteDispatched, 'function')
       assert.strictEqual(store.snapshot().feishuSyncRuns[0].state, STATES.READY_TO_APPLY)
       assert.strictEqual(store.snapshot().feishuSyncRuns[0].externalWritesMayHaveOccurred, false)
+      freezeApplyPlan(options, { mirrorPlanSha256: '6'.repeat(64) })
       const error = new Error('飞书镜像源数据或写入计划已变化，已在写入前阻断')
       error.name = 'MirrorSafetyDigestError'
       error.code = 'MIRROR_PLAN_CHANGED'
@@ -1425,6 +1593,7 @@ async function testCommitFailureKeepsBusinessDbUntouchedAndUnknown() {
     ids: ['run-commit-failure'],
     sync: async (db, actorId, options) => {
       if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
       db.listings = [{ id: 'MUST-NOT-COMMIT' }]
       return applyResult()
     },
@@ -1768,6 +1937,8 @@ async function main() {
   await testDbWriteLockIsMandatoryBeforeAnyMutation()
   await testManualDryOnlyDoesNotNeedApprovalOrApply()
   await testSuccessIsAtomicAndReturnsExpectedDigests()
+  await testSlowPreparationFreezesAuthoritativeMirrorBeforeFirstWrite()
+  await testApplyPlanFreezeGateFailsClosed()
   await testCommittableInventoryWithKnownMaterialFailuresCommitsWithWarning()
   await testDryMaterialWarningContinuesToApplyAndAtomicCommit()
   await testDryMaterialWarningRejectsGlobalFailureAndApprovedDigestDrift()

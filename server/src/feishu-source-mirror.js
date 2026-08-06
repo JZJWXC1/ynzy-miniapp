@@ -1,5 +1,7 @@
 'use strict'
 
+const crypto = require('crypto')
+
 const COMPANY_SHEET_TITLE = '寓你住一起房源表'
 const COMPANY_SHEET_HEADERS = Object.freeze([
   '行政区',
@@ -578,10 +580,28 @@ function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {
       return prepared
     }, [])
 
+  const digestRecords = records.map((record) => {
+    const digestRecord = {
+      recordId: sourceRecordIdOf(record),
+      fields: stableValue(mirrorFieldsOf(record))
+    }
+    if (record && record.createdTimeMs !== undefined) {
+      digestRecord.createdTimeMs = Number(record.createdTimeMs)
+    }
+    return digestRecord
+  }).sort((left, right) => left.recordId.localeCompare(right.recordId))
+  const digest = crypto.createHash('sha256').update(JSON.stringify(stableValue({
+    version: 'feishu-employee-compatible-source-v1',
+    records: digestRecords
+  }))).digest('hex')
+
   return {
     ...clonePlain(sourceSnapshot),
     records,
-    recordCount: records.length
+    recordCount: records.length,
+    // 原始 Base 快照可能包含会被兼容层明确丢弃的空模板；后续镜像计划只绑定
+    // 实际参与业务投影的规范记录，避免空行或返回顺序制造假漂移。
+    digest
   }
 }
 

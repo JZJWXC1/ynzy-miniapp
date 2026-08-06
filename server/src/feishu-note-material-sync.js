@@ -15,10 +15,11 @@ const IMAGE_MIME_TO_EXTENSION = new Map([
 ])
 const DEFAULT_MAX_DEPTH = 8
 const DEFAULT_MAX_ITEMS = 5000
-const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v3'
-const PARTIAL_CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v4-partial'
+const CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v5'
+const PARTIAL_CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v6-partial'
 const CONTENT_PLAN_EVIDENCE = Symbol('contentPlanEvidence')
 const DEFERRED_MATERIAL_EVIDENCE = Symbol('deferredMaterialEvidence')
+const SOURCE_MATERIAL_FIELD_PLAN = Symbol('sourceMaterialFieldPlan')
 const KNOWN_DEFERRED_MATERIAL_STATUSES = new Set([
   'listing-missing',
   'media-limit-exceeded',
@@ -85,6 +86,45 @@ function noteMaterialSourceValueFingerprint(value) {
     schemaVersion: 'feishu-note-source-value-v1',
     value: value === undefined ? null : canonicalJson(value)
   })
+}
+
+function buildNoteMaterialSourceFieldPlan(values = []) {
+  if (!Array.isArray(values)) throw new Error('房源笔记源字段计划必须是数组')
+  const rows = values.map((row) => {
+    const sourceRecordId = normalizeText(row && row.sourceRecordId)
+    if (!sourceRecordId) throw new Error('房源笔记源字段计划缺少源记录身份')
+    return {
+      sourceRecordFingerprint: sha256Text(sourceRecordId),
+      sourceValueFingerprint: noteMaterialSourceValueFingerprint(row && row.value)
+    }
+  }).sort((left, right) => left.sourceRecordFingerprint.localeCompare(right.sourceRecordFingerprint))
+  const identities = rows.map((row) => row.sourceRecordFingerprint)
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('房源笔记源字段计划包含重复源记录身份')
+  }
+  return {
+    sourceMaterialFieldSha256: digest({
+      schemaVersion: 'feishu-note-source-field-plan-v1',
+      recordCount: rows.length,
+      rows
+    }),
+    sourceMaterialFieldRecordCount: rows.length
+  }
+}
+
+function normalizedSourceMaterialFieldPlan(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : buildNoteMaterialSourceFieldPlan([])
+  const hash = normalizeText(source.sourceMaterialFieldSha256).toLowerCase()
+  const count = Number(source.sourceMaterialFieldRecordCount)
+  if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isSafeInteger(count) || count < 0) {
+    throw contentPlanConfirmationError('房源笔记源字段计划摘要或数量无效', 400)
+  }
+  return {
+    sourceMaterialFieldSha256: hash,
+    sourceMaterialFieldRecordCount: count
+  }
 }
 
 function parseNoteMaterialLink(value, options = {}) {
@@ -637,19 +677,22 @@ function deferredMaterialEvidenceFromReport(report) {
     })))
 }
 
-function buildContentPlanSummary(values, deferredValues = []) {
+function buildContentPlanSummary(values, deferredValues = [], sourceFieldPlanValue) {
   const evidence = normalizedContentPlanEvidence(values)
   const deferred = normalizedDeferredMaterialEvidence(deferredValues)
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan(sourceFieldPlanValue)
   const body = deferred.length
     ? {
         schemaVersion: PARTIAL_CONTENT_PLAN_SCHEMA_VERSION,
+        ...sourceFieldPlan,
         assetCount: evidence.length,
         assets: evidence,
         deferredCount: deferred.length,
         deferredRows: deferred
       }
-    : {
+      : {
         schemaVersion: CONTENT_PLAN_SCHEMA_VERSION,
+        ...sourceFieldPlan,
         assetCount: evidence.length,
         assets: evidence
       }
@@ -719,13 +762,17 @@ function expectedContentPlanFromInput(input = {}) {
   if (!Array.isArray(input.expectedContentPlanEvidence)) {
     throw contentPlanConfirmationError('房源笔记素材正式同步缺少同次预检的行级内容计划', 400)
   }
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan({
+    sourceMaterialFieldSha256: input.expectedSourceMaterialFieldSha256,
+    sourceMaterialFieldRecordCount: input.expectedSourceMaterialFieldRecordCount
+  })
   const evidence = normalizedContentPlanEvidence(input.expectedContentPlanEvidence)
   const deferred = normalizedDeferredMaterialEvidence(
     Array.isArray(input.expectedDeferredMaterialEvidence)
       ? input.expectedDeferredMaterialEvidence
       : []
   )
-  const summary = buildContentPlanSummary(evidence, deferred)
+  const summary = buildContentPlanSummary(evidence, deferred, sourceFieldPlan)
   if (summary.contentPlanSha256 !== hash || summary.contentPlanAssetCount !== count) {
     throw contentPlanConfirmationError('房源笔记素材确认摘要与行级内容计划不一致', 400)
   }
@@ -733,17 +780,28 @@ function expectedContentPlanFromInput(input = {}) {
     expectedContentPlanSha256: hash,
     expectedContentAssetCount: count,
     expectedContentPlanEvidence: evidence,
-    expectedDeferredMaterialEvidence: deferred
+    expectedDeferredMaterialEvidence: deferred,
+    expectedSourceMaterialFieldSha256: sourceFieldPlan.sourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: sourceFieldPlan.sourceMaterialFieldRecordCount
   }
 }
 
-function assertContentPlanMatchesExpected(values, expected, message, deferredValues = []) {
+function assertContentPlanMatchesExpected(
+  values,
+  expected,
+  message,
+  deferredValues = [],
+  sourceFieldPlanValue
+) {
   if (!expected) return
   const evidence = normalizedContentPlanEvidence(values)
   const deferred = normalizedDeferredMaterialEvidence(deferredValues)
-  const summary = buildContentPlanSummary(evidence, deferred)
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan(sourceFieldPlanValue)
+  const summary = buildContentPlanSummary(evidence, deferred, sourceFieldPlan)
   if (summary.contentPlanSha256 !== expected.expectedContentPlanSha256 ||
       summary.contentPlanAssetCount !== expected.expectedContentAssetCount ||
+      sourceFieldPlan.sourceMaterialFieldSha256 !== expected.expectedSourceMaterialFieldSha256 ||
+      sourceFieldPlan.sourceMaterialFieldRecordCount !== expected.expectedSourceMaterialFieldRecordCount ||
       JSON.stringify(evidence) !== JSON.stringify(expected.expectedContentPlanEvidence) ||
       JSON.stringify(deferred) !== JSON.stringify(expected.expectedDeferredMaterialEvidence || [])) {
     throw contentPlanConfirmationError(message || '房源笔记素材内容计划与确认预检不一致')
@@ -758,9 +816,10 @@ function expectedEvidenceForSourceRecord(expected, sourceRecordId) {
   ))
 }
 
-function attachContentPlanEvidence(target, values, deferredValues = []) {
+function attachContentPlanEvidence(target, values, deferredValues = [], sourceFieldPlanValue) {
   const evidence = normalizedContentPlanEvidence(values)
   const deferred = normalizedDeferredMaterialEvidence(deferredValues)
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan(sourceFieldPlanValue)
   Object.defineProperty(target, CONTENT_PLAN_EVIDENCE, {
     value: evidence,
     enumerable: false,
@@ -769,6 +828,12 @@ function attachContentPlanEvidence(target, values, deferredValues = []) {
   })
   Object.defineProperty(target, DEFERRED_MATERIAL_EVIDENCE, {
     value: deferred,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  })
+  Object.defineProperty(target, SOURCE_MATERIAL_FIELD_PLAN, {
+    value: sourceFieldPlan,
     enumerable: false,
     configurable: false,
     writable: false
@@ -786,12 +851,14 @@ function contentPlanConfirmationFromReport(report) {
       !Number.isSafeInteger(report.contentPlanAssetCount) ||
       report.contentPlanAssetCount < 0 ||
       !Array.isArray(report[CONTENT_PLAN_EVIDENCE]) ||
-      !Array.isArray(report[DEFERRED_MATERIAL_EVIDENCE])) {
+      !Array.isArray(report[DEFERRED_MATERIAL_EVIDENCE]) ||
+      !report[SOURCE_MATERIAL_FIELD_PLAN]) {
     throw contentPlanConfirmationError('房源笔记素材预检未生成可确认的完整内容计划')
   }
   const evidence = normalizedContentPlanEvidence(report[CONTENT_PLAN_EVIDENCE])
   const deferred = normalizedDeferredMaterialEvidence(report[DEFERRED_MATERIAL_EVIDENCE])
-  const summary = buildContentPlanSummary(evidence, deferred)
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan(report[SOURCE_MATERIAL_FIELD_PLAN])
+  const summary = buildContentPlanSummary(evidence, deferred, sourceFieldPlan)
   if (summary.contentPlanSha256 !== report.contentPlanSha256 ||
       summary.contentPlanAssetCount !== report.contentPlanAssetCount) {
     throw contentPlanConfirmationError('房源笔记素材预检摘要与私有行级计划不一致')
@@ -800,7 +867,9 @@ function contentPlanConfirmationFromReport(report) {
     expectedContentPlanSha256: summary.contentPlanSha256,
     expectedContentAssetCount: summary.contentPlanAssetCount,
     expectedContentPlanEvidence: evidence,
-    expectedDeferredMaterialEvidence: deferred
+    expectedDeferredMaterialEvidence: deferred,
+    expectedSourceMaterialFieldSha256: sourceFieldPlan.sourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: sourceFieldPlan.sourceMaterialFieldRecordCount
   }
 }
 
@@ -902,7 +971,11 @@ function cloneContentPlanConfirmation(confirmation) {
       ? confirmation.expectedDeferredMaterialEvidence.map((item) => ({ ...item }))
       : []
   )
-  const summary = buildContentPlanSummary(evidence, deferred)
+  const sourceFieldPlan = normalizedSourceMaterialFieldPlan({
+    sourceMaterialFieldSha256: confirmation.expectedSourceMaterialFieldSha256,
+    sourceMaterialFieldRecordCount: confirmation.expectedSourceMaterialFieldRecordCount
+  })
+  const summary = buildContentPlanSummary(evidence, deferred, sourceFieldPlan)
   if (summary.contentPlanSha256 !== confirmation.expectedContentPlanSha256 ||
       summary.contentPlanAssetCount !== confirmation.expectedContentAssetCount) {
     throw contentPlanConfirmationError('房源笔记素材缓存确认与私有内容计划不一致')
@@ -911,7 +984,9 @@ function cloneContentPlanConfirmation(confirmation) {
     expectedContentPlanSha256: summary.contentPlanSha256,
     expectedContentAssetCount: summary.contentPlanAssetCount,
     expectedContentPlanEvidence: evidence,
-    expectedDeferredMaterialEvidence: deferred
+    expectedDeferredMaterialEvidence: deferred,
+    expectedSourceMaterialFieldSha256: sourceFieldPlan.sourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: sourceFieldPlan.sourceMaterialFieldRecordCount
   }
 }
 
@@ -1869,9 +1944,17 @@ function deferredLocalAction(listing, linkFingerprint, expectedStateKey, error, 
 async function syncNoteMaterialsForInventory(input = {}) {
   const db = input.db
   if (!db || typeof db !== 'object' || Array.isArray(db)) throw new Error('房源笔记素材同步缺少库存数据库')
+  const rows = Array.isArray(input.sourceRows) ? input.sourceRows : []
+  const sourceFieldPlan = buildNoteMaterialSourceFieldPlan(rows)
   // 正式确认字段必须在源表、工作 DB、Drive 或 OSS 的任何读取/写入之前完成形状校验。
   // dry-run 与未启用确认门的旧链路不会被扩大契约。
   const expectedContentPlan = expectedContentPlanFromInput(input)
+  if (expectedContentPlan && (
+    sourceFieldPlan.sourceMaterialFieldSha256 !== expectedContentPlan.expectedSourceMaterialFieldSha256 ||
+    sourceFieldPlan.sourceMaterialFieldRecordCount !== expectedContentPlan.expectedSourceMaterialFieldRecordCount
+  )) {
+    throw contentPlanConfirmationError('房源笔记素材内容计划确认后，源字段发生变化')
+  }
   const expectedDeferredByFingerprint = new Map((
     expectedContentPlan && expectedContentPlan.expectedDeferredMaterialEvidence || []
   ).map((item) => [item.sourceRecordFingerprint, item]))
@@ -1880,7 +1963,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
     error.statusCode = 409
     throw error
   }
-  const rows = Array.isArray(input.sourceRows) ? input.sourceRows : []
   const now = normalizeText(input.nowText) || new Date().toISOString()
   const report = {
     complete: true,
@@ -2156,7 +2238,8 @@ async function syncNoteMaterialsForInventory(input = {}) {
         inventoryPlanEvidence,
         expectedContentPlan,
         '房源笔记素材正式全局预检与已确认内容计划不一致',
-        expectedContentPlan.expectedDeferredMaterialEvidence
+        expectedContentPlan.expectedDeferredMaterialEvidence,
+        sourceFieldPlan
       )
     }
 
@@ -2476,10 +2559,15 @@ async function syncNoteMaterialsForInventory(input = {}) {
         contentPlanEvidence,
         expectedContentPlan,
         '房源笔记素材正式响应与已确认内容计划不一致',
-        deferredMaterialEvidence
+        deferredMaterialEvidence,
+        sourceFieldPlan
       )
-      Object.assign(report, buildContentPlanSummary(contentPlanEvidence, deferredMaterialEvidence))
-      attachContentPlanEvidence(report, contentPlanEvidence, deferredMaterialEvidence)
+      Object.assign(report, buildContentPlanSummary(
+        contentPlanEvidence,
+        deferredMaterialEvidence,
+        sourceFieldPlan
+      ))
+      attachContentPlanEvidence(report, contentPlanEvidence, deferredMaterialEvidence, sourceFieldPlan)
     }
     return report
   } finally {
@@ -2504,6 +2592,7 @@ module.exports = {
     digest,
     temporaryNoteMaterialFailure,
     buildContentPlanSummary,
+    buildNoteMaterialSourceFieldPlan,
     isKnownMaterialRowWarningReport,
     isExternalWriteStateUnknownError,
     isExternalWriteIntentPersistenceError,

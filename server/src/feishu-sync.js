@@ -20,7 +20,8 @@ const {
   isContentPlanConfirmationError,
   isKnownMaterialRowWarningReport,
   isExternalWriteStateUnknownError,
-  isExternalWriteIntentPersistenceError
+  isExternalWriteIntentPersistenceError,
+  buildNoteMaterialSourceFieldPlan
 } = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
 const {
@@ -3417,23 +3418,18 @@ function lifecycleHistoryOperations(
     record.fields || {}
   ]))
   const operations = []
-  let logicalEventSequence = 0
+  const historyCandidates = []
 
-  function appendHistory(fields, seedParts) {
+  function appendHistory(fields, seedParts, stage) {
     const seed = seedParts.map(normalizeText).join('\u0000')
     const historyEventId = `HIST-${crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32).toUpperCase()}`
-    const eventAt = Number(nowMs) + logicalEventSequence
-    logicalEventSequence += 1
-    const historyEventKey = historyEventId.toLocaleLowerCase('zh-CN')
-    if (existingIds.has(historyEventKey)) return
-    existingIds.add(historyEventKey)
-    operations.push({
+    historyCandidates.push({
+      stage,
       type: 'create',
       historyEventId,
       fields: {
         historyEventId,
-        ...fields,
-        eventAt
+        ...fields
       }
     })
   }
@@ -3513,7 +3509,7 @@ function lifecycleHistoryOperations(
       operation.archiveKey,
       lifecycleVersion,
       '检测已出租'
-    ])
+    ], 0)
   })
 
   ;(currentOperations || []).forEach((operation) => {
@@ -3563,7 +3559,28 @@ function lifecycleHistoryOperations(
       listingOwner: normalizeText(after.listingOwner),
       ownerDepartment: normalizeText(after.ownerDepartment),
       lifecycleVersion
-    }, seedParts)
+    }, seedParts, 1)
+  })
+
+  const scheduledIds = new Set()
+  historyCandidates.sort((left, right) => {
+    if (left.stage !== right.stage) return left.stage - right.stage
+    return left.historyEventId.localeCompare(right.historyEventId)
+  }).forEach((candidate, index) => {
+    const historyEventKey = candidate.historyEventId.toLocaleLowerCase('zh-CN')
+    if (scheduledIds.has(historyEventKey)) return
+    scheduledIds.add(historyEventKey)
+    // 已经落盘的候选仍占据规范序号，确保部分成功后重跑时后续事件时间不前移。
+    if (existingIds.has(historyEventKey)) return
+    existingIds.add(historyEventKey)
+    operations.push({
+      type: candidate.type,
+      historyEventId: candidate.historyEventId,
+      fields: {
+        ...candidate.fields,
+        eventAt: Number(nowMs) + index
+      }
+    })
   })
   return operations
 }
@@ -4091,6 +4108,10 @@ function mirrorSafetyDigestError(code, message) {
   error.code = code
   error.statusCode = 409
   error.safeBeforeWrite = true
+  // 字段契约或物理资源身份变化不会靠下一次自动重读自行恢复，必须锁住调度等待人工批准。
+  if (code === 'MIRROR_SCHEMA_CHANGED' || code === 'MIRROR_RESOURCE_CHANGED') {
+    error.blocked = true
+  }
   return error
 }
 
@@ -4527,6 +4548,30 @@ function sourceNoteMaterialRows(sourceSnapshot = {}) {
   })
 }
 
+function assertNoteMaterialSourceFieldPlan(options = {}, sourceFieldPlan = {}) {
+  const hasHash = Object.prototype.hasOwnProperty.call(options, 'expectedSourceMaterialFieldSha256') &&
+    options.expectedSourceMaterialFieldSha256 !== undefined
+  const hasCount = Object.prototype.hasOwnProperty.call(options, 'expectedSourceMaterialFieldRecordCount') &&
+    options.expectedSourceMaterialFieldRecordCount !== undefined
+  if (hasHash !== hasCount) {
+    throw mirrorSafetyDigestError(
+      'NOTE_MATERIAL_SOURCE_FIELD_CHANGED',
+      '房源笔记源字段确认摘要与数量不完整，已在写入前阻断'
+    )
+  }
+  if (!hasHash) return
+  const hash = normalizeText(options.expectedSourceMaterialFieldSha256).toLowerCase()
+  const count = Number(options.expectedSourceMaterialFieldRecordCount)
+  if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isSafeInteger(count) || count < 0 ||
+      !secureDigestEqual(hash, sourceFieldPlan.sourceMaterialFieldSha256) ||
+      count !== sourceFieldPlan.sourceMaterialFieldRecordCount) {
+    throw mirrorSafetyDigestError(
+      'NOTE_MATERIAL_SOURCE_FIELD_CHANGED',
+      '房源笔记源字段在素材确认后发生变化，已在写入前阻断'
+    )
+  }
+}
+
 function sourceBindingsWithNoteMaterial(bindings, options = {}) {
   const source = bindings && typeof bindings === 'object' && !Array.isArray(bindings)
     ? { ...bindings }
@@ -4611,6 +4656,8 @@ async function executeMirrorTableSync(options = {}) {
   const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
     ? sourceNoteMaterialRows(sourceSnapshot)
     : []
+  const sourceMaterialFieldPlan = buildNoteMaterialSourceFieldPlan(sourceNoteMaterials)
+  assertNoteMaterialSourceFieldPlan(options, sourceMaterialFieldPlan)
   const mirrorSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
@@ -4865,6 +4912,9 @@ async function configuredMirrorTableSync(options = {}) {
     expectedSchemaSha256: options.expectedSchemaSha256,
     expectedResourceIdentitySha256: options.expectedResourceIdentitySha256,
     expectedMirrorPlanSha256: options.expectedMirrorPlanSha256,
+    expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
+    onExternalWriteDispatched: options.onExternalWriteDispatched,
     mirrorSafetyResources: {
       sourceBaseToken,
       targetBaseToken,
@@ -4995,6 +5045,9 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
   if (!cachedConfirmation ||
       cachedConfirmation.expectedContentPlanSha256 !== expected.expectedContentPlanSha256 ||
       cachedConfirmation.expectedContentAssetCount !== expected.expectedContentAssetCount ||
+      !/^[0-9a-f]{64}$/.test(String(cachedConfirmation.expectedSourceMaterialFieldSha256 || '')) ||
+      !Number.isSafeInteger(cachedConfirmation.expectedSourceMaterialFieldRecordCount) ||
+      cachedConfirmation.expectedSourceMaterialFieldRecordCount < 0 ||
       !Array.isArray(cachedConfirmation.expectedContentPlanEvidence)) {
     throw contentPlanConfirmationError('素材内容计划的私有确认已过期，请重新完成两次 dry-run 后再正式同步', 409)
   }
@@ -5009,6 +5062,8 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
     expectedDeferredMaterialEvidence: Array.isArray(cachedConfirmation.expectedDeferredMaterialEvidence)
       ? cachedConfirmation.expectedDeferredMaterialEvidence
       : [],
+    expectedSourceMaterialFieldSha256: cachedConfirmation.expectedSourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: cachedConfirmation.expectedSourceMaterialFieldRecordCount,
     verifyExpectedContentPlan: true
   })
   const preflightAccepted = preflight && (
@@ -5024,6 +5079,10 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
   if (!privateConfirmation ||
       privateConfirmation.expectedContentPlanSha256 !== expected.expectedContentPlanSha256 ||
       privateConfirmation.expectedContentAssetCount !== expected.expectedContentAssetCount ||
+      privateConfirmation.expectedSourceMaterialFieldSha256 !==
+        cachedConfirmation.expectedSourceMaterialFieldSha256 ||
+      privateConfirmation.expectedSourceMaterialFieldRecordCount !==
+        cachedConfirmation.expectedSourceMaterialFieldRecordCount ||
       !Array.isArray(privateConfirmation.expectedContentPlanEvidence)) {
     throw contentPlanConfirmationError('正式飞书同步只读预检缺少同次行级内容计划')
   }
@@ -5033,6 +5092,8 @@ async function prepareMirrorContentPlanConfirmation(input = {}) {
     expectedDeferredMaterialEvidence: Array.isArray(privateConfirmation.expectedDeferredMaterialEvidence)
       ? privateConfirmation.expectedDeferredMaterialEvidence
       : [],
+    expectedSourceMaterialFieldSha256: privateConfirmation.expectedSourceMaterialFieldSha256,
+    expectedSourceMaterialFieldRecordCount: privateConfirmation.expectedSourceMaterialFieldRecordCount,
     sourcesGloballyVerified: true
   }
 }
@@ -5122,6 +5183,8 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
       expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
+      expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
+      expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
       onExternalWriteDispatched: options.onExternalWriteDispatched
     })
     emptyPlan.skipped = true
@@ -5199,6 +5262,8 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedContentAssetCount: options.expectedContentAssetCount,
       expectedContentPlanEvidence: options.expectedContentPlanEvidence,
       expectedDeferredMaterialEvidence: options.expectedDeferredMaterialEvidence,
+      expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
+      expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
       onExternalWriteDispatched: options.onExternalWriteDispatched,
       mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
       replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
@@ -5376,6 +5441,9 @@ async function runMirrorContentPlanPreflight(db, adminId, options = {}) {
   const previewResult = await syncViaMirror(previewDb, adminId, {
     ...options,
     dryRun: true,
+    // A 的镜像摘要可能在慢素材准备期间自然过期；本层只负责复验 A 的
+    // schema/resource/content 与素材来源，当前镜像事实交给随后紧邻写入的 B 冻结。
+    expectedMirrorPlanSha256: undefined,
     runId: options.runId,
     nowMs: options.nowMs,
     contentPlanConfirmationRequired: true,
@@ -5468,6 +5536,8 @@ async function syncViaMirror(db, adminId, options = {}) {
           expectedContentAssetCount: confirmationContext.expectedContentAssetCount,
           expectedContentPlanEvidence: confirmationContext.expectedContentPlanEvidence,
           expectedDeferredMaterialEvidence: confirmationContext.expectedDeferredMaterialEvidence,
+          expectedSourceMaterialFieldSha256: confirmationContext.expectedSourceMaterialFieldSha256,
+          expectedSourceMaterialFieldRecordCount: confirmationContext.expectedSourceMaterialFieldRecordCount,
           verifyExpectedContentPlan: confirmationContext.verifyExpectedContentPlan === true
         })
         preflightFeishuToken = preflight.feishuToken || ''
@@ -5478,14 +5548,22 @@ async function syncViaMirror(db, adminId, options = {}) {
   let mirrorSafetyPreflight = null
   if (options.dryRun !== true) {
     // 每次正式同步都先用完全相同的 runId/nowMs、资源和基线做一次镜像只读预检。
-    // 预检产出的摘要随即成为 apply 的 expected 值；若调用方还携带上一次人工批准摘要，
-    // configuredMirrorTableSync 会先核对它，任何漂移都不会进入目标写阶段。
+    // B 的镜像摘要随即成为 apply 的 expected；较早 A 的 mirror 可被当前事实刷新，
+    // 但 A 已批准的 schema/resource/content 与素材来源仍须逐项一致。
     mirrorSafetyPreflight = await configuredMirrorTableSync({
       ...options,
       ...coordinates,
       baselinePublishedSourceIds,
       baselinePublishedFoundationIdentityKeys,
       dryRun: true,
+      // A 只绑定慢素材准备的内容/schema/resource；临写前镜像 B 必须按当前五表重新形成，
+      // 不能再被较早的 A mirror 摘要提前拦截。
+      expectedMirrorPlanSha256: undefined,
+      // 源表房源笔记字段属于已确认内容计划的一部分；镜像可刷新，素材来源不可刷新。
+      expectedSourceMaterialFieldSha256: confirmedContentPlan &&
+        confirmedContentPlan.expectedSourceMaterialFieldSha256,
+      expectedSourceMaterialFieldRecordCount: confirmedContentPlan &&
+        confirmedContentPlan.expectedSourceMaterialFieldRecordCount,
       feishuToken: options.feishuToken || preflightFeishuToken || ''
     })
     if (!mirrorSafetyPreflight || mirrorSafetyPreflight.complete !== true ||
@@ -5499,6 +5577,26 @@ async function syncViaMirror(db, adminId, options = {}) {
       )
     }
     preflightFeishuToken = mirrorSafetyPreflight.feishuToken || preflightFeishuToken
+    if (options.syncController === 'worker-v2' && typeof options.onApplyPlanFrozen !== 'function') {
+      throw mirrorSafetyDigestError(
+        'MIRROR_PREFLIGHT_FAILED',
+        '正式同步缺少临写前权威镜像冻结门'
+      )
+    }
+    if (typeof options.onApplyPlanFrozen === 'function') {
+      const freezeResult = options.onApplyPlanFrozen({
+        schemaSha256: mirrorSafetyPreflight.schemaSha256,
+        resourceIdentitySha256: mirrorSafetyPreflight.resourceIdentitySha256,
+        mirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256
+      })
+      if (freezeResult && typeof freezeResult.then === 'function') {
+        Promise.resolve(freezeResult).catch(() => {})
+        throw mirrorSafetyDigestError(
+          'MIRROR_PREFLIGHT_FAILED',
+          '临写前权威镜像冻结门只允许同步落盘'
+        )
+      }
+    }
   }
   const effectiveOptions = {
     ...options,

@@ -2248,6 +2248,122 @@ function testArchiveProjectionPrioritizesEveryFrozenEventField() {
   assert.strictEqual(archived.sourcePresent, false, '归档必须强制标记源表已不存在')
 }
 
+function testCompatibilityDigestUsesOnlyEffectiveRows() {
+  const bindings = sourceBindings()
+  const catalog = buildLocationCatalog(locationSnapshot().records.map((record) => ({
+    recordId: record.recordId,
+    ...record.fields
+  })))
+  const validRecord = sourceRecord('source-effective-digest', '901')
+  const emptyTemplate = {
+    recordId: 'source-empty-template',
+    createdTimeMs: SOURCE_CREATED_TIME_MS,
+    fields: {}
+  }
+  const firstRaw = sourceSnapshotOf([validRecord, emptyTemplate])
+  firstRaw.digest = 'a'.repeat(64)
+  const secondRaw = sourceSnapshotOf([emptyTemplate, validRecord])
+  secondRaw.digest = 'b'.repeat(64)
+
+  const firstPrepared = prepareSourceSnapshotForCompatibility(firstRaw, {
+    profile: PROFILE,
+    sourceBindings: bindings,
+    locationCatalog: catalog
+  })
+  const secondPrepared = prepareSourceSnapshotForCompatibility(secondRaw, {
+    profile: PROFILE,
+    sourceBindings: bindings,
+    locationCatalog: catalog
+  })
+  assert.strictEqual(firstPrepared.recordCount, 1)
+  assert.strictEqual(secondPrepared.recordCount, 1)
+  assert.match(firstPrepared.digest, /^[0-9a-f]{64}$/)
+  assert.strictEqual(
+    firstPrepared.digest,
+    secondPrepared.digest,
+    '被兼容层过滤的空模板及飞书返回顺序不得改变有效源表摘要'
+  )
+
+  const changedRaw = sourceSnapshotOf([
+    sourceRecord('source-effective-digest', '901', { monthlyRent: 3300 })
+  ])
+  changedRaw.digest = firstRaw.digest
+  const changedPrepared = prepareSourceSnapshotForCompatibility(changedRaw, {
+    profile: PROFILE,
+    sourceBindings: bindings,
+    locationCatalog: catalog
+  })
+  assert.notStrictEqual(
+    changedPrepared.digest,
+    firstPrepared.digest,
+    '真实有效字段变化必须改变兼容层摘要，不能沿用原始快照旧摘要'
+  )
+}
+
+function testLifecycleHistoryPlanIsCanonicalAcrossOperationOrder() {
+  const currentRecords = ['A', 'B'].map((suffix) => ({
+    recordId: `current-history-${suffix}`,
+    fields: {
+      foundationListingId: `TMP-HISTORY-${suffix}`,
+      sourceRecordId: `source-history-${suffix}`,
+      lifecycleStatusText: '待出租',
+      availabilityCycleNo: 1,
+      availabilityCycleId: `TMP-HISTORY-${suffix}:available:1`,
+      listingOwner: '原负责人',
+      ownerDepartment: '原部门',
+      lifecycleVersion: 1
+    }
+  }))
+  const currentOperations = currentRecords.map((record) => ({
+    type: 'update',
+    recordId: record.recordId,
+    foundationListingId: record.fields.foundationListingId,
+    sourceRecordId: record.fields.sourceRecordId,
+    fields: {
+      ...clone(record.fields),
+      listingOwner: `新负责人-${record.fields.foundationListingId}`,
+      ownerDepartment: '新部门',
+      lifecycleVersion: 2
+    }
+  }))
+  const current = snapshot(currentRecords)
+  const forward = feishuSync._internal.lifecycleHistoryOperations(
+    current,
+    currentOperations,
+    snapshot([]),
+    'canonical-history-run',
+    FIXED_NOW_MS
+  )
+  const reversed = feishuSync._internal.lifecycleHistoryOperations(
+    current,
+    [...currentOperations].reverse(),
+    snapshot([]),
+    'canonical-history-run',
+    FIXED_NOW_MS
+  )
+  assert.deepStrictEqual(
+    reversed,
+    forward,
+    '同一组状态事件只改变飞书返回顺序时，流水计划及 eventAt 必须完全一致'
+  )
+
+  const digestInput = (historyOperations) => feishuSync._internal.buildMirrorSafetyDigests({
+    sourceSnapshot: snapshot([]),
+    locationSnapshot: snapshot([]),
+    mirrorSnapshot: snapshot([]),
+    plannedRecords: [],
+    operations: [],
+    archiveOperations: [],
+    historyOperations,
+    resources: {}
+  }).mirrorPlanSha256
+  assert.strictEqual(
+    digestInput(reversed),
+    digestInput(forward),
+    '事件集合相同且仅输入顺序不同时，镜像计划摘要必须稳定'
+  )
+}
+
 function testRentedReappearanceHistoryKeepsOrderAfterPartialRetry() {
   const currentSnapshot = snapshot([{
     recordId: 'current-partial-history',
@@ -2481,6 +2597,8 @@ async function main() {
     ['旧周期关闭成功且恢复流水失败后只补缺口', testRentedReappearanceRecoversWhenRestoreHistoryFails],
     ['归档优先冻结事件身份与明确空前态', testArchiveUsesFrozenEventIdentityAndExplicitEmptyPreviousStatus],
     ['归档逐项优先冻结事件身份和生命周期字段', testArchiveProjectionPrioritizesEveryFrozenEventField],
+    ['兼容层摘要只绑定有效源表行', testCompatibilityDigestUsesOnlyEffectiveRows],
+    ['状态流水计划不受输入顺序影响', testLifecycleHistoryPlanIsCanonicalAcrossOperationOrder],
     ['出租恢复部分失败重跑仍保持事件顺序', testRentedReappearanceHistoryKeepsOrderAfterPartialRetry]
   ]
 

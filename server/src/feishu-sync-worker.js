@@ -629,6 +629,35 @@ function validateApplyResult(result, expected) {
   return { ...actual, committableMaterialWarning }
 }
 
+function validateFrozenApplyPlan(candidate, prepared) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+      !prepared || typeof prepared !== 'object') {
+    throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+  }
+  const keys = Object.keys(candidate).sort()
+  const expectedKeys = ['mirrorPlanSha256', 'resourceIdentitySha256', 'schemaSha256']
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index]) ||
+      !validSha256(candidate.schemaSha256) ||
+      !validSha256(candidate.resourceIdentitySha256) ||
+      !validSha256(candidate.mirrorPlanSha256)) {
+    throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+  }
+  if (candidate.schemaSha256 !== prepared.schemaSha256) {
+    throw new WorkerError('MIRROR_SCHEMA_CHANGED', '', { safeBeforeWrite: true, blocked: true })
+  }
+  if (candidate.resourceIdentitySha256 !== prepared.resourceIdentitySha256) {
+    throw new WorkerError('MIRROR_RESOURCE_CHANGED', '', { safeBeforeWrite: true, blocked: true })
+  }
+  return {
+    mirrorPlanSha256: candidate.mirrorPlanSha256,
+    schemaSha256: prepared.schemaSha256,
+    resourceIdentitySha256: prepared.resourceIdentitySha256,
+    contentPlanSha256: prepared.contentPlanSha256,
+    contentPlanAssetCount: prepared.contentPlanAssetCount,
+    committableMaterialWarning: prepared.committableMaterialWarning === true
+  }
+}
+
 function createFeishuSyncWorker(dependencies = {}) {
   const dbStore = dependencies.dbStore
   const feishuSync = dependencies.feishuSync
@@ -1246,9 +1275,27 @@ function createFeishuSyncWorker(dependencies = {}) {
         throw markSafeBeforeWrite(error, 'SOURCE_READ_FAILED')
       }
       const nextDb = clone(applyBase)
+      let applyDigests = null
+      let applyPlanFreezeCount = 0
+      const onApplyPlanFrozen = (candidate) => {
+        if (heartbeat.lost()) throw new WorkerError('LEASE_LOST', '', { safeBeforeWrite: true })
+        applyPlanFreezeCount += 1
+        if (applyPlanFreezeCount !== 1 || applyDigests) {
+          throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+        }
+        const frozen = validateFrozenApplyPlan(candidate, digests)
+        // 必须先在受租约保护的事务中落盘 B，再允许内存门开启；落盘失败时外部写永远不能开始。
+        mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY], (run) => {
+          run.mirrorPlanSha256 = frozen.mirrorPlanSha256
+        })
+        applyDigests = frozen
+      }
       // 正式函数允许先执行只读复验。只有 Base、Drive 或 OSS 即将派发首个真实写请求时，
       // 适配器才同步调用此门；门先原子持久化，失败则抛错并阻止外部请求发出。
       const onExternalWriteDispatched = () => {
+        if (!applyDigests || applyPlanFreezeCount !== 1) {
+          throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+        }
         if (heartbeat.lost()) throw new WorkerError('LEASE_LOST', '', { safeBeforeWrite: true })
         mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], (run, db, atMs) => {
           if (run.externalWritesMayHaveOccurred === true) return
@@ -1270,11 +1317,15 @@ function createFeishuSyncWorker(dependencies = {}) {
         expectedMirrorPlanSha256: digests.mirrorPlanSha256,
         expectedContentPlanSha256: digests.contentPlanSha256,
         expectedContentAssetCount: digests.contentPlanAssetCount,
+        onApplyPlanFrozen,
         onExternalWriteDispatched
       })
       if (heartbeat.lost()) throw new WorkerError('LEASE_LOST')
       mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], () => true)
-      const applyValidation = validateApplyResult(applyResult, digests)
+      if (!applyDigests || applyPlanFreezeCount !== 1) {
+        throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+      }
+      const applyValidation = validateApplyResult(applyResult, applyDigests)
       const applyWarningCode = applyValidation.committableMaterialWarning
         ? 'MATERIALS_PARTIAL_FAILURE'
         : ''
@@ -1396,6 +1447,7 @@ module.exports = {
     extractDigests,
     validateDryResult,
     validateApplyResult,
+    validateFrozenApplyPlan,
     sanitizeRun,
     sanitizeSchemaBindings,
     markerMatches,

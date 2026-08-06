@@ -649,7 +649,7 @@ function checkFeishuNoteMaterialNormalizationContract() {
     clientSource.includes("crypto.createHash('sha256')"), '飞书素材客户端必须边下载边落盘并计算摘要')
   assertOk(syncSource.includes('sourcesGloballyVerified') &&
     syncSource.includes('ossWriteInput.filePath = writeEvidence.filePath'), '正式同步必须复用已确认计划并把同一成品文件流式交给 Drive 与 OSS')
-  assertOk(syncSource.includes("CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v3'"), '素材内容计划必须使用含源/输出身份的 v3 契约')
+  assertOk(syncSource.includes("CONTENT_PLAN_SCHEMA_VERSION = 'feishu-note-content-plan-v5'"), '素材内容计划必须使用同时绑定源字段集合及源/输出身份的 v5 契约')
   ;[
     'sourceContentSha256',
     'sourceSize',
