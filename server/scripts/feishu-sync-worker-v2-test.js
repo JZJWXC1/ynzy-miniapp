@@ -2201,6 +2201,90 @@ async function testReconciledZeroWriteUnknownQueuesDryRunOnly() {
     assert.strictEqual(corruptBarrierStore.snapshot().feishuSyncRuns.length, 2)
   }
 
+  for (const retryPairCorruption of [
+    {
+      label: '只存在重试任务 ID',
+      mutate(old) {
+        old.dryRunRetryRunId = continuation.runId
+      }
+    },
+    {
+      label: '只存在重试任务种子',
+      mutate(old) {
+        old.dryRunRetrySeedSha256 = 'f'.repeat(64)
+      }
+    }
+  ]) {
+    const halfPairStore = createStore(store.snapshot())
+    halfPairStore.updateDb((db) => {
+      retryPairCorruption.mutate(db.feishuSyncRuns.find((run) => run.runId === runId))
+    })
+    let halfPairSyncCalls = 0
+    const halfPairWorker = makeWorker({
+      store: halfPairStore,
+      now: () => nowMs,
+      sync: async () => {
+        halfPairSyncCalls += 1
+        return dryResult()
+      }
+    }).worker
+    const beforeHalfPair = halfPairStore.snapshot()
+    assert.throws(
+      () => halfPairWorker.enqueue({ trigger: 'manual', dryRun: true }),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `${retryPairCorruption.label}时入队必须失败关闭`
+    )
+    assert.deepStrictEqual(halfPairStore.snapshot(), beforeHalfPair)
+    await assert.rejects(
+      halfPairWorker.run(continuation.runId, { workerId: 'half-retry-pair-worker' }),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `${retryPairCorruption.label}时领取执行权必须失败关闭`
+    )
+    assert.strictEqual(halfPairSyncCalls, 0)
+    assert.deepStrictEqual(halfPairStore.snapshot(), beforeHalfPair)
+  }
+
+  for (const pointerCorruption of [
+    {
+      label: '零写恢复屏障状态漂移',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === runId).state = STATES.DRY_SUCCEEDED
+      }
+    },
+    {
+      label: '零写恢复屏障指针丢失',
+      mutate(db) {
+        db.feishuSyncScheduler.blockedRunId = ''
+      }
+    }
+  ]) {
+    const pointerStore = createStore(store.snapshot())
+    pointerStore.updateDb(pointerCorruption.mutate)
+    let pointerSyncCalls = 0
+    const pointerWorker = makeWorker({
+      store: pointerStore,
+      now: () => nowMs,
+      sync: async () => {
+        pointerSyncCalls += 1
+        return dryResult()
+      }
+    }).worker
+    const beforePointerAttempt = pointerStore.snapshot()
+    await assert.rejects(
+      pointerWorker.run(continuation.runId, { workerId: 'missing-barrier-pointer-worker' }),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `${pointerCorruption.label}时恢复预演不得领取执行权`
+    )
+    assert.strictEqual(pointerSyncCalls, 0)
+    assert.deepStrictEqual(pointerStore.snapshot(), beforePointerAttempt)
+    assert.throws(
+      () => pointerWorker.enqueue({ trigger: 'manual', dryRun: false }),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `${pointerCorruption.label}时正式任务仍必须失败关闭`
+    )
+    assert.deepStrictEqual(pointerStore.snapshot(), beforePointerAttempt)
+  }
+
   assert.throws(
     () => worker.enqueue({ trigger: 'manual', dryRun: false, actorId: 'admin:formal-bypass' }),
     (error) => error && error.code === 'ZERO_WRITE_DRY_RUN_REQUIRED',
@@ -2322,17 +2406,21 @@ async function testReconciledZeroWriteUnknownQueuesDryRunOnly() {
   const unrelatedDryWorker = makeWorker({
     store: unrelatedDryStore,
     now: () => nowMs,
-    sync: async () => dryResult()
+    sync: async () => { throw new Error('未授权 dry-run 不得联网') }
   }).worker
-  const unrelatedCompleted = await unrelatedDryWorker.run(unrelatedDryRunId, {
-    workerId: 'unrelated-dry-worker'
-  })
-  assert.strictEqual(unrelatedCompleted.state, STATES.DRY_SUCCEEDED)
-  assert.strictEqual(
-    unrelatedDryStore.snapshot().feishuSyncScheduler.blockedRunId,
-    runId,
-    '未绑定旧任务与对账证据的普通 dry-run 即使成功也不得解除恢复屏障'
+  const beforeUnrelatedDry = unrelatedDryStore.snapshot()
+  assert.throws(
+    () => unrelatedDryWorker.enqueue({ trigger: 'manual', dryRun: true }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '已有未授权 queued dry-run 时，入队复用必须失败关闭'
   )
+  assert.deepStrictEqual(unrelatedDryStore.snapshot(), beforeUnrelatedDry)
+  await assert.rejects(
+    unrelatedDryWorker.run(unrelatedDryRunId, { workerId: 'unrelated-dry-worker' }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '存在零写恢复屏障时，未授权 dry-run 必须在领取执行权前失败关闭'
+  )
+  assert.deepStrictEqual(unrelatedDryStore.snapshot(), beforeUnrelatedDry)
   assert.throws(
     () => unrelatedDryWorker.enqueue({ trigger: 'manual', dryRun: false }),
     (error) => error && error.code === 'ZERO_WRITE_DRY_RUN_REQUIRED'
@@ -2372,6 +2460,37 @@ async function testReconciledZeroWriteUnknownQueuesDryRunOnly() {
   )
   assert.strictEqual(failedDryStore.snapshot().feishuSyncRuns.length, 2)
   assert.strictEqual(failedDrySyncCalls, 0)
+
+  const retryAtomicBaseStore = createStore(failedDryStore.snapshot())
+  let retryInsertFaultInjected = false
+  const retryAtomicFaultStore = {
+    readDb: () => retryAtomicBaseStore.readDb(),
+    snapshot: () => retryAtomicBaseStore.snapshot(),
+    updateDb(mutator) {
+      return retryAtomicBaseStore.updateDb((db) => {
+        db.feishuSyncRuns.unshift = () => {
+          retryInsertFaultInjected = true
+          throw new Error('INJECT_RETRY_INSERT_FAILURE')
+        }
+        return mutator(db)
+      })
+    }
+  }
+  const retryAtomicWorker = makeWorker({
+    store: retryAtomicFaultStore,
+    now: () => nowMs + 1,
+    ids: ['zero-write-bound-dry-atomic-fault'],
+    sync: async () => dryResult()
+  }).worker
+  const beforeRetryAtomicFault = retryAtomicFaultStore.snapshot()
+  assert.throws(
+    () => retryAtomicWorker.enqueue({ trigger: 'manual', dryRun: true }),
+    /INJECT_RETRY_INSERT_FAILURE/,
+    '更新当前重试指针后若插入任务失败，整笔事务必须回滚'
+  )
+  assert.strictEqual(retryInsertFaultInjected, true)
+  assert.deepStrictEqual(retryAtomicFaultStore.snapshot(), beforeRetryAtomicFault)
+
   const boundRetry = failedDryWorker.enqueue({
     trigger: 'manual',
     dryRun: true,
@@ -2380,13 +2499,126 @@ async function testReconciledZeroWriteUnknownQueuesDryRunOnly() {
   const persistedBoundRetry = failedDryStore.snapshot().feishuSyncRuns.find((run) => (
     run.runId === boundRetry.runId
   ))
+  const retryBarrier = failedDryStore.snapshot().feishuSyncRuns.find((run) => run.runId === runId)
   assert.strictEqual(persistedBoundRetry.continuationOfRunId, runId)
+  assert.strictEqual(persistedBoundRetry.actorId, retryBarrier.actorId)
   assert.strictEqual(persistedBoundRetry.sourceUnknownRunSha256, persistedOld.sourceUnknownRunSha256)
   assert.strictEqual(
     persistedBoundRetry.reconciliationEvidenceSha256,
     persistedOld.reconciliationEvidenceSha256,
     '失败后的只读重试必须继承同一零写入证据绑定'
   )
+  assert.strictEqual(retryBarrier.dryRunRetryRunId, boundRetry.runId)
+  assert.match(retryBarrier.dryRunRetrySeedSha256, /^[0-9a-f]{64}$/)
+
+  const badRetrySeedStore = createStore(failedDryStore.snapshot())
+  badRetrySeedStore.updateDb((db) => {
+    db.feishuSyncRuns.find((run) => run.runId === runId).dryRunRetrySeedSha256 = 'f'.repeat(64)
+  })
+  let badRetrySeedSyncCalls = 0
+  const badRetrySeedWorker = makeWorker({
+    store: badRetrySeedStore,
+    now: () => nowMs + 2,
+    sync: async () => {
+      badRetrySeedSyncCalls += 1
+      return dryResult()
+    }
+  }).worker
+  const beforeBadRetrySeed = badRetrySeedStore.snapshot()
+  assert.throws(
+    () => badRetrySeedWorker.enqueue({ trigger: 'manual', dryRun: true }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '当前重试种子漂移时不得继续入队'
+  )
+  assert.deepStrictEqual(badRetrySeedStore.snapshot(), beforeBadRetrySeed)
+  await assert.rejects(
+    badRetrySeedWorker.run(boundRetry.runId, { workerId: 'bad-retry-seed-worker' }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '当前重试种子漂移时不得领取执行权'
+  )
+  assert.strictEqual(badRetrySeedSyncCalls, 0)
+  assert.deepStrictEqual(badRetrySeedStore.snapshot(), beforeBadRetrySeed)
+
+  const completionTamperStore = createStore(failedDryStore.snapshot())
+  let completionTamperSyncCalls = 0
+  const completionTamperWorker = makeWorker({
+    store: completionTamperStore,
+    now: () => nowMs + 3,
+    sync: async () => {
+      completionTamperSyncCalls += 1
+      completionTamperStore.updateDb((db) => {
+        db.feishuSyncRuns.find((run) => run.runId === runId).dryRunRetrySeedSha256 = 'f'.repeat(64)
+      })
+      return dryResult()
+    }
+  }).worker
+  const completionAfterTamper = await completionTamperWorker.run(boundRetry.runId, {
+    workerId: 'completion-rechecks-current-retry-seed'
+  })
+  assert.strictEqual(completionAfterTamper.state, STATES.DRY_SUCCEEDED)
+  assert.strictEqual(completionTamperSyncCalls, 1)
+  assert.strictEqual(
+    completionTamperStore.snapshot().feishuSyncScheduler.blockedRunId,
+    runId,
+    '领取执行权后授权种子漂移，即使预演完成也不得清除旧屏障'
+  )
+
+  const retryChainStore = createStore(failedDryStore.snapshot())
+  let retryChainNow = nowMs + 10
+  let retryChainSyncCalls = 0
+  const retryChainWorker = makeWorker({
+    store: retryChainStore,
+    now: () => ++retryChainNow,
+    ids: ['zero-write-bound-dry-retry-two'],
+    sync: async () => {
+      retryChainSyncCalls += 1
+      return retryChainSyncCalls === 1
+        ? dryResult({ schemaSha256: '' })
+        : dryResult()
+    }
+  }).worker
+  const firstRetryBlocked = await retryChainWorker.run(boundRetry.runId, {
+    workerId: 'zero-write-bound-dry-retry-one-blocked'
+  })
+  assert.strictEqual(firstRetryBlocked.state, STATES.BLOCKED)
+  assert.strictEqual(retryChainSyncCalls, 1)
+  assert.strictEqual(retryChainStore.snapshot().feishuSyncScheduler.blockedRunId, runId)
+  const secondRetry = retryChainWorker.enqueue({
+    trigger: 'manual',
+    dryRun: true,
+    actorId: 'admin:must-not-replace-barrier-actor'
+  })
+  const retryTwoBarrier = retryChainStore.snapshot().feishuSyncRuns.find((run) => run.runId === runId)
+  const persistedSecondRetry = retryChainStore.snapshot().feishuSyncRuns.find((run) => (
+    run.runId === secondRetry.runId
+  ))
+  assert.strictEqual(retryTwoBarrier.dryRunRetryRunId, secondRetry.runId)
+  assert.match(retryTwoBarrier.dryRunRetrySeedSha256, /^[0-9a-f]{64}$/)
+  assert.strictEqual(persistedSecondRetry.actorId, retryTwoBarrier.actorId)
+  retryChainStore.updateDb((db) => {
+    const staleRetry = db.feishuSyncRuns.find((run) => run.runId === boundRetry.runId)
+    staleRetry.state = STATES.QUEUED
+    staleRetry.updatedAt = staleRetry.createdAt
+    staleRetry.attemptCount = 0
+    staleRetry.errorCode = ''
+    delete staleRetry.startedAt
+    delete staleRetry.finishedAt
+  })
+  const beforeStaleRetry = retryChainStore.snapshot()
+  await assert.rejects(
+    retryChainWorker.run(boundRetry.runId, { workerId: 'stale-retry-must-not-replay' }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '当前授权指针切到第二次重试后，旧重试不得再次执行'
+  )
+  assert.strictEqual(retryChainSyncCalls, 1)
+  assert.deepStrictEqual(retryChainStore.snapshot(), beforeStaleRetry)
+  const secondRetryCompleted = await retryChainWorker.run(secondRetry.runId, {
+    workerId: 'zero-write-bound-dry-retry-two-success'
+  })
+  assert.strictEqual(secondRetryCompleted.state, STATES.DRY_SUCCEEDED)
+  assert.strictEqual(retryChainSyncCalls, 2)
+  assert.strictEqual(retryChainStore.snapshot().feishuSyncScheduler.blockedRunId, '')
+
   const completedRetry = await failedDryWorker.run(boundRetry.runId, {
     workerId: 'zero-write-bound-dry-retry-worker'
   })
@@ -2407,6 +2639,460 @@ async function testReconciledZeroWriteUnknownQueuesDryRunOnly() {
   })
   assert.strictEqual(formalAfterDryRun.dryRun, false, '完整 dry-run 成功后才允许新建正式任务')
   assert.strictEqual(store.snapshot().feishuSyncRuns.length, 3)
+}
+
+async function testUnknownContinuationCanBeReconciledWithoutDroppingParentEvidence() {
+  const firstResolvedAt = 1_800_000_200_000
+  const parentRunId = 'feishu-sync-parent-partial-unknown'
+  const parentUnknown = exactPartialUnknownRun(parentRunId, firstResolvedAt)
+  const store = createStore({
+    listings: [{ id: 'nested-zero-write-business-must-stay-untouched' }],
+    feishuSyncRuns: [parentUnknown],
+    feishuSyncScheduler: { blockedRunId: parentRunId, activeLease: null },
+    feishuSyncCommitMarkers: {}
+  })
+  const parentEvidence = partialReconciliationEvidence(parentRunId)
+  const parentWorker = makeWorker({
+    store,
+    now: () => firstResolvedAt,
+    ids: ['parent-formal-continuation'],
+    sync: async () => { throw new Error('父任务解阻只允许排队') },
+    reconcilePartialBaseWrites: async () => clone(parentEvidence)
+  }).worker
+  const parentResolved = await parentWorker.resolveAndEnqueueReconciledPartial(parentRunId)
+  const continuationRunId = parentResolved.continuationRun.runId
+  const parentResolvedState = store.snapshot()
+  const rawResolvedParent = parentResolvedState.feishuSyncRuns.find((run) => run.runId === parentRunId)
+  const rawParentContinuation = parentResolvedState.feishuSyncRuns.find((run) => (
+    run.runId === continuationRunId
+  ))
+  assert.strictEqual(parentResolved.continuationRun.continuationOfRunId, parentRunId)
+  assert.match(rawResolvedParent.sourceUnknownRunSha256, /^[0-9a-f]{64}$/)
+  assert.strictEqual(
+    rawParentContinuation.sourceUnknownRunSha256,
+    rawResolvedParent.sourceUnknownRunSha256
+  )
+  assert.strictEqual(
+    rawParentContinuation.reconciliationEvidenceSha256,
+    parentEvidence.evidenceSha256
+  )
+  let executionNow = firstResolvedAt + 1_000
+  let executionCalls = 0
+  const executionWorker = makeWorker({
+    store,
+    now: () => ++executionNow,
+    sync: async (businessDb, actorId, options) => {
+      executionCalls += 1
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      options.onExternalWriteDispatched()
+      throw new Error('合成的首笔 Base 新增发送后未知')
+    }
+  }).worker
+  const unknown = await executionWorker.run(continuationRunId, {
+    workerId: 'nested-formal-unknown-worker'
+  })
+  assert.strictEqual(executionCalls, 2, '正式续跑必须先预演，再在 apply 写意图后失败')
+  assert.strictEqual(unknown.state, STATES.UNKNOWN)
+  assert.strictEqual(unknown.externalWritesMayHaveOccurred, true)
+  assert.strictEqual(unknown.continuationOfRunId, parentRunId)
+  const naturalUnknownState = store.snapshot()
+  const rawUnknown = naturalUnknownState.feishuSyncRuns.find((run) => (
+    run.runId === continuationRunId
+  ))
+  assert.match(rawUnknown.sourceUnknownRunSha256, /^[0-9a-f]{64}$/)
+  assert.strictEqual(
+    rawUnknown.sourceUnknownRunSha256,
+    rawResolvedParent.sourceUnknownRunSha256
+  )
+  assert.strictEqual(rawUnknown.reconciliationEvidenceSha256, parentEvidence.evidenceSha256)
+  assert.strictEqual(store.snapshot().feishuSyncScheduler.blockedRunId, continuationRunId)
+  const failedAt = unknown.finishedAt
+
+  const zeroEvidence = partialReconciliationEvidence(continuationRunId, {
+    archiveCount: 0,
+    historyCount: 0,
+    archiveEvidenceSha256: stableSha256([]),
+    historyEvidenceSha256: stableSha256([])
+  })
+  const replacementParentEvidence = partialReconciliationEvidence(parentRunId, {
+    currentOperationsSha256: 'c'.repeat(64)
+  })
+  const lineageCorruptions = [
+    {
+      label: '删除父任务 ID',
+      mutate(db) { delete db.feishuSyncRuns.find((run) => run.runId === continuationRunId).continuationOfRunId }
+    },
+    {
+      label: '删除父 UNKNOWN 身份',
+      mutate(db) { delete db.feishuSyncRuns.find((run) => run.runId === continuationRunId).sourceUnknownRunSha256 }
+    },
+    {
+      label: '删除父对账证据',
+      mutate(db) { delete db.feishuSyncRuns.find((run) => run.runId === continuationRunId).reconciliationEvidenceSha256 }
+    },
+    {
+      label: '篡改父 UNKNOWN 身份',
+      mutate(db) { db.feishuSyncRuns.find((run) => run.runId === continuationRunId).sourceUnknownRunSha256 = 'a'.repeat(64) }
+    },
+    {
+      label: '篡改父对账证据',
+      mutate(db) { db.feishuSyncRuns.find((run) => run.runId === continuationRunId).reconciliationEvidenceSha256 = 'b'.repeat(64) }
+    },
+    {
+      label: '删除父任务形成孤儿',
+      mutate(db) { db.feishuSyncRuns = db.feishuSyncRuns.filter((run) => run.runId !== parentRunId) }
+    },
+    {
+      label: '父任务反向链接被改动',
+      mutate(db) { db.feishuSyncRuns.find((run) => run.runId === parentRunId).continuationRunId = 'feishu-sync-other-child' }
+    },
+    {
+      label: '父任务状态不再是已对账',
+      mutate(db) { db.feishuSyncRuns.find((run) => run.runId === parentRunId).state = STATES.BLOCKED }
+    },
+    {
+      label: '父任务身份字段被改动',
+      mutate(db) { db.feishuSyncRuns.find((run) => run.runId === parentRunId).contentPlanAssetCount += 1 }
+    },
+    {
+      label: '父证据与子绑定被整体替换',
+      mutate(db) {
+        const parent = db.feishuSyncRuns.find((run) => run.runId === parentRunId)
+        const child = db.feishuSyncRuns.find((run) => run.runId === continuationRunId)
+        parent.reconciliationEvidence = clone(replacementParentEvidence)
+        parent.reconciliationEvidenceSha256 = replacementParentEvidence.evidenceSha256
+        child.reconciliationEvidenceSha256 = replacementParentEvidence.evidenceSha256
+      }
+    },
+    {
+      label: '续跑 UNKNOWN 预塞父身份字段',
+      mutate(db) {
+        const child = db.feishuSyncRuns.find((run) => run.runId === continuationRunId)
+        child.parentSourceUnknownRunSha256 = 'd'.repeat(64)
+        child.parentReconciliationEvidenceSha256 = 'e'.repeat(64)
+      }
+    },
+    {
+      label: '父任务出现重复记录',
+      mutate(db) {
+        const parent = db.feishuSyncRuns.find((run) => run.runId === parentRunId)
+        db.feishuSyncRuns.push(clone(parent))
+      }
+    },
+    {
+      label: '续跑任务形成自引用',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => (
+          run.runId === continuationRunId
+        )).continuationOfRunId = continuationRunId
+      }
+    }
+  ]
+  for (const corruption of lineageCorruptions) {
+    const corruptStore = createStore(naturalUnknownState)
+    corruptStore.updateDb(corruption.mutate)
+    const before = corruptStore.snapshot()
+    let unexpectedReads = 0
+    const corruptWorker = makeWorker({
+      store: corruptStore,
+      now: () => failedAt + 10_000,
+      sync: async () => { throw new Error('父证据损坏不得执行同步') },
+      reconcilePartialBaseWrites: async () => {
+        unexpectedReads += 1
+        return clone(zeroEvidence)
+      }
+    }).worker
+    await assert.rejects(
+      corruptWorker.resolveAndEnqueueReconciledPartial(continuationRunId),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      `父级续跑身份损坏必须失败关闭：${corruption.label}`
+    )
+    assert.strictEqual(unexpectedReads, 0, `父级续跑身份损坏时不得读取飞书：${corruption.label}`)
+    assert.deepStrictEqual(corruptStore.snapshot(), before, `拒绝时数据库必须逐字不变：${corruption.label}`)
+  }
+  let reconcileCalls = 0
+  const worker = makeWorker({
+    store,
+    now: () => failedAt + 10_000,
+    ids: ['nested-zero-write-dry-run'],
+    sync: async () => { throw new Error('再次解阻只允许排队 dry-run') },
+    reconcilePartialBaseWrites: async (businessDb, input) => {
+      reconcileCalls += 1
+      assert.deepStrictEqual(
+        businessDb.listings,
+        [{ id: 'nested-zero-write-business-must-stay-untouched' }]
+      )
+      assert.strictEqual(input.runId, continuationRunId)
+      return clone(zeroEvidence)
+    }
+  }).worker
+
+  const resolved = await worker.resolveAndEnqueueReconciledPartial(continuationRunId)
+  assert.strictEqual(reconcileCalls, 1)
+  assert.strictEqual(resolved.resolvedRun.state, STATES.RECONCILED_PARTIAL)
+  assert.strictEqual(resolved.resolvedRun.resolutionCode, 'ZERO_BASE_WRITES_RECONCILED')
+  assert.strictEqual(resolved.continuationRun.state, STATES.QUEUED)
+  assert.strictEqual(resolved.continuationRun.dryRun, true)
+  const persisted = store.snapshot()
+  const persistedParent = persisted.feishuSyncRuns.find((run) => run.runId === parentRunId)
+  const persistedUnknown = persisted.feishuSyncRuns.find((run) => run.runId === continuationRunId)
+  assert.strictEqual(persistedUnknown.continuationOfRunId, parentRunId)
+  assert.strictEqual(
+    persistedUnknown.parentSourceUnknownRunSha256,
+    persistedParent.sourceUnknownRunSha256,
+    '再次解阻必须保留父 UNKNOWN 身份，不能被本轮身份摘要覆盖'
+  )
+  assert.strictEqual(
+    persistedUnknown.parentReconciliationEvidenceSha256,
+    persistedParent.reconciliationEvidenceSha256,
+    '再次解阻必须保留父对账证据，不能被本轮证据摘要覆盖'
+  )
+  assert.notStrictEqual(
+    persistedUnknown.sourceUnknownRunSha256,
+    persistedUnknown.parentSourceUnknownRunSha256,
+    '本轮 UNKNOWN 身份与父 UNKNOWN 身份必须分开保存'
+  )
+  assert.strictEqual(persistedUnknown.reconciliationEvidenceSha256, zeroEvidence.evidenceSha256)
+  const nestedDry = persisted.feishuSyncRuns.find((run) => (
+    run.runId === resolved.continuationRun.runId
+  ))
+  assert.strictEqual(nestedDry.continuationOfRunId, continuationRunId)
+  assert.strictEqual(nestedDry.sourceUnknownRunSha256, persistedUnknown.sourceUnknownRunSha256)
+  assert.strictEqual(
+    nestedDry.reconciliationEvidenceSha256,
+    persistedUnknown.reconciliationEvidenceSha256
+  )
+  assert.strictEqual(persisted.feishuSyncScheduler.blockedRunId, continuationRunId)
+  assert.deepStrictEqual(
+    persisted.listings,
+    [{ id: 'nested-zero-write-business-must-stay-untouched' }]
+  )
+
+  const beforeIdempotent = store.snapshot()
+  const idempotent = await worker.resolveAndEnqueueReconciledPartial(continuationRunId)
+  assert.strictEqual(idempotent.continuationRun.runId, nestedDry.runId)
+  assert.strictEqual(reconcileCalls, 1, '幂等快路径不得再次读取飞书')
+  assert.deepStrictEqual(store.snapshot(), beforeIdempotent, '幂等快路径不得重复新增或改写')
+
+  const corruptResolvedStore = createStore(beforeIdempotent)
+  corruptResolvedStore.updateDb((db) => {
+    db.feishuSyncRuns.find((run) => run.runId === parentRunId).contentPlanAssetCount += 1
+  })
+  const beforeCorruptFastPath = corruptResolvedStore.snapshot()
+  let corruptFastPathReads = 0
+  const corruptFastPathWorker = makeWorker({
+    store: corruptResolvedStore,
+    sync: async () => { throw new Error('坏祖先不得执行同步') },
+    reconcilePartialBaseWrites: async () => {
+      corruptFastPathReads += 1
+      return clone(zeroEvidence)
+    }
+  }).worker
+  await assert.rejects(
+    corruptFastPathWorker.resolveAndEnqueueReconciledPartial(continuationRunId),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '已对账快路径也必须重新校验完整祖先链'
+  )
+  assert.strictEqual(corruptFastPathReads, 0)
+  assert.deepStrictEqual(corruptResolvedStore.snapshot(), beforeCorruptFastPath)
+
+  const corruptDryStore = createStore(beforeIdempotent)
+  corruptDryStore.updateDb((db) => {
+    db.feishuSyncRuns.find((run) => run.runId === parentRunId).contentPlanAssetCount += 1
+  })
+  let corruptDryCalls = 0
+  const corruptDryWorker = makeWorker({
+    store: corruptDryStore,
+    now: () => failedAt + 20_000,
+    sync: async () => {
+      corruptDryCalls += 1
+      return dryResult()
+    }
+  }).worker
+  const beforeCorruptDry = corruptDryStore.snapshot()
+  await assert.rejects(
+    corruptDryWorker.run(nestedDry.runId, { workerId: 'corrupt-lineage-dry-worker' }),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '祖先链损坏时，绑定 dry-run 必须在任何飞书读取前失败关闭'
+  )
+  assert.strictEqual(corruptDryCalls, 0)
+  assert.deepStrictEqual(corruptDryStore.snapshot(), beforeCorruptDry)
+
+  for (const bindingMutation of [
+    {
+      label: 'dry-run 请求键被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === nestedDry.runId).requestKeySha256 = 'f'.repeat(64)
+      }
+    },
+    {
+      label: 'dry-run 发起人被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === nestedDry.runId).actorId = 'admin:tampered'
+      }
+    },
+    {
+      label: 'dry-run 运行时间被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === nestedDry.runId).runNowMs += 1
+      }
+    },
+    {
+      label: 'dry-run 创建时间被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === nestedDry.runId).createdAt += 1
+      }
+    },
+    {
+      label: '屏障绑定的子任务 ID 被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === continuationRunId).continuationRunId = 'other-dry-run'
+      }
+    },
+    {
+      label: '屏障绑定的子任务种子被篡改',
+      mutate(db) {
+        db.feishuSyncRuns.find((run) => run.runId === continuationRunId).continuationSeedSha256 = 'f'.repeat(64)
+      }
+    },
+    {
+      label: '相同 runId 的 dry-run 被复制',
+      mutate(db) {
+        db.feishuSyncRuns.push(clone(db.feishuSyncRuns.find((run) => run.runId === nestedDry.runId)))
+      }
+    }
+  ]) {
+    const bindingStore = createStore(beforeIdempotent)
+    bindingStore.updateDb(bindingMutation.mutate)
+    const beforeBindingAttempt = bindingStore.snapshot()
+    let bindingSyncCalls = 0
+    const bindingWorker = makeWorker({
+      store: bindingStore,
+      now: () => failedAt + 20_000,
+      sync: async () => {
+        bindingSyncCalls += 1
+        return dryResult()
+      }
+    }).worker
+    await assert.rejects(
+      bindingWorker.run(nestedDry.runId, { workerId: 'tampered-binding-dry-worker' }),
+      (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+      bindingMutation.label
+    )
+    assert.strictEqual(bindingSyncCalls, 0, `${bindingMutation.label}时不得联网`)
+    assert.deepStrictEqual(bindingStore.snapshot(), beforeBindingAttempt, `${bindingMutation.label}时不得改库`)
+  }
+
+  let nestedDryCalls = 0
+  let nestedDryNow = failedAt + 20_000
+  const nestedDryWorker = makeWorker({
+    store,
+    now: () => ++nestedDryNow,
+    sync: async () => {
+      nestedDryCalls += 1
+      return dryResult()
+    }
+  }).worker
+  const completedNestedDry = await nestedDryWorker.run(nestedDry.runId, {
+    workerId: 'nested-zero-write-dry-worker'
+  })
+  assert.strictEqual(completedNestedDry.state, STATES.DRY_SUCCEEDED)
+  assert.strictEqual(nestedDryCalls, 1)
+  const afterNestedDry = store.snapshot()
+  assert.strictEqual(afterNestedDry.feishuSyncScheduler.blockedRunId, '')
+  const parentAfterDry = afterNestedDry.feishuSyncRuns.find((run) => run.runId === parentRunId)
+  const resolvedAfterDry = afterNestedDry.feishuSyncRuns.find((run) => (
+    run.runId === continuationRunId
+  ))
+  assert.strictEqual(
+    resolvedAfterDry.parentSourceUnknownRunSha256,
+    persistedUnknown.parentSourceUnknownRunSha256
+  )
+  assert.strictEqual(
+    resolvedAfterDry.parentReconciliationEvidenceSha256,
+    persistedUnknown.parentReconciliationEvidenceSha256
+  )
+  assert.strictEqual(parentAfterDry.sourceUnknownRunSha256, persistedParent.sourceUnknownRunSha256)
+  assert.deepStrictEqual(
+    afterNestedDry.listings,
+    [{ id: 'nested-zero-write-business-must-stay-untouched' }]
+  )
+  const formalAfterNestedDry = nestedDryWorker.enqueue({
+    trigger: 'manual',
+    dryRun: false,
+    actorId: 'admin:after-nested-zero-write-dry'
+  })
+  assert.strictEqual(formalAfterNestedDry.dryRun, false)
+}
+
+async function testContinuationLineageDepthIsBounded() {
+  let clock = 1_900_000_000_000
+  const rootRunId = 'feishu-sync-depth-root-unknown'
+  const store = createStore({
+    listings: [{ id: 'depth-limit-business-sentinel' }],
+    feishuSyncRuns: [exactPartialUnknownRun(rootRunId, clock)],
+    feishuSyncScheduler: { blockedRunId: rootRunId, activeLease: null },
+    feishuSyncCommitMarkers: {}
+  })
+  let currentRunId = rootRunId
+
+  // 深度 0 到 32 都使用真实 resolver 与真实 worker 状态机生成，避免手拼链路假绿。
+  for (let depth = 0; depth <= 32; depth += 1) {
+    const evidence = partialReconciliationEvidence(currentRunId)
+    let evidenceReads = 0
+    const resolver = makeWorker({
+      store,
+      now: () => ++clock,
+      ids: [`depth-child-${depth + 1}`],
+      sync: async () => { throw new Error('解阻阶段只允许排队') },
+      reconcilePartialBaseWrites: async () => {
+        evidenceReads += 1
+        return clone(evidence)
+      }
+    }).worker
+    const resolved = await resolver.resolveAndEnqueueReconciledPartial(currentRunId)
+    assert.strictEqual(evidenceReads, 1)
+    const childRunId = resolved.continuationRun.runId
+    let executionCalls = 0
+    const executor = makeWorker({
+      store,
+      now: () => ++clock,
+      sync: async (businessDb, actorId, options) => {
+        executionCalls += 1
+        if (options.dryRun) return dryResult()
+        freezeApplyPlan(options)
+        options.onExternalWriteDispatched()
+        throw new Error('合成的深链首笔写请求未知')
+      }
+    }).worker
+    const unknown = await executor.run(childRunId, {
+      workerId: `depth-worker-${depth + 1}`
+    })
+    assert.strictEqual(executionCalls, 2)
+    assert.strictEqual(unknown.state, STATES.UNKNOWN)
+    currentRunId = childRunId
+  }
+
+  const beforeTooDeep = store.snapshot()
+  let tooDeepReads = 0
+  const tooDeepWorker = makeWorker({
+    store,
+    now: () => ++clock,
+    ids: ['depth-must-not-be-created'],
+    sync: async () => { throw new Error('超深链不得执行同步') },
+    reconcilePartialBaseWrites: async () => {
+      tooDeepReads += 1
+      return partialReconciliationEvidence(currentRunId)
+    }
+  }).worker
+  await assert.rejects(
+    tooDeepWorker.resolveAndEnqueueReconciledPartial(currentRunId),
+    (error) => error && error.code === 'PARTIAL_RECONCILIATION_FAILED',
+    '超过 32 层的恢复链必须在联网前失败关闭'
+  )
+  assert.strictEqual(tooDeepReads, 0)
+  assert.deepStrictEqual(store.snapshot(), beforeTooDeep)
 }
 
 async function testPartialReconciliationRejectsDriftWithoutChangingDb() {
@@ -2798,6 +3484,8 @@ async function main() {
   await testRecoveryRules()
   await testReconciledPartialUnknownAtomicallyQueuesOneFreshRun()
   await testReconciledZeroWriteUnknownQueuesDryRunOnly()
+  await testUnknownContinuationCanBeReconciledWithoutDroppingParentEvidence()
+  await testContinuationLineageDepthIsBounded()
   await testPartialReconciliationRejectsDriftWithoutChangingDb()
   await testPartialReconciliationAtomicRollbackAndConcurrentDriftGuards()
   await testConcurrentPartialResolversCreateOneContinuation()
