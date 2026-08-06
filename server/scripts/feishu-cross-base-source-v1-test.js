@@ -1023,9 +1023,9 @@ async function testEmployeeCurrentStockProfileDryRunIsReadOnly() {
       '四段房号落入最终库存后必须仍完整保留楼栋、单元和复合房号'
     )
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(sharedRecord.fields, 'viewingPassword'),
-      false,
-      '腾房说明不得经完整配置链路泄漏到目标密码字段'
+      sharedRecord.fields.viewingPassword,
+      '',
+      '腾房说明经完整配置链路只能形成明确空密码'
     )
     assert.deepStrictEqual(
       clients.calls.filter((call) => call.client === 'source').map((call) => call.action),

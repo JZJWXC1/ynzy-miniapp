@@ -901,9 +901,9 @@ function testEmployeeProfileNormalizesViewingAccessWithoutLeakingSourceNotes() {
     const fields = prepared.records.find((record) => record.recordId === `viewing-note-${index}`).fields
     assert.strictEqual(fields.viewingMethod, expectedMethod, `“${value}”必须收敛为安全的标准看房方式`)
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(fields, 'viewingPassword'),
-      false,
-      '钥匙、腾房日期、联系说明及无法确认文本不得写入密码字段'
+      fields.viewingPassword,
+      '',
+      '钥匙、腾房日期、联系说明及无法确认文本只能形成明确空密码'
     )
     assert.strictEqual(fields.remark, '员工公开备注', '腾房或联系说明不得拼接或覆盖公开备注')
     assert.strictEqual(JSON.stringify(fields).includes(value), false, '员工看房说明原文不得残留在专用表其他字段')
@@ -989,8 +989,8 @@ function testEmployeeProfileNeverOverridesExplicitViewingPasswordBinding() {
     '钥匙或联系说明配空显式密码列时必须允许安全标准化'
   )
   assert.ok(
-    nonPassword.records.every((record) => !record.fields.viewingPassword),
-    '钥匙或联系房东方式不得在规范结果中保留空密码字段'
+    nonPassword.records.every((record) => record.fields.viewingPassword === ''),
+    '钥匙或联系房东方式必须在规范结果中形成明确空密码'
   )
 
   const catalog = buildLocationCatalog([location()])

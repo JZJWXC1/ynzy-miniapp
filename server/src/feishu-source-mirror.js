@@ -499,7 +499,7 @@ function normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sour
       throw new Error(`源记录 ${sourceRecordId} 的看房方式为钥匙但显式密码列非空`)
     }
     fields.viewingMethod = '钥匙'
-    delete fields.viewingPassword
+    fields.viewingPassword = ''
     return
   }
   if (isVerifiedEmployeeLegacyDoorCode(sourceViewingMethod) || explicitPasswordSemantics) {
@@ -518,7 +518,7 @@ function normalizeEmployeeCurrentStockViewingAccess(fields, sourceBindings, sour
     throw new Error(`源记录 ${sourceRecordId} 的看房方式为联系房东但显式密码列非空`)
   }
   fields.viewingMethod = '联系房东'
-  delete fields.viewingPassword
+  fields.viewingPassword = ''
 }
 
 function prepareSourceSnapshotForCompatibility(sourceSnapshot, options = {}) {

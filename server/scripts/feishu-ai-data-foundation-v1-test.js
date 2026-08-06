@@ -126,6 +126,10 @@ const EXISTING_MINI_FIELDS = Object.freeze([
   'rentMode',
   'viewingMethod',
   'viewingPassword',
+  'contact',
+  'landlordCommissionPercent',
+  'tags',
+  'video',
   'remark',
   'listingStatus',
   'published',
@@ -235,6 +239,7 @@ function fixtureFieldType(semantic) {
     'latitude',
     'longitude',
     'monthlyRent',
+    'landlordCommissionPercent',
     'availabilityCycleNo',
     'lifecycleDays',
     'lifecycleVersion',
@@ -739,9 +744,9 @@ function testViewingMethodDerivesVacancyNoteWithoutConfusingDoorCodes() {
     assert.strictEqual(fields.listingStatus, '即将空出', '明确含“空出”的记录必须标为即将空出')
     assert.strictEqual(fields.viewingMethod, '联系房东', '空出说明处理后仍须归一为安全看房方式')
     assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(fields, 'viewingPassword'),
-      false,
-      '空出说明不得进入看房密码'
+      fields.viewingPassword,
+      '',
+      '空出说明只形成明确空密码，不得进入敏感内容'
     )
     assert.strictEqual(fields.remark, '公开备注', '空出说明不得拼入公开备注')
   })
@@ -1256,6 +1261,143 @@ async function testApplyWritesOnlyTargetClient() {
   assert.deepStrictEqual(invalidCallback.calls, [])
 }
 
+async function testCreateOmitsMissingOptionalFieldsAndUpdateKeepsClearSemantics() {
+  const clients = makeLifecycleClients()
+  await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false,
+    runId: 'foundation-create-without-null-run'
+  }))
+
+  const miniCreate = clients.calls.find((call) => (
+    call.client === 'target' && call.action === 'create' && call.tableId === 'tbl-mini'
+  ))
+  assert.ok(miniCreate && miniCreate.records.length === 1, '测试前置：首次同步必须新增一条当前主档')
+  const createFields = miniCreate.records[0].fields
+  Object.entries(createFields).forEach(([fieldName, value]) => {
+    assert.notStrictEqual(value, null, `新增载荷不得把缺失字段 ${fieldName} 序列化为 null`)
+    assert.notStrictEqual(value, undefined, `新增载荷不得把缺失字段 ${fieldName} 序列化为 undefined`)
+    if (typeof value === 'string') {
+      assert.notStrictEqual(value.trim(), '', `新增载荷不得夹带空文本字段 ${fieldName}`)
+    }
+    if (Array.isArray(value)) {
+      assert.ok(value.length > 0, `新增载荷不得夹带空数组字段 ${fieldName}`)
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      assert.ok(Object.keys(value).length > 0, `新增载荷不得夹带空对象字段 ${fieldName}`)
+    }
+  })
+  ;['viewingPassword', 'contact', 'landlordCommissionPercent', 'tags', 'video'].forEach((semantic) => {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(createFields, semantic),
+      false,
+      `新增载荷必须省略未提供的可选字段 ${semantic}`
+    )
+  })
+
+  const persisted = clients.tableRecords['tbl-mini'][0]
+  persisted.fields.viewingPassword = '336699#'
+  persisted.fields.landlordCommissionPercent = 65
+  persisted.fields.tags = ['电梯', '整租']
+  persisted.fields.video = [{ file_token: 'target-owned-video-token' }]
+  persisted.fields.yuxiaoerListingId = 'YXL-TARGET-ONLY'
+  persisted.fields.yuxiaoerRoomId = 'YXR-TARGET-ONLY'
+  persisted.fields.listingOwner = '目标负责人'
+  persisted.fields.ownerDepartment = '目标部门'
+  clients.calls.length = 0
+  await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: false,
+    runId: 'foundation-update-clear-run'
+  }))
+  const miniUpdate = clients.calls.find((call) => (
+    call.client === 'target' && call.action === 'update' && call.tableId === 'tbl-mini'
+  ))
+  assert.ok(miniUpdate && miniUpdate.records.length === 1, '源记录明确无密码时必须更新并清除旧密码')
+  assert.strictEqual(
+    miniUpdate.records[0].fields.viewingPassword,
+    '',
+    '更新载荷必须用类型正确的空文本明确清除旧密码'
+  )
+  assert.deepStrictEqual(
+    Object.keys(miniUpdate.records[0].fields).sort(),
+    ['identityAliases', 'identityType', 'viewingPassword'],
+    '补入目标内部 ID 后，只能更新随身份确实变化的字段和待清空密码，不得夹带未变化或目标表专有字段'
+  )
+  ;['landlordCommissionPercent', 'tags', 'video'].forEach((semantic) => {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(miniUpdate.records[0].fields, semantic),
+      false,
+      `员工源未拥有的目标专有字段 ${semantic} 不得进入更新载荷`
+    )
+  })
+  assert.strictEqual(persisted.fields.landlordCommissionPercent, 65, '更新后必须保留目标表佣金比例')
+  assert.deepStrictEqual(persisted.fields.tags, ['电梯', '整租'], '更新后必须保留目标表标签')
+  assert.deepStrictEqual(
+    persisted.fields.video,
+    [{ file_token: 'target-owned-video-token' }],
+    '更新后必须保留目标表视频附件'
+  )
+  assert.strictEqual(persisted.fields.yuxiaoerListingId, 'YXL-TARGET-ONLY')
+  assert.strictEqual(persisted.fields.yuxiaoerRoomId, 'YXR-TARGET-ONLY')
+  assert.strictEqual(persisted.fields.listingOwner, '目标负责人')
+  assert.strictEqual(persisted.fields.ownerDepartment, '目标部门')
+}
+
+async function testFeishuApiFailureExposesOnlySanitizedMachineCode() {
+  const client = bitableClient.createBitableClient({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          code: 1254063,
+          msg: '合成错误正文不得进入持久错误码',
+          data: {}
+        }
+      }
+    }),
+    baseUrl: 'https://open.feishu.invalid/open-apis',
+    appToken: 'app-test-only',
+    accessToken: 'tenant-test-only',
+    requestTimeoutMs: 1000,
+    maxRetries: 0,
+    retryDelayMs: 0
+  })
+  await assert.rejects(
+    () => client.batchCreateRecords('tbl-test-only', [{ fields: { 名称: '合成记录' } }], {
+      clientToken: '11111111-1111-4111-8111-111111111111'
+    }),
+    (error) => error && error.code === 'FEISHU_API_1254063' &&
+      !String(error.message || '').includes('合成错误正文'),
+    '飞书业务失败必须提供脱敏、可分类的机器错误码，且不得携带响应正文'
+  )
+
+  const sensitiveMarker = 'synthetic-sensitive-code-marker'
+  const nonnumericClient = bitableClient.createBitableClient({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return { code: sensitiveMarker, msg: '同样不得泄露', data: {} }
+      }
+    }),
+    baseUrl: 'https://open.feishu.invalid/open-apis',
+    appToken: 'app-test-only',
+    accessToken: 'tenant-test-only',
+    requestTimeoutMs: 1000,
+    maxRetries: 0,
+    retryDelayMs: 0
+  })
+  await assert.rejects(
+    () => nonnumericClient.batchCreateRecords('tbl-test-only', [{ fields: { 名称: '合成记录' } }], {
+      clientToken: '22222222-2222-4222-8222-222222222222'
+    }),
+    (error) => error && error.code === 'FEISHU_API_ERROR' &&
+      !String(error.message || '').includes(sensitiveMarker) &&
+      String(error.message || '').includes('code=unknown'),
+    '非数字业务错误码必须同时从机器码与异常文本中脱敏'
+  )
+}
+
 async function testLegacyProfileCannotEraseFoundationFields() {
   const clients = makeLifecycleClients()
   await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
@@ -1265,7 +1407,9 @@ async function testLegacyProfileCannotEraseFoundationFields() {
   assert.ok(current, '测试前置：AI 数据底座必须已建立当前主档')
   current.fields.listingStatus = '在租'
   const internalBefore = FOUNDATION_MINI_FIELDS.reduce((result, semantic) => {
-    result[semantic] = clone(current.fields[semantic])
+    result[semantic] = current.fields[semantic] === undefined
+      ? undefined
+      : clone(current.fields[semantic])
     return result
   }, {})
 
@@ -1723,6 +1867,49 @@ async function testExactPartialPrefixKeepsStableReadOnlyContinuationPlan() {
     '每轮必须分别读取员工源、位置、主表、已出租、流水五表'
   )
   assertNoWrites(clients.calls, '服务端双读对账不得产生任何目标写入')
+
+  const zeroWriteRunId = 'foundation-exact-zero-write-run-20260807'
+  const zeroWriteRunNowMs = oldRunNowMs + 90_000
+  clients.calls.length = 0
+  const zeroWriteAuthorizedPlan = await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+    dryRun: true,
+    runId: zeroWriteRunId,
+    nowMs: zeroWriteRunNowMs,
+    maxDeactivateRatio: 0.75
+  }))
+  assert.deepStrictEqual(zeroWriteAuthorizedPlan.counts, expectedMainCounts)
+  assert.deepStrictEqual(
+    zeroWriteAuthorizedPlan.lifecycleCounts,
+    { rentedArchived: 0, historyAppended: 0, baselineInitialized: 0 },
+    '旧前缀已由生命周期幂等识别时，新 UNKNOWN 可以真实形成五表零业务增量'
+  )
+  let zeroWriteConfiguredRounds = 0
+  clients.calls.length = 0
+  const zeroWriteEvidence = await feishuSync._internal.reconcilePartialBaseWritesWithConfiguredSync(
+    { listings: [] },
+    {
+      externalWriteIntentAt: zeroWriteRunNowMs + 1,
+      expectedMirrorPlanSha256: zeroWriteAuthorizedPlan.mirrorPlanSha256,
+      expectedResourceIdentitySha256: zeroWriteAuthorizedPlan.resourceIdentitySha256,
+      expectedSchemaSha256: zeroWriteAuthorizedPlan.schemaSha256,
+      runId: zeroWriteRunId,
+      runNowMs: zeroWriteRunNowMs
+    },
+    async (options) => {
+      zeroWriteConfiguredRounds += 1
+      return feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+        ...options,
+        maxDeactivateRatio: 0.75
+      }))
+    }
+  )
+  assert.strictEqual(zeroWriteConfiguredRounds, 2, '零写入对账也必须真实双读 configured 生产路径')
+  assert.strictEqual(zeroWriteEvidence.archiveCount, 0)
+  assert.strictEqual(zeroWriteEvidence.historyCount, 0)
+  assert.strictEqual(zeroWriteEvidence.archiveEvidenceSha256, fixtureSha256([]))
+  assert.strictEqual(zeroWriteEvidence.historyEvidenceSha256, fixtureSha256([]))
+  assert.deepStrictEqual(zeroWriteEvidence.currentPlan, expectedMainCounts)
+  assertNoWrites(clients.calls, '零写入 configured 双读不得产生任何目标写入')
 
   const freshRunId = 'foundation-exact-partial-fresh-20260807'
   const freshRunNowMs = oldRunNowMs + 120_000
@@ -2217,6 +2404,23 @@ async function testFirstApplyCreatesPersistentBaselineWithoutHistoricalRental() 
     1,
     '基线成功后必须持久化且只持久化一个初始化标记'
   )
+  const baselineHistoryCreate = clients.calls
+    .filter((call) => call.client === 'target' && call.action === 'create' && call.tableId === 'tbl-history')
+    .flatMap((call) => call.records || [])
+    .find((record) => record.fields && record.fields.eventType === '初始化基线')
+  assert.ok(baselineHistoryCreate, '初始化基线必须经过真实流水创建载荷写入')
+  ;['sourceRecordId', 'fromLifecycleStatusText', 'listingOwner', 'ownerDepartment'].forEach((semantic) => {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(baselineHistoryCreate.fields, semantic),
+      true,
+      `生命周期流水的明确空前态 ${semantic} 不得按新增主档规则省略`
+    )
+    assert.strictEqual(
+      baselineHistoryCreate.fields[semantic],
+      '',
+      `生命周期流水的明确空前态 ${semantic} 必须按字段类型写为空文本`
+    )
+  })
   assert.strictEqual(
     history.some((fields) => fields.eventType === '检测已出租'),
     false,
@@ -2976,6 +3180,8 @@ async function main() {
     ['全空模板不污染房源笔记素材同步', testEmptyTemplateCannotPoisonNoteMaterialSync],
     ['素材写意图落盘失败整轮中止', testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded],
     ['正式写只走目标客户端', testApplyWritesOnlyTargetClient],
+    ['新增省略缺失可选字段且更新保留清空语义', testCreateOmitsMissingOptionalFieldsAndUpdateKeepsClearSemantics],
+    ['飞书业务错误码可诊断且不泄露正文', testFeishuApiFailureExposesOnlySanitizedMachineCode],
     ['旧 profile 回退不清空底座字段', testLegacyProfileCannotEraseFoundationFields],
     ['出租归档幂等与重新进入待租', testArchiveIdempotencyAndReappearance],
     ['出租事件先落盘后的失败补偿', testArchiveFirstCurrentWriteFailureCanRecover],

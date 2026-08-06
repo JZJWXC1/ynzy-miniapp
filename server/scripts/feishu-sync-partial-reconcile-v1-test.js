@@ -184,8 +184,12 @@ async function testCliContinuationOnlyResolvesAndQueues() {
     async resolveAndEnqueueReconciledPartial(receivedRunId) {
       calls.push(['resolve', receivedRunId])
       return {
-        resolvedRun: { runId, state: 'reconciled-partial' },
-        continuationRun: { runId: continuationRunId, state: 'queued' }
+        resolvedRun: {
+          runId,
+          state: 'reconciled-partial',
+          resolutionCode: 'PARTIAL_BASE_WRITES_RECONCILED'
+        },
+        continuationRun: { runId: continuationRunId, state: 'queued', dryRun: false }
       }
     },
     recover() { calls.push(['recover']) },
@@ -208,8 +212,10 @@ async function testCliContinuationOnlyResolvesAndQueues() {
     skipped: false,
     reconciledRunId: runId,
     resolvedState: 'reconciled-partial',
+    resolutionCode: 'PARTIAL_BASE_WRITES_RECONCILED',
     runId: continuationRunId,
-    state: 'queued'
+    state: 'queued',
+    dryRun: false
   })
 
   const originalAutoSyncEnabled = config.feishu.autoSyncEnabled

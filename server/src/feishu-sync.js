@@ -2700,18 +2700,75 @@ function assertFoundationEnrichmentConfiguration() {
   throw error
 }
 
-function semanticFieldsForWrite(fieldNames, fields, options = {}) {
+function semanticFieldsForWrite(fieldNames, fields) {
   const names = fieldNames && typeof fieldNames === 'object' ? fieldNames : {}
   const source = fields && typeof fields === 'object' ? fields : {}
   const output = {}
   Object.keys(names).sort().forEach((semantic) => {
     if (Object.prototype.hasOwnProperty.call(source, semantic)) {
+      if (source[semantic] === undefined || source[semantic] === null) {
+        const error = new Error(`飞书写入字段 ${semantic} 缺少类型正确的空值`)
+        error.code = 'FEISHU_WRITE_FIELD_VALUE_INVALID'
+        error.statusCode = 400
+        error.safeBeforeWrite = true
+        throw error
+      }
       output[names[semantic]] = clone(source[semantic])
-    } else if (options.full === true) {
-      output[names[semantic]] = null
     }
   })
   return output
+}
+
+function semanticFieldsForCreate(fieldNames, fields) {
+  const source = fields && typeof fields === 'object' ? fields : {}
+  const compact = {}
+  Object.keys(source).forEach((semantic) => {
+    const value = source[semantic]
+    if (value === undefined || value === null) return
+    if (typeof value === 'string' && !value.trim()) return
+    if (Array.isArray(value) && value.length === 0) return
+    if (
+      value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && Object.keys(value).length === 0
+    ) return
+    compact[semantic] = value
+  })
+  return semanticFieldsForWrite(fieldNames, compact)
+}
+
+function semanticUpdateRecordForWrite(snapshot, fieldNames, operation) {
+  const recordId = normalizeText(operation && operation.recordId)
+  const current = (snapshot.records || []).find((record) => (
+    normalizeText(record && record.recordId) === recordId
+  ))
+  if (!recordId || !current || !current.fields || typeof current.fields !== 'object') {
+    const error = new Error('飞书更新计划无法命中当前快照记录')
+    error.code = 'FEISHU_UPDATE_SNAPSHOT_MISMATCH'
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  const desired = operation && operation.fields && typeof operation.fields === 'object'
+    ? operation.fields
+    : {}
+  const changed = {}
+  Object.keys(fieldNames || {}).sort().forEach((semantic) => {
+    if (!Object.prototype.hasOwnProperty.call(desired, semantic)) return
+    const before = JSON.stringify(stablePlanValue(current.fields[semantic]))
+    const after = JSON.stringify(stablePlanValue(desired[semantic]))
+    if (before !== after) changed[semantic] = clone(desired[semantic])
+  })
+  const fields = semanticFieldsForWrite(fieldNames, changed)
+  if (Object.keys(fields).length === 0) {
+    const error = new Error('飞书更新计划没有可写的真实字段差异')
+    error.code = 'FEISHU_UPDATE_PLAN_EMPTY'
+    error.statusCode = 409
+    error.safeBeforeWrite = true
+    throw error
+  }
+  return { record_id: recordId, fields }
 }
 
 function legacyMirrorFieldNames(fieldNames, sourceBindings) {
@@ -3310,6 +3367,7 @@ function buildFoundationMirrorPlan({
     const canonicalFields = canonicalBySourceId.get(normalizeText(state.sourceRecordId))
     if (!canonicalFields) throw new Error(`AI 数据底座缺少 canonical 房源：${state.sourceRecordId}`)
     const fields = {
+      ...(persistedFields ? clone(persistedFields) : {}),
       ...clone(canonicalFields),
       ...clone(state),
       listingStatus: state.lifecycleStatusText,
@@ -3755,9 +3813,12 @@ async function createSemanticRecords(targetClient, tableId, snapshot, operations
   // batch_create 只有一个 client_token。若把多条业务记录合在同一个随机批次，
   // “服务端已落盘但响应丢失”后下一进程无法稳定重建同一批次，可能重复建行。
   // 因此创建阶段按业务幂等键逐条提交；吞吐让位于跨进程确定性。
+  const serializeFields = options.omitEmptyFields === true
+    ? semanticFieldsForCreate
+    : semanticFieldsForWrite
   for (const operation of operations) {
     await targetClient.batchCreateRecords(tableId, [{
-      fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
+      fields: serializeFields(snapshot.fieldNames, operation.fields)
     }], {
       clientToken: stableCreateClientToken(tableId, operation),
       ...externalWriteOptions(options)
@@ -3768,12 +3829,14 @@ async function createSemanticRecords(targetClient, tableId, snapshot, operations
 async function writeFoundationCurrentRecords(targetClient, tableId, snapshot, operations, options = {}) {
   const creates = operations.filter((operation) => operation.type === 'create')
   const updates = operations.filter((operation) => operation.type !== 'create')
-  await createSemanticRecords(targetClient, tableId, snapshot, creates, options)
+  await createSemanticRecords(targetClient, tableId, snapshot, creates, {
+    ...options,
+    omitEmptyFields: true
+  })
   for (const batch of chunksOf(updates)) {
-    const records = batch.map((operation) => ({
-      record_id: operation.recordId,
-      fields: semanticFieldsForWrite(snapshot.fieldNames, operation.fields, { full: true })
-    }))
+    const records = batch.map((operation) => (
+      semanticUpdateRecordForWrite(snapshot, snapshot.fieldNames, operation)
+    ))
     await targetClient.batchUpdateRecords(tableId, records, {
       clientToken: stableUpdateClientToken(tableId, records, {
         phase: 'foundation-current',
@@ -4759,9 +4822,6 @@ function buildPartialBaseReconciliationEvidence(input = {}) {
   const historyRecords = capture.historySnapshot.records.filter((record) => (
     normalizeText(record && record.fields && record.fields.runId) === runId
   ))
-  if (archiveRecords.length + historyRecords.length === 0) {
-    throw partialReconciliationError('当前 Base 未发现旧 run 的部分写入前缀')
-  }
   const archiveRecordIds = new Set(archiveRecords.map((record) => record.recordId))
   const historyRecordIds = new Set(historyRecords.map((record) => record.recordId))
   const priorRentedSnapshot = rebuildValidatedTableSnapshot(
@@ -5172,19 +5232,16 @@ async function executeMirrorTableSync(options = {}) {
   const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames, options.sourceBindings)
   for (const batch of chunksOf(creates)) {
     await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
-      fields: semanticFieldsForWrite(writableFieldNames, operation.fields, { full: true })
+      fields: semanticFieldsForCreate(writableFieldNames, operation.fields)
     })), {
       clientToken: crypto.randomUUID(),
       ...externalWriteOptions(options)
     })
   }
   for (const batch of chunksOf(updates)) {
-    const records = batch.map((operation) => ({
-      record_id: operation.recordId,
-      fields: semanticFieldsForWrite(writableFieldNames, operation.fields, {
-        full: operation.type !== 'deactivate'
-      })
-    }))
+    const records = batch.map((operation) => (
+      semanticUpdateRecordForWrite(mirrorSnapshot, writableFieldNames, operation)
+    ))
     await targetClient.batchUpdateRecords(options.miniTableId, records, {
       clientToken: stableUpdateClientToken(options.miniTableId, records, {
         phase: 'legacy-current',

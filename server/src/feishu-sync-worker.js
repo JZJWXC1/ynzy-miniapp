@@ -177,6 +177,7 @@ function validatePartialReconciliationEvidence(evidence, run) {
     'schemaSha256'
   ]
   const planKeys = ['create', 'deactivate', 'noop', 'restore', 'update']
+  const emptyEvidenceSha256 = stableSha256([])
   if (!exactObjectKeys(evidence, evidenceKeys) ||
       !exactObjectKeys(evidence.currentPlan, planKeys) ||
       evidence.contract !== 'feishu-partial-base-write-reconciliation-v1' ||
@@ -191,7 +192,8 @@ function validatePartialReconciliationEvidence(evidence, run) {
       !validSha256(evidence.evidenceSha256) ||
       !Number.isSafeInteger(evidence.archiveCount) || evidence.archiveCount < 0 ||
       !Number.isSafeInteger(evidence.historyCount) || evidence.historyCount < 0 ||
-      evidence.archiveCount + evidence.historyCount <= 0 ||
+      (evidence.archiveCount === 0) !== (evidence.archiveEvidenceSha256 === emptyEvidenceSha256) ||
+      (evidence.historyCount === 0) !== (evidence.historyEvidenceSha256 === emptyEvidenceSha256) ||
       planKeys.some((key) => !Number.isSafeInteger(evidence.currentPlan[key]) || evidence.currentPlan[key] < 0) ||
       ['create', 'update', 'restore', 'deactivate']
         .reduce((sum, key) => sum + evidence.currentPlan[key], 0) <= 0) {
@@ -217,12 +219,61 @@ function validatePartialReconciliationEvidence(evidence, run) {
   return { ...evidenceBody, evidenceSha256: evidence.evidenceSha256 }
 }
 
+function isZeroBaseWriteEvidence(evidence) {
+  return evidence.archiveCount === 0 && evidence.historyCount === 0
+}
+
+function isReconciledDryRunBarrier(run) {
+  return Boolean(run) && run.state === STATES.RECONCILED_PARTIAL
+}
+
+function isVerifiedZeroWriteBarrier(run) {
+  if (!isReconciledDryRunBarrier(run) ||
+      run.resolutionCode !== 'ZERO_BASE_WRITES_RECONCILED' ||
+      !run.reconciliationEvidence ||
+      run.reconciliationEvidenceSha256 !== run.reconciliationEvidence.evidenceSha256 ||
+      !Number.isSafeInteger(run.resolvedAt) || run.resolvedAt <= 0 ||
+      !Number.isSafeInteger(run.finishedAt) || run.resolvedAt <= run.finishedAt ||
+      run.updatedAt !== run.resolvedAt) return false
+  try {
+    const evidence = validatePartialReconciliationEvidence(
+      run.reconciliationEvidence,
+      run
+    )
+    return isZeroBaseWriteEvidence(evidence) &&
+      sourceUnknownRunIdentityFromResolved(run) === run.sourceUnknownRunSha256
+  } catch (error) {
+    return false
+  }
+}
+
+function isDryRunBoundToZeroWriteBarrier(run, barrier) {
+  return Boolean(run) && Boolean(barrier) &&
+    run.dryRun === true &&
+    run.continuationOfRunId === barrier.runId &&
+    run.sourceUnknownRunSha256 === barrier.sourceUnknownRunSha256 &&
+    run.reconciliationEvidenceSha256 === barrier.reconciliationEvidenceSha256 &&
+    Number.isSafeInteger(run.createdAt) &&
+    Number.isSafeInteger(barrier.resolvedAt) &&
+    run.createdAt >= barrier.resolvedAt
+}
+
 function partialContinuationRequestKey(runId, sourceUnknownRunSha256, evidenceSha256) {
   return stableSha256({
     contract: 'feishu-reconciled-partial-continuation-v1',
     continuationOfRunId: runId,
     sourceUnknownRunSha256,
     reconciliationEvidenceSha256: evidenceSha256
+  })
+}
+
+function zeroWriteContinuationRequestKey(runId, sourceUnknownRunSha256, evidenceSha256) {
+  return stableSha256({
+    contract: 'feishu-reconciled-zero-write-dry-run-v1',
+    continuationOfRunId: runId,
+    sourceUnknownRunSha256,
+    reconciliationEvidenceSha256: evidenceSha256,
+    dryRun: true
   })
 }
 
@@ -940,10 +991,27 @@ function createFeishuSyncWorker(dependencies = {}) {
         selected = clone(blocker)
         return
       }
+      if (blocker && isReconciledDryRunBarrier(blocker) && !dryRun) {
+        if (trigger === 'scheduled') scheduler.lastTickAt = requestedAt
+        throw new WorkerError('ZERO_WRITE_DRY_RUN_REQUIRED', '', {
+          safeBeforeWrite: true,
+          blocked: true
+        })
+      }
+      const zeroWriteBarrier = blocker && isReconciledDryRunBarrier(blocker)
+        ? blocker
+        : null
+      if (zeroWriteBarrier && !isVerifiedZeroWriteBarrier(zeroWriteBarrier)) {
+        throw partialReconciliationFailure()
+      }
       const existingNonTerminal = db.feishuSyncRuns.find((run) =>
         run && !TERMINAL_STATES.has(run.state) && run.dryRun === dryRun
       )
       if (existingNonTerminal) {
+        if (zeroWriteBarrier && dryRun &&
+            !isDryRunBoundToZeroWriteBarrier(existingNonTerminal, zeroWriteBarrier)) {
+          throw partialReconciliationFailure()
+        }
         if (trigger === 'scheduled') scheduler.lastTickAt = requestedAt
         selected = clone(existingNonTerminal)
         return
@@ -988,6 +1056,11 @@ function createFeishuSyncWorker(dependencies = {}) {
         writeIntentEvidenceVersion: 1,
         lease: null,
         errorCode: ''
+      }
+      if (zeroWriteBarrier && dryRun) {
+        run.continuationOfRunId = zeroWriteBarrier.runId
+        run.sourceUnknownRunSha256 = zeroWriteBarrier.sourceUnknownRunSha256
+        run.reconciliationEvidenceSha256 = zeroWriteBarrier.reconciliationEvidenceSha256
       }
       db.feishuSyncRuns.unshift(run)
       scheduler.lastRunId = runId
@@ -1097,7 +1170,11 @@ function createFeishuSyncWorker(dependencies = {}) {
         : (activeLeaseOrphaned ? String(scheduler.activeLease.runId || 'controller-state-invalid') : '')
     }
     const currentBlocker = runById(db, db.feishuSyncScheduler.blockedRunId)
-    if (!currentBlocker || ![STATES.UNKNOWN, STATES.BLOCKED].includes(currentBlocker.state)) {
+    const currentBlockerStillRequired = currentBlocker && (
+      [STATES.UNKNOWN, STATES.BLOCKED].includes(currentBlocker.state) ||
+      isReconciledDryRunBarrier(currentBlocker)
+    )
+    if (!currentBlockerStillRequired) {
       const unresolved = db.feishuSyncRuns.find((run) =>
         run && [STATES.UNKNOWN, STATES.BLOCKED].includes(run.state)
       )
@@ -1190,17 +1267,28 @@ function createFeishuSyncWorker(dependencies = {}) {
     } catch (error) {
       throw partialReconciliationFailure()
     }
-    const expectedRequestKey = partialContinuationRequestKey(
-      runId,
-      resolvedRun.sourceUnknownRunSha256,
-      resolvedRun.reconciliationEvidenceSha256
-    )
+    const zeroWrite = isZeroBaseWriteEvidence(verifiedEvidence)
+    const expectedRequestKey = zeroWrite
+      ? zeroWriteContinuationRequestKey(
+          runId,
+          resolvedRun.sourceUnknownRunSha256,
+          resolvedRun.reconciliationEvidenceSha256
+        )
+      : partialContinuationRequestKey(
+          runId,
+          resolvedRun.sourceUnknownRunSha256,
+          resolvedRun.reconciliationEvidenceSha256
+        )
+    const expectedResolutionCode = zeroWrite
+      ? 'ZERO_BASE_WRITES_RECONCILED'
+      : 'PARTIAL_BASE_WRITES_RECONCILED'
     if (resolvedRun.version !== 3 || resolvedRun.trigger !== 'manual' ||
         resolvedRun.actorType !== 'manual' || resolvedRun.dryRun !== false ||
         resolvedRun.errorCode !== 'UNKNOWN_ERROR' ||
         resolvedRun.externalWritesMayHaveOccurred !== true ||
-        resolvedRun.resolutionCode !== 'PARTIAL_BASE_WRITES_RECONCILED' ||
+        resolvedRun.resolutionCode !== expectedResolutionCode ||
         !Number.isSafeInteger(resolvedRun.resolvedAt) || resolvedRun.resolvedAt <= 0 ||
+        !Number.isSafeInteger(resolvedRun.finishedAt) || resolvedRun.resolvedAt <= resolvedRun.finishedAt ||
         resolvedRun.updatedAt !== resolvedRun.resolvedAt ||
         resolvedRun.sourceUnknownRunSha256 !== verifiedSourceUnknownSha256 ||
         resolvedRun.reconciliationEvidenceSha256 !== verifiedEvidence.evidenceSha256 ||
@@ -1210,12 +1298,16 @@ function createFeishuSyncWorker(dependencies = {}) {
         !continuation || continuation.continuationOfRunId !== runId ||
         continuation.version !== 3 || continuation.trigger !== 'manual' ||
         continuation.actorType !== 'manual' || continuation.actorId !== resolvedRun.actorId ||
-        continuation.dryRun !== false || continuation.state !== STATES.QUEUED ||
+        continuation.dryRun !== zeroWrite || continuation.state !== STATES.QUEUED ||
+        continuation.runNowMs !== resolvedRun.resolvedAt ||
+        continuation.createdAt !== resolvedRun.resolvedAt ||
+        continuation.updatedAt !== resolvedRun.resolvedAt ||
         continuation.sourceUnknownRunSha256 !== resolvedRun.sourceUnknownRunSha256 ||
         continuation.reconciliationEvidenceSha256 !== resolvedRun.reconciliationEvidenceSha256 ||
         continuation.requestKeySha256 !== expectedRequestKey ||
         stableSha256(continuation) !== resolvedRun.continuationSeedSha256 ||
-        scheduler.blockedRunId || scheduler.activeLease || scheduler.leaseIntegrityBlockedRunId ||
+        scheduler.blockedRunId !== (zeroWrite ? runId : '') ||
+        scheduler.activeLease || scheduler.leaseIntegrityBlockedRunId ||
         scheduler.lastRunId !== continuation.runId ||
         commitMarkers[runId] || commitMarkers[continuation.runId]) {
       throw partialReconciliationFailure()
@@ -1328,24 +1420,31 @@ function createFeishuSyncWorker(dependencies = {}) {
         throw partialReconciliationFailure()
       }
       const confirmedEvidence = validatePartialReconciliationEvidence(evidence, currentRun)
+      const zeroWrite = isZeroBaseWriteEvidence(confirmedEvidence)
       const atMs = Number(now())
-      if (!Number.isSafeInteger(atMs) || atMs <= currentRun.externalWriteIntentAt) {
+      if (!Number.isSafeInteger(atMs) || atMs <= currentRun.finishedAt) {
         throw partialReconciliationFailure()
       }
       const continuationRunId = nextRunId()
       if (runById(db, continuationRunId)) throw partialReconciliationFailure()
       const sourceUnknownRunSha256 = stableSha256(frozenRun)
-      const requestKeySha256 = partialContinuationRequestKey(
-        runId,
-        sourceUnknownRunSha256,
-        confirmedEvidence.evidenceSha256
-      )
+      const requestKeySha256 = zeroWrite
+        ? zeroWriteContinuationRequestKey(
+            runId,
+            sourceUnknownRunSha256,
+            confirmedEvidence.evidenceSha256
+          )
+        : partialContinuationRequestKey(
+            runId,
+            sourceUnknownRunSha256,
+            confirmedEvidence.evidenceSha256
+          )
       const continuation = {
         version: 3,
         runId: continuationRunId,
         state: STATES.QUEUED,
         trigger: 'manual',
-        dryRun: false,
+        dryRun: zeroWrite,
         actorType: 'manual',
         actorId: normalizeActorId(currentRun.actorId, ''),
         bucket: null,
@@ -1364,7 +1463,9 @@ function createFeishuSyncWorker(dependencies = {}) {
         errorCode: ''
       }
       currentRun.state = STATES.RECONCILED_PARTIAL
-      currentRun.resolutionCode = 'PARTIAL_BASE_WRITES_RECONCILED'
+      currentRun.resolutionCode = zeroWrite
+        ? 'ZERO_BASE_WRITES_RECONCILED'
+        : 'PARTIAL_BASE_WRITES_RECONCILED'
       currentRun.resolvedAt = atMs
       currentRun.updatedAt = atMs
       currentRun.reconciliationEvidenceSha256 = confirmedEvidence.evidenceSha256
@@ -1374,7 +1475,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       currentRun.sourceUnknownUpdatedAt = frozenRun.updatedAt
       currentRun.continuationSeedSha256 = stableSha256(continuation)
       db.feishuSyncRuns.unshift(continuation)
-      db.feishuSyncScheduler.blockedRunId = ''
+      db.feishuSyncScheduler.blockedRunId = zeroWrite ? runId : ''
       db.feishuSyncScheduler.lastRunId = continuationRunId
       trimRuns(db, maxRuns)
       resolved = {
@@ -1494,7 +1595,12 @@ function createFeishuSyncWorker(dependencies = {}) {
         run.lastFence = Number(finishedLease.fence)
         run.lease = null
         releaseSchedulerLease(db, runId, finishedLease)
-        if (state === STATES.BLOCKED || state === STATES.UNKNOWN) {
+        const existingBarrier = runById(db, db.feishuSyncScheduler.blockedRunId)
+        const preserveZeroWriteParentBarrier = state === STATES.BLOCKED &&
+          isVerifiedZeroWriteBarrier(existingBarrier) &&
+          isDryRunBoundToZeroWriteBarrier(run, existingBarrier)
+        if ((state === STATES.BLOCKED || state === STATES.UNKNOWN) &&
+            !preserveZeroWriteParentBarrier) {
           db.feishuSyncScheduler.blockedRunId = runId
         }
       })
@@ -1595,6 +1701,11 @@ function createFeishuSyncWorker(dependencies = {}) {
             ? 'MATERIALS_PARTIAL_DRY_RUN'
             : ''
           db.feishuSyncScheduler.lastDryRunAt = atMs
+          const reconciliationBarrier = runById(db, db.feishuSyncScheduler.blockedRunId)
+          if (isVerifiedZeroWriteBarrier(reconciliationBarrier) &&
+              isDryRunBoundToZeroWriteBarrier(run, reconciliationBarrier)) {
+            db.feishuSyncScheduler.blockedRunId = ''
+          }
         })
         return readRun(runId)
       }

@@ -87,8 +87,10 @@ async function main(argv = process.argv.slice(2), runtime = {}) {
       skipped: false,
       reconciledRunId: resolved.resolvedRun.runId,
       resolvedState: resolved.resolvedRun.state,
+      resolutionCode: resolved.resolvedRun.resolutionCode,
       runId: resolved.continuationRun.runId,
-      state: resolved.continuationRun.state
+      state: resolved.continuationRun.state,
+      dryRun: resolved.continuationRun.dryRun
     })}\n`)
     return 0
   }

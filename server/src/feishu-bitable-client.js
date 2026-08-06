@@ -406,7 +406,10 @@ function createBitableClient(options) {
         const code = payload && (typeof payload.code === 'number' || typeof payload.code === 'string')
           ? String(payload.code)
           : 'unknown'
-        throw new Error(`飞书${operation}失败：code=${code}`)
+        const numericCode = /^\d{1,16}$/.test(code) ? code : ''
+        const error = new Error(`飞书${operation}失败：code=${numericCode || 'unknown'}`)
+        error.code = numericCode ? `FEISHU_API_${numericCode}` : 'FEISHU_API_ERROR'
+        throw error
       }
       if (!payload.data || typeof payload.data !== 'object') throw new Error(`飞书${operation}响应缺少 data`)
       return payload.data
