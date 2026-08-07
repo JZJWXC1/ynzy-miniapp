@@ -19,6 +19,16 @@ function parseArgs(argv = []) {
   if (argv.length === 2 && argv[0] === '--continue-reconciled-partial' && validRunId(argv[1])) {
     return { mode: 'continue-reconciled-partial', runId: argv[1] }
   }
+  if (argv.length === 3 && argv[0] === '--create-current-convergence' &&
+      /^feishu-sync-[A-Za-z0-9._:-]{4,115}$/.test(argv[1]) &&
+      /^feishu-sync-[A-Za-z0-9._:-]{4,115}$/.test(argv[2]) &&
+      validRunId(argv[1]) && validRunId(argv[2]) && argv[1] !== argv[2]) {
+    return {
+      mode: 'create-current-convergence',
+      blockedRunId: argv[1],
+      baselineDryRunId: argv[2]
+    }
+  }
   const error = new Error('同步 worker 参数无效')
   error.code = 'WORKER_ARGUMENT_INVALID'
   throw error
@@ -65,8 +75,9 @@ async function main(argv = process.argv.slice(2), runtime = {}) {
     throw error
   }
   const args = parseArgs(argv)
-  if (args.mode === 'continue-reconciled-partial' && config.feishu.autoSyncEnabled) {
-    const error = new Error('部分写入恢复前必须先关闭自动同步')
+  if (['run', 'continue-reconciled-partial', 'create-current-convergence'].includes(args.mode) &&
+      config.feishu.autoSyncEnabled) {
+    const error = new Error('人工运行、恢复或收敛前必须先关闭自动同步')
     error.code = 'WORKER_CONFIGURATION_INVALID'
     throw error
   }
@@ -91,6 +102,22 @@ async function main(argv = process.argv.slice(2), runtime = {}) {
       runId: resolved.continuationRun.runId,
       state: resolved.continuationRun.state,
       dryRun: resolved.continuationRun.dryRun
+    })}\n`)
+    return 0
+  }
+  if (args.mode === 'create-current-convergence') {
+    const created = worker.createCurrentConvergence(
+      args.blockedRunId,
+      args.baselineDryRunId
+    )
+    writeOutput(`${JSON.stringify({
+      ok: true,
+      skipped: false,
+      runId: created.runId,
+      state: created.state,
+      convergenceContract: created.convergenceContract,
+      supersedesBlockedRunId: created.supersedesBlockedRunId,
+      baselineDryRunId: created.baselineDryRunId
     })}\n`)
     return 0
   }

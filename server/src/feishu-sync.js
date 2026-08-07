@@ -3889,6 +3889,9 @@ function operationsForPlanDigest(operations = [], options = {}) {
       normalized.fields.eventAt = 0
       normalized.fields.runId = ''
     }
+    if (options.archive === true && normalized.fields) {
+      normalized.fields.archivedAt = 0
+    }
     return stablePlanValue(normalized)
   }).sort((left, right) => {
     const leftText = JSON.stringify(left)
@@ -4195,21 +4198,60 @@ function buildMirrorSafetyDigests(input = {}) {
 
   const plannedRecords = Array.isArray(input.plannedRecords) ? input.plannedRecords : []
   const publicCompanySheetSnapshot = buildCompanySheetSnapshot(plannedRecords)
+  const planOperations = operationsForPlanDigest(input.operations || [])
+  const archiveOperations = operationsForPlanDigest(input.archiveOperations || [], { archive: true })
+  const historyOperations = operationsForPlanDigest(input.historyOperations || [], { history: true })
+  const baselineMarkerOperations = input.baselineMarkerOperation
+    ? operationsForPlanDigest([input.baselineMarkerOperation], { history: true })
+    : []
+  const publicCompanySheet = stablePlanValue(publicCompanySheetSnapshot)
+  // 分项证据只保存摘要和数量，不保存源表正文。总摘要变化时，运维可以直接看出是
+  // 哪张表、哪类操作、素材清单还是首页房源表发生变化，避免再次靠反复正式尝试定位。
+  const componentEvidence = {
+    contract: 'feishu-mirror-component-evidence-v1',
+    snapshots: snapshots.map(({ role, digest, recordCount }) => ({ role, digest, recordCount })),
+    operations: {
+      main: { count: planOperations.length, digest: stableSha256(planOperations) },
+      archive: { count: archiveOperations.length, digest: stableSha256(archiveOperations) },
+      history: { count: historyOperations.length, digest: stableSha256(historyOperations) }
+    },
+    baselineMarker: {
+      count: baselineMarkerOperations.length,
+      digest: stableSha256(baselineMarkerOperations)
+    },
+    legacyMaterials: {
+      count: legacyMaterialEvidence.count,
+      digest: stableSha256(legacyMaterialEvidence)
+    },
+    companySheet: {
+      rowCount: Math.max(0, publicCompanySheetSnapshot.rows.length - 1),
+      columnCount: Array.isArray(publicCompanySheetSnapshot.rows[0])
+        ? publicCompanySheetSnapshot.rows[0].length
+        : 0,
+      digest: stableSha256(publicCompanySheet)
+    }
+  }
+  const componentEvidenceSha256 = stableSha256(componentEvidence)
   const mirrorPlanSha256 = stableSha256({
     version: 'feishu-mirror-plan-v1',
     schemaSha256,
     resourceIdentitySha256,
     snapshots: snapshots.map(({ role, digest, recordCount }) => ({ role, digest, recordCount })),
-    operations: operationsForPlanDigest(input.operations || []),
-    archiveOperations: operationsForPlanDigest(input.archiveOperations || []),
-    historyOperations: operationsForPlanDigest(input.historyOperations || []),
-    baselineMarkerOperation: input.baselineMarkerOperation
-      ? operationsForPlanDigest([input.baselineMarkerOperation])[0]
-      : null,
+    operations: planOperations,
+    archiveOperations,
+    historyOperations,
+    baselineMarkerOperation: baselineMarkerOperations[0] || null,
     legacyMaterialEvidence,
-    publicCompanySheetSnapshot: stablePlanValue(publicCompanySheetSnapshot)
+    publicCompanySheetSnapshot: publicCompanySheet
   })
-  return { schemaSha256, resourceIdentitySha256, mirrorPlanSha256, schemaBindings }
+  return {
+    schemaSha256,
+    resourceIdentitySha256,
+    mirrorPlanSha256,
+    schemaBindings,
+    componentEvidence,
+    componentEvidenceSha256
+  }
 }
 
 function mirrorSafetyDigestError(code, message) {
@@ -4240,6 +4282,14 @@ function assertMirrorSafetyDigestConfirmation(options = {}, digests = {}) {
       options.expectedResourceIdentitySha256 !== undefined &&
       !secureDigestEqual(options.expectedResourceIdentitySha256, digests.resourceIdentitySha256)) {
     throw mirrorSafetyDigestError('MIRROR_RESOURCE_CHANGED', '飞书源表或目标表身份已变化，已在写入前阻断')
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'expectedComponentEvidenceSha256') &&
+      options.expectedComponentEvidenceSha256 !== undefined &&
+      !secureDigestEqual(
+        options.expectedComponentEvidenceSha256,
+        digests.componentEvidenceSha256
+      )) {
+    throw mirrorSafetyDigestError('MIRROR_PLAN_CHANGED', '飞书镜像分项证据已变化，已在写入前阻断')
   }
   return true
 }
@@ -6040,8 +6090,14 @@ async function syncViaMirror(db, adminId, options = {}) {
       baselinePublishedFoundationIdentityKeys,
       dryRun: true,
       // A 只绑定慢素材准备的内容/schema/resource；临写前镜像 B 必须按当前五表重新形成，
-      // 不能再被较早的 A mirror 摘要提前拦截。
-      expectedMirrorPlanSha256: undefined,
+      // 不能再被较早的 A mirror 摘要提前拦截。只有显式“当前态收敛”任务会把已选择的
+      // 全新 dry 基线严格绑定到 B，确保旧 UNKNOWN 解锁链没有任何静默刷新。
+      expectedMirrorPlanSha256: options.strictMirrorPlanBinding === true
+        ? options.expectedMirrorPlanSha256
+        : undefined,
+      expectedComponentEvidenceSha256: options.strictMirrorPlanBinding === true
+        ? options.expectedComponentEvidenceSha256
+        : undefined,
       // 源表房源笔记字段属于已确认内容计划的一部分；镜像可刷新，素材来源不可刷新。
       expectedSourceMaterialFieldSha256: confirmedContentPlan &&
         confirmedContentPlan.expectedSourceMaterialFieldSha256,
@@ -6053,7 +6109,8 @@ async function syncViaMirror(db, adminId, options = {}) {
         mirrorSafetyPreflight.dryRun !== true ||
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.schemaSha256 || '')) ||
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.resourceIdentitySha256 || '')) ||
-        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.mirrorPlanSha256 || ''))) {
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.mirrorPlanSha256 || '')) ||
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.componentEvidenceSha256 || ''))) {
       throw mirrorSafetyDigestError(
         'MIRROR_PREFLIGHT_FAILED',
         '飞书镜像正式同步的只读安全预检未形成完整摘要'
@@ -6070,7 +6127,9 @@ async function syncViaMirror(db, adminId, options = {}) {
       const freezeResult = options.onApplyPlanFrozen({
         schemaSha256: mirrorSafetyPreflight.schemaSha256,
         resourceIdentitySha256: mirrorSafetyPreflight.resourceIdentitySha256,
-        mirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256
+        mirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256,
+        componentEvidence: mirrorSafetyPreflight.componentEvidence,
+        componentEvidenceSha256: mirrorSafetyPreflight.componentEvidenceSha256
       })
       if (freezeResult && typeof freezeResult.then === 'function') {
         Promise.resolve(freezeResult).catch(() => {})
@@ -6101,7 +6160,8 @@ async function syncViaMirror(db, adminId, options = {}) {
       ? {
           expectedSchemaSha256: mirrorSafetyPreflight.schemaSha256,
           expectedResourceIdentitySha256: mirrorSafetyPreflight.resourceIdentitySha256,
-          expectedMirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256
+          expectedMirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256,
+          expectedComponentEvidenceSha256: mirrorSafetyPreflight.componentEvidenceSha256
         }
       : {})
   }
