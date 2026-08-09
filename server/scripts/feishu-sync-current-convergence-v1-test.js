@@ -945,9 +945,59 @@ function cliContractIsExplicitAndNonAmbiguous() {
       baselineDryRunId: 'feishu-sync-dry-current-01'
     }
   )
+  assert.deepStrictEqual(
+    workerRunner.parseArgs([
+      '--create-current-convergence',
+      'sync-unknown-current-01',
+      'sync-abd3840-20260809-fresh-dry-01'
+    ]),
+    {
+      mode: 'create-current-convergence',
+      blockedRunId: 'sync-unknown-current-01',
+      baselineDryRunId: 'sync-abd3840-20260809-fresh-dry-01'
+    },
+    'CLI 必须接受 worker 通用安全规则允许的任务号，不能额外绑定历史前缀'
+  )
   assert.throws(
-    () => workerRunner.parseArgs(['--create-current-convergence', 'too-short', 'feishu-sync-dry-current-01']),
+    () => workerRunner.parseArgs(['--create-current-convergence', 'bad', 'feishu-sync-dry-current-01']),
     /参数无效/
+  )
+  assert.throws(
+    () => workerRunner.parseArgs([
+      '--create-current-convergence',
+      'sync-password-current-01',
+      'sync-abd3840-20260809-fresh-dry-01'
+    ]),
+    /参数无效/,
+    '放宽历史前缀后仍必须拒绝含敏感词的任务号'
+  )
+  assert.throws(
+    () => workerRunner.parseArgs([
+      '--create-current-convergence',
+      'sync-same-current-01',
+      'sync-same-current-01'
+    ]),
+    /参数无效/,
+    '被收敛任务与预演任务必须保持两个不同身份'
+  )
+  assert.throws(
+    () => workerRunner.parseArgs([
+      '--create-current-convergence',
+      'sync-unknown-current-01',
+      'sync-abd3840-20260809-fresh-dry-01',
+      'unexpected'
+    ]),
+    /参数无效/,
+    '合法参数后追加内容时必须拒绝，不能静默忽略歧义输入'
+  )
+  assert.throws(
+    () => workerRunner.parseArgs([
+      '--create-current-convergence-extra',
+      'sync-unknown-current-01',
+      'sync-abd3840-20260809-fresh-dry-01'
+    ]),
+    /参数无效/,
+    '创建入口名称必须精确匹配'
   )
 }
 

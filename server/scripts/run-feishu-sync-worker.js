@@ -20,8 +20,6 @@ function parseArgs(argv = []) {
     return { mode: 'continue-reconciled-partial', runId: argv[1] }
   }
   if (argv.length === 3 && argv[0] === '--create-current-convergence' &&
-      /^feishu-sync-[A-Za-z0-9._:-]{4,115}$/.test(argv[1]) &&
-      /^feishu-sync-[A-Za-z0-9._:-]{4,115}$/.test(argv[2]) &&
       validRunId(argv[1]) && validRunId(argv[2]) && argv[1] !== argv[2]) {
     return {
       mode: 'create-current-convergence',
