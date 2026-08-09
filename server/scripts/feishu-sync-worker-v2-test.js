@@ -463,8 +463,11 @@ async function testSuccessIsAtomicAndReturnsExpectedDigests() {
   })
 
   const queued = worker.enqueue({ trigger: 'manual', actorId: 'admin-1' })
+  const queuedRaw = store.snapshot().feishuSyncRuns[0]
+  assert.strictEqual(queuedRaw.version, 3, '普通同步必须继续使用 V3 身份')
+  assert.strictEqual(queuedRaw.convergenceContract, undefined, '普通同步不得误挂 V5 收敛合同')
   const completed = await worker.run(queued.runId, { workerId: 'worker-a' })
-  assert.strictEqual(completed.state, STATES.SUCCEEDED)
+  assert.strictEqual(completed.state, STATES.SUCCEEDED, `formal success blocked: ${completed.errorCode || 'no-error-code'}`)
   assert.strictEqual(calls.length, 2, '成功链路必须且只允许一次 dry 与一次 apply')
   assert.strictEqual(calls[0].options.dryRun, true)
   assert.strictEqual(calls[1].options.dryRun, false)
@@ -486,6 +489,71 @@ async function testSuccessIsAtomicAndReturnsExpectedDigests() {
   assert.strictEqual(db.feishuSyncRuns[0].actorId, 'admin-1', '内部任务必须持久化已认证发起人')
   assert.ok(calls.every((call) => call.actorId === 'admin-1'), 'dry/apply 必须使用同一持久发起人')
   assert.ok(!JSON.stringify(worker.getStatus()).includes('admin-1'), '公共任务状态不得输出内部发起人身份')
+}
+
+async function testClearedWriteIntentCannotCommitAsNoWrite() {
+  let store
+  let writeIntentCalls = 0
+  const built = makeWorker({
+    ids: ['run-cleared-write-intent'],
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      options.onExternalWriteDispatched()
+      writeIntentCalls += 1
+      store.updateDb((current) => {
+        const run = current.feishuSyncRuns.find((item) => item.runId === options.runId)
+        run.state = STATES.READY_TO_APPLY
+        run.externalWritesMayHaveOccurred = false
+        delete run.applyIntentAt
+        delete run.externalWriteIntentAt
+      })
+      db.listings = [{ id: 'must-not-commit-after-intent-tamper' }]
+      return applyResult()
+    }
+  })
+  store = built.store
+  const queued = built.worker.enqueue({ trigger: 'manual', actorId: 'admin-intent-tamper' })
+  const result = await built.worker.run(queued.runId, { workerId: 'worker-intent-tamper' })
+  const after = store.snapshot()
+  const persisted = after.feishuSyncRuns.find((run) => run.runId === queued.runId)
+  assert.strictEqual(writeIntentCalls, 1)
+  assert.strictEqual(result.state, STATES.UNKNOWN)
+  assert.strictEqual(result.externalWritesMayHaveOccurred, true)
+  assert.ok(Number.isSafeInteger(persisted.applyIntentAt))
+  assert.strictEqual(persisted.externalWriteIntentAt, persisted.applyIntentAt)
+  assert.strictEqual(after.feishuSyncScheduler.blockedRunId, queued.runId)
+  assert.strictEqual(after.feishuSyncCommitMarkers[queued.runId], undefined)
+  assert.deepStrictEqual(after.listings, [], '持久写意图被清空时业务增量不得提交')
+}
+
+async function testForgedPersistentWriteIntentWithoutCallbackCannotCommit() {
+  let store
+  const built = makeWorker({
+    ids: ['run-forged-write-intent'],
+    sync: async (db, actorId, options) => {
+      if (options.dryRun) return dryResult()
+      freezeApplyPlan(options)
+      store.updateDb((current) => {
+        const run = current.feishuSyncRuns.find((item) => item.runId === options.runId)
+        run.state = STATES.APPLYING
+        run.externalWritesMayHaveOccurred = true
+        run.applyIntentAt = run.startedAt
+        run.externalWriteIntentAt = run.startedAt
+      })
+      db.listings = [{ id: 'must-not-commit-forged-intent' }]
+      return applyResult()
+    }
+  })
+  store = built.store
+  const queued = built.worker.enqueue({ trigger: 'manual', actorId: 'admin-forged-intent' })
+  const result = await built.worker.run(queued.runId, { workerId: 'worker-forged-intent' })
+  const after = store.snapshot()
+  assert.strictEqual(result.state, STATES.UNKNOWN)
+  assert.strictEqual(result.externalWritesMayHaveOccurred, true)
+  assert.strictEqual(after.feishuSyncScheduler.blockedRunId, queued.runId)
+  assert.strictEqual(after.feishuSyncCommitMarkers[queued.runId], undefined)
+  assert.deepStrictEqual(after.listings, [], '本地未派发写请求时伪造的持久意图不得获得提交资格')
 }
 
 async function testSlowPreparationFreezesAuthoritativeMirrorBeforeFirstWrite() {
@@ -3454,6 +3522,8 @@ async function main() {
   await testDbWriteLockIsMandatoryBeforeAnyMutation()
   await testManualDryOnlyDoesNotNeedApprovalOrApply()
   await testSuccessIsAtomicAndReturnsExpectedDigests()
+  await testClearedWriteIntentCannotCommitAsNoWrite()
+  await testForgedPersistentWriteIntentWithoutCallbackCannotCommit()
   await testSlowPreparationFreezesAuthoritativeMirrorBeforeFirstWrite()
   await testApplyPlanFreezeGateFailsClosed()
   await testCommittableInventoryWithKnownMaterialFailuresCommitsWithWarning()

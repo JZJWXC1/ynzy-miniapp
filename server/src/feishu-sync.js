@@ -35,7 +35,7 @@ const {
   classifyMirrorRunResult,
   runCompanySourceSync
 } = sourceMirror
-const { managedFieldsOf } = sourceMirror._internal
+const { managedFieldNames, managedFieldsOf } = sourceMirror._internal
 const {
   planListingLifecycle,
   yuxiaoerIdentityKey
@@ -3900,6 +3900,103 @@ function operationsForPlanDigest(operations = [], options = {}) {
   })
 }
 
+function semanticMirrorFieldsForConvergence(fields = {}) {
+  const managed = managedFieldsOf(
+    fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {},
+    { includeFoundation: true }
+  )
+  const normalized = clone(managed)
+  delete normalized.lifecycleDays
+  return stablePlanValue(normalized)
+}
+
+function semanticPlanFieldsForConvergence(fields = {}) {
+  const normalized = clone(
+    fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {}
+  )
+  delete normalized.lifecycleDays
+  return stablePlanValue(normalized)
+}
+
+function exactSemanticOperationKeys(operation) {
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation)) return false
+  return JSON.stringify(Object.keys(operation).sort()) === JSON.stringify([
+    'fields',
+    'foundationListingId',
+    'recordId',
+    'sourceRecordId',
+    'type'
+  ])
+}
+
+function operationsForSemanticConvergenceDigest(
+  operations = [],
+  mirrorSnapshot = {},
+  plannedRecords = []
+) {
+  const allowedFieldNames = new Set(managedFieldNames({ includeFoundation: true }))
+  const currentByRecordId = new Map((mirrorSnapshot.records || []).map((record) => [
+    normalizeText(record && (record.recordId || record.record_id)),
+    record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+  ]))
+  const plannedByRecordId = new Map((plannedRecords || []).map((record) => [
+    normalizeText(record && (record.recordId || record.record_id)),
+    record && record.fields && typeof record.fields === 'object' ? record.fields : {}
+  ]))
+  return operations.reduce((result, operation) => {
+    const recordId = normalizeText(operation && operation.recordId)
+    const currentFields = recordId ? currentByRecordId.get(recordId) : null
+    const plannedFields = recordId ? plannedByRecordId.get(recordId) : null
+    const operationFields = operation && operation.fields &&
+      typeof operation.fields === 'object' && !Array.isArray(operation.fields)
+      ? operation.fields
+      : null
+    const semanticOperationFields = semanticPlanFieldsForConvergence(operationFields)
+    const semanticManagedOperationFields = semanticMirrorFieldsForConvergence(operationFields)
+    const exactManagedFields = operationFields && Object.keys(operationFields).every((field) => (
+      field === 'lifecycleDays' || allowedFieldNames.has(field)
+    ))
+    const exactIdentities = operationFields &&
+      normalizeText(operation.sourceRecordId) &&
+      normalizeText(operation.foundationListingId) &&
+      normalizeText(operation.sourceRecordId) === normalizeText(operationFields.sourceRecordId) &&
+      normalizeText(operation.foundationListingId) ===
+        normalizeText(operationFields.foundationListingId)
+    if (operation && operation.type === 'update' && exactSemanticOperationKeys(operation) &&
+        currentFields && plannedFields && exactIdentities && exactManagedFields &&
+        JSON.stringify(semanticOperationFields) ===
+          JSON.stringify(semanticPlanFieldsForConvergence(plannedFields)) &&
+        JSON.stringify(semanticManagedOperationFields) ===
+          JSON.stringify(semanticMirrorFieldsForConvergence(currentFields))) {
+      // lifecycleDays 是按本次 runNowMs 推导的展示值。若一次 update 除它之外没有任何
+      // 托管字段变化，且 operation / planned record / 当前记录三方身份和字段精确闭合，
+      // 跨运行身份才把该操作视为 noop；任何额外字段或未知结构都会保留并阻断。
+      return result
+    }
+    const normalized = clone(operation)
+    if (normalized && normalized.fields) {
+      normalized.fields = semanticPlanFieldsForConvergence(normalized.fields)
+    }
+    result.push(stablePlanValue(normalized))
+    return result
+  }, []).sort((left, right) => {
+    const leftText = JSON.stringify(left)
+    const rightText = JSON.stringify(right)
+    return leftText < rightText ? -1 : leftText > rightText ? 1 : 0
+  })
+}
+
+function plannedRecordsForSemanticConvergenceDigest(records = []) {
+  return records.map((record) => ({
+    recordId: normalizeText(record && (record.recordId || record.record_id)),
+    fields: semanticPlanFieldsForConvergence(record && record.fields)
+  })).sort((left, right) => {
+    const leftText = JSON.stringify(left)
+    const rightText = JSON.stringify(right)
+    return leftText < rightText ? -1 : leftText > rightText ? 1 : 0
+  })
+}
+
 function foundationEnrichmentPlanSha256({
   targetBaseToken,
   miniTableId,
@@ -4199,6 +4296,12 @@ function buildMirrorSafetyDigests(input = {}) {
   const plannedRecords = Array.isArray(input.plannedRecords) ? input.plannedRecords : []
   const publicCompanySheetSnapshot = buildCompanySheetSnapshot(plannedRecords)
   const planOperations = operationsForPlanDigest(input.operations || [])
+  const semanticPlanOperations = operationsForSemanticConvergenceDigest(
+    input.operations || [],
+    input.mirrorSnapshot || {},
+    plannedRecords
+  )
+  const semanticPlannedRecords = plannedRecordsForSemanticConvergenceDigest(plannedRecords)
   const archiveOperations = operationsForPlanDigest(input.archiveOperations || [], { archive: true })
   const historyOperations = operationsForPlanDigest(input.historyOperations || [], { history: true })
   const baselineMarkerOperations = input.baselineMarkerOperation
@@ -4244,10 +4347,24 @@ function buildMirrorSafetyDigests(input = {}) {
     legacyMaterialEvidence,
     publicCompanySheetSnapshot: publicCompanySheet
   })
+  const semanticMirrorPlanSha256 = stableSha256({
+    version: 'feishu-mirror-semantic-plan-v1',
+    schemaSha256,
+    resourceIdentitySha256,
+    snapshots: snapshots.map(({ role, digest, recordCount }) => ({ role, digest, recordCount })),
+    operations: semanticPlanOperations,
+    plannedRecords: semanticPlannedRecords,
+    archiveOperations,
+    historyOperations,
+    baselineMarkerOperation: baselineMarkerOperations[0] || null,
+    legacyMaterialEvidence,
+    publicCompanySheetSnapshot: publicCompanySheet
+  })
   return {
     schemaSha256,
     resourceIdentitySha256,
     mirrorPlanSha256,
+    semanticMirrorPlanSha256,
     schemaBindings,
     componentEvidence,
     componentEvidenceSha256
@@ -6110,6 +6227,7 @@ async function syncViaMirror(db, adminId, options = {}) {
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.schemaSha256 || '')) ||
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.resourceIdentitySha256 || '')) ||
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.mirrorPlanSha256 || '')) ||
+        !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.semanticMirrorPlanSha256 || '')) ||
         !/^[0-9a-f]{64}$/.test(String(mirrorSafetyPreflight.componentEvidenceSha256 || ''))) {
       throw mirrorSafetyDigestError(
         'MIRROR_PREFLIGHT_FAILED',
@@ -6128,6 +6246,7 @@ async function syncViaMirror(db, adminId, options = {}) {
         schemaSha256: mirrorSafetyPreflight.schemaSha256,
         resourceIdentitySha256: mirrorSafetyPreflight.resourceIdentitySha256,
         mirrorPlanSha256: mirrorSafetyPreflight.mirrorPlanSha256,
+        semanticMirrorPlanSha256: mirrorSafetyPreflight.semanticMirrorPlanSha256,
         componentEvidence: mirrorSafetyPreflight.componentEvidence,
         componentEvidenceSha256: mirrorSafetyPreflight.componentEvidenceSha256
       })

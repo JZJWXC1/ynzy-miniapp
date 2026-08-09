@@ -30,8 +30,32 @@ const RECOVERABLE_DRY_STATES = new Set([
 ])
 
 const MAX_RECONCILIATION_LINEAGE_DEPTH = 32
-const CURRENT_CONVERGENCE_CONTRACT = 'feishu-current-state-convergence-v1'
-const CURRENT_CONVERGENCE_RESOLUTION_CONTRACT = 'feishu-current-state-resolution-v1'
+const LEGACY_CURRENT_CONVERGENCE_CONTRACT = 'feishu-current-state-convergence-v1'
+const CURRENT_CONVERGENCE_CONTRACT = 'feishu-current-state-convergence-v2'
+const LEGACY_CURRENT_CONVERGENCE_RESOLUTION_CONTRACT = 'feishu-current-state-resolution-v1'
+const CURRENT_CONVERGENCE_RESOLUTION_CONTRACT = 'feishu-current-state-resolution-v2'
+const CURRENT_CONVERGENCE_DIGEST_CONTRACT = 'feishu-current-state-digest-binding-v2'
+
+function isCurrentConvergenceRun(run) {
+  return Boolean(run) && [
+    LEGACY_CURRENT_CONVERGENCE_CONTRACT,
+    CURRENT_CONVERGENCE_CONTRACT
+  ].includes(run.convergenceContract)
+}
+
+function hasConvergenceExecutionIdentity(run) {
+  return Boolean(run) && (
+    [4, 5].includes(run.version) ||
+    Object.prototype.hasOwnProperty.call(run, 'convergenceContract') ||
+    Object.prototype.hasOwnProperty.call(run, 'convergenceDigestContract')
+  )
+}
+
+function isExactCurrentConvergenceRun(run) {
+  return Boolean(run) && run.version === 5 &&
+    run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT &&
+    run.convergenceDigestContract === CURRENT_CONVERGENCE_DIGEST_CONTRACT
+}
 
 const CONTROL_KEYS = Object.freeze([
   'feishuSyncRuns',
@@ -388,9 +412,9 @@ function safeBindingText(value, maxLength = 80) {
 function sanitizeSchemaBindings(result) {
   const source = result && typeof result === 'object' ? result : {}
   const mirror = source.mirror && typeof source.mirror === 'object' ? source.mirror : {}
-  const bindings = Array.isArray(source.schemaBindings)
-    ? source.schemaBindings
-    : (Array.isArray(mirror.schemaBindings) ? mirror.schemaBindings : [])
+  const bindings = Array.isArray(mirror.schemaBindings)
+    ? mirror.schemaBindings
+    : (Array.isArray(source.schemaBindings) ? source.schemaBindings : [])
   const flattened = bindings.flatMap((binding) => {
     if (binding && Array.isArray(binding.bindings)) {
       return binding.bindings.map((nested) => ({ ...nested, role: binding.role }))
@@ -416,9 +440,9 @@ function sanitizeSchemaBindings(result) {
 function validateSchemaBindings(result) {
   const source = result && typeof result === 'object' ? result : {}
   const mirror = source.mirror && typeof source.mirror === 'object' ? source.mirror : {}
-  const raw = Array.isArray(source.schemaBindings)
-    ? source.schemaBindings
-    : (Array.isArray(mirror.schemaBindings) ? mirror.schemaBindings : [])
+  const raw = Array.isArray(mirror.schemaBindings)
+    ? mirror.schemaBindings
+    : (Array.isArray(source.schemaBindings) ? source.schemaBindings : [])
   const safe = sanitizeSchemaBindings(result)
   const allowedRoles = new Set(['source', 'location', 'mini', 'rented', 'history'])
   const declaredRoles = new Set()
@@ -562,13 +586,26 @@ function releaseSchedulerLease(db, runId, lease) {
 
 function markerMatches(run, marker) {
   if (!run || !marker || typeof marker !== 'object' || Array.isArray(marker)) return false
+  const legacyConvergence = run.version === 4 &&
+    run.convergenceContract === LEGACY_CURRENT_CONVERGENCE_CONTRACT &&
+    !Object.prototype.hasOwnProperty.call(run, 'convergenceDigestContract')
+  const currentConvergence = isExactCurrentConvergenceRun(run)
+  const convergenceIdentityPresent = hasConvergenceExecutionIdentity(run)
+  if (convergenceIdentityPresent && !legacyConvergence && !currentConvergence) return false
   const runFence = Number(run.lease && run.lease.fence || run.lastFence)
+  const currentV2 = currentConvergence
   const body = {
     runId: marker.runId,
     fence: marker.fence,
     schemaSha256: marker.schemaSha256,
     resourceIdentitySha256: marker.resourceIdentitySha256,
     mirrorPlanSha256: marker.mirrorPlanSha256,
+    ...(currentV2
+      ? {
+          semanticMirrorPlanSha256: marker.semanticMirrorPlanSha256,
+          componentEvidenceSha256: marker.componentEvidenceSha256
+        }
+      : {}),
     contentPlanSha256: marker.contentPlanSha256,
     contentPlanAssetCount: marker.contentPlanAssetCount,
     committedAt: marker.committedAt
@@ -579,15 +616,36 @@ function markerMatches(run, marker) {
       body.schemaSha256 !== run.schemaSha256 ||
       body.resourceIdentitySha256 !== run.resourceIdentitySha256 ||
       body.mirrorPlanSha256 !== run.mirrorPlanSha256 ||
+      (currentV2 && body.semanticMirrorPlanSha256 !== run.semanticMirrorPlanSha256) ||
+      (currentV2 && body.componentEvidenceSha256 !== run.componentEvidenceSha256) ||
       body.contentPlanSha256 !== run.contentPlanSha256 ||
       !Number.isSafeInteger(body.contentPlanAssetCount) ||
       body.contentPlanAssetCount !== run.contentPlanAssetCount ||
       !Number.isSafeInteger(body.committedAt) || body.committedAt <= 0 ||
       !validSha256(body.schemaSha256) || !validSha256(body.resourceIdentitySha256) ||
       !validSha256(body.mirrorPlanSha256) ||
+      (currentV2 && !validSha256(body.semanticMirrorPlanSha256)) ||
+      (currentV2 && !validSha256(body.componentEvidenceSha256)) ||
       !validSha256(body.contentPlanSha256) || !validSha256(run.commitMarkerSha256) ||
       marker.markerSha256 !== run.commitMarkerSha256) return false
   return sha256(JSON.stringify(body)) === marker.markerSha256
+}
+
+function writeIntentMatchesExecution(run, commitMarker, expectedDispatched, expectedDispatchedAt) {
+  if (!run || !commitMarker) return false
+  const noWriteIntent = run.externalWritesMayHaveOccurred === false &&
+    !Object.prototype.hasOwnProperty.call(run, 'applyIntentAt') &&
+    !Object.prototype.hasOwnProperty.call(run, 'externalWriteIntentAt')
+  const exactWriteIntent = run.externalWritesMayHaveOccurred === true &&
+    Number.isSafeInteger(run.applyIntentAt) && run.applyIntentAt >= run.startedAt &&
+    run.externalWriteIntentAt === run.applyIntentAt &&
+    Number.isSafeInteger(commitMarker.committedAt) &&
+    run.applyIntentAt <= commitMarker.committedAt
+  if (expectedDispatched === true) {
+    return exactWriteIntent && Number.isSafeInteger(expectedDispatchedAt) &&
+      run.applyIntentAt === expectedDispatchedAt
+  }
+  return expectedDispatched === false && noWriteIntent
 }
 
 function trimRuns(db, maxRuns) {
@@ -595,7 +653,7 @@ function trimRuns(db, maxRuns) {
     const retainedIds = new Set()
     db.feishuSyncRuns.forEach((run) => {
       if (run && !TERMINAL_STATES.has(run.state)) retainedIds.add(run.runId)
-      if (run && run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT) {
+      if (isCurrentConvergenceRun(run)) {
         if (run.supersedesBlockedRunId) retainedIds.add(run.supersedesBlockedRunId)
         if (run.baselineDryRunId) retainedIds.add(run.baselineDryRunId)
       }
@@ -671,6 +729,9 @@ function sanitizeRun(run) {
       ? run.resourceIdentitySha256
       : '',
     mirrorPlanSha256: validSha256(run.mirrorPlanSha256) ? run.mirrorPlanSha256 : '',
+    semanticMirrorPlanSha256: validSha256(run.semanticMirrorPlanSha256)
+      ? run.semanticMirrorPlanSha256
+      : '',
     schemaSha256: validSha256(run.schemaSha256) ? run.schemaSha256 : '',
     contentPlanSha256: validSha256(run.contentPlanSha256) ? run.contentPlanSha256 : '',
     contentPlanAssetCount: Number.isSafeInteger(run.contentPlanAssetCount)
@@ -682,8 +743,23 @@ function sanitizeRun(run) {
     componentEvidence: validComponentEvidence(run.componentEvidence, run.componentEvidenceSha256)
       ? clone(run.componentEvidence)
       : null,
-    convergenceContract: run.convergenceContract === 'feishu-current-state-convergence-v1'
+    convergenceContract: [
+      LEGACY_CURRENT_CONVERGENCE_CONTRACT,
+      CURRENT_CONVERGENCE_CONTRACT
+    ].includes(run.convergenceContract)
       ? run.convergenceContract
+      : '',
+    convergenceDigestContract: run.convergenceDigestContract === CURRENT_CONVERGENCE_DIGEST_CONTRACT
+      ? run.convergenceDigestContract
+      : '',
+    baselineMirrorPlanSha256: validSha256(run.baselineMirrorPlanSha256)
+      ? run.baselineMirrorPlanSha256
+      : '',
+    baselineSemanticMirrorPlanSha256: validSha256(run.baselineSemanticMirrorPlanSha256)
+      ? run.baselineSemanticMirrorPlanSha256
+      : '',
+    baselineComponentEvidenceSha256: validSha256(run.baselineComponentEvidenceSha256)
+      ? run.baselineComponentEvidenceSha256
       : '',
     supersedesBlockedRunId: run.supersedesBlockedRunId
       ? String(run.supersedesBlockedRunId)
@@ -765,26 +841,32 @@ function extractDigests(result, captured) {
     : {}
   const pick = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
   return {
-    mirrorPlanSha256: pick(source.mirrorPlanSha256, mirror.mirrorPlanSha256, mirror.planSha256),
-    schemaSha256: pick(source.schemaSha256, mirror.schemaSha256),
+    // 六项镜像安全证据优先只信任 mirror 阶段；inventory 展平到根的
+    // 同名字段只能作为旧返回形状兼容，不得覆盖已存在的 mirror 证据。
+    mirrorPlanSha256: pick(mirror.mirrorPlanSha256, mirror.planSha256, source.mirrorPlanSha256),
+    semanticMirrorPlanSha256: pick(
+      mirror.semanticMirrorPlanSha256,
+      source.semanticMirrorPlanSha256
+    ),
+    schemaSha256: pick(mirror.schemaSha256, source.schemaSha256),
     resourceIdentitySha256: pick(
-      source.resourceIdentitySha256,
-      mirror.resourceIdentitySha256
+      mirror.resourceIdentitySha256,
+      source.resourceIdentitySha256
     ),
     contentPlanSha256: pick(
-      source.contentPlanSha256,
       note.contentPlanSha256,
-      capturedReport.contentPlanSha256
+      capturedReport.contentPlanSha256,
+      source.contentPlanSha256
     ),
     contentPlanAssetCount: pick(
-      source.contentPlanAssetCount,
       note.contentPlanAssetCount,
-      capturedReport.contentPlanAssetCount
+      capturedReport.contentPlanAssetCount,
+      source.contentPlanAssetCount
     ),
-    componentEvidence: pick(source.componentEvidence, mirror.componentEvidence),
+    componentEvidence: pick(mirror.componentEvidence, source.componentEvidence),
     componentEvidenceSha256: pick(
-      source.componentEvidenceSha256,
-      mirror.componentEvidenceSha256
+      mirror.componentEvidenceSha256,
+      source.componentEvidenceSha256
     )
   }
 }
@@ -870,6 +952,10 @@ function validateDryResult(
   if (!validSha256(digests.mirrorPlanSha256)) {
     throw new WorkerError('MIRROR_PLAN_DIGEST_MISSING', '', { safeBeforeWrite: true, blocked: true })
   }
+  if (digests.semanticMirrorPlanSha256 !== undefined &&
+      !validSha256(digests.semanticMirrorPlanSha256)) {
+    throw new WorkerError('MIRROR_PLAN_DIGEST_MISSING', '', { safeBeforeWrite: true, blocked: true })
+  }
   if (!validSha256(digests.resourceIdentitySha256)) {
     throw new WorkerError('RESOURCE_IDENTITY_DIGEST_MISSING', '', {
       safeBeforeWrite: true,
@@ -913,6 +999,9 @@ function validateDryResult(
   }
   return {
     mirrorPlanSha256: digests.mirrorPlanSha256,
+    semanticMirrorPlanSha256: validSha256(digests.semanticMirrorPlanSha256)
+      ? digests.semanticMirrorPlanSha256
+      : '',
     schemaSha256: digests.schemaSha256,
     resourceIdentitySha256: digests.resourceIdentitySha256,
     contentPlanSha256: digests.contentPlanSha256,
@@ -938,6 +1027,8 @@ function validateApplyResult(result, expected) {
   }
   const actual = extractDigests(result, null)
   if (actual.mirrorPlanSha256 !== expected.mirrorPlanSha256 ||
+      (validSha256(expected.semanticMirrorPlanSha256) &&
+        actual.semanticMirrorPlanSha256 !== expected.semanticMirrorPlanSha256) ||
       actual.schemaSha256 !== expected.schemaSha256 ||
       actual.resourceIdentitySha256 !== expected.resourceIdentitySha256 ||
       actual.contentPlanSha256 !== expected.contentPlanSha256 ||
@@ -959,14 +1050,21 @@ function validateFrozenApplyPlan(candidate, prepared, options = {}) {
     throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
   }
   const keys = Object.keys(candidate).sort()
-  const basicKeys = ['mirrorPlanSha256', 'resourceIdentitySha256', 'schemaSha256']
+  const legacyBasicKeys = ['mirrorPlanSha256', 'resourceIdentitySha256', 'schemaSha256']
+  const basicKeys = legacyBasicKeys.concat(['semanticMirrorPlanSha256'])
+  const legacyComponentKeys = legacyBasicKeys
+    .concat(['componentEvidence', 'componentEvidenceSha256']).sort()
   const componentKeys = basicKeys.concat(['componentEvidence', 'componentEvidenceSha256']).sort()
   const basicCandidate = JSON.stringify(keys) === JSON.stringify(basicKeys.slice().sort())
   const componentCandidate = JSON.stringify(keys) === JSON.stringify(componentKeys)
-  if ((!basicCandidate && !componentCandidate) ||
+  const legacyBasicCandidate = JSON.stringify(keys) === JSON.stringify(legacyBasicKeys.slice().sort())
+  const legacyComponentCandidate = JSON.stringify(keys) === JSON.stringify(legacyComponentKeys)
+  const strict = options.strictMirrorPlanBinding === true
+  if ((!basicCandidate && !componentCandidate && !legacyBasicCandidate && !legacyComponentCandidate) ||
       !validSha256(candidate.schemaSha256) ||
       !validSha256(candidate.resourceIdentitySha256) ||
-      !validSha256(candidate.mirrorPlanSha256)) {
+      !validSha256(candidate.mirrorPlanSha256) ||
+      (strict && !validSha256(candidate.semanticMirrorPlanSha256))) {
     throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
   }
   if (candidate.schemaSha256 !== prepared.schemaSha256) {
@@ -975,18 +1073,17 @@ function validateFrozenApplyPlan(candidate, prepared, options = {}) {
   if (candidate.resourceIdentitySha256 !== prepared.resourceIdentitySha256) {
     throw new WorkerError('MIRROR_RESOURCE_CHANGED', '', { safeBeforeWrite: true, blocked: true })
   }
-  if (componentCandidate && !validComponentEvidence(
+  if ((componentCandidate || legacyComponentCandidate) && !validComponentEvidence(
     candidate.componentEvidence,
     candidate.componentEvidenceSha256
   )) {
     throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
   }
-  const strict = options.strictMirrorPlanBinding === true
   if (strict && candidate.mirrorPlanSha256 !== prepared.mirrorPlanSha256) {
     throw new WorkerError('MIRROR_PLAN_CHANGED', '', { safeBeforeWrite: true, blocked: true })
   }
   if (strict && (
-    !componentCandidate ||
+      (!componentCandidate && !legacyComponentCandidate) ||
     !validSha256(prepared.componentEvidenceSha256) ||
     candidate.componentEvidenceSha256 !== prepared.componentEvidenceSha256
   )) {
@@ -994,12 +1091,19 @@ function validateFrozenApplyPlan(candidate, prepared, options = {}) {
   }
   return {
     mirrorPlanSha256: candidate.mirrorPlanSha256,
+    semanticMirrorPlanSha256: validSha256(candidate.semanticMirrorPlanSha256)
+      ? candidate.semanticMirrorPlanSha256
+      : (prepared.semanticMirrorPlanSha256 || ''),
     schemaSha256: prepared.schemaSha256,
     resourceIdentitySha256: prepared.resourceIdentitySha256,
     contentPlanSha256: prepared.contentPlanSha256,
     contentPlanAssetCount: prepared.contentPlanAssetCount,
-    componentEvidence: componentCandidate ? clone(candidate.componentEvidence) : null,
-    componentEvidenceSha256: componentCandidate ? candidate.componentEvidenceSha256 : '',
+    componentEvidence: (componentCandidate || legacyComponentCandidate)
+      ? clone(candidate.componentEvidence)
+      : null,
+    componentEvidenceSha256: (componentCandidate || legacyComponentCandidate)
+      ? candidate.componentEvidenceSha256
+      : '',
     committableMaterialWarning: prepared.committableMaterialWarning === true
   }
 }
@@ -1330,7 +1434,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         return
       }
       if (RECOVERABLE_DRY_STATES.has(run.state)) {
-        if (run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT) {
+        if (hasConvergenceExecutionIdentity(run)) {
           const writeStateUnknown = run.externalWritesMayHaveOccurred === true
           run.state = writeStateUnknown ? STATES.UNKNOWN : STATES.FAILED_BEFORE_WRITE
           run.finishedAt = atMs
@@ -1875,7 +1979,9 @@ function createFeishuSyncWorker(dependencies = {}) {
       validSha256(baseline.schemaSha256) && baseline.schemaSha256 === approvedSchemaSha256 &&
       validSha256(baseline.resourceIdentitySha256) &&
       baseline.resourceIdentitySha256 === approvedResourceIdentitySha256 &&
-      validSha256(baseline.mirrorPlanSha256) && validSha256(baseline.contentPlanSha256) &&
+      validSha256(baseline.mirrorPlanSha256) &&
+      validSha256(baseline.semanticMirrorPlanSha256) &&
+      validSha256(baseline.contentPlanSha256) &&
       Number.isSafeInteger(baseline.contentPlanAssetCount) && baseline.contentPlanAssetCount >= 0 &&
       validComponentEvidence(
         baseline.componentEvidence,
@@ -1932,6 +2038,38 @@ function createFeishuSyncWorker(dependencies = {}) {
     }
   }
 
+  function semanticConvergenceDigestBundle(run) {
+    return {
+      schemaSha256: run.schemaSha256,
+      resourceIdentitySha256: run.resourceIdentitySha256,
+      semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
+      contentPlanSha256: run.contentPlanSha256,
+      contentPlanAssetCount: run.contentPlanAssetCount
+    }
+  }
+
+  function preparedConvergenceDigestBundle(run) {
+    return {
+      ...convergenceDigestBundle(run),
+      semanticMirrorPlanSha256: run.semanticMirrorPlanSha256
+    }
+  }
+
+  function currentConvergencePreparedDigestsMatch(run, expected) {
+    if (!run || !expected || !validComponentEvidence(
+      run.componentEvidence,
+      run.componentEvidenceSha256,
+      { requireFiveTables: true }
+    ) || !validComponentEvidence(
+      expected.componentEvidence,
+      expected.componentEvidenceSha256,
+      { requireFiveTables: true }
+    )) return false
+    const actualBundle = preparedConvergenceDigestBundle(run)
+    const expectedBundle = preparedConvergenceDigestBundle(expected)
+    return Object.keys(expectedBundle).every((key) => actualBundle[key] === expectedBundle[key])
+  }
+
   function convergenceTerminalRunSha256(run) {
     const identity = clone(run)
     delete identity.convergenceResolutionSha256
@@ -1949,6 +2087,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       bucket: run.bucket,
       requestKeySha256: run.requestKeySha256,
       convergenceContract: run.convergenceContract,
+      convergenceDigestContract: run.convergenceDigestContract,
       supersedesBlockedRunId: run.supersedesBlockedRunId,
       supersedesBlockedRunSha256: run.supersedesBlockedRunSha256,
       baselineDryRunId: run.baselineDryRunId,
@@ -1957,13 +2096,14 @@ function createFeishuSyncWorker(dependencies = {}) {
       runNowMs: run.runNowMs,
       createdAt: run.createdAt,
       writeIntentEvidenceVersion: run.writeIntentEvidenceVersion,
+      baselineMirrorPlanSha256: run.baselineMirrorPlanSha256,
+      baselineSemanticMirrorPlanSha256: run.baselineSemanticMirrorPlanSha256,
+      baselineComponentEvidenceSha256: run.baselineComponentEvidenceSha256,
       schemaSha256: run.schemaSha256,
       resourceIdentitySha256: run.resourceIdentitySha256,
-      mirrorPlanSha256: run.mirrorPlanSha256,
+      semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
       contentPlanSha256: run.contentPlanSha256,
       contentPlanAssetCount: run.contentPlanAssetCount,
-      componentEvidence: clone(run.componentEvidence),
-      componentEvidenceSha256: run.componentEvidenceSha256,
       schemaBindings: clone(run.schemaBindings || [])
     }
   }
@@ -1987,6 +2127,9 @@ function createFeishuSyncWorker(dependencies = {}) {
       'startedAt'
     ].every((key) => !Object.prototype.hasOwnProperty.call(run, key))
     return convergenceSeedMatches(run) && run.state === STATES.QUEUED &&
+      run.mirrorPlanSha256 === run.baselineMirrorPlanSha256 &&
+      run.componentEvidenceSha256 === run.baselineComponentEvidenceSha256 &&
+      run.semanticMirrorPlanSha256 === run.baselineSemanticMirrorPlanSha256 &&
       run.updatedAt === run.createdAt && run.attemptCount === 0 && run.recoveryCount === 0 &&
       run.externalWritesMayHaveOccurred === false && run.writeIntentEvidenceVersion === 1 &&
       run.lease === null && run.errorCode === '' && absent &&
@@ -1997,7 +2140,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       )
   }
 
-  function currentConvergenceWritePhaseValid(db, run, expectedDrySummary) {
+  function currentConvergenceWritePhaseValid(db, run, expectedDrySummary, expectedPreparedDigests) {
     const absent = [
       'applyResultSummary',
       'commitMarkerSha256',
@@ -2019,7 +2162,8 @@ function createFeishuSyncWorker(dependencies = {}) {
           db.feishuSyncConvergenceResolutions,
           run.supersedesBlockedRunId
         ) || run.errorCode !== '' || !absent || !drySummaryMatchesBaseline ||
-        stableSha256(run.dryResultSummary) !== stableSha256(expectedDrySummary)) return false
+        stableSha256(run.dryResultSummary) !== stableSha256(expectedDrySummary) ||
+        !currentConvergencePreparedDigestsMatch(run, expectedPreparedDigests)) return false
     if (run.externalWritesMayHaveOccurred === false) {
       return run.state === STATES.READY_TO_APPLY &&
         !Object.prototype.hasOwnProperty.call(run, 'applyIntentAt') &&
@@ -2035,7 +2179,10 @@ function createFeishuSyncWorker(dependencies = {}) {
     run,
     commitMarker,
     expectedDrySummary,
-    expectedApplySummary
+    expectedApplySummary,
+    expectedPreparedDigests,
+    expectedExternalWriteDispatched,
+    expectedExternalWriteIntentAt
   ) {
     const blocked = exactCurrentConvergenceBlocker(db, run.supersedesBlockedRunId, run.runId)
     const baseline = exactCurrentDryBaseline(db, run.baselineDryRunId, blocked)
@@ -2045,23 +2192,22 @@ function createFeishuSyncWorker(dependencies = {}) {
       'lastFence',
       'resultSummary'
     ].every((key) => !Object.prototype.hasOwnProperty.call(run, key))
-    const noWriteIntent = run.externalWritesMayHaveOccurred === false &&
-      !Object.prototype.hasOwnProperty.call(run, 'applyIntentAt') &&
-      !Object.prototype.hasOwnProperty.call(run, 'externalWriteIntentAt')
-    const exactWriteIntent = run.externalWritesMayHaveOccurred === true &&
-      Number.isSafeInteger(run.applyIntentAt) && run.applyIntentAt >= run.startedAt &&
-      run.externalWriteIntentAt === run.applyIntentAt &&
-      Number.isSafeInteger(commitMarker && commitMarker.committedAt) &&
-      run.applyIntentAt <= commitMarker.committedAt
+    const executionWriteIntentMatches = writeIntentMatchesExecution(
+      run,
+      commitMarker,
+      expectedExternalWriteDispatched,
+      expectedExternalWriteIntentAt
+    )
     if (!convergenceBindingMatches(db, run, blocked, baseline) ||
         run.state !== STATES.COMMITTING || run.attemptCount !== 1 || run.recoveryCount !== 0 ||
         !validLeaseShape(run.lease) || run.lease.runId !== run.runId ||
         !schedulerLeaseConsistent(db, run.runId, run.lease) ||
         !Number.isSafeInteger(run.startedAt) || run.startedAt < run.createdAt ||
         !Number.isSafeInteger(run.updatedAt) || run.updatedAt < run.startedAt ||
-        run.errorCode !== '' || !absent || (!noWriteIntent && !exactWriteIntent) ||
+        run.errorCode !== '' || !absent || !executionWriteIntentMatches ||
         stableSha256(run.dryResultSummary) !== stableSha256(expectedDrySummary) ||
         stableSha256(run.applyResultSummary) !== stableSha256(expectedApplySummary) ||
+        !currentConvergencePreparedDigestsMatch(run, expectedPreparedDigests) ||
         !validSha256(run.commitMarkerSha256) ||
         !markerMatches(run, commitMarker) ||
         Object.prototype.hasOwnProperty.call(
@@ -2076,22 +2222,30 @@ function createFeishuSyncWorker(dependencies = {}) {
   function convergenceRequestBody(blocked, baseline) {
     return {
       contract: CURRENT_CONVERGENCE_CONTRACT,
+      digestContract: CURRENT_CONVERGENCE_DIGEST_CONTRACT,
       supersedesBlockedRunId: blocked.runId,
       supersedesBlockedRunSha256: stableSha256(blocked),
       baselineDryRunId: baseline.runId,
       baselineDryRunSha256: stableSha256(baseline),
-      ...convergenceDigestBundle(baseline)
+      baselineMirrorPlanSha256: baseline.mirrorPlanSha256,
+      baselineSemanticMirrorPlanSha256: baseline.semanticMirrorPlanSha256,
+      baselineComponentEvidenceSha256: baseline.componentEvidenceSha256,
+      ...semanticConvergenceDigestBundle(baseline)
     }
   }
 
   function convergenceBindingMatches(db, run, blocked, baseline) {
-    if (!run || run.version !== 4 || run.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT ||
+    if (!run || run.version !== 5 || run.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT ||
+        run.convergenceDigestContract !== CURRENT_CONVERGENCE_DIGEST_CONTRACT ||
         run.trigger !== 'manual' || run.actorType !== 'manual' || run.dryRun !== false ||
         run.bucket !== null || run.actorId !== baseline.actorId ||
         run.supersedesBlockedRunId !== blocked.runId ||
         run.supersedesBlockedRunSha256 !== stableSha256(blocked) ||
         run.baselineDryRunId !== baseline.runId ||
         run.baselineDryRunSha256 !== stableSha256(baseline) ||
+        run.baselineMirrorPlanSha256 !== baseline.mirrorPlanSha256 ||
+        run.baselineSemanticMirrorPlanSha256 !== baseline.semanticMirrorPlanSha256 ||
+        run.baselineComponentEvidenceSha256 !== baseline.componentEvidenceSha256 ||
         run.requestKeySha256 !== stableSha256(convergenceRequestBody(blocked, baseline)) ||
         run.createdAt <= baseline.finishedAt || run.runNowMs !== run.createdAt ||
         !convergenceSeedMatches(run) || !validComponentEvidence(
@@ -2099,8 +2253,8 @@ function createFeishuSyncWorker(dependencies = {}) {
           run.componentEvidenceSha256,
           { requireFiveTables: true }
         )) return false
-    const expected = convergenceDigestBundle(baseline)
-    const actual = convergenceDigestBundle(run)
+    const expected = semanticConvergenceDigestBundle(baseline)
+    const actual = semanticConvergenceDigestBundle(run)
     return Object.keys(expected).every((key) => actual[key] === expected[key]) &&
       db.feishuSyncRuns.filter((item) => item && item.runId === run.runId).length === 1
   }
@@ -2109,7 +2263,7 @@ function createFeishuSyncWorker(dependencies = {}) {
     if (!blockedRun || blockedRun.state !== STATES.UNKNOWN) return false
     const marker = db.feishuSyncConvergenceResolutions &&
       db.feishuSyncConvergenceResolutions[blockedRun.runId]
-    const keys = [
+    const legacyKeys = [
       'baselineDryRunId',
       'baselineDryRunSha256',
       'commitMarkerSha256',
@@ -2127,8 +2281,33 @@ function createFeishuSyncWorker(dependencies = {}) {
       'supersededRunId',
       'supersededRunSha256'
     ]
-    if (!exactObjectKeys(marker, keys) ||
-        marker.contract !== CURRENT_CONVERGENCE_RESOLUTION_CONTRACT ||
+    const currentKeys = [
+      'baselineComponentEvidenceSha256',
+      'baselineDryRunId',
+      'baselineDryRunSha256',
+      'baselineMirrorPlanSha256',
+      'baselineSemanticMirrorPlanSha256',
+      'commitMarkerSha256',
+      'componentEvidenceSha256',
+      'convergenceRunSha256',
+      'contentPlanAssetCount',
+      'contentPlanSha256',
+      'contract',
+      'convergenceRunId',
+      'markerSha256',
+      'mirrorPlanSha256',
+      'resolvedAt',
+      'resourceIdentitySha256',
+      'schemaSha256',
+      'semanticMirrorPlanSha256',
+      'supersededRunId',
+      'supersededRunSha256'
+    ]
+    const legacy = exactObjectKeys(marker, legacyKeys) &&
+      marker.contract === LEGACY_CURRENT_CONVERGENCE_RESOLUTION_CONTRACT
+    const current = exactObjectKeys(marker, currentKeys) &&
+      marker.contract === CURRENT_CONVERGENCE_RESOLUTION_CONTRACT
+    if ((!legacy && !current) ||
         marker.supersededRunId !== blockedRun.runId ||
         marker.supersededRunSha256 !== stableSha256(blockedRun)) return false
     const lineageIds = [
@@ -2144,7 +2323,11 @@ function createFeishuSyncWorker(dependencies = {}) {
     const commitMarker = db.feishuSyncCommitMarkers &&
       db.feishuSyncCommitMarkers[marker.convergenceRunId]
     if (!baseline || !convergence || convergence.state !== STATES.SUCCEEDED ||
-        convergence.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT ||
+        (legacy
+          ? convergence.version !== 4 ||
+            convergence.convergenceContract !== LEGACY_CURRENT_CONVERGENCE_CONTRACT
+          : convergence.version !== 5 ||
+            convergence.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT) ||
         convergence.supersedesBlockedRunId !== blockedRun.runId ||
         convergence.baselineDryRunId !== baseline.runId ||
         marker.baselineDryRunSha256 !== stableSha256(baseline) ||
@@ -2153,7 +2336,51 @@ function createFeishuSyncWorker(dependencies = {}) {
         marker.resolvedAt !== convergence.finishedAt ||
         marker.markerSha256 !== convergence.convergenceResolutionSha256 ||
         !markerMatches(convergence, commitMarker)) return false
-    const expectedDigests = convergenceDigestBundle(baseline)
+    if (legacy) {
+      const expectedDigests = convergenceDigestBundle(baseline)
+      const markerDigests = {
+        schemaSha256: marker.schemaSha256,
+        resourceIdentitySha256: marker.resourceIdentitySha256,
+        mirrorPlanSha256: marker.mirrorPlanSha256,
+        contentPlanSha256: marker.contentPlanSha256,
+        contentPlanAssetCount: marker.contentPlanAssetCount,
+        componentEvidenceSha256: marker.componentEvidenceSha256
+      }
+      if (!Object.keys(expectedDigests).every((key) => (
+        expectedDigests[key] === markerDigests[key] &&
+        expectedDigests[key] === convergence[key]
+      ))) return false
+      const body = clone(marker)
+      delete body.markerSha256
+      return validSha256(marker.markerSha256) && stableSha256(body) === marker.markerSha256
+    }
+
+    if (convergence.version !== 5 ||
+        convergence.convergenceDigestContract !== CURRENT_CONVERGENCE_DIGEST_CONTRACT ||
+        !validComponentEvidence(
+          baseline.componentEvidence,
+          baseline.componentEvidenceSha256,
+          { requireFiveTables: true }
+        ) ||
+        !validComponentEvidence(
+          convergence.componentEvidence,
+          convergence.componentEvidenceSha256,
+          { requireFiveTables: true }
+        ) ||
+        marker.baselineMirrorPlanSha256 !== baseline.mirrorPlanSha256 ||
+        marker.baselineSemanticMirrorPlanSha256 !== baseline.semanticMirrorPlanSha256 ||
+        marker.baselineComponentEvidenceSha256 !== baseline.componentEvidenceSha256 ||
+        convergence.baselineMirrorPlanSha256 !== baseline.mirrorPlanSha256 ||
+        convergence.baselineSemanticMirrorPlanSha256 !== baseline.semanticMirrorPlanSha256 ||
+        convergence.baselineComponentEvidenceSha256 !== baseline.componentEvidenceSha256) return false
+
+    const baselineSemantic = semanticConvergenceDigestBundle(baseline)
+    const convergenceSemantic = semanticConvergenceDigestBundle(convergence)
+    if (!Object.keys(baselineSemantic).every((key) => (
+      baselineSemantic[key] === convergenceSemantic[key]
+    )) || marker.semanticMirrorPlanSha256 !== convergence.semanticMirrorPlanSha256) return false
+
+    const expectedDigests = convergenceDigestBundle(convergence)
     const markerDigests = {
       schemaSha256: marker.schemaSha256,
       resourceIdentitySha256: marker.resourceIdentitySha256,
@@ -2163,8 +2390,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       componentEvidenceSha256: marker.componentEvidenceSha256
     }
     if (!Object.keys(expectedDigests).every((key) => (
-      expectedDigests[key] === markerDigests[key] &&
-      expectedDigests[key] === convergence[key]
+      expectedDigests[key] === markerDigests[key]
     ))) return false
     const body = clone(marker)
     delete body.markerSha256
@@ -2184,22 +2410,37 @@ function createFeishuSyncWorker(dependencies = {}) {
       supersededRunSha256: stableSha256(blocked),
       baselineDryRunId: baseline.runId,
       baselineDryRunSha256: stableSha256(baseline),
+      baselineMirrorPlanSha256: run.baselineMirrorPlanSha256,
+      baselineSemanticMirrorPlanSha256: run.baselineSemanticMirrorPlanSha256,
+      baselineComponentEvidenceSha256: run.baselineComponentEvidenceSha256,
       convergenceRunId: run.runId,
       convergenceRunSha256: convergenceTerminalRunSha256(run),
       commitMarkerSha256: run.commitMarkerSha256,
       ...convergenceDigestBundle(run),
+      semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
       resolvedAt: atMs
     }
     return { ...body, markerSha256: stableSha256(body) }
   }
 
-  function assertCurrentConvergenceExecutionInDb(db, run, phase = 'claim', expectedDrySummary = null) {
-    if (!run || run.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT) return false
+  function assertCurrentConvergenceExecutionInDb(
+    db,
+    run,
+    phase = 'claim',
+    expectedDrySummary = null,
+    expectedPreparedDigests = null
+  ) {
+    if (!isExactCurrentConvergenceRun(run)) throw currentConvergenceFailure()
     const blocked = exactCurrentConvergenceBlocker(db, run.supersedesBlockedRunId, run.runId)
     const baseline = exactCurrentDryBaseline(db, run.baselineDryRunId, blocked)
     if (!convergenceBindingMatches(db, run, blocked, baseline) ||
         (phase === 'claim' && !pristineCurrentConvergenceRun(db, run)) ||
-        (phase === 'write' && !currentConvergenceWritePhaseValid(db, run, expectedDrySummary))) {
+        (phase === 'write' && !currentConvergenceWritePhaseValid(
+          db,
+          run,
+          expectedDrySummary,
+          expectedPreparedDigests
+        ))) {
       throw currentConvergenceFailure()
     }
     return true
@@ -2212,8 +2453,8 @@ function createFeishuSyncWorker(dependencies = {}) {
       digests.componentEvidenceSha256,
       { requireFiveTables: true }
     )) throw currentConvergenceFailure()
-    const expected = convergenceDigestBundle(run)
-    const actual = convergenceDigestBundle(digests)
+    const expected = semanticConvergenceDigestBundle(run)
+    const actual = semanticConvergenceDigestBundle(digests)
     const expectedSummary = run.baselineDryResultSummary || {}
     const actualSummary = summarizeResult(dryResult)
     const summaryKeys = ['success', 'complete', 'dryRun', 'failed']
@@ -2264,7 +2505,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         throw currentConvergenceFailure()
       }
       const run = {
-        version: 4,
+        version: 5,
         runId,
         state: STATES.QUEUED,
         trigger: 'manual',
@@ -2274,6 +2515,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         bucket: null,
         requestKeySha256: stableSha256(requestBody),
         convergenceContract: CURRENT_CONVERGENCE_CONTRACT,
+        convergenceDigestContract: CURRENT_CONVERGENCE_DIGEST_CONTRACT,
         supersedesBlockedRunId: blocked.runId,
         supersedesBlockedRunSha256: requestBody.supersedesBlockedRunSha256,
         baselineDryRunId: baseline.runId,
@@ -2286,9 +2528,13 @@ function createFeishuSyncWorker(dependencies = {}) {
         recoveryCount: 0,
         externalWritesMayHaveOccurred: false,
         writeIntentEvidenceVersion: 1,
+        baselineMirrorPlanSha256: baseline.mirrorPlanSha256,
+        baselineSemanticMirrorPlanSha256: baseline.semanticMirrorPlanSha256,
+        baselineComponentEvidenceSha256: baseline.componentEvidenceSha256,
         schemaSha256: baseline.schemaSha256,
         resourceIdentitySha256: baseline.resourceIdentitySha256,
         mirrorPlanSha256: baseline.mirrorPlanSha256,
+        semanticMirrorPlanSha256: baseline.semanticMirrorPlanSha256,
         contentPlanSha256: baseline.contentPlanSha256,
         contentPlanAssetCount: baseline.contentPlanAssetCount,
         componentEvidence: clone(baseline.componentEvidence),
@@ -2437,10 +2683,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         ? runById(db, runId)
         : db.feishuSyncRuns.find((item) =>
           item.state === STATES.QUEUED &&
-          item.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT && (
-            !blocked || item.dryRun === true ||
-            item.convergenceContract === CURRENT_CONVERGENCE_CONTRACT
-          )
+          !hasConvergenceExecutionIdentity(item) && (!blocked || item.dryRun === true)
         )
       if (!run) return
       if (TERMINAL_STATES.has(run.state)) {
@@ -2448,7 +2691,9 @@ function createFeishuSyncWorker(dependencies = {}) {
         return
       }
       if (run.state !== STATES.QUEUED || !leaseExpired(run, atMs)) return
-      const currentConvergence = run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT
+      const convergenceIdentityPresent = hasConvergenceExecutionIdentity(run)
+      const currentConvergence = isExactCurrentConvergenceRun(run)
+      if (convergenceIdentityPresent && !currentConvergence) throw currentConvergenceFailure()
       if (currentConvergence) assertCurrentConvergenceExecutionInDb(db, run, 'claim')
       if (blocked && run.dryRun !== true && !currentConvergence) return
       if (scheduler.activeLease && Number(scheduler.activeLease.expiresAt) > atMs) return
@@ -2525,22 +2770,35 @@ function createFeishuSyncWorker(dependencies = {}) {
     }
   }
 
-  function recordFailure(runId, claimInfo, error) {
+  function recordFailure(runId, claimInfo, error, executionEvidence = {}) {
     const code = safeErrorCode(error)
     const safeBeforeWrite = error && error.safeBeforeWrite === true || safeBeforeWriteCodes.has(code)
     const requestedState = error && error.blocked === true
       ? STATES.BLOCKED
       : (safeBeforeWrite ? STATES.FAILED_BEFORE_WRITE : STATES.UNKNOWN)
+    const claimedCurrentConvergence = isExactCurrentConvergenceRun(claimInfo && claimInfo.run)
+    const claimedSupersededRunId = claimedCurrentConvergence
+      ? claimInfo.run.supersedesBlockedRunId
+      : ''
+    const locallyDispatched = executionEvidence.externalWriteDispatched === true &&
+      Number.isSafeInteger(executionEvidence.externalWriteDispatchedAt)
     try {
       mutateClaimed(runId, claimInfo, null, (run, db, atMs) => {
-        const writeIntentReached = run.externalWritesMayHaveOccurred === true ||
+        const writeIntentReached = locallyDispatched ||
+          run.externalWritesMayHaveOccurred === true ||
           run.state === STATES.APPLYING || run.state === STATES.COMMITTING
         const state = writeIntentReached
           ? STATES.UNKNOWN
-          : (run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT
+          : (claimedCurrentConvergence
               ? STATES.FAILED_BEFORE_WRITE
               : requestedState)
         run.state = state
+        if (locallyDispatched) {
+          run.externalWritesMayHaveOccurred = true
+          run.applyIntentAt = executionEvidence.externalWriteDispatchedAt
+          run.externalWriteIntentAt = executionEvidence.externalWriteDispatchedAt
+          run.writeIntentEvidenceVersion = 1
+        }
         run.finishedAt = atMs
         run.errorCode = code
         const finishedLease = clone(run.lease)
@@ -2552,8 +2810,8 @@ function createFeishuSyncWorker(dependencies = {}) {
         const preserveZeroWriteParentBarrier = state === STATES.BLOCKED &&
           existingReconciledBarrier
         const preserveCurrentConvergenceBarrier = state !== STATES.UNKNOWN &&
-          run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT &&
-          existingBarrier && existingBarrier.runId === run.supersedesBlockedRunId
+          claimedCurrentConvergence &&
+          existingBarrier && existingBarrier.runId === claimedSupersededRunId
         if ((state === STATES.BLOCKED || state === STATES.UNKNOWN) &&
             !preserveZeroWriteParentBarrier && !preserveCurrentConvergenceBarrier) {
           db.feishuSyncScheduler.blockedRunId = runId
@@ -2566,12 +2824,19 @@ function createFeishuSyncWorker(dependencies = {}) {
   }
 
   function makeCommitMarker(run, claimInfo, atMs) {
+    const currentV2 = isExactCurrentConvergenceRun(run)
     const body = {
       runId: run.runId,
       fence: claimInfo.fence,
       schemaSha256: run.schemaSha256,
       resourceIdentitySha256: run.resourceIdentitySha256,
       mirrorPlanSha256: run.mirrorPlanSha256,
+      ...(currentV2
+        ? {
+            semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
+            componentEvidenceSha256: run.componentEvidenceSha256
+          }
+        : {}),
       contentPlanSha256: run.contentPlanSha256,
       contentPlanAssetCount: run.contentPlanAssetCount,
       committedAt: atMs
@@ -2581,12 +2846,15 @@ function createFeishuSyncWorker(dependencies = {}) {
 
   async function executeClaim(claimInfo, options = {}) {
     const runId = claimInfo.run.runId
+    const currentConvergence = isExactCurrentConvergenceRun(claimInfo.run)
     const workerLeaseId = claimInfo.owner
     const actorId = normalizeActorId(
       claimInfo.run && claimInfo.run.actorId,
       settings.systemActorId || 'system:feishu-sync-worker'
     )
     const heartbeat = startHeartbeat(runId, claimInfo)
+    let externalWriteDispatched = false
+    let externalWriteDispatchedAt = null
     try {
       let captured = null
       const dryDb = clone(claimInfo.baseDb)
@@ -2621,6 +2889,9 @@ function createFeishuSyncWorker(dependencies = {}) {
         if (validSha256(candidateDigests.mirrorPlanSha256)) {
           run.mirrorPlanSha256 = candidateDigests.mirrorPlanSha256
         }
+        if (validSha256(candidateDigests.semanticMirrorPlanSha256)) {
+          run.semanticMirrorPlanSha256 = candidateDigests.semanticMirrorPlanSha256
+        }
         if (validSha256(candidateDigests.contentPlanSha256)) {
           run.contentPlanSha256 = candidateDigests.contentPlanSha256
         }
@@ -2650,6 +2921,9 @@ function createFeishuSyncWorker(dependencies = {}) {
         mutateClaimed(runId, claimInfo, [STATES.DRY_RUNNING], (run, db, atMs) => {
           run.state = STATES.DRY_SUCCEEDED
           run.mirrorPlanSha256 = digests.mirrorPlanSha256
+          if (validSha256(digests.semanticMirrorPlanSha256)) {
+            run.semanticMirrorPlanSha256 = digests.semanticMirrorPlanSha256
+          }
           run.schemaSha256 = digests.schemaSha256
           run.resourceIdentitySha256 = digests.resourceIdentitySha256
           run.contentPlanSha256 = digests.contentPlanSha256
@@ -2678,6 +2952,7 @@ function createFeishuSyncWorker(dependencies = {}) {
       mutateClaimed(runId, claimInfo, [STATES.DRY_RUNNING], (run) => {
         run.state = STATES.READY_TO_APPLY
         run.mirrorPlanSha256 = digests.mirrorPlanSha256
+        run.semanticMirrorPlanSha256 = digests.semanticMirrorPlanSha256
         run.schemaSha256 = digests.schemaSha256
         run.resourceIdentitySha256 = digests.resourceIdentitySha256
         run.contentPlanSha256 = digests.contentPlanSha256
@@ -2706,11 +2981,12 @@ function createFeishuSyncWorker(dependencies = {}) {
         }
         const frozen = validateFrozenApplyPlan(candidate, digests, {
           strictMirrorPlanBinding:
-            claimInfo.run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT
+            currentConvergence
         })
         // 必须先在受租约保护的事务中落盘 B，再允许内存门开启；落盘失败时外部写永远不能开始。
         mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY], (run) => {
           run.mirrorPlanSha256 = frozen.mirrorPlanSha256
+          run.semanticMirrorPlanSha256 = frozen.semanticMirrorPlanSha256
           if (validSha256(frozen.componentEvidenceSha256)) {
             run.componentEvidence = clone(frozen.componentEvidence)
             run.componentEvidenceSha256 = frozen.componentEvidenceSha256
@@ -2725,15 +3001,53 @@ function createFeishuSyncWorker(dependencies = {}) {
           throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
         }
         if (heartbeat.lost()) throw new WorkerError('LEASE_LOST', '', { safeBeforeWrite: true })
-        mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY, STATES.APPLYING], (run, db, atMs) => {
-          assertCurrentConvergenceExecutionInDb(db, run, 'write', summarizeResult(dryResult))
-          if (run.externalWritesMayHaveOccurred === true) return
+        if (externalWriteDispatched) {
+          mutateClaimed(runId, claimInfo, [STATES.APPLYING], (run, db) => {
+            if (currentConvergence) {
+              assertCurrentConvergenceExecutionInDb(
+                db,
+                run,
+                'write',
+                summarizeResult(dryResult),
+                applyDigests
+              )
+            }
+            if (run.externalWritesMayHaveOccurred !== true ||
+                run.applyIntentAt !== externalWriteDispatchedAt ||
+                run.externalWriteIntentAt !== externalWriteDispatchedAt) {
+              throw new WorkerError('MIRROR_PREFLIGHT_FAILED')
+            }
+          })
+          return
+        }
+        let persistedDispatchAt = null
+        mutateClaimed(runId, claimInfo, [STATES.READY_TO_APPLY], (run, db, atMs) => {
+          if (currentConvergence) {
+            assertCurrentConvergenceExecutionInDb(
+              db,
+              run,
+              'write',
+              summarizeResult(dryResult),
+              applyDigests
+            )
+          }
+          if (run.externalWritesMayHaveOccurred !== false ||
+              Object.prototype.hasOwnProperty.call(run, 'applyIntentAt') ||
+              Object.prototype.hasOwnProperty.call(run, 'externalWriteIntentAt')) {
+            throw new WorkerError('MIRROR_PREFLIGHT_FAILED', '', { safeBeforeWrite: true })
+          }
           run.state = STATES.APPLYING
           run.externalWritesMayHaveOccurred = true
           run.applyIntentAt = atMs
           run.externalWriteIntentAt = atMs
           run.writeIntentEvidenceVersion = 1
+          persistedDispatchAt = atMs
         })
+        if (!Number.isSafeInteger(persistedDispatchAt)) {
+          throw new WorkerError('MIRROR_PREFLIGHT_FAILED')
+        }
+        externalWriteDispatchedAt = persistedDispatchAt
+        externalWriteDispatched = true
       }
       const applyResult = await feishuSync.sync(nextDb, actorId, {
         dryRun: false,
@@ -2748,7 +3062,7 @@ function createFeishuSyncWorker(dependencies = {}) {
         expectedContentAssetCount: digests.contentPlanAssetCount,
         expectedComponentEvidenceSha256: digests.componentEvidenceSha256 || undefined,
         strictMirrorPlanBinding:
-          claimInfo.run.convergenceContract === CURRENT_CONVERGENCE_CONTRACT,
+          currentConvergence,
         onApplyPlanFrozen,
         onExternalWriteDispatched
       })
@@ -2791,16 +3105,27 @@ function createFeishuSyncWorker(dependencies = {}) {
               throw new WorkerError('LEASE_LOST')
             }
             const committedMarker = freshDb.feishuSyncCommitMarkers[runId]
+            if (!writeIntentMatchesExecution(
+              freshRun,
+              committedMarker,
+              externalWriteDispatched,
+              externalWriteDispatchedAt
+            )) {
+              throw new WorkerError('COMMIT_FAILED')
+            }
             if (!markerMatches(freshRun, committedMarker)) {
               throw new WorkerError('COMMIT_FAILED')
             }
-            if (freshRun.convergenceContract === CURRENT_CONVERGENCE_CONTRACT) {
+            if (currentConvergence) {
               assertCurrentConvergenceCommitPhaseInDb(
                 freshDb,
                 freshRun,
                 committedMarker,
                 summarizeResult(dryResult),
-                summarizeResult(applyResult)
+                summarizeResult(applyResult),
+                applyDigests,
+                externalWriteDispatched,
+                externalWriteDispatchedAt
               )
             }
             const committedAt = Number(committedMarker.committedAt || now())
@@ -2818,7 +3143,7 @@ function createFeishuSyncWorker(dependencies = {}) {
             } else {
               freshDb.feishuSyncScheduler.lastSuccessAt = committedAt
             }
-            if (freshRun.convergenceContract === CURRENT_CONVERGENCE_CONTRACT) {
+            if (currentConvergence) {
               if (freshDb.feishuSyncScheduler.blockedRunId !==
                   freshRun.supersedesBlockedRunId) {
                 throw currentConvergenceFailure()
@@ -2851,7 +3176,10 @@ function createFeishuSyncWorker(dependencies = {}) {
       }
       return readRun(runId)
     } catch (error) {
-      return recordFailure(runId, claimInfo, error)
+      return recordFailure(runId, claimInfo, error, {
+        externalWriteDispatched,
+        externalWriteDispatchedAt
+      })
     } finally {
       heartbeat.stop()
     }

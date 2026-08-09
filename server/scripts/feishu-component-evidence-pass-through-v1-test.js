@@ -80,6 +80,7 @@ function mirrorStage(digests, patch = {}) {
     schemaSha256: digests.schemaSha256,
     resourceIdentitySha256: digests.resourceIdentitySha256,
     mirrorPlanSha256: digests.mirrorPlanSha256,
+    semanticMirrorPlanSha256: digests.semanticMirrorPlanSha256,
     schemaBindings: clone(digests.schemaBindings),
     componentEvidence: clone(digests.componentEvidence),
     componentEvidenceSha256: digests.componentEvidenceSha256,
@@ -160,9 +161,15 @@ async function testValidEvidencePassesThroughStageAndWorker() {
     digests.componentEvidenceSha256,
     '阶段摘要必须透传与分项证据自洽的 SHA-256'
   )
+  assert.strictEqual(
+    composed.mirror.semanticMirrorPlanSha256,
+    digests.semanticMirrorPlanSha256,
+    '阶段摘要必须透传跨运行语义计划摘要'
+  )
   const extracted = workerInternal.extractDigests(composed, null)
   assert.deepStrictEqual(extracted.componentEvidence, digests.componentEvidence)
   assert.strictEqual(extracted.componentEvidenceSha256, digests.componentEvidenceSha256)
+  assert.strictEqual(extracted.semanticMirrorPlanSha256, digests.semanticMirrorPlanSha256)
 
   const sharedMirrorResult = mirrorStage(digests)
   const sharedComposed = await composedDryResult(sharedMirrorResult, { useSharedMirrorResult: true })
@@ -204,6 +211,7 @@ async function testValidEvidencePassesThroughStageAndWorker() {
   assert.strictEqual(completed.state, STATES.DRY_SUCCEEDED)
   assert.deepStrictEqual(completed.componentEvidence, digests.componentEvidence)
   assert.strictEqual(completed.componentEvidenceSha256, digests.componentEvidenceSha256)
+  assert.strictEqual(completed.semanticMirrorPlanSha256, digests.semanticMirrorPlanSha256)
   assert.deepStrictEqual(
     store.snapshot().feishuSyncRuns[0].componentEvidence,
     digests.componentEvidence,
@@ -288,20 +296,60 @@ async function testInventoryCannotOverrideMirrorEvidence() {
   const composed = await composedDryResult(mirrorStage(digests), {
     inventory: {
       componentEvidence: forgedEvidence,
-      componentEvidenceSha256: forgedSha256
+      componentEvidenceSha256: forgedSha256,
+      contentPlanAssetCount: 999,
+      contentPlanSha256: '4'.repeat(64),
+      mirrorPlanSha256: '1'.repeat(64),
+      noteMaterials: {
+        contentPlanAssetCount: 329,
+        contentPlanSha256: CONTENT_PLAN_SHA256
+      },
+      resourceIdentitySha256: '2'.repeat(64),
+      schemaSha256: '3'.repeat(64),
+      schemaBindings: [{ role: 'source', bindings: [] }],
+      semanticMirrorPlanSha256: '0'.repeat(64)
     }
   })
   assert.strictEqual(composed.inventory.componentEvidence, undefined)
   assert.strictEqual(composed.inventory.componentEvidenceSha256, undefined)
+  assert.strictEqual(composed.inventory.contentPlanAssetCount, undefined)
+  assert.strictEqual(composed.inventory.contentPlanSha256, undefined)
+  assert.strictEqual(composed.inventory.mirrorPlanSha256, undefined)
+  assert.strictEqual(composed.inventory.resourceIdentitySha256, undefined)
+  assert.strictEqual(composed.inventory.schemaSha256, undefined)
+  assert.strictEqual(composed.inventory.schemaBindings, undefined)
+  assert.strictEqual(composed.inventory.semanticMirrorPlanSha256, undefined)
   const flattened = feishuSync._internal.finalizeMirrorSyncResult(composed)
   assert.strictEqual(flattened.componentEvidence, undefined)
   assert.strictEqual(flattened.componentEvidenceSha256, undefined)
+  assert.strictEqual(flattened.contentPlanAssetCount, undefined)
+  assert.strictEqual(flattened.contentPlanSha256, undefined)
+  assert.strictEqual(flattened.mirrorPlanSha256, undefined)
+  assert.strictEqual(flattened.resourceIdentitySha256, undefined)
+  assert.strictEqual(flattened.schemaSha256, undefined)
+  assert.strictEqual(flattened.schemaBindings, undefined)
+  assert.strictEqual(flattened.semanticMirrorPlanSha256, undefined)
   const extracted = workerInternal.extractDigests(flattened, null)
   assert.deepStrictEqual(extracted.componentEvidence, digests.componentEvidence)
   assert.strictEqual(
     extracted.componentEvidenceSha256,
     digests.componentEvidenceSha256,
     'worker 必须选择镜像证据，库存阶段不得用自洽伪造证据覆盖它'
+  )
+  assert.strictEqual(
+    extracted.semanticMirrorPlanSha256,
+    digests.semanticMirrorPlanSha256,
+    'worker 必须选择镜像语义摘要，库存阶段不得覆盖它'
+  )
+  assert.strictEqual(extracted.mirrorPlanSha256, digests.mirrorPlanSha256)
+  assert.strictEqual(extracted.resourceIdentitySha256, digests.resourceIdentitySha256)
+  assert.strictEqual(extracted.schemaSha256, digests.schemaSha256)
+  assert.strictEqual(extracted.contentPlanSha256, CONTENT_PLAN_SHA256)
+  assert.strictEqual(extracted.contentPlanAssetCount, 329)
+  assert.deepStrictEqual(
+    workerInternal.sanitizeSchemaBindings(flattened),
+    workerInternal.sanitizeSchemaBindings({ mirror: composed.mirror }),
+    'schemaBindings 必须只信任镜像阶段，不得被库存根字段覆盖'
   )
 }
 

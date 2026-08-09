@@ -170,8 +170,17 @@ function publicInventorySummary(result = {}) {
   const summary = result && typeof result === 'object' && !Array.isArray(result)
     ? clonePlain(result)
     : {}
-  delete summary.componentEvidence
-  delete summary.componentEvidenceSha256
+  ;[
+    'componentEvidence',
+    'componentEvidenceSha256',
+    'contentPlanAssetCount',
+    'contentPlanSha256',
+    'mirrorPlanSha256',
+    'resourceIdentitySha256',
+    'schemaSha256',
+    'schemaBindings',
+    'semanticMirrorPlanSha256'
+  ].forEach((field) => delete summary[field])
   return summary
 }
 
@@ -747,11 +756,15 @@ function canonicalMirrorFields(sourceRecord, location) {
   return fields
 }
 
-function managedFieldsOf(fields, options = {}) {
-  const managed = {}
-  const managedFields = options.includeFoundation === true
+function managedFieldNames(options = {}) {
+  return options.includeFoundation === true
     ? Array.from(new Set([...MANAGED_MIRROR_FIELDS, ...FOUNDATION_MIRROR_FIELDS]))
     : MANAGED_MIRROR_FIELDS.filter((field) => !FOUNDATION_MIRROR_FIELDS.includes(field))
+}
+
+function managedFieldsOf(fields, options = {}) {
+  const managed = {}
+  const managedFields = managedFieldNames(options)
   managedFields.forEach((field) => {
     if (options.ignoreVacancyNote === true && field === 'vacancyNote') return
     // 飞书清空单元格后会按字段类型回读为 null、省略、空字符串或空数组；这些形态
@@ -988,7 +1001,12 @@ function publicStageSummary(result = {}, options = {}) {
     planned: result.planned === true,
     status: typeof result.status === 'string' ? result.status : ''
   }
-  ;['schemaSha256', 'resourceIdentitySha256', 'mirrorPlanSha256'].forEach((field) => {
+  ;[
+    'schemaSha256',
+    'resourceIdentitySha256',
+    'mirrorPlanSha256',
+    'semanticMirrorPlanSha256'
+  ].forEach((field) => {
     if (/^[0-9a-f]{64}$/.test(String(result[field] || ''))) summary[field] = result[field]
   })
   if (options.includeComponentEvidence === true &&
@@ -1070,6 +1088,7 @@ module.exports = {
   classifyMirrorRunResult,
   runCompanySourceSync,
   _internal: {
+    managedFieldNames,
     managedFieldsOf
   }
 }
