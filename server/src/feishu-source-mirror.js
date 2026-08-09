@@ -109,6 +109,72 @@ function stableValue(value) {
   return value
 }
 
+function stableSha256(value) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stableValue(value)))
+    .digest('hex')
+}
+
+function exactObjectKeys(value, expectedKeys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort())
+}
+
+function validSha256(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function validDigestCount(value) {
+  return exactObjectKeys(value, ['count', 'digest']) &&
+    Number.isSafeInteger(value.count) && value.count >= 0 && validSha256(value.digest)
+}
+
+function validComponentEvidence(evidence, expectedSha256) {
+  if (!exactObjectKeys(evidence, [
+    'baselineMarker',
+    'companySheet',
+    'contract',
+    'legacyMaterials',
+    'operations',
+    'snapshots'
+  ]) || evidence.contract !== 'feishu-mirror-component-evidence-v1' ||
+      !Array.isArray(evidence.snapshots) ||
+      !exactObjectKeys(evidence.operations, ['archive', 'history', 'main']) ||
+      !validDigestCount(evidence.operations.main) ||
+      !validDigestCount(evidence.operations.archive) ||
+      !validDigestCount(evidence.operations.history) ||
+      !validDigestCount(evidence.baselineMarker) ||
+      !validDigestCount(evidence.legacyMaterials) ||
+      !exactObjectKeys(evidence.companySheet, ['columnCount', 'digest', 'rowCount']) ||
+      !Number.isSafeInteger(evidence.companySheet.rowCount) || evidence.companySheet.rowCount < 0 ||
+      !Number.isSafeInteger(evidence.companySheet.columnCount) ||
+      evidence.companySheet.columnCount < 0 || !validSha256(evidence.companySheet.digest)) return false
+  const roles = evidence.snapshots.map((snapshot) => snapshot && snapshot.role)
+  const validRoleSequences = [
+    ['source', 'location', 'mini'],
+    ['source', 'location', 'mini', 'rented'],
+    ['source', 'location', 'mini', 'history'],
+    ['source', 'location', 'mini', 'rented', 'history']
+  ]
+  if (!validRoleSequences.some((expected) => JSON.stringify(roles) === JSON.stringify(expected)) ||
+      evidence.snapshots.some((snapshot) => (
+        !exactObjectKeys(snapshot, ['digest', 'recordCount', 'role']) ||
+        !['source', 'location', 'mini', 'rented', 'history'].includes(snapshot.role) ||
+        !validSha256(snapshot.digest) ||
+        !Number.isSafeInteger(snapshot.recordCount) || snapshot.recordCount < 0
+      ))) return false
+  return validSha256(expectedSha256) && stableSha256(evidence) === expectedSha256
+}
+
+function publicInventorySummary(result = {}) {
+  const summary = result && typeof result === 'object' && !Array.isArray(result)
+    ? clonePlain(result)
+    : {}
+  delete summary.componentEvidence
+  delete summary.componentEvidenceSha256
+  return summary
+}
+
 function equalPlain(left, right) {
   return JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right))
 }
@@ -911,7 +977,7 @@ function failedRun(stage, result) {
   }
 }
 
-function publicStageSummary(result = {}) {
+function publicStageSummary(result = {}, options = {}) {
   const summary = {
     complete: result.complete === true,
     published: result.published === true,
@@ -925,6 +991,11 @@ function publicStageSummary(result = {}) {
   ;['schemaSha256', 'resourceIdentitySha256', 'mirrorPlanSha256'].forEach((field) => {
     if (/^[0-9a-f]{64}$/.test(String(result[field] || ''))) summary[field] = result[field]
   })
+  if (options.includeComponentEvidence === true &&
+      validComponentEvidence(result.componentEvidence, result.componentEvidenceSha256)) {
+    summary.componentEvidence = clonePlain(result.componentEvidence)
+    summary.componentEvidenceSha256 = result.componentEvidenceSha256
+  }
   if (result.dryRun === true && Array.isArray(result.schemaBindings)) {
     summary.schemaBindings = result.schemaBindings.map((entry) => ({
       role: typeof (entry && entry.role) === 'string' ? entry.role : '',
@@ -983,8 +1054,8 @@ async function runCompanySourceSync({ db, mirrorSync, applyInventory, publishSna
     status: dryRun ? 'success-dry-run' : (noop ? 'success-noop' : 'success'),
     noop,
     dryRun,
-    mirror: publicStageSummary(mirrorResult),
-    inventory: clonePlain(inventoryResult),
+    mirror: publicStageSummary(mirrorResult, { includeComponentEvidence: true }),
+    inventory: publicInventorySummary(inventoryResult),
     snapshot: publicStageSummary(snapshotResult),
     commit: publicStageSummary(commitResult)
   }
