@@ -630,6 +630,7 @@ FEISHU_AUTO_SYNC_ENABLED=false
 - 小程序位置字典：ID/城市/行政区/板块/标准小区用文本，别名用多选，经纬度用数字，启用用复选框。
 - 小程序专用源表：ID、位置、标准房号、户型、出租方式、房态、看房方式、备注等用文本；租金、佣金、经纬度用数字；标签用多选；视频用附件；`published/canonical/enabled` 用复选框。
 - `sourceRecordId/locationId/locationRecordId/city/district/block/community/latitude/longitude/roomLabel/building/roomNumber/layoutDescription/layoutCategory/monthlyRent/rentMode/listingStatus/published/canonical/enabled` 为专用表逐行必填；`unit/viewingMethod/remark` 列必建但值可空。启用 `employee-current-stock-v1` 或 `employee-ai-foundation-v1` 时 `viewingPassword` 也必须建成文本列，即使源表没有独立密码列，因为兼容层需要把纯门锁码从“看房方式”安全拆入该列；漏配或类型错误会在任何飞书读取/写入前阻断。源表若额外绑定楼栋、单元、房号、分类、电话、密码、佣金、标签或视频，专用表必须存在同语义配对列。
+- canonical 镜像只把 NFKC 归一并去除首尾空白后仍精确匹配 `/^1[3-9]\d{9}$/` 的联系电话写入专用表。中间空白/横线、`+86`、座机、占位文字、空值和其他非法形态不会被静默删字符“修好”：新建时省略联系电话；更新或恢复时也省略该字段，从而保留目标快照已有合法号码且不向手机号类型列发送无效值。源与目标都没有合法号码时，该字段不参与差异判断，不会制造循环更新。合法源号码的真实新增或变化仍进入完整计划和语义计划摘要；非法源正文变化仍由源快照摘要 fail-closed 地留痕，不能被业务归一静默掩盖。
 
 环境绑定只负责提供稳定 `field_id`，字段类型与必填规则由代码固定并在每轮读取前对照飞书元数据；员工改显示列名不会影响同步，同名诱饵列也不会被读取。模板中的占位符必须替换成飞书真实 `field_id`，不得把真实值写进仓库：
 

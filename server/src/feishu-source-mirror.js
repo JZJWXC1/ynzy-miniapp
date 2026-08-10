@@ -73,12 +73,19 @@ const MANAGED_MIRROR_FIELDS = Object.freeze([
 ])
 const ACTIVE_LISTING_STATUS_PATTERN = /^(?:上架|已上架|在租|待租|待出租|即将空出|空置|可租|有效|开放|可看|可出租|up|on|active)$/i
 const INACTIVE_LISTING_STATUS_PATTERN = /^(?:下架|已下架|已租|已出租|已成交|成交|关闭|已关闭|无效|删除|已删除|暂停|暂缓|维修中|不可租|停租|未上架|不上架|未在租|不在租|down|off|inactive|rented|closed)$/i
+const MAINLAND_MOBILE_PATTERN = /^1[3-9]\d{9}$/
 const EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE = 'employee-current-stock-v1'
 const EMPLOYEE_AI_FOUNDATION_PROFILE = 'employee-ai-foundation-v1'
 
 function normalizeText(value) {
   if (value === undefined || value === null) return ''
   return String(value).normalize('NFKC').trim().replace(/\s+/g, ' ')
+}
+
+function canonicalMainlandMobile(value) {
+  if (value === undefined || value === null) return ''
+  const normalized = String(value).normalize('NFKC').trim()
+  return MAINLAND_MOBILE_PATTERN.test(normalized) ? normalized : ''
 }
 
 function identityKey(value) {
@@ -716,6 +723,9 @@ function canonicalMirrorFields(sourceRecord, location) {
   ;['viewingMethod', 'remark', 'vacancyNote', 'contact', 'viewingPassword'].forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(sourceFields, field)) fields[field] = normalizeText(sourceFields[field])
   })
+  const canonicalContact = canonicalMainlandMobile(sourceFields.contact)
+  if (canonicalContact) fields.contact = canonicalContact
+  else delete fields.contact
   if (fields.viewingPassword && looksLikeSensitiveViewingCredential(fields.viewingPassword)) {
     throw new Error(`源记录 ${sourceRecordId} 的看房密码包含联系电话、社交账号或日期说明`)
   }
@@ -767,6 +777,7 @@ function managedFieldsOf(fields, options = {}) {
   const managedFields = managedFieldNames(options)
   managedFields.forEach((field) => {
     if (options.ignoreVacancyNote === true && field === 'vacancyNote') return
+    if (options.ignoreContact === true && field === 'contact') return
     // 飞书清空单元格后会按字段类型回读为 null、省略、空字符串或空数组；这些形态
     // 与源字段未提供等价。已有非空旧值仍会保留在 managed 中并由本轮写空清除。
     const value = fields[field]
@@ -775,6 +786,11 @@ function managedFieldsOf(fields, options = {}) {
       !(typeof value === 'string' && value.trim() === '') &&
       !(Array.isArray(value) && value.length === 0)
     if (Object.prototype.hasOwnProperty.call(fields, field) && hasValue) {
+      if (field === 'contact') {
+        const contact = canonicalMainlandMobile(value)
+        if (contact) managed[field] = contact
+        return
+      }
       managed[field] = field === 'video' ? stableVideoAttachments(fields[field]) : clonePlain(fields[field])
     }
   })
@@ -850,7 +866,12 @@ function planMirrorSync({
       return
     }
 
-    const managedOptions = { ignoreVacancyNote }
+    // 源联系电话为空、占位或格式非法时，目标 phone 字段完全不参与本轮写入与差异判断。
+    // update/restore 省略该字段即可保留目标快照已有合法值，也不会因非法旧值制造循环更新。
+    const managedOptions = {
+      ignoreVacancyNote,
+      ignoreContact: !Object.prototype.hasOwnProperty.call(fields, 'contact')
+    }
     if (!equalPlain(managedFieldsOf(existingFields, managedOptions), managedFieldsOf(fields, managedOptions))) {
       operations.push({ type: 'update', recordId, sourceRecordId, fields: clonePlain(fields) })
       counts.update += 1
