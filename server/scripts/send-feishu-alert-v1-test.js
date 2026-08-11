@@ -135,6 +135,21 @@ const fakeMachineCodeText = alert.buildText({
 assert.ok(!fakeMachineCodeText.includes('OWNER_EMAIL_EXAMPLE_TEST'), '仅形态合法但未列入该告警类型白名单的机器码不得外发')
 assert.ok(fakeMachineCodeText.includes('机器码：FEISHU_SYNC_FAILED'), '未知机器码必须归一为告警类型')
 
+const registrationTraceBypass = alert.buildText({
+  ALERT_KIND: 'REGISTRATION_NOTIFY_DEAD_LETTER',
+  ALERT_DETAIL: JSON.stringify({ registrationRequestTraceId: 'CUSTOMER-JOHN-SMITH' })
+}, [])
+assert.ok(!registrationTraceBypass.includes('CUSTOMER-JOHN-SMITH'), '注册追踪编号不得接受任意字母数字自由文本')
+const registrationTraceSafe = alert.buildText({
+  ALERT_KIND: 'REGISTRATION_NOTIFY_DEAD_LETTER',
+  ALERT_DETAIL: JSON.stringify({ registrationRequestTraceId: 'REQ-ABCDEF1234567890' })
+}, [])
+assert.ok(registrationTraceSafe.includes('追踪编号：REQ-ABCDEF1234567890'), '服务端不可逆注册追踪编号必须可用于排查')
+
+const unknownKindText = alert.buildText({ ALERT_KIND: 'OWNER_EMAIL_EXAMPLE_TEST' }, [])
+assert.ok(!unknownKindText.includes('OWNER_EMAIL_EXAMPLE_TEST'), '未知告警类型不得作为机器码自由文本外发')
+assert.ok(unknownKindText.includes('机器码：ALERT_UNCLASSIFIED'), '未知告警类型必须归一为安全机器码')
+
 const traceA = alert.buildText({ ALERT_KIND: 'BACKUP_FAILED', ALERT_TRACE_ID: 'AL-AAAAAAAAAAAAAAAA' }, [])
 const traceB = alert.buildText({ ALERT_KIND: 'BACKUP_FAILED', ALERT_TRACE_ID: 'AL-BBBBBBBBBBBBBBBB' }, [])
 const extractTrace = (text) => (text.match(/追踪编号：([^\n]+)/) || [])[1]

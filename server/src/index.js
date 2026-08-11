@@ -524,9 +524,7 @@ function registrationNotifyErrorSummary(error, fallback) {
 }
 
 function formatRegistrationAlertTraceId(id) {
-  return String(id || '')
-    .replace(/(\d{4})(?=\d)/g, '$1-')
-    .slice(0, 80)
+  return `REQ-${crypto.createHash('sha256').update(String(id || '')).digest('hex').slice(0, 16).toUpperCase()}`
 }
 
 function scheduleRegistrationNotification(requestId, delayMs = 0) {

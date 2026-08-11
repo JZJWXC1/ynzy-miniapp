@@ -102,7 +102,7 @@ function parseSafeDetail(raw) {
     if (key === 'ok' && typeof value === 'boolean') safe[key] = value
     else if (['code', 'errorCode'].includes(key) && /^[A-Z][A-Z0-9_-]{2,63}$/.test(String(value || '').toUpperCase())) safe[key] = String(value).toUpperCase()
     else if (key === 'traceId' && /^(?:SYNC|INC|AL)-[A-F0-9]{12,64}$/.test(String(value || '').toUpperCase())) safe[key] = String(value).toUpperCase()
-    else if (key === 'registrationRequestTraceId' && /^[A-Za-z0-9-]{4,96}$/.test(String(value || ''))) safe[key] = String(value)
+    else if (key === 'registrationRequestTraceId' && /^REQ-[A-F0-9]{16}$/.test(String(value || '').toUpperCase())) safe[key] = String(value).toUpperCase()
     else if (key === 'state' && SAFE_STATES.has(String(value || ''))) safe[key] = String(value)
     else if (key === 'stage' && SAFE_STAGES.has(String(value || ''))) safe[key] = String(value)
     else if (key === 'notifyAttempts' && Number.isSafeInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 100) safe[key] = Number(value)
@@ -119,7 +119,7 @@ function parseSafeDetail(raw) {
 function safeMachineCode(kind, detail) {
   const candidate = String(detail.code || detail.errorCode || '').toUpperCase()
   if (KNOWN_REASONS[kind] && Object.prototype.hasOwnProperty.call(KNOWN_REASONS[kind], candidate)) return candidate
-  return /^[A-Z][A-Z0-9_-]{2,63}$/.test(kind) ? kind : 'ALERT_UNCLASSIFIED'
+  return Object.prototype.hasOwnProperty.call(KIND_TEMPLATES, kind) ? kind : 'ALERT_UNCLASSIFIED'
 }
 
 function confirmedReason(message, code, kind) {
@@ -136,7 +136,7 @@ function traceId(kind, detail, env) {
   const machineTrace = String(detail.traceId || '').toUpperCase()
   if (/^(?:SYNC|INC|AL)-[A-F0-9]{12,64}$/.test(machineTrace)) return machineTrace
   const registrationTrace = String(detail.registrationRequestTraceId || '')
-  if (/^[A-Za-z0-9-]{4,96}$/.test(registrationTrace)) return registrationTrace
+  if (/^REQ-[A-F0-9]{16}$/.test(registrationTrace)) return registrationTrace
   const alertTrace = String(env.ALERT_TRACE_ID || '').toUpperCase()
   if (/^AL-[A-F0-9]{16}$/.test(alertTrace)) return alertTrace
   const healthIncident = String(env.HEALTH_INCIDENT_ID || '').toUpperCase()
@@ -175,7 +175,8 @@ function healthAlert(env) {
 function renderAlert(env, argv) {
   const hasStructured = env.ALERT_KIND || env.ALERT_MESSAGE
   const health = !hasStructured && (env.HEALTH_FAILURES || env.HEALTH_SUMMARY) ? healthAlert(env) : null
-  const kind = String((health && health.kind) || env.ALERT_KIND || 'MANUAL_ALERT').trim().toUpperCase()
+  const rawKind = String((health && health.kind) || env.ALERT_KIND || 'MANUAL_ALERT').trim().toUpperCase()
+  const kind = Object.prototype.hasOwnProperty.call(KIND_TEMPLATES, rawKind) ? rawKind : 'ALERT_UNCLASSIFIED'
   const detail = (health && health.detail) || parseSafeDetail(env.ALERT_DETAIL)
   const message = (health && health.message) || env.ALERT_MESSAGE || (argv || []).join(' ')
   const template = KIND_TEMPLATES[kind] || ['警告', '系统报告了一项异常', '影响范围尚未确认', '状态尚未确认', '查看对应任务的服务日志并按追踪编号补齐阶段证据']

@@ -2,6 +2,7 @@
 // 1. 待审核同号重复提交不得覆盖原姓名/密码；2. 飞书文本不得注入 at/换行；
 // 3. 通知失败最多重试 3 次并落库状态；4. 进程重启后恢复未完成通知。
 const assert = require('assert')
+const crypto = require('crypto')
 const fs = require('fs')
 const http = require('http')
 const os = require('os')
@@ -195,7 +196,7 @@ async function run() {
   let failResponsesRemaining = 0
   let failAllResponses = false
   const isDeadLetterAlert = (hit) => notificationText(hit).includes('REGISTRATION_NOTIFY_DEAD_LETTER')
-  const alertTraceId = (id) => String(id || '').replace(/(\d{4})(?=\d)/g, '$1-')
+  const alertTraceId = (id) => `REQ-${crypto.createHash('sha256').update(String(id || '')).digest('hex').slice(0, 16).toUpperCase()}`
   const stub = http.createServer((req, res) => {
     let raw = ''
     req.on('data', (chunk) => { raw += chunk })
