@@ -195,7 +195,7 @@ async function run() {
   const hits = []
   let failResponsesRemaining = 0
   let failAllResponses = false
-  const isDeadLetterAlert = (hit) => notificationText(hit).includes('REGISTRATION_NOTIFY_DEAD_LETTER')
+  const isDeadLetterAlert = (hit) => notificationText(hit).includes('注册申请通知多次发送失败')
   const alertTraceId = (id) => `REQ-${crypto.createHash('sha256').update(String(id || '')).digest('hex').slice(0, 16).toUpperCase()}`
   const stub = http.createServer((req, res) => {
     let raw = ''
@@ -336,6 +336,7 @@ async function run() {
     const deadLetterAlerts = hits.slice(exhaustStart).filter(isDeadLetterAlert)
     assert.strictEqual(deadLetterAlerts.length, 1, '同一申请重试耗尽只允许发 1 次死信升级告警')
     const deadLetterText = notificationText(deadLetterAlerts[0])
+    assert.ok(!deadLetterText.includes('REGISTRATION_NOTIFY_DEAD_LETTER'), '死信升级告警不得把内部机器码发到群里')
     assert.ok(deadLetterText.includes(alertTraceId(exhausted.id)), '死信告警应带可追踪申请 id')
     assert.ok(!deadLetterText.includes(EXHAUST_PHONE), '死信告警不得含完整手机号')
     assert.ok(!deadLetterText.includes('139****0067'), '死信告警不得含打码手机号，避免和个人身份绑定')

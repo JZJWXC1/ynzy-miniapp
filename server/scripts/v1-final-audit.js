@@ -83,7 +83,9 @@ const criticalScripts = [
   // 图片错误事件晚于列表刷新时，必须按房源 id + 当时 URL 定位，禁止旧 index 误清另一套房的封面。
   'server/scripts/listing-cover-error-race-test.js',
   // 告警到人：飞书 webhook 通知脚本的两条契约（HEALTH_ALERT_CMD 白名单 env / BACKUP_ALERT_CMD ALERT_*）、
-  // 签名、截断、失败退出码。告警链坏了没人收到通知，必须门禁锁住。
+  // 健康巡检的正式同步失败识别、可信成功逐条通知、持久游标与部署基线也必须一起锁住。
+  'server/scripts/health-check-v1-test.js',
+  // 签名、截断、失败退出码与人话正文。告警链坏了没人收到通知，必须门禁锁住。
   'server/scripts/send-feishu-alert-v1-test.js',
   // 注册申请飞书提醒：新申请/驳回后重申请→通知、待审核重复提交不轰炸、409 不通知、手机号打码零 PII、
   // 无 webhook 注册不受影响。
