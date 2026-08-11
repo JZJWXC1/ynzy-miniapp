@@ -118,7 +118,7 @@ function parseSafeDetail(raw) {
 
 function safeMachineCode(kind, detail) {
   const candidate = String(detail.code || detail.errorCode || '').toUpperCase()
-  if (/^[A-Z][A-Z0-9_-]{2,63}$/.test(candidate)) return candidate
+  if (KNOWN_REASONS[kind] && Object.prototype.hasOwnProperty.call(KNOWN_REASONS[kind], candidate)) return candidate
   return /^[A-Z][A-Z0-9_-]{2,63}$/.test(kind) ? kind : 'ALERT_UNCLASSIFIED'
 }
 
@@ -145,8 +145,8 @@ function traceId(kind, detail, env) {
 }
 
 function healthAlert(env) {
-  const failures = [...new Set(String(env.HEALTH_FAILURES || '').split(',').map((item) => item.trim()).filter(Boolean))]
-  const labels = failures.map((item) => CHECK_LABELS[item] || sanitizeText(item))
+  const failures = [...new Set(String(env.HEALTH_FAILURES || '').split(',').map((item) => item.trim()).filter((item) => Object.prototype.hasOwnProperty.call(CHECK_LABELS, item)))]
+  const labels = failures.map((item) => CHECK_LABELS[item])
   const detail = parseSafeDetail(env.HEALTH_SUMMARY)
   let summary = {}
   try { summary = JSON.parse(env.HEALTH_SUMMARY || '{}') } catch (_error) { summary = {} }
@@ -163,10 +163,11 @@ function healthAlert(env) {
   const syncOnly = failures.length === 1 && failures[0] === 'feishuSync'
   const syncCheck = failedChecks.find((item) => item && item.name === 'feishuSync')
   if (syncCheck) {
-    detail.state = sanitizeText(syncCheck.lastState || '')
-    detail.traceId = sanitizeText(syncCheck.traceId || '')
-    const syncCode = String(syncCheck.errorCode || '').toUpperCase()
-    if (/^[A-Z][A-Z0-9_-]{2,63}$/.test(syncCode)) detail.code = syncCode
+    Object.assign(detail, parseSafeDetail(JSON.stringify({
+      state: syncCheck.lastState,
+      traceId: syncCheck.traceId,
+      code: syncCheck.errorCode
+    })))
   }
   return { kind: syncOnly ? 'FEISHU_SYNC_FAILED' : 'HEALTH_CHECK_FAILED', detail, message: reason, impact: labels.length ? `${labels.join('、')}对应的服务能力可能不可用` : undefined, happened: syncOnly ? '飞书房源同步失败' : (labels.length ? `系统健康巡检发现异常：${labels.join('、')}` : undefined) }
 }
@@ -193,7 +194,12 @@ function renderAlert(env, argv) {
     `追踪编号：${traceId(kind, detail, env)}`,
     `机器码：${code}`
   ]
-  const safeDetail = Object.keys(detail).length ? JSON.stringify(detail) : ''
+  const displayDetail = { ...detail }
+  for (const key of ['code', 'errorCode']) {
+    const candidate = String(displayDetail[key] || '').toUpperCase()
+    if (!KNOWN_REASONS[kind] || !Object.prototype.hasOwnProperty.call(KNOWN_REASONS[kind], candidate)) delete displayDetail[key]
+  }
+  const safeDetail = Object.keys(displayDetail).length ? JSON.stringify(displayDetail) : ''
   if (safeDetail) lines.push(`安全明细：${truncate(safeDetail, 420)}`)
   return truncate(lines.join('\n'), MAX_TEXT_LENGTH)
 }

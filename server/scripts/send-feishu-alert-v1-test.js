@@ -106,6 +106,35 @@ const syncHealthText = alert.buildText({
 assert.ok(syncHealthText.includes('飞书房源同步失败'), '同步巡检失败必须使用同步专用模板')
 assert.ok(syncHealthText.includes('同步存在未处置的未知或阻断任务'), '同步巡检必须保留真实受控原因')
 
+const maliciousHealthText = alert.buildText({
+  HEALTH_FAILURES: 'feishuSync,owner@example.test',
+  HEALTH_SUMMARY: JSON.stringify({
+    ok: false,
+    checks: [{
+      name: 'feishuSync',
+      ok: false,
+      detail: '任意未知正文 owner@example.test 湖滨路88号',
+      lastState: '<xml>secret-address</xml>',
+      traceId: 'evil-trace owner@example.test',
+      errorCode: 'FEISHU_API_1254072'
+    }]
+  })
+}, [])
+;['owner@example.test', '湖滨路88号', 'secret-address', 'evil-trace'].forEach((secret) => {
+  assert.ok(!maliciousHealthText.includes(secret), `巡检摘要与未知失败项不得绕过白名单：${secret}`)
+})
+assert.ok(maliciousHealthText.includes('FEISHU_API_1254072'), '巡检链的安全机器码必须保留')
+
+const fakeMachineCodeText = alert.buildText({
+  HEALTH_FAILURES: 'feishuSync',
+  HEALTH_SUMMARY: JSON.stringify({
+    ok: false,
+    checks: [{ name: 'feishuSync', ok: false, errorCode: 'OWNER_EMAIL_EXAMPLE_TEST' }]
+  })
+}, [])
+assert.ok(!fakeMachineCodeText.includes('OWNER_EMAIL_EXAMPLE_TEST'), '仅形态合法但未列入该告警类型白名单的机器码不得外发')
+assert.ok(fakeMachineCodeText.includes('机器码：FEISHU_SYNC_FAILED'), '未知机器码必须归一为告警类型')
+
 const traceA = alert.buildText({ ALERT_KIND: 'BACKUP_FAILED', ALERT_TRACE_ID: 'AL-AAAAAAAAAAAAAAAA' }, [])
 const traceB = alert.buildText({ ALERT_KIND: 'BACKUP_FAILED', ALERT_TRACE_ID: 'AL-BBBBBBBBBBBBBBBB' }, [])
 const extractTrace = (text) => (text.match(/追踪编号：([^\n]+)/) || [])[1]
