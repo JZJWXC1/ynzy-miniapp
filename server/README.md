@@ -36,6 +36,10 @@ https://zf-api.ynzyqbot.cn
 
 健康巡检（`server/scripts/health-check.js` + `deploy/ynzy-health-check.{service,timer}`）：独立于 `/healthz` 的定时巡检，检查「会拖垮生产但 `/healthz` 未必发现」的信号——**db 可解析**（JSON 有效且含 listings 数组）、**磁盘余量**（`df -Pk`，低于 `DISK_MIN_FREE_PCT`% 告警，默认 10）、**备份新鲜度**（复用 `backup.checkFreshness`，超 `BACKUP_MAX_AGE_HOURS` 小时无新备份告警，默认 24；未配置备份目录则跳过不误报）、**服务端点**（`curl /healthz` 是否 200）。打一行 `[health] {"ok","checks","failures"}` 到 journald，**任一失败非零退出**（systemd 可据此告警）；配了 `HEALTH_ALERT_CMD` 时经环境变量把摘要传给外部通知命令（仓库不写凭据/webhook）。systemd 定时器每 15 分钟跑一次（`install-on-server.sh` 自动加装）；服务单元 `EnvironmentFile=-/etc/default/ynzy-backup` 复用备份环境。不改 `index.js`/`/readyz`，是纯旁路巡检。查看：`journalctl -u ynzy-health-check --since "1 hour ago"`。
 
+飞书机器人告警统一由 `server/scripts/send-feishu-alert.js` 渲染。巡检、飞书同步状态、备份生成/校验/异地上传、新鲜度、恢复演练和注册通知死信都会输出同一套中文字段：严重程度、发生时间、发生了什么、影响范围、当前状态、真实原因、建议处理、脱敏追踪编号和机器码。重复巡检项先合并；能从受控错误码或检查结果确认原因时显示中文原因，只有 `UNKNOWN`、空原因或泛化“失败”时明确显示“原因尚未确认”并提示按追踪编号查看服务日志。任意 token、secret、webhook、手机号、原始响应正文和非白名单生产明细不会进入消息或发送失败日志。同步健康项单独使用同步失败模板；其他巡检项合并成一次巡检告警，避免同轮重复通知。
+
+告警 webhook 与签名密钥只允许放在服务器私有环境变量 `HEALTH_ALERT_WEBHOOK` / `HEALTH_ALERT_SECRET` 中，不得写入仓库、聊天、测试或日志。已在任何非私有渠道出现过的 webhook 必须先到飞书后台轮换。禁止用真实机器人跑自动化测试；本地测试通过 `sendAlert({ transport })` 注入 fake transport，端到端 HTTP 行为只连接本机假服务。
+
 需求转化漏斗（`server/src/need-funnel.js` + `server/scripts/metric-readout.js`）：持久需求的 `funnel` 对象仍兼容读取首次推荐、历史 L1 敏感查看、历史 L2 报备、审核通过带看、历史 L3 成交提交与确认时间，不保存客户、房源、地址或自由文本。M3 起新的敏感查看不再绑定 `needId`、不再制造 L1；报备/签单写入默认暂停，因此不会新增 L2/L3。带看仍可选提交本人持久 `needId`，由服务端验归属后再计漏斗。历史显式恢复模式下，报备/成交仍沿用服务端可信归因与首次时间幂等规则。
 
 - 历史指标 `fillL2_reportPct`：有可信报备的需求数 / 持久需求总数；暂停期只反映存量，不代表当前活动入口。
