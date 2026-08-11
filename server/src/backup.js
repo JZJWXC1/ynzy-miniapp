@@ -360,8 +360,10 @@ function checkFreshness({ dir, maxAgeHours, now }) {
 
 // ---------- 告警 ----------
 
-function defaultAlertSink({ kind, message, detail }) {
-  process.stderr.write(`[备份告警][${kind}] ${message}\n`)
+function defaultAlertSink({ kind, message, detail, eventId, occurredAt }) {
+  const candidateCode = String(detail && detail.errorCode || '').toUpperCase()
+  const safeCode = /^[A-Z][A-Z0-9_-]{2,63}$/.test(candidateCode) ? candidateCode : kind
+  process.stderr.write(`[备份告警][${kind}][${eventId}] 机器码=${safeCode}\n`)
   // 外部通知命令只从环境变量读取（仓库不写目标/凭据/webhook）；把内容经环境变量传入，避免拼接注入。
   const cmd = process.env.BACKUP_ALERT_CMD
   if (cmd && cmd.trim()) {
@@ -369,7 +371,10 @@ function defaultAlertSink({ kind, message, detail }) {
       ...process.env,
       ALERT_KIND: kind,
       ALERT_MESSAGE: message,
-      ALERT_DETAIL: JSON.stringify(detail || {})
+      ALERT_DETAIL: JSON.stringify(detail || {}),
+      ALERT_TRACE_ID: eventId,
+      ALERT_DEDUPE_KEY: eventId,
+      ALERT_OCCURRED_AT: new Date(occurredAt).toISOString()
     }
     try {
       if (process.platform === 'win32') {
@@ -378,17 +383,25 @@ function defaultAlertSink({ kind, message, detail }) {
         execFileSync('/bin/sh', ['-c', cmd], { env, stdio: 'ignore', timeout: 15000 })
       }
     } catch (error) {
-      process.stderr.write(`[备份告警] 外部通知命令执行失败：${error.message}\n`)
+      const failureCode = error && /^[A-Z][A-Z0-9_-]{1,63}$/.test(String(error.code || '').toUpperCase())
+        ? String(error.code).toUpperCase()
+        : 'UNKNOWN'
+      process.stderr.write(`[备份告警][${eventId}] 外部通知命令执行失败，机器码=${failureCode}\n`)
     }
   }
 }
 
 function raiseAlert(sink, kind, message, detail) {
-  const record = { kind, message, detail: detail || {} }
+  const occurredAt = Date.now()
+  const eventId = `AL-${crypto.createHash('sha256').update(`${kind}|${occurredAt}|${crypto.randomBytes(16).toString('hex')}`).digest('hex').slice(0, 16).toUpperCase()}`
+  const record = { kind, message, detail: detail || {}, eventId, occurredAt }
   try {
     ;(sink || defaultAlertSink)(record)
   } catch (error) {
-    process.stderr.write(`[备份告警] 告警发送失败：${error.message}\n`)
+    const failureCode = error && /^[A-Z][A-Z0-9_-]{1,63}$/.test(String(error.code || '').toUpperCase())
+      ? String(error.code).toUpperCase()
+      : 'UNKNOWN'
+    process.stderr.write(`[备份告警][${eventId}] 告警发送失败，机器码=${failureCode}\n`)
   }
   return record
 }
@@ -470,7 +483,7 @@ function runBackup(options) {
     result.file = created.file
     result.meta = created.meta
   } catch (error) {
-    alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_FAILED, `生成加密备份失败：${error.message}`, { dataFile, stageDir }))
+    alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_FAILED, '生成加密备份失败', { dataFile, stageDir, errorCode: error && error.code }))
     return result
   }
 
@@ -483,7 +496,7 @@ function runBackup(options) {
     drill = { ok: false, error: `自检异常：${error.message}`, mismatches: [] }
   }
   if (!drill.ok) {
-    alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_VERIFY_FAILED, `新备份自检失败：${drill.error}`, { file: created.fileName, mismatches: drill.mismatches }))
+    alerts.push(raiseAlert(alertSink, ALERT_KINDS.BACKUP_VERIFY_FAILED, '新备份自检失败', { file: created.fileName, mismatches: drill.mismatches }))
     try { fs.unlinkSync(created.file) } catch (error) { /* 忽略 */ }
     result.file = null
     return result
@@ -526,7 +539,7 @@ function runBackup(options) {
       result.remoteUploaded = true
       remoteAchieved = true
     } catch (error) {
-      alerts.push(raiseAlert(alertSink, ALERT_KINDS.REMOTE_UPLOAD_FAILED, `异地上传失败：${error.message}`, { file: created.fileName }))
+      alerts.push(raiseAlert(alertSink, ALERT_KINDS.REMOTE_UPLOAD_FAILED, '异地上传失败', { file: created.fileName, errorCode: error && error.code }))
     }
   } else if (allowLocalOnly) {
     warn('[备份] 已显式允许仅本地备份（BACKUP_ALLOW_LOCAL_ONLY=1）：未配置异地目标，仅生成本地加密备份。')
@@ -594,7 +607,7 @@ function runRestoreDrill(options) {
     const kind = drill.mismatches && drill.mismatches.length
       ? ALERT_KINDS.RESTORE_MISMATCH
       : ALERT_KINDS.RESTORE_FAILED
-    alerts.push(raiseAlert(alertSink, kind, `恢复演练失败：${drill.error}`, { file: path.basename(target), mismatches: drill.mismatches }))
+    alerts.push(raiseAlert(alertSink, kind, '恢复演练失败', { file: path.basename(target), mismatches: drill.mismatches }))
     return result
   }
 

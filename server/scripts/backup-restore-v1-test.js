@@ -103,8 +103,8 @@ function run() {
     assert.strictEqual(rb.ok, false, '写盘失败时备份必须判失败')
     const failAlert = sink.alerts.find((a) => a.kind === backup.ALERT_KINDS.BACKUP_FAILED)
     assert.ok(failAlert, '写盘失败必须触发 BACKUP_FAILED 告警')
-    // 锁定失败确来自写盘步骤（mkdir/落盘），而非更早的读源/加密异常，避免场景名与实际路径脱节。
-    assert.ok(/mkdir|EEXIST|ENOTDIR|EPERM|EACCES/i.test(failAlert.message), `告警须指向写盘失败，实得：${failAlert.message}`)
+    // 自由异常正文不得进入告警；用严格机器码证明失败来自写盘步骤。
+    assert.ok(/^(?:EEXIST|ENOTDIR|EPERM|EACCES)$/.test(String(failAlert.detail && failAlert.detail.errorCode || '')), `告警须保留写盘机器码，实得：${JSON.stringify(failAlert.detail)}`)
   }
 
   // 3) 失败场景二：恢复数量校验不符 → RESTORE_MISMATCH。
@@ -589,10 +589,13 @@ function run() {
       const rb = backup.runBackup({
         dataFile, stageDir, passphrase: PW, now: NOW, alertSink: sink, quiet: true,
         remoteCmd: 'upload $BACKUP_FILE',
-        exec: () => { throw new Error('scp: connection refused') }
+        exec: () => { const error = new Error('scp: customer payload refused'); error.code = 'EACCES'; throw error }
       })
       assert.strictEqual(rb.ok, false, '异地上传失败时备份必须判失败')
       assert.ok(sink.kinds().includes(backup.ALERT_KINDS.REMOTE_UPLOAD_FAILED), '异地上传失败必须触发 REMOTE_UPLOAD_FAILED 告警')
+      const remoteAlert = sink.alerts.find((item) => item.kind === backup.ALERT_KINDS.REMOTE_UPLOAD_FAILED)
+      assert.strictEqual(remoteAlert.detail.errorCode, 'EACCES', '异地上传必须单独透传安全系统错误码，不依赖自由错误正文')
+      assert.match(remoteAlert.eventId, /^AL-[A-F0-9]{16}$/, '备份告警必须在事件源生成稳定脱敏编号')
     }
   }
 

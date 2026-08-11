@@ -18,11 +18,15 @@
 const https = require('https')
 const http = require('http')
 const os = require('os')
+const fs = require('fs')
+const path = require('path')
 const crypto = require('crypto')
 const { URL } = require('url')
 
 const MAX_TEXT_LENGTH = 1800 // 飞书文本消息留余量截断，防超长被拒
 const TIMEOUT_MS = 10000 // 必须小于两条调用链各自的 15s execSync 限时
+const DEDUPE_WINDOW_MS = 60 * 60 * 1000
+const DEDUPE_DIR = path.join(os.tmpdir(), 'ynzy-feishu-alert-dedupe')
 
 const CHECK_LABELS = {
   db: '数据库', disk: '磁盘', backup: '备份', service: '应用服务', feishuSync: '飞书同步'
@@ -44,15 +48,34 @@ const KIND_TEMPLATES = {
 }
 
 const KNOWN_REASONS = {
-  FEISHU_API_1254072: '字段值格式不符合飞书表格要求',
-  HTTP_401: '外部服务拒绝了身份校验',
-  HTTP_403: '外部服务拒绝了当前权限',
-  HTTP_429: '外部服务请求过于频繁',
-  HTTP_500: '外部服务发生内部错误'
+  FEISHU_SYNC_FAILED: {
+    FEISHU_API_1254072: '字段值格式不符合飞书表格要求'
+  },
+  BACKUP_FAILED: {
+    ENOSPC: '服务器磁盘空间不足', EACCES: '服务器文件权限不足', EPERM: '服务器文件权限不足'
+  },
+  REMOTE_UPLOAD_FAILED: {
+    ETIMEDOUT: '异地上传执行超时', EACCES: '异地上传权限不足', EPERM: '异地上传权限不足',
+    HTTP_401: '异地服务拒绝了身份校验', HTTP_403: '异地服务拒绝了当前权限',
+    HTTP_429: '异地服务请求过于频繁', HTTP_500: '异地服务发生内部错误'
+  }
 }
 
 const SENSITIVE_KEY = /(?:token|secret|password|passwd|webhook|authorization|cookie|phone|mobile|response(?:body|text|raw)|rawresponse)/i
-const SAFE_DETAIL_KEYS = new Set(['ok', 'code', 'errorCode', 'runId', 'taskId', 'state', 'stage', 'reason', 'notifyAttempts', 'deadLetterAt', 'registrationRequestTraceId', 'file', 'mismatches', 'newCounts', 'priorCounts'])
+const SAFE_DETAIL_KEYS = new Set(['ok', 'code', 'errorCode', 'traceId', 'state', 'stage', 'notifyAttempts', 'deadLetterAt', 'registrationRequestTraceId', 'newCounts', 'priorCounts'])
+
+const SAFE_STATES = new Set(['unknown', 'blocked', 'failed', 'failed-before-write', 'succeeded', 'dry-succeeded', 'dead_letter'])
+const SAFE_STAGES = new Set(['backup', 'verify', 'upload', 'restore', 'health', 'sync', 'notify'])
+const SAFE_COUNT_KEYS = new Set(['listings', 'users', 'reports', 'deals', 'commissionRecords', 'footprints', 'favorites'])
+const HEALTH_REASON_MAP = new Map([
+  ['healthz 不可达', '应用健康接口当前不可达'],
+  ['同步存在未处置的未知或阻断任务', '同步存在未处置的未知或阻断任务'],
+  ['同步控制器租约完整性异常', '同步控制器租约状态异常'],
+  ['同步控制器活动租约不一致', '同步控制器租约状态异常'],
+  ['自动同步尚无受信成功记录', '自动同步尚无受信成功记录'],
+  ['自动同步成功记录已超过健康窗口', '自动同步成功记录已超过健康窗口'],
+  ['最近一次自动同步的素材链路未完整', '最近一次同步的素材处理未完整完成']
+])
 
 function truncate(text, max) {
   const value = String(text == null ? '' : text)
@@ -72,24 +95,25 @@ function parseSafeDetail(raw) {
   let detail = {}
   try { detail = raw ? JSON.parse(raw) : {} } catch (_error) { detail = {} }
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return {}
-  return Object.keys(detail).reduce((safe, key) => {
-    if (!SAFE_DETAIL_KEYS.has(key) || SENSITIVE_KEY.test(key)) return safe
+  const safe = {}
+  for (const key of Object.keys(detail)) {
+    if (!SAFE_DETAIL_KEYS.has(key) || SENSITIVE_KEY.test(key)) continue
     const value = detail[key]
-    if (value == null || typeof value === 'boolean' || typeof value === 'number') safe[key] = value
-    else if (typeof value === 'string') safe[key] = truncate(sanitizeText(value), 160)
-    else if (Array.isArray(value)) safe[key] = value.slice(0, 8).map((item) => {
-      if (typeof item === 'string') return truncate(sanitizeText(item), 80)
-      if (item && typeof item === 'object') {
-        return Object.fromEntries(Object.entries(item).filter(([childKey, childValue]) => (
-          !SENSITIVE_KEY.test(childKey) && /^[A-Za-z][A-Za-z0-9_-]{0,30}$/.test(childKey) &&
-          (typeof childValue === 'number' || typeof childValue === 'boolean')
-        )))
-      }
-      return null
-    }).filter((item) => item != null)
-    else safe[key] = Object.fromEntries(Object.entries(value).slice(0, 12).map(([k, v]) => [sanitizeText(k), Number(v) || 0]))
-    return safe
-  }, {})
+    if (key === 'ok' && typeof value === 'boolean') safe[key] = value
+    else if (['code', 'errorCode'].includes(key) && /^[A-Z][A-Z0-9_-]{2,63}$/.test(String(value || '').toUpperCase())) safe[key] = String(value).toUpperCase()
+    else if (key === 'traceId' && /^(?:SYNC|INC|AL)-[A-F0-9]{12,64}$/.test(String(value || '').toUpperCase())) safe[key] = String(value).toUpperCase()
+    else if (key === 'registrationRequestTraceId' && /^[A-Za-z0-9-]{4,96}$/.test(String(value || ''))) safe[key] = String(value)
+    else if (key === 'state' && SAFE_STATES.has(String(value || ''))) safe[key] = String(value)
+    else if (key === 'stage' && SAFE_STAGES.has(String(value || ''))) safe[key] = String(value)
+    else if (key === 'notifyAttempts' && Number.isSafeInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 100) safe[key] = Number(value)
+    else if (key === 'deadLetterAt' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(String(value || ''))) safe[key] = String(value)
+    else if (['newCounts', 'priorCounts'].includes(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+      safe[key] = Object.fromEntries(Object.entries(value).filter(([countKey, countValue]) => (
+        SAFE_COUNT_KEYS.has(countKey) && Number.isSafeInteger(Number(countValue)) && Number(countValue) >= 0
+      )).map(([countKey, countValue]) => [countKey, Number(countValue)]))
+    }
+  }
+  return safe
 }
 
 function safeMachineCode(kind, detail) {
@@ -98,17 +122,26 @@ function safeMachineCode(kind, detail) {
   return /^[A-Z][A-Z0-9_-]{2,63}$/.test(kind) ? kind : 'ALERT_UNCLASSIFIED'
 }
 
-function confirmedReason(message, code, detail) {
-  if (KNOWN_REASONS[code]) return KNOWN_REASONS[code]
-  const candidate = sanitizeText(detail.reason || message)
-  if (!candidate || /^(?:unknown|未知|同步失败|失败)$/i.test(candidate)) return '原因尚未确认；请查看对应任务的服务日志并按追踪编号补齐阶段证据'
-  return truncate(candidate, 240)
+function confirmedReason(message, code, kind) {
+  if (KNOWN_REASONS[kind] && KNOWN_REASONS[kind][code]) return KNOWN_REASONS[kind][code]
+  if (kind === 'BACKUP_REMOTE_REQUIRED') return '服务器没有配置有效的异地备份目标'
+  if (kind === 'BACKUP_EMPTY_SOURCE') return '本次备份计数全为零，但上一份可信备份仍有数据'
+  if (kind === 'BACKUP_BASELINE_UNREADABLE') return '上一份备份无法通过完整性验证'
+  if (kind === 'BACKUP_STALE') return '最近一次成功备份已经超过允许时间窗口'
+  if (kind === 'RESTORE_MISMATCH') return '恢复结果与备份元数据计数不一致'
+  return '原因尚未确认；请查看对应任务的服务日志并按追踪编号补齐阶段证据'
 }
 
 function traceId(kind, detail, env) {
-  const supplied = sanitizeText(detail.runId || detail.taskId || detail.registrationRequestTraceId || env.ALERT_TRACE_ID || '')
-  if (supplied && /^[A-Za-z0-9._:-]{4,128}$/.test(supplied)) return supplied
-  return `AL-${crypto.createHash('sha256').update(`${kind}|${JSON.stringify(detail)}`).digest('hex').slice(0, 12).toUpperCase()}`
+  const machineTrace = String(detail.traceId || '').toUpperCase()
+  if (/^(?:SYNC|INC|AL)-[A-F0-9]{12,64}$/.test(machineTrace)) return machineTrace
+  const registrationTrace = String(detail.registrationRequestTraceId || '')
+  if (/^[A-Za-z0-9-]{4,96}$/.test(registrationTrace)) return registrationTrace
+  const alertTrace = String(env.ALERT_TRACE_ID || '').toUpperCase()
+  if (/^AL-[A-F0-9]{16}$/.test(alertTrace)) return alertTrace
+  const healthIncident = String(env.HEALTH_INCIDENT_ID || '').toUpperCase()
+  if (/^INC-[A-F0-9]{16}$/.test(healthIncident)) return healthIncident
+  return `AL-${alertFingerprint(env).slice(0, 12).toUpperCase()}`
 }
 
 function healthAlert(env) {
@@ -118,12 +151,20 @@ function healthAlert(env) {
   let summary = {}
   try { summary = JSON.parse(env.HEALTH_SUMMARY || '{}') } catch (_error) { summary = {} }
   const failedChecks = Array.isArray(summary.checks) ? summary.checks.filter((item) => item && item.ok === false) : []
-  const reasonParts = failedChecks.map((item) => sanitizeText(item.detail || item.reason || '')).filter(Boolean)
+  const reasonParts = failedChecks.map((item) => {
+    const raw = String(item && item.detail || '')
+    if (HEALTH_REASON_MAP.has(raw)) return HEALTH_REASON_MAP.get(raw)
+    if (raw.startsWith('db.json 不可解析：') || raw === 'db.json 缺 listings 数组' || raw.startsWith('db.json 读取失败：')) return '数据库文件读取或结构校验失败'
+    if (item && item.name === 'disk' && item.ok === false) return '服务器磁盘可用空间低于安全阈值'
+    if (item && item.name === 'backup' && item.ok === false) return '最近备份未达到新鲜度要求'
+    return ''
+  }).filter(Boolean)
   const reason = reasonParts.length ? [...new Set(reasonParts)].join('；') : '原因尚未确认；请查看对应任务的服务日志并按追踪编号补齐阶段证据'
   const syncOnly = failures.length === 1 && failures[0] === 'feishuSync'
   const syncCheck = failedChecks.find((item) => item && item.name === 'feishuSync')
   if (syncCheck) {
     detail.state = sanitizeText(syncCheck.lastState || '')
+    detail.traceId = sanitizeText(syncCheck.traceId || '')
     const syncCode = String(syncCheck.errorCode || '').toUpperCase()
     if (/^[A-Z][A-Z0-9_-]{2,63}$/.test(syncCode)) detail.code = syncCode
   }
@@ -138,7 +179,8 @@ function renderAlert(env, argv) {
   const message = (health && health.message) || env.ALERT_MESSAGE || (argv || []).join(' ')
   const template = KIND_TEMPLATES[kind] || ['警告', '系统报告了一项异常', '影响范围尚未确认', '状态尚未确认', '查看对应任务的服务日志并按追踪编号补齐阶段证据']
   const code = safeMachineCode(kind, detail)
-  const reason = confirmedReason(message, code, detail)
+  const reason = (KNOWN_REASONS[kind] && KNOWN_REASONS[kind][code]) ||
+    (health ? health.message : confirmedReason(message, code, kind))
   const lines = [
     '【寓你住一起｜系统告警】',
     `严重程度：${template[0]}`,
@@ -224,13 +266,83 @@ function postJson(webhook, payload, callback) {
   req.end(body)
 }
 
+function alertFingerprint(env) {
+  const detail = parseSafeDetail(env.ALERT_DETAIL)
+  let rawDetail = {}
+  try { rawDetail = JSON.parse(env.ALERT_DETAIL || '{}') } catch (_error) { rawDetail = {} }
+  let healthSummary = {}
+  try { healthSummary = JSON.parse(env.HEALTH_SUMMARY || '{}') } catch (_error) { healthSummary = {} }
+  const healthChecks = Array.isArray(healthSummary.checks) ? healthSummary.checks : []
+  const syncCheck = healthChecks.find((item) => item && item.name === 'feishuSync') || {}
+  const kind = String(env.ALERT_KIND || (String(env.HEALTH_FAILURES || '').split(',').filter(Boolean).length === 1 && String(env.HEALTH_FAILURES).includes('feishuSync') ? 'FEISHU_SYNC_FAILED' : 'HEALTH_CHECK_FAILED')).toUpperCase()
+  const code = safeMachineCode(kind, { ...detail, code: detail.code || syncCheck.errorCode })
+  const rawIdentity = rawDetail && typeof rawDetail === 'object'
+    ? [rawDetail.traceId, rawDetail.runId, rawDetail.taskId, rawDetail.registrationRequestTraceId, rawDetail.file, rawDetail.dataFile].filter(Boolean).join('|')
+    : ''
+  const identity = env.ALERT_DEDUPE_KEY || env.HEALTH_INCIDENT_ID || rawIdentity || detail.traceId || detail.registrationRequestTraceId || syncCheck.traceId || ''
+  const failures = [...new Set(String(env.HEALTH_FAILURES || '').split(',').map((item) => item.trim()).filter(Boolean))].sort().join(',')
+  const reason = confirmedReason(env.ALERT_MESSAGE || healthChecks.map((item) => item && item.detail).filter(Boolean).join('|'), code, kind)
+  return crypto.createHash('sha256').update(`${kind}|${code}|${identity}|${failures}|${reason}`).digest('hex')
+}
+
+function createFileDedupeStore(options = {}) {
+  const dir = options.dir || DEDUPE_DIR
+  const windowMs = Number(options.windowMs) > 0 ? Number(options.windowMs) : DEDUPE_WINDOW_MS
+  const now = typeof options.now === 'function' ? options.now : Date.now
+  const pendingMs = Math.min(windowMs, Number(options.pendingMs) > 0 ? Number(options.pendingMs) : 30 * 1000)
+  return {
+    claim(key) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const marker = path.join(dir, `${key}.sent`)
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const fd = fs.openSync(marker, 'wx', 0o600)
+          try { fs.writeFileSync(fd, `pending:${now()}`, 'utf8') } finally { fs.closeSync(fd) }
+          return {
+            duplicate: false,
+            markSent: () => { fs.writeFileSync(marker, `sent:${now()}`, { encoding: 'utf8', mode: 0o600 }) },
+            release: () => { try { fs.unlinkSync(marker) } catch (_error) {} }
+          }
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error
+          let state = 'pending'
+          let timestamp = now()
+          try {
+            const parts = String(fs.readFileSync(marker, 'utf8')).split(':')
+            state = parts[0]
+            timestamp = Number(parts[1])
+          } catch (_readError) {}
+          const ageMs = now() - timestamp
+          const activeWindow = state === 'sent' ? windowMs : pendingMs
+          if (ageMs >= 0 && ageMs < activeWindow) return { duplicate: true, inFlight: state !== 'sent', markSent() {}, release() {} }
+          try { fs.unlinkSync(marker) } catch (_unlinkError) { return { duplicate: true, inFlight: true, markSent() {}, release() {} } }
+        }
+      }
+      return { duplicate: true, inFlight: true, markSent() {}, release() {} }
+    }
+  }
+}
+
 function sendAlert(options, callback) {
   const env = options && options.env ? options.env : {}
   const argv = options && options.argv ? options.argv : []
   const transport = options && options.transport ? options.transport : postJson
   const webhook = String(env.HEALTH_ALERT_WEBHOOK || '').trim()
   if (!webhook) return callback(new Error('未配置 HEALTH_ALERT_WEBHOOK'))
-  transport(webhook, buildPayload(env, argv), callback)
+  const structured = Boolean(env.ALERT_KIND || env.ALERT_MESSAGE || env.HEALTH_FAILURES || env.HEALTH_SUMMARY)
+  let claim = { duplicate: false, markSent() {}, release() {} }
+  try {
+    if (structured) claim = (options.dedupeStore || createFileDedupeStore({ dir: env.HEALTH_ALERT_DEDUPE_DIR || DEDUPE_DIR })).claim(alertFingerprint(env))
+  } catch (error) {
+    return callback(new Error(`告警去重状态不可用：${error.code || 'UNKNOWN'}`))
+  }
+  if (claim.duplicate && claim.inFlight) return callback(new Error('相同告警正在发送，请稍后重试'))
+  if (claim.duplicate) return callback(null, { deduplicated: true })
+  transport(webhook, buildPayload(env, argv), (error) => {
+    if (error) claim.release()
+    else claim.markSent()
+    callback(error, { deduplicated: false })
+  })
 }
 
 function main() {
@@ -239,15 +351,15 @@ function main() {
     process.stderr.write('[feishu-alert] 未配置 HEALTH_ALERT_WEBHOOK，无法发送\n')
     process.exit(2)
   }
-  sendAlert({ env: process.env, argv: process.argv.slice(2) }, (error) => {
+  sendAlert({ env: process.env, argv: process.argv.slice(2) }, (error, result) => {
     if (error) {
       process.stderr.write(`[feishu-alert] 发送失败：${error.message}\n`)
       process.exit(1)
     }
-    process.stdout.write('[feishu-alert] 已发送\n')
+    process.stdout.write(result && result.deduplicated ? '[feishu-alert] 重复告警已合并\n' : '[feishu-alert] 已发送\n')
   })
 }
 
 if (require.main === module) main()
 
-module.exports = { buildText, buildPayload, signPayload, truncate, postJson, sendAlert, renderAlert, parseSafeDetail, sanitizeText }
+module.exports = { buildText, buildPayload, signPayload, truncate, postJson, sendAlert, renderAlert, parseSafeDetail, sanitizeText, alertFingerprint, createFileDedupeStore }

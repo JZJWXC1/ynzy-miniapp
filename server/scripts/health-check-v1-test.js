@@ -3,6 +3,9 @@
 // 健康巡检 health-check.js 纯函数锁定测试：evaluateDb / parseDfFreePct / aggregate。
 
 const assert = require('assert')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const hc = require('./health-check')
 
 // 1) evaluateDb：有效 / BOM / 坏 JSON / 缺 listings。
@@ -242,9 +245,10 @@ const hc = require('./health-check')
 
   const unknown = hc.evaluateFeishuSyncState({
     feishuSyncRuns: [{
-      id: 'RUN-UNKNOWN',
+      runId: 'RUN-UNKNOWN-20260811',
       state: 'unknown',
       updatedAt: nowMs - 1000,
+      errorCode: 'FEISHU_API_1254072',
       errorMessage: 'https://secret.invalid/path?token=never-output'
     }]
   }, {
@@ -258,6 +262,37 @@ const hc = require('./health-check')
   })
   assert.strictEqual(unknown.ok, false, 'UNKNOWN 必须 fail-loud')
   assert.strictEqual(/secret|token|https?:|path/i.test(JSON.stringify(unknown)), false, '巡检结果不得带任务原始错误或外部地址')
+  assert.strictEqual(unknown.errorCode, 'FEISHU_API_1254072', '同步巡检必须透传白名单形态机器码')
+  assert.match(unknown.traceId, /^SYNC-[A-F0-9]{12}$/, '同步巡检必须提供不可逆脱敏任务编号')
+  assert.ok(!JSON.stringify(unknown).includes('RUN-UNKNOWN-20260811'), '同步巡检不得回显原始 runId')
+
+  const newest = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [
+      { runId: 'RUN-OLDER-UNKNOWN', state: 'unknown', updatedAt: nowMs - 5000, errorCode: 'OLDER_ERROR' },
+      { runId: 'RUN-NEWER-BLOCKED', state: 'blocked', updatedAt: nowMs - 1000, errorCode: 'NEWER_ERROR' }
+    ]
+  }, { nowMs, autoSyncEnabled: false })
+  assert.strictEqual(newest.lastState, 'blocked', '多个未处置任务必须固定选择最新任务')
+  assert.strictEqual(newest.errorCode, 'NEWER_ERROR', '最新任务的安全机器码必须进入巡检')
+
+  const syncAlertText = require('./send-feishu-alert').buildText({
+    HEALTH_FAILURES: 'feishuSync',
+    HEALTH_SUMMARY: JSON.stringify(hc.aggregate([{ name: 'feishuSync', ...unknown }]))
+  }, [])
+  assert.ok(syncAlertText.includes('字段值格式不符合飞书表格要求'), '真实同步巡检结构必须进入受控中文原因模板')
+  assert.ok(syncAlertText.includes(unknown.traceId), '同步告警必须沿用健康巡检生成的脱敏任务编号')
+
+  const incidentFile = path.join(os.tmpdir(), `ynzy-health-incident-test-${process.pid}-${Date.now()}.json`)
+  try {
+    const failed = { ok: false, failures: ['service'] }
+    const firstIncident = hc.updateHealthIncident(failed, { file: incidentFile, nowMs })
+    assert.strictEqual(hc.updateHealthIncident(failed, { file: incidentFile, nowMs: nowMs + 1000 }), firstIncident, '连续同一故障必须沿用事件编号')
+    hc.updateHealthIncident({ ok: true, failures: [] }, { file: incidentFile, nowMs: nowMs + 2000 })
+    const secondIncident = hc.updateHealthIncident(failed, { file: incidentFile, nowMs: nowMs + 3000 })
+    assert.notStrictEqual(secondIncident, firstIncident, '恢复后再次发生同类故障必须生成新事件编号')
+  } finally {
+    try { fs.unlinkSync(incidentFile) } catch (_error) {}
+  }
 
   const forgedManualResolution = hc.evaluateFeishuSyncState({
     feishuSyncRuns: [{

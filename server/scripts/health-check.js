@@ -11,12 +11,15 @@
 
 const fs = require('fs')
 const path = require('path')
+const os = require('os')
+const crypto = require('crypto')
 const { execSync } = require('child_process')
 const {
   _internal: { manualNoopResolutionMatches }
 } = require('../src/feishu-sync-worker')
 
 const SERVER_DIR = path.join(__dirname, '..')
+const DEFAULT_INCIDENT_FILE = path.join(os.tmpdir(), 'ynzy-health-alert-incident.json')
 
 // ---------- 纯函数（可单测，无副作用） ----------
 
@@ -53,6 +56,40 @@ function aggregate(checks) {
   return { ok: failures.length === 0, checks: list, failures }
 }
 
+function safeSyncContext(run) {
+  if (!run || typeof run !== 'object') return {}
+  const rawId = String(run.runId || run.id || '')
+  const errorCode = String(run.errorCode || '').toUpperCase()
+  return {
+    ...(rawId ? { traceId: `SYNC-${crypto.createHash('sha256').update(rawId).digest('hex').slice(0, 12).toUpperCase()}` } : {}),
+    ...(/^[A-Z][A-Z0-9_-]{2,63}$/.test(errorCode) ? { errorCode } : {})
+  }
+}
+
+function updateHealthIncident(result, options = {}) {
+  const file = options.file || process.env.HEALTH_ALERT_INCIDENT_FILE || DEFAULT_INCIDENT_FILE
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now()
+  if (!result || result.ok) {
+    try { fs.unlinkSync(file) } catch (error) { if (error.code !== 'ENOENT') throw error }
+    return ''
+  }
+  const signature = crypto.createHash('sha256')
+    .update([...new Set(result.failures || [])].sort().join(','))
+    .digest('hex')
+  try {
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (current && current.signature === signature && /^INC-[A-F0-9]{16}$/.test(String(current.incidentId || ''))) {
+      return current.incidentId
+    }
+  } catch (_error) {}
+  const incidentId = `INC-${crypto.createHash('sha256').update(`${signature}|${nowMs}|${crypto.randomBytes(16).toString('hex')}`).digest('hex').slice(0, 16).toUpperCase()}`
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const temp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`
+  fs.writeFileSync(temp, JSON.stringify({ signature, incidentId }), { encoding: 'utf8', mode: 0o600 })
+  fs.renameSync(temp, file)
+  return incidentId
+}
+
 function evaluateFeishuSyncState(db, options = {}) {
   const autoSyncEnabled = options.autoSyncEnabled === true
   const runs = Array.isArray(db && db.feishuSyncRuns) ? db.feishuSyncRuns : []
@@ -84,18 +121,19 @@ function evaluateFeishuSyncState(db, options = {}) {
   const unresolved = runs.filter((run) => (
     run && ['unknown', 'blocked'].includes(String(run.state || '')) &&
     !Number(run.resolvedAt || 0) && !manualNoopResolved(run)
-  ))
+  )).sort((left, right) => Number(right.updatedAt || right.finishedAt || right.createdAt || 0) - Number(left.updatedAt || left.finishedAt || left.createdAt || 0))
   // 关闭自动同步通常正是 UNKNOWN/BLOCKED 的处置动作之一；不能因为关闭开关就把事故假报为健康。
   if (unresolved.length) {
     return {
       ok: false,
       detail: '同步存在未处置的未知或阻断任务',
       unresolvedCount: unresolved.length,
-      lastState: String(unresolved[0] && unresolved[0].state || '')
+      lastState: String(unresolved[0] && unresolved[0].state || ''),
+      ...safeSyncContext(unresolved[0])
     }
   }
   if (String(scheduler.leaseIntegrityBlockedRunId || '').trim()) {
-    return { ok: false, detail: '同步控制器租约完整性异常' }
+    return { ok: false, detail: '同步控制器租约完整性异常', ...safeSyncContext({ runId: scheduler.leaseIntegrityBlockedRunId }) }
   }
   const activeLease = scheduler.activeLease
   const activeRun = activeLease && runs.find((run) => run && run.runId === activeLease.runId)
@@ -161,14 +199,16 @@ function evaluateFeishuSyncState(db, options = {}) {
       detail: '最近一次自动同步的素材链路未完整',
       lastState: 'succeeded',
       lastSuccessAgeMinutes,
-      maxAgeMinutes
+      maxAgeMinutes,
+      ...safeSyncContext(latestFullRun)
     }
   }
   if (!lastSuccess || !Number.isFinite(Number(lastSuccess.finishedAt))) {
     return {
       ok: false,
       detail: '自动同步尚无受信成功记录',
-      lastState: String(latestRun && latestRun.state || '')
+      lastState: String(latestRun && latestRun.state || ''),
+      ...safeSyncContext(latestRun)
     }
   }
   const ageMs = Math.max(0, nowMs - Number(lastSuccess.finishedAt))
@@ -178,7 +218,8 @@ function evaluateFeishuSyncState(db, options = {}) {
     ...(ageMs <= maxAgeMs ? {} : { detail: '自动同步成功记录已超过健康窗口' }),
     lastState: String(latestRun && latestRun.state || ''),
     lastSuccessAgeMinutes: Math.floor(ageMs / 60000),
-    maxAgeMinutes
+    maxAgeMinutes,
+    ...(ageMs <= maxAgeMs ? {} : safeSyncContext(latestRun || lastSuccess))
   }
 }
 
@@ -284,6 +325,10 @@ function checkFeishuSync() {
 }
 
 function alertIfNeeded(result) {
+  let incidentId = ''
+  try { incidentId = updateHealthIncident(result) } catch (error) {
+    process.stderr.write('[health] 告警事故状态更新失败：' + (error && error.code || 'UNKNOWN') + '\n')
+  }
   if (result.ok) return
   process.stderr.write('[health][ALERT] 巡检失败：' + result.failures.join(',') + '\n')
   const cmd = process.env.HEALTH_ALERT_CMD
@@ -293,13 +338,17 @@ function alertIfNeeded(result) {
     execSync(cmd, {
       env: buildAlertEnv(process.env, {
         HEALTH_FAILURES: result.failures.join(','),
-        HEALTH_SUMMARY: JSON.stringify(result)
+        HEALTH_SUMMARY: JSON.stringify(result),
+        HEALTH_INCIDENT_ID: incidentId
       }),
       stdio: 'ignore',
       timeout: 15000
     })
   } catch (error) {
-    process.stderr.write('[health] 告警命令执行失败：' + (error && error.message) + '\n')
+    const safeCode = error && /^[A-Z][A-Z0-9_-]{1,63}$/.test(String(error.code || '').toUpperCase())
+      ? String(error.code).toUpperCase()
+      : 'UNKNOWN'
+    process.stderr.write('[health] 告警命令执行失败，机器码=' + safeCode + '\n')
   }
 }
 
@@ -314,6 +363,8 @@ module.exports = {
   evaluateDb,
   parseDfFreePct,
   aggregate,
+  safeSyncContext,
+  updateHealthIncident,
   evaluateFeishuSyncState,
   resolveDbPath,
   buildAlertEnv

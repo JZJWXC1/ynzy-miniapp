@@ -112,6 +112,7 @@ function spawnServer(extraEnv) {
       ADMIN_TOKEN_SECRET: 'reg-notify-admin',
       V1_DISABLE_LEGACY_ROUTES: '1',
       REGISTRATION_NOTIFY_RETRY_DELAYS_MS: '40,80',
+      HEALTH_ALERT_DEDUPE_DIR: path.join(tempDir, 'alert-dedupe'),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe'],
