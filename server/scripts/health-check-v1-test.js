@@ -259,6 +259,29 @@ const hc = require('./health-check')
   assert.strictEqual(unknown.ok, false, 'UNKNOWN 必须 fail-loud')
   assert.strictEqual(/secret|token|https?:|path/i.test(JSON.stringify(unknown)), false, '巡检结果不得带任务原始错误或外部地址')
 
+  const forgedManualResolution = hc.evaluateFeishuSyncState({
+    feishuSyncRuns: [{
+      version: 3,
+      runId: 'feishu-sync-forged-unknown-01',
+      state: 'unknown',
+      updatedAt: nowMs - 1000
+    }],
+    feishuSyncCommitMarkers: {},
+    feishuSyncConvergenceResolutions: {
+      'feishu-sync-forged-unknown-01': {
+        contract: 'feishu-manual-five-table-noop-resolution-v1'
+      }
+    }
+  }, {
+    nowMs,
+    autoSyncEnabled: false
+  })
+  assert.strictEqual(
+    forgedManualResolution.ok,
+    false,
+    '只有完整且可复核的本地零差异 marker 才能消除 UNKNOWN 告警'
+  )
+
   const fresh = hc.evaluateFeishuSyncState({
     feishuSyncRuns: [{ id: 'RUN-OK', state: 'succeeded', finishedAt: nowMs - 20 * 60 * 1000 }]
   }, {

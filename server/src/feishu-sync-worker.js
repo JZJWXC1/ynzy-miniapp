@@ -35,6 +35,9 @@ const CURRENT_CONVERGENCE_CONTRACT = 'feishu-current-state-convergence-v2'
 const LEGACY_CURRENT_CONVERGENCE_RESOLUTION_CONTRACT = 'feishu-current-state-resolution-v1'
 const CURRENT_CONVERGENCE_RESOLUTION_CONTRACT = 'feishu-current-state-resolution-v2'
 const CURRENT_CONVERGENCE_DIGEST_CONTRACT = 'feishu-current-state-digest-binding-v2'
+const MANUAL_NOOP_APPROVAL_CONTRACT = 'feishu-manual-five-table-noop-approval-v1'
+const MANUAL_NOOP_RESOLUTION_CONTRACT = 'feishu-manual-five-table-noop-resolution-v1'
+const MANUAL_NOOP_MAX_DRY_AGE_MS = 30 * 60 * 1000
 
 function isCurrentConvergenceRun(run) {
   return Boolean(run) && [
@@ -137,6 +140,7 @@ const SAFE_MESSAGES = Object.freeze({
   LEGACY_PREWRITE_EVIDENCE_MISMATCH: '旧任务写前证据不完整，拒绝解除未知态',
   PARTIAL_RECONCILIATION_FAILED: '部分写入只读对账未通过，旧任务继续保持阻断',
   CURRENT_CONVERGENCE_FAILED: '当前态收敛证据不完整，旧任务继续保持阻断',
+  MANUAL_NOOP_RESOLUTION_FAILED: '人工五表零差异证据不完整，旧任务继续保持阻断',
   UNKNOWN_ERROR: '同步异常，详细信息仅保留在受控服务日志中'
 })
 
@@ -364,6 +368,176 @@ function sourceUnknownRunFromResolved(run) {
 
 function sourceUnknownRunIdentityFromResolved(run) {
   return stableSha256(sourceUnknownRunFromResolved(run))
+}
+
+function queuedContinuationSeedFromRun(run) {
+  return {
+    version: run.version,
+    runId: run.runId,
+    state: STATES.QUEUED,
+    trigger: run.trigger,
+    dryRun: run.dryRun,
+    actorType: run.actorType,
+    actorId: run.actorId,
+    bucket: run.bucket,
+    requestKeySha256: run.requestKeySha256,
+    continuationOfRunId: run.continuationOfRunId,
+    sourceUnknownRunSha256: run.sourceUnknownRunSha256,
+    reconciliationEvidenceSha256: run.reconciliationEvidenceSha256,
+    runNowMs: run.runNowMs,
+    createdAt: run.createdAt,
+    updatedAt: run.createdAt,
+    attemptCount: 0,
+    recoveryCount: 0,
+    externalWritesMayHaveOccurred: false,
+    writeIntentEvidenceVersion: 1,
+    lease: null,
+    errorCode: ''
+  }
+}
+
+function partialUnknownResolutionFieldsAbsent(run) {
+  return [
+    'continuationRunId',
+    'continuationSeedSha256',
+    'dryRunRetryRunId',
+    'dryRunRetrySeedSha256',
+    'reconciliationEvidence',
+    'resolutionCode',
+    'resolvedAt',
+    'sourceUnknownUpdatedAt',
+    'parentSourceUnknownRunSha256',
+    'parentReconciliationEvidenceSha256'
+  ].every((key) => !Object.prototype.hasOwnProperty.call(run || {}, key))
+}
+
+function exactPartialUnknownCore(run, commitMarker) {
+  if (!run || run.version !== 3 || run.state !== STATES.UNKNOWN ||
+      run.trigger !== 'manual' || run.actorType !== 'manual' || run.dryRun !== false ||
+      run.errorCode !== 'UNKNOWN_ERROR' || run.externalWritesMayHaveOccurred !== true ||
+      run.writeIntentEvidenceVersion !== 1 || run.attemptCount !== 1 ||
+      run.recoveryCount !== 0 ||
+      !Number.isSafeInteger(run.runNowMs) || run.runNowMs <= 0 ||
+      !Number.isSafeInteger(run.createdAt) || run.createdAt !== run.runNowMs ||
+      !Number.isSafeInteger(run.applyIntentAt) || run.applyIntentAt < run.runNowMs ||
+      !Number.isSafeInteger(run.externalWriteIntentAt) ||
+      run.externalWriteIntentAt !== run.applyIntentAt ||
+      !Number.isSafeInteger(run.finishedAt) || run.finishedAt < run.externalWriteIntentAt ||
+      !Number.isSafeInteger(run.updatedAt) || run.updatedAt !== run.finishedAt ||
+      !validSha256(run.schemaSha256) || !validSha256(run.resourceIdentitySha256) ||
+      !validSha256(run.mirrorPlanSha256) || !validSha256(run.contentPlanSha256) ||
+      !Number.isSafeInteger(run.contentPlanAssetCount) || run.contentPlanAssetCount < 0 ||
+      run.lease || run.commitMarkerSha256 || commitMarker ||
+      run.applyResultSummary || run.resultSummary ||
+      !partialUnknownResolutionFieldsAbsent(run)) return false
+  try {
+    normalizeActorId(run.actorId, '')
+  } catch (error) {
+    return false
+  }
+  return true
+}
+
+function validateUnknownContinuationLineage(db, unknownRun) {
+  const runs = Array.isArray(db.feishuSyncRuns) ? db.feishuSyncRuns : []
+  const commitMarkers = db.feishuSyncCommitMarkers || {}
+  const runIndex = new Map()
+  runs.forEach((run) => {
+    if (!run || typeof run.runId !== 'string') return
+    if (!runIndex.has(run.runId)) runIndex.set(run.runId, [])
+    runIndex.get(run.runId).push(run)
+  })
+  const visited = new Set()
+  let child = unknownRun
+  let depth = 0
+
+  while (true) {
+    if (!child || visited.has(child.runId) ||
+        !exactPartialUnknownCore(child, commitMarkers[child.runId])) {
+      throw partialReconciliationFailure()
+    }
+    visited.add(child.runId)
+
+    const hasParentRun = Object.prototype.hasOwnProperty.call(child, 'continuationOfRunId')
+    const hasParentSource = Object.prototype.hasOwnProperty.call(
+      child,
+      'sourceUnknownRunSha256'
+    )
+    const hasParentEvidence = Object.prototype.hasOwnProperty.call(
+      child,
+      'reconciliationEvidenceSha256'
+    )
+    if (hasParentRun !== hasParentSource || hasParentRun !== hasParentEvidence) {
+      throw partialReconciliationFailure()
+    }
+    if (!hasParentRun) return { depth, rootRunId: child.runId }
+    if (depth >= MAX_RECONCILIATION_LINEAGE_DEPTH ||
+        typeof child.continuationOfRunId !== 'string' ||
+        !child.continuationOfRunId || !validSha256(child.sourceUnknownRunSha256) ||
+        !validSha256(child.reconciliationEvidenceSha256)) {
+      throw partialReconciliationFailure()
+    }
+
+    const parentRunId = child.continuationOfRunId
+    const parents = runIndex.get(parentRunId) || []
+    const parent = parents.length === 1 ? parents[0] : null
+    if (!parent || parent.state !== STATES.RECONCILED_PARTIAL ||
+        visited.has(parentRunId) || parent.continuationRunId !== child.runId ||
+        parent.version !== 3 || parent.trigger !== 'manual' ||
+        parent.actorType !== 'manual' || parent.dryRun !== false ||
+        parent.errorCode !== 'UNKNOWN_ERROR' ||
+        parent.externalWritesMayHaveOccurred !== true ||
+        parent.writeIntentEvidenceVersion !== 1 || parent.attemptCount !== 1 ||
+        parent.recoveryCount !== 0 || !Number.isSafeInteger(parent.resolvedAt) ||
+        !Number.isSafeInteger(parent.finishedAt) || parent.resolvedAt <= parent.finishedAt ||
+        parent.updatedAt !== parent.resolvedAt ||
+        !validSha256(parent.sourceUnknownRunSha256) ||
+        !validSha256(parent.reconciliationEvidenceSha256) ||
+        !validSha256(parent.continuationSeedSha256) || parent.actorId !== child.actorId ||
+        child.sourceUnknownRunSha256 !== parent.sourceUnknownRunSha256 ||
+        child.reconciliationEvidenceSha256 !== parent.reconciliationEvidenceSha256 ||
+        commitMarkers[parentRunId] || commitMarkers[child.runId]) {
+      throw partialReconciliationFailure()
+    }
+
+    let evidence
+    let parentUnknown
+    try {
+      evidence = validatePartialReconciliationEvidence(parent.reconciliationEvidence, parent)
+      parentUnknown = sourceUnknownRunFromResolved(parent)
+    } catch (error) {
+      throw partialReconciliationFailure()
+    }
+    const zeroWrite = isZeroBaseWriteEvidence(evidence)
+    const expectedResolutionCode = zeroWrite
+      ? 'ZERO_BASE_WRITES_RECONCILED'
+      : 'PARTIAL_BASE_WRITES_RECONCILED'
+    const expectedRequestKey = zeroWrite
+      ? zeroWriteContinuationRequestKey(
+          parentRunId,
+          parent.sourceUnknownRunSha256,
+          parent.reconciliationEvidenceSha256
+        )
+      : partialContinuationRequestKey(
+          parentRunId,
+          parent.sourceUnknownRunSha256,
+          parent.reconciliationEvidenceSha256
+        )
+    if (parent.resolutionCode !== expectedResolutionCode ||
+        parent.reconciliationEvidenceSha256 !== evidence.evidenceSha256 ||
+        parent.sourceUnknownRunSha256 !== stableSha256(parentUnknown) ||
+        !exactPartialUnknownCore(parentUnknown, commitMarkers[parentRunId]) ||
+        child.version !== 3 || child.trigger !== 'manual' || child.actorType !== 'manual' ||
+        child.dryRun !== zeroWrite || child.bucket !== null ||
+        child.runNowMs !== parent.resolvedAt || child.createdAt !== parent.resolvedAt ||
+        child.requestKeySha256 !== expectedRequestKey ||
+        stableSha256(queuedContinuationSeedFromRun(child)) !== parent.continuationSeedSha256) {
+      throw partialReconciliationFailure()
+    }
+
+    child = parentUnknown
+    depth += 1
+  }
 }
 
 function numberOr(value, fallback) {
@@ -673,7 +847,11 @@ function trimRuns(db, maxRuns) {
       ;[
         marker.supersededRunId,
         marker.baselineDryRunId,
-        marker.convergenceRunId
+        marker.convergenceRunId,
+        marker.rootUnknownRunId,
+        marker.failedConvergenceRunId,
+        marker.failedConvergenceBaselineDryRunId,
+        ...(Array.isArray(marker.verificationDryRunIds) ? marker.verificationDryRunIds : [])
       ].filter((runId) => typeof runId === 'string' && runId).forEach((runId) => retainedIds.add(runId))
     })
     db.feishuSyncRuns.forEach((run) => {
@@ -828,6 +1006,357 @@ function validComponentEvidence(evidence, expectedSha256, options = {}) {
         !Number.isSafeInteger(snapshot.recordCount) || snapshot.recordCount < 0
       ))) return false
   return validSha256(expectedSha256) && stableSha256(evidence) === expectedSha256
+}
+
+function manualNoopResolutionFailure() {
+  return new WorkerError('MANUAL_NOOP_RESOLUTION_FAILED', '', {
+    safeBeforeWrite: true,
+    blocked: true
+  })
+}
+
+function manualNoopVerificationEvidence(run) {
+  const evidence = run && run.componentEvidence
+  if (!validComponentEvidence(
+    evidence,
+    run && run.componentEvidenceSha256,
+    { requireFiveTables: true }
+  )) return null
+  return {
+    schemaSha256: run.schemaSha256,
+    resourceIdentitySha256: run.resourceIdentitySha256,
+    mirrorPlanSha256: run.mirrorPlanSha256,
+    semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
+    componentEvidenceSha256: run.componentEvidenceSha256,
+    contentPlanSha256: run.contentPlanSha256,
+    contentPlanAssetCount: run.contentPlanAssetCount,
+    schemaBindingsSha256: stableSha256(run.schemaBindings || []),
+    snapshots: clone(evidence.snapshots),
+    operations: {
+      main: clone(evidence.operations.main),
+      archive: clone(evidence.operations.archive),
+      history: clone(evidence.operations.history),
+      baselineMarker: clone(evidence.baselineMarker)
+    },
+    companySheet: clone(evidence.companySheet),
+    resultSummary: summarizeResult(run.resultSummary)
+  }
+}
+
+function manualNoopDryRunShapeValid(run, afterMs) {
+  const absent = [
+    'applyIntentAt',
+    'commitMarkerSha256',
+    'continuationOfRunId',
+    'convergenceContract',
+    'convergenceDigestContract',
+    'externalWriteIntentAt',
+    'reconciliationEvidence',
+    'reconciliationEvidenceSha256',
+    'resolvedAt',
+    'resolutionCode'
+  ].every((key) => !Object.prototype.hasOwnProperty.call(run || {}, key))
+  const evidence = manualNoopVerificationEvidence(run)
+  const summary = summarizeResult(run && run.resultSummary)
+  const emptyOperationsSha256 = stableSha256([])
+  return Boolean(run) && run.version === 3 && run.state === STATES.DRY_SUCCEEDED &&
+    run.trigger === 'manual' && run.actorType === 'manual' && run.dryRun === true &&
+    run.bucket === null && run.requestKeySha256 === '' && run.attemptCount === 1 &&
+    run.recoveryCount === 0 && run.externalWritesMayHaveOccurred === false &&
+    run.writeIntentEvidenceVersion === 1 && run.lease === null && run.errorCode === '' && absent &&
+    Number.isSafeInteger(run.runNowMs) && run.runNowMs === run.createdAt &&
+    Number.isSafeInteger(run.createdAt) && run.createdAt > afterMs &&
+    Number.isSafeInteger(run.startedAt) && run.startedAt >= run.createdAt &&
+    Number.isSafeInteger(run.finishedAt) && run.finishedAt >= run.startedAt &&
+    run.updatedAt === run.finishedAt && Number.isSafeInteger(run.lastFence) && run.lastFence > 0 &&
+    validSha256(run.schemaSha256) && validSha256(run.resourceIdentitySha256) &&
+    validSha256(run.mirrorPlanSha256) && validSha256(run.semanticMirrorPlanSha256) &&
+    validSha256(run.contentPlanSha256) && Number.isSafeInteger(run.contentPlanAssetCount) &&
+    run.contentPlanAssetCount >= 0 && evidence &&
+    ['main', 'archive', 'history', 'baselineMarker'].every((key) => (
+      evidence.operations[key].count === 0 &&
+      evidence.operations[key].digest === emptyOperationsSha256
+    )) &&
+    run.resultSummary && stableSha256(run.resultSummary) === stableSha256(summary) &&
+    summary.success === true && summary.complete === true && summary.dryRun === true &&
+    summary.failed === 0 && ['created', 'updated', 'down'].every((key) => (
+      Object.prototype.hasOwnProperty.call(summary, key) && summary[key] === 0
+    ))
+}
+
+function manualNoopFailedConvergenceShapeValid(run) {
+  const absent = [
+    'applyResultSummary',
+    'commitMarkerSha256',
+    'convergenceResolutionSha256',
+    'resultSummary'
+  ].every((key) => !Object.prototype.hasOwnProperty.call(run || {}, key))
+  return Boolean(run) && isExactCurrentConvergenceRun(run) && run.state === STATES.UNKNOWN &&
+    run.trigger === 'manual' && run.actorType === 'manual' && run.dryRun === false &&
+    run.bucket === null && run.attemptCount === 1 && run.recoveryCount === 0 &&
+    run.externalWritesMayHaveOccurred === true && run.writeIntentEvidenceVersion === 1 &&
+    Number.isSafeInteger(run.runNowMs) && run.runNowMs === run.createdAt &&
+    Number.isSafeInteger(run.startedAt) && run.startedAt >= run.createdAt &&
+    Number.isSafeInteger(run.applyIntentAt) && run.applyIntentAt >= run.startedAt &&
+    run.externalWriteIntentAt === run.applyIntentAt &&
+    Number.isSafeInteger(run.finishedAt) && run.finishedAt >= run.applyIntentAt &&
+    run.updatedAt === run.finishedAt && Number.isSafeInteger(run.lastFence) && run.lastFence > 0 &&
+    run.lease === null && typeof run.errorCode === 'string' && run.errorCode !== '' &&
+    safeErrorCode({ code: run.errorCode }, '') === run.errorCode && absent &&
+    validSha256(run.convergenceSeedSha256) && validSha256(run.supersedesBlockedRunSha256) &&
+    validSha256(run.baselineDryRunSha256) && validSha256(run.baselineComponentEvidenceSha256) &&
+    validComponentEvidence(
+      run.componentEvidence,
+      run.componentEvidenceSha256,
+      { requireFiveTables: true }
+    ) && run.dryResultSummary && run.baselineDryResultSummary &&
+    stableSha256(run.dryResultSummary) === stableSha256(run.baselineDryResultSummary)
+}
+
+function manualNoopRootUnknownShapeValid(db, run) {
+  try {
+    const lineage = validateUnknownContinuationLineage(db, run)
+    const root = runById(db, lineage.rootRunId)
+    return lineage.depth <= 1 && Boolean(root) && root.requestKeySha256 === ''
+  } catch (error) {
+    return false
+  }
+}
+
+function manualNoopBaselineDryRunShapeValid(db, run, blockedRun) {
+  const markerPresent = Object.prototype.hasOwnProperty.call(
+    db.feishuSyncCommitMarkers || {},
+    run && run.runId
+  )
+  if (!run || run.version !== 3 || run.state !== STATES.DRY_SUCCEEDED ||
+      run.trigger !== 'manual' || run.actorType !== 'manual' || run.dryRun !== true ||
+      run.bucket !== null || run.externalWritesMayHaveOccurred === true ||
+      run.writeIntentEvidenceVersion !== 1 || run.attemptCount !== 1 || run.recoveryCount !== 0 ||
+      run.lease || markerPresent || run.commitMarkerSha256 || run.errorCode !== '' ||
+      !Number.isSafeInteger(run.createdAt) || run.createdAt <= blockedRun.finishedAt ||
+      !Number.isSafeInteger(run.startedAt) || run.startedAt < run.createdAt ||
+      !Number.isSafeInteger(run.finishedAt) || run.finishedAt < run.startedAt ||
+      run.updatedAt !== run.finishedAt || !validSha256(run.schemaSha256) ||
+      !validSha256(run.resourceIdentitySha256) || !validSha256(run.mirrorPlanSha256) ||
+      !validSha256(run.semanticMirrorPlanSha256) || !validSha256(run.contentPlanSha256) ||
+      !Number.isSafeInteger(run.contentPlanAssetCount) || run.contentPlanAssetCount < 0 ||
+      !validComponentEvidence(
+        run.componentEvidence,
+        run.componentEvidenceSha256,
+        { requireFiveTables: true }
+      ) || !run.resultSummary || run.resultSummary.success !== true ||
+      run.resultSummary.complete !== true || run.resultSummary.dryRun !== true ||
+      Number(run.resultSummary.failed || 0) !== 0) return false
+  try {
+    normalizeActorId(run.actorId, '')
+  } catch (error) {
+    return false
+  }
+  return true
+}
+
+function manualNoopSemanticDigestBundle(run) {
+  return {
+    schemaSha256: run.schemaSha256,
+    resourceIdentitySha256: run.resourceIdentitySha256,
+    semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
+    contentPlanSha256: run.contentPlanSha256,
+    contentPlanAssetCount: run.contentPlanAssetCount
+  }
+}
+
+function manualNoopConvergenceSeedBody(run) {
+  return {
+    version: run.version,
+    runId: run.runId,
+    trigger: run.trigger,
+    dryRun: run.dryRun,
+    actorType: run.actorType,
+    actorId: run.actorId,
+    bucket: run.bucket,
+    requestKeySha256: run.requestKeySha256,
+    convergenceContract: run.convergenceContract,
+    convergenceDigestContract: run.convergenceDigestContract,
+    supersedesBlockedRunId: run.supersedesBlockedRunId,
+    supersedesBlockedRunSha256: run.supersedesBlockedRunSha256,
+    baselineDryRunId: run.baselineDryRunId,
+    baselineDryRunSha256: run.baselineDryRunSha256,
+    baselineDryResultSummary: clone(run.baselineDryResultSummary),
+    runNowMs: run.runNowMs,
+    createdAt: run.createdAt,
+    writeIntentEvidenceVersion: run.writeIntentEvidenceVersion,
+    baselineMirrorPlanSha256: run.baselineMirrorPlanSha256,
+    baselineSemanticMirrorPlanSha256: run.baselineSemanticMirrorPlanSha256,
+    baselineComponentEvidenceSha256: run.baselineComponentEvidenceSha256,
+    schemaSha256: run.schemaSha256,
+    resourceIdentitySha256: run.resourceIdentitySha256,
+    semanticMirrorPlanSha256: run.semanticMirrorPlanSha256,
+    contentPlanSha256: run.contentPlanSha256,
+    contentPlanAssetCount: run.contentPlanAssetCount,
+    schemaBindings: clone(run.schemaBindings || [])
+  }
+}
+
+function manualNoopConvergenceRequestBody(blocked, baseline) {
+  return {
+    contract: CURRENT_CONVERGENCE_CONTRACT,
+    digestContract: CURRENT_CONVERGENCE_DIGEST_CONTRACT,
+    supersedesBlockedRunId: blocked.runId,
+    supersedesBlockedRunSha256: stableSha256(blocked),
+    baselineDryRunId: baseline.runId,
+    baselineDryRunSha256: stableSha256(baseline),
+    baselineMirrorPlanSha256: baseline.mirrorPlanSha256,
+    baselineSemanticMirrorPlanSha256: baseline.semanticMirrorPlanSha256,
+    baselineComponentEvidenceSha256: baseline.componentEvidenceSha256,
+    ...manualNoopSemanticDigestBundle(baseline)
+  }
+}
+
+function manualNoopConvergenceBindingMatches(db, run, blocked, baseline) {
+  if (!run || run.version !== 5 || run.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT ||
+      run.convergenceDigestContract !== CURRENT_CONVERGENCE_DIGEST_CONTRACT ||
+      run.trigger !== 'manual' || run.actorType !== 'manual' || run.dryRun !== false ||
+      run.bucket !== null || run.actorId !== baseline.actorId ||
+      run.supersedesBlockedRunId !== blocked.runId ||
+      run.supersedesBlockedRunSha256 !== stableSha256(blocked) ||
+      run.baselineDryRunId !== baseline.runId ||
+      run.baselineDryRunSha256 !== stableSha256(baseline) ||
+      run.baselineMirrorPlanSha256 !== baseline.mirrorPlanSha256 ||
+      run.baselineSemanticMirrorPlanSha256 !== baseline.semanticMirrorPlanSha256 ||
+      run.baselineComponentEvidenceSha256 !== baseline.componentEvidenceSha256 ||
+      run.requestKeySha256 !== stableSha256(manualNoopConvergenceRequestBody(blocked, baseline)) ||
+      run.createdAt <= baseline.finishedAt || run.runNowMs !== run.createdAt ||
+      !validSha256(run.convergenceSeedSha256) ||
+      stableSha256(manualNoopConvergenceSeedBody(run)) !== run.convergenceSeedSha256 ||
+      !validComponentEvidence(
+        run.componentEvidence,
+        run.componentEvidenceSha256,
+        { requireFiveTables: true }
+      )) return false
+  const expected = manualNoopSemanticDigestBundle(baseline)
+  const actual = manualNoopSemanticDigestBundle(run)
+  return Object.keys(expected).every((key) => actual[key] === expected[key]) &&
+    db.feishuSyncRuns.filter((item) => item && item.runId === run.runId).length === 1
+}
+
+function manualNoopApprovalBody(context) {
+  const evidence = manualNoopVerificationEvidence(context.firstDryRun)
+  return {
+    contract: MANUAL_NOOP_APPROVAL_CONTRACT,
+    rootUnknownRun: {
+      runId: context.rootUnknownRun.runId,
+      runSha256: stableSha256(context.rootUnknownRun)
+    },
+    failedConvergenceRun: {
+      runId: context.failedConvergenceRun.runId,
+      runSha256: stableSha256(context.failedConvergenceRun)
+    },
+    failedConvergenceBaselineDryRun: {
+      runId: context.failedConvergenceBaselineDryRun.runId,
+      runSha256: stableSha256(context.failedConvergenceBaselineDryRun)
+    },
+    verificationDryRuns: [context.firstDryRun, context.secondDryRun].map((run) => ({
+      runId: run.runId,
+      runSha256: stableSha256(run)
+    })),
+    evidence,
+    evidenceSha256: stableSha256(evidence),
+    businessSnapshotSha256: context.businessSnapshotSha256,
+    approvalExpiresAt: context.secondDryRun.finishedAt + MANUAL_NOOP_MAX_DRY_AGE_MS
+  }
+}
+
+function manualNoopResolutionMatches(db, blockedRun) {
+  if (!db || !blockedRun || blockedRun.state !== STATES.UNKNOWN ||
+      !Array.isArray(db.feishuSyncRuns) || !db.feishuSyncCommitMarkers ||
+      !db.feishuSyncConvergenceResolutions) return false
+  const rootRunId = isExactCurrentConvergenceRun(blockedRun)
+    ? blockedRun.supersedesBlockedRunId
+    : blockedRun.runId
+  const marker = db.feishuSyncConvergenceResolutions[rootRunId]
+  const markerKeys = [
+    'approvalSha256',
+    'businessSnapshotSha256',
+    'contract',
+    'evidenceSha256',
+    'failedConvergenceBaselineDryRunId',
+    'failedConvergenceBaselineDryRunSha256',
+    'failedConvergenceRunId',
+    'failedConvergenceRunSha256',
+    'markerSha256',
+    'resolvedAt',
+    'rootUnknownRunId',
+    'rootUnknownRunSha256',
+    'verificationDryRunIds',
+    'verificationDryRunSha256s'
+  ]
+  if (!exactObjectKeys(marker, markerKeys) || marker.contract !== MANUAL_NOOP_RESOLUTION_CONTRACT ||
+      marker.rootUnknownRunId !== rootRunId || !validSha256(marker.markerSha256) ||
+      !validSha256(marker.approvalSha256) || !validSha256(marker.businessSnapshotSha256) ||
+      !validSha256(marker.evidenceSha256) || !Array.isArray(marker.verificationDryRunIds) ||
+      marker.verificationDryRunIds.length !== 2 ||
+      !Array.isArray(marker.verificationDryRunSha256s) ||
+      marker.verificationDryRunSha256s.length !== 2 ||
+      !Number.isSafeInteger(marker.resolvedAt) || marker.resolvedAt <= 0) return false
+  const markerBody = clone(marker)
+  delete markerBody.markerSha256
+  if (stableSha256(markerBody) !== marker.markerSha256) return false
+
+  const ids = [
+    marker.rootUnknownRunId,
+    marker.failedConvergenceRunId,
+    marker.failedConvergenceBaselineDryRunId,
+    ...marker.verificationDryRunIds
+  ]
+  if (new Set(ids).size !== ids.length || ids.some((runId) => (
+    typeof runId !== 'string' || db.feishuSyncRuns.filter((run) => run && run.runId === runId).length !== 1
+  ))) return false
+  const root = runById(db, marker.rootUnknownRunId)
+  const failed = runById(db, marker.failedConvergenceRunId)
+  const baseline = runById(db, marker.failedConvergenceBaselineDryRunId)
+  const firstDry = runById(db, marker.verificationDryRunIds[0])
+  const secondDry = runById(db, marker.verificationDryRunIds[1])
+  if (!manualNoopRootUnknownShapeValid(db, root) ||
+      !manualNoopBaselineDryRunShapeValid(db, baseline, root) ||
+      !manualNoopFailedConvergenceShapeValid(failed) ||
+      !manualNoopConvergenceBindingMatches(db, failed, root, baseline) ||
+      failed.supersedesBlockedRunId !== root.runId ||
+      failed.baselineDryRunId !== baseline.runId || baseline.state !== STATES.DRY_SUCCEEDED ||
+      failed.supersedesBlockedRunSha256 !== stableSha256(root) ||
+      failed.baselineDryRunSha256 !== stableSha256(baseline) ||
+      !manualNoopDryRunShapeValid(firstDry, failed.finishedAt) ||
+      !manualNoopDryRunShapeValid(secondDry, firstDry.finishedAt) ||
+      firstDry.actorId !== failed.actorId || secondDry.actorId !== failed.actorId) return false
+  const expectedRunSha256s = [
+    marker.rootUnknownRunSha256,
+    marker.failedConvergenceRunSha256,
+    marker.failedConvergenceBaselineDryRunSha256,
+    ...marker.verificationDryRunSha256s
+  ]
+  const actualRunSha256s = [root, failed, baseline, firstDry, secondDry].map(stableSha256)
+  if (!actualRunSha256s.every((value, index) => value === expectedRunSha256s[index])) return false
+  const firstEvidence = manualNoopVerificationEvidence(firstDry)
+  const secondEvidence = manualNoopVerificationEvidence(secondDry)
+  if (!firstEvidence || !secondEvidence ||
+      stableSha256(firstEvidence) !== stableSha256(secondEvidence) ||
+      marker.evidenceSha256 !== stableSha256(firstEvidence) ||
+      marker.resolvedAt <= secondDry.finishedAt ||
+      marker.resolvedAt > secondDry.finishedAt + MANUAL_NOOP_MAX_DRY_AGE_MS) return false
+  if ([root.runId, failed.runId, baseline.runId, firstDry.runId, secondDry.runId].some((runId) => (
+    Object.prototype.hasOwnProperty.call(db.feishuSyncCommitMarkers, runId)
+  )) || [failed.runId, baseline.runId, firstDry.runId, secondDry.runId].some((runId) => (
+    Object.prototype.hasOwnProperty.call(db.feishuSyncConvergenceResolutions, runId)
+  ))) return false
+  const approval = manualNoopApprovalBody({
+    rootUnknownRun: root,
+    failedConvergenceRun: failed,
+    failedConvergenceBaselineDryRun: baseline,
+    firstDryRun: firstDry,
+    secondDryRun: secondDry,
+    businessSnapshotSha256: marker.businessSnapshotSha256
+  })
+  return stableSha256(approval) === marker.approvalSha256 &&
+    blockedRun.runId === (isExactCurrentConvergenceRun(blockedRun) ? failed.runId : root.runId)
 }
 
 function extractDigests(result, captured) {
@@ -1562,180 +2091,6 @@ function createFeishuSyncWorker(dependencies = {}) {
     return sanitizeRun(resolved)
   }
 
-  function queuedContinuationSeedFromRun(run) {
-    return {
-      version: run.version,
-      runId: run.runId,
-      state: STATES.QUEUED,
-      trigger: run.trigger,
-      dryRun: run.dryRun,
-      actorType: run.actorType,
-      actorId: run.actorId,
-      bucket: run.bucket,
-      requestKeySha256: run.requestKeySha256,
-      continuationOfRunId: run.continuationOfRunId,
-      sourceUnknownRunSha256: run.sourceUnknownRunSha256,
-      reconciliationEvidenceSha256: run.reconciliationEvidenceSha256,
-      runNowMs: run.runNowMs,
-      createdAt: run.createdAt,
-      updatedAt: run.createdAt,
-      attemptCount: 0,
-      recoveryCount: 0,
-      externalWritesMayHaveOccurred: false,
-      writeIntentEvidenceVersion: 1,
-      lease: null,
-      errorCode: ''
-    }
-  }
-
-  function partialUnknownResolutionFieldsAbsent(run) {
-    return [
-      'continuationRunId',
-      'continuationSeedSha256',
-      'dryRunRetryRunId',
-      'dryRunRetrySeedSha256',
-      'reconciliationEvidence',
-      'resolutionCode',
-      'resolvedAt',
-      'sourceUnknownUpdatedAt',
-      'parentSourceUnknownRunSha256',
-      'parentReconciliationEvidenceSha256'
-    ].every((key) => !Object.prototype.hasOwnProperty.call(run || {}, key))
-  }
-
-  function exactPartialUnknownCore(run, commitMarker) {
-    if (!run || run.version !== 3 || run.state !== STATES.UNKNOWN ||
-        run.trigger !== 'manual' || run.actorType !== 'manual' || run.dryRun !== false ||
-        run.errorCode !== 'UNKNOWN_ERROR' || run.externalWritesMayHaveOccurred !== true ||
-        run.writeIntentEvidenceVersion !== 1 || run.attemptCount !== 1 ||
-        run.recoveryCount !== 0 ||
-        !Number.isSafeInteger(run.runNowMs) || run.runNowMs <= 0 ||
-        !Number.isSafeInteger(run.createdAt) || run.createdAt !== run.runNowMs ||
-        !Number.isSafeInteger(run.applyIntentAt) || run.applyIntentAt < run.runNowMs ||
-        !Number.isSafeInteger(run.externalWriteIntentAt) ||
-        run.externalWriteIntentAt !== run.applyIntentAt ||
-        !Number.isSafeInteger(run.finishedAt) || run.finishedAt < run.externalWriteIntentAt ||
-        !Number.isSafeInteger(run.updatedAt) || run.updatedAt !== run.finishedAt ||
-        !validSha256(run.schemaSha256) || !validSha256(run.resourceIdentitySha256) ||
-        !validSha256(run.mirrorPlanSha256) || !validSha256(run.contentPlanSha256) ||
-        !Number.isSafeInteger(run.contentPlanAssetCount) || run.contentPlanAssetCount < 0 ||
-        run.lease || run.commitMarkerSha256 || commitMarker ||
-        run.applyResultSummary || run.resultSummary ||
-        !partialUnknownResolutionFieldsAbsent(run)) return false
-    try {
-      normalizeActorId(run.actorId, '')
-    } catch (error) {
-      return false
-    }
-    return true
-  }
-
-  function validateUnknownContinuationLineage(db, unknownRun) {
-    const runs = Array.isArray(db.feishuSyncRuns) ? db.feishuSyncRuns : []
-    const commitMarkers = db.feishuSyncCommitMarkers || {}
-    const runIndex = new Map()
-    runs.forEach((run) => {
-      if (!run || typeof run.runId !== 'string') return
-      if (!runIndex.has(run.runId)) runIndex.set(run.runId, [])
-      runIndex.get(run.runId).push(run)
-    })
-    const visited = new Set()
-    let child = unknownRun
-    let depth = 0
-
-    while (true) {
-      if (!child || visited.has(child.runId) ||
-          !exactPartialUnknownCore(child, commitMarkers[child.runId])) {
-        throw partialReconciliationFailure()
-      }
-      visited.add(child.runId)
-
-      const hasParentRun = Object.prototype.hasOwnProperty.call(child, 'continuationOfRunId')
-      const hasParentSource = Object.prototype.hasOwnProperty.call(
-        child,
-        'sourceUnknownRunSha256'
-      )
-      const hasParentEvidence = Object.prototype.hasOwnProperty.call(
-        child,
-        'reconciliationEvidenceSha256'
-      )
-      if (hasParentRun !== hasParentSource || hasParentRun !== hasParentEvidence) {
-        throw partialReconciliationFailure()
-      }
-      if (!hasParentRun) return { depth, rootRunId: child.runId }
-      if (depth >= MAX_RECONCILIATION_LINEAGE_DEPTH ||
-          typeof child.continuationOfRunId !== 'string' ||
-          !child.continuationOfRunId ||
-          !validSha256(child.sourceUnknownRunSha256) ||
-          !validSha256(child.reconciliationEvidenceSha256)) {
-        throw partialReconciliationFailure()
-      }
-
-      const parentRunId = child.continuationOfRunId
-      const parents = runIndex.get(parentRunId) || []
-      const parent = parents.length === 1 ? parents[0] : null
-      if (!parent || parent.state !== STATES.RECONCILED_PARTIAL ||
-          visited.has(parentRunId) || parent.continuationRunId !== child.runId ||
-          parent.version !== 3 || parent.trigger !== 'manual' ||
-          parent.actorType !== 'manual' || parent.dryRun !== false ||
-          parent.errorCode !== 'UNKNOWN_ERROR' ||
-          parent.externalWritesMayHaveOccurred !== true ||
-          parent.writeIntentEvidenceVersion !== 1 ||
-          parent.attemptCount !== 1 || parent.recoveryCount !== 0 ||
-          !Number.isSafeInteger(parent.resolvedAt) ||
-          !Number.isSafeInteger(parent.finishedAt) || parent.resolvedAt <= parent.finishedAt ||
-          parent.updatedAt !== parent.resolvedAt ||
-          !validSha256(parent.sourceUnknownRunSha256) ||
-          !validSha256(parent.reconciliationEvidenceSha256) ||
-          !validSha256(parent.continuationSeedSha256) ||
-          parent.actorId !== child.actorId ||
-          child.sourceUnknownRunSha256 !== parent.sourceUnknownRunSha256 ||
-          child.reconciliationEvidenceSha256 !== parent.reconciliationEvidenceSha256 ||
-          commitMarkers[parentRunId] || commitMarkers[child.runId]) {
-        throw partialReconciliationFailure()
-      }
-
-      let evidence
-      let parentUnknown
-      try {
-        evidence = validatePartialReconciliationEvidence(parent.reconciliationEvidence, parent)
-        parentUnknown = sourceUnknownRunFromResolved(parent)
-      } catch (error) {
-        throw partialReconciliationFailure()
-      }
-      const zeroWrite = isZeroBaseWriteEvidence(evidence)
-      const expectedResolutionCode = zeroWrite
-        ? 'ZERO_BASE_WRITES_RECONCILED'
-        : 'PARTIAL_BASE_WRITES_RECONCILED'
-      const expectedRequestKey = zeroWrite
-        ? zeroWriteContinuationRequestKey(
-            parentRunId,
-            parent.sourceUnknownRunSha256,
-            parent.reconciliationEvidenceSha256
-          )
-        : partialContinuationRequestKey(
-            parentRunId,
-            parent.sourceUnknownRunSha256,
-            parent.reconciliationEvidenceSha256
-          )
-      if (parent.resolutionCode !== expectedResolutionCode ||
-          parent.reconciliationEvidenceSha256 !== evidence.evidenceSha256 ||
-          parent.sourceUnknownRunSha256 !== stableSha256(parentUnknown) ||
-          !exactPartialUnknownCore(parentUnknown, commitMarkers[parentRunId]) ||
-          child.version !== 3 || child.trigger !== 'manual' ||
-          child.actorType !== 'manual' || child.dryRun !== zeroWrite ||
-          child.bucket !== null || child.runNowMs !== parent.resolvedAt ||
-          child.createdAt !== parent.resolvedAt ||
-          child.requestKeySha256 !== expectedRequestKey ||
-          stableSha256(queuedContinuationSeedFromRun(child)) !== parent.continuationSeedSha256) {
-        throw partialReconciliationFailure()
-      }
-
-      child = parentUnknown
-      depth += 1
-    }
-  }
-
   function zeroWriteDrySeedMatches(db, run, barrier, expectedRunId, expectedSeedSha256) {
     if (!run || !barrier || run.runId !== expectedRunId ||
         db.feishuSyncRuns.filter((item) => item && item.runId === run.runId).length !== 1 ||
@@ -2261,6 +2616,7 @@ function createFeishuSyncWorker(dependencies = {}) {
 
   function currentConvergenceResolutionMatches(db, blockedRun) {
     if (!blockedRun || blockedRun.state !== STATES.UNKNOWN) return false
+    if (manualNoopResolutionMatches(db, blockedRun)) return true
     const marker = db.feishuSyncConvergenceResolutions &&
       db.feishuSyncConvergenceResolutions[blockedRun.runId]
     const legacyKeys = [
@@ -2464,6 +2820,194 @@ function createFeishuSyncWorker(dependencies = {}) {
       throw currentConvergenceFailure()
     }
     return true
+  }
+
+  function manualNoopResolutionContext(
+    db,
+    failedConvergenceRunId,
+    firstDryRunId,
+    secondDryRunId,
+    atMs
+  ) {
+    ensureState(db)
+    const failed = runById(db, failedConvergenceRunId)
+    const root = failed && runById(db, failed.supersedesBlockedRunId)
+    const baseline = failed && runById(db, failed.baselineDryRunId)
+    const firstDry = runById(db, firstDryRunId)
+    const secondDry = runById(db, secondDryRunId)
+    const referenced = [root, failed, baseline, firstDry, secondDry]
+    const referencedIds = referenced.map((run) => run && run.runId)
+    if (referenced.some((run) => !run) || new Set(referencedIds).size !== referencedIds.length ||
+        referencedIds.some((runId) => db.feishuSyncRuns.filter((run) => (
+          run && run.runId === runId
+        )).length !== 1)) throw manualNoopResolutionFailure()
+    if (!manualNoopRootUnknownShapeValid(db, root) ||
+        !manualNoopFailedConvergenceShapeValid(failed) ||
+        failed.supersedesBlockedRunId !== root.runId ||
+        failed.baselineDryRunId !== baseline.runId ||
+        !convergenceBindingMatches(db, failed, root, baseline) ||
+        !manualNoopDryRunShapeValid(firstDry, failed.finishedAt) ||
+        !manualNoopDryRunShapeValid(secondDry, firstDry.finishedAt) ||
+        firstDry.actorId !== failed.actorId || secondDry.actorId !== failed.actorId) {
+      throw manualNoopResolutionFailure()
+    }
+    try {
+      exactCurrentDryBaseline(db, baseline.runId, root)
+    } catch (error) {
+      throw manualNoopResolutionFailure()
+    }
+    const firstEvidence = manualNoopVerificationEvidence(firstDry)
+    const secondEvidence = manualNoopVerificationEvidence(secondDry)
+    if (!firstEvidence || !secondEvidence ||
+        stableSha256(firstEvidence) !== stableSha256(secondEvidence) ||
+        !Number.isSafeInteger(atMs) || atMs <= secondDry.finishedAt ||
+        atMs > secondDry.finishedAt + MANUAL_NOOP_MAX_DRY_AGE_MS) {
+      throw manualNoopResolutionFailure()
+    }
+    const scheduler = db.feishuSyncScheduler
+    if (scheduler.blockedRunId !== failed.runId || scheduler.activeLease ||
+        scheduler.leaseIntegrityBlockedRunId || scheduler.lastRunId !== secondDry.runId ||
+        Number(scheduler.lastDryRunAt) !== Number(secondDry.finishedAt)) {
+      throw manualNoopResolutionFailure()
+    }
+    const unresolvedIds = db.feishuSyncRuns.filter((run) => (
+      run && [STATES.UNKNOWN, STATES.BLOCKED].includes(run.state)
+    )).map((run) => run.runId).sort()
+    if (JSON.stringify(unresolvedIds) !== JSON.stringify([root.runId, failed.runId].sort())) {
+      throw manualNoopResolutionFailure()
+    }
+    if ([root.runId, failed.runId, baseline.runId, firstDry.runId, secondDry.runId].some((runId) => (
+      Object.prototype.hasOwnProperty.call(db.feishuSyncCommitMarkers, runId)
+    )) || [root.runId, failed.runId, baseline.runId, firstDry.runId, secondDry.runId].some((runId) => (
+      Object.prototype.hasOwnProperty.call(db.feishuSyncConvergenceResolutions, runId)
+    ))) {
+      throw manualNoopResolutionFailure()
+    }
+    return {
+      rootUnknownRun: root,
+      failedConvergenceRun: failed,
+      failedConvergenceBaselineDryRun: baseline,
+      firstDryRun: firstDry,
+      secondDryRun: secondDry,
+      businessSnapshotSha256: stableSha256(businessSnapshot(db))
+    }
+  }
+
+  function planManualNoopResolution(
+    failedConvergenceRunIdInput,
+    firstDryRunIdInput,
+    secondDryRunIdInput
+  ) {
+    const failedConvergenceRunId = normalizeRunId(failedConvergenceRunIdInput)
+    const firstDryRunId = normalizeRunId(firstDryRunIdInput)
+    const secondDryRunId = normalizeRunId(secondDryRunIdInput)
+    const atMs = Number(now())
+    const db = clone(dbStore.readDb())
+    const context = manualNoopResolutionContext(
+      db,
+      failedConvergenceRunId,
+      firstDryRunId,
+      secondDryRunId,
+      atMs
+    )
+    const body = manualNoopApprovalBody(context)
+    return { ...body, approvalSha256: stableSha256(body) }
+  }
+
+  function applyManualNoopResolution(
+    failedConvergenceRunIdInput,
+    firstDryRunIdInput,
+    secondDryRunIdInput,
+    approvalSha256Input
+  ) {
+    assertWriteLockEnabled()
+    const failedConvergenceRunId = normalizeRunId(failedConvergenceRunIdInput)
+    const firstDryRunId = normalizeRunId(firstDryRunIdInput)
+    const secondDryRunId = normalizeRunId(secondDryRunIdInput)
+    const approvalSha256 = String(approvalSha256Input || '').trim().toLowerCase()
+    if (!validSha256(approvalSha256)) throw manualNoopResolutionFailure()
+    const publicResultFromMarker = (marker) => ({
+      contract: marker.contract,
+      rootUnknownRunId: marker.rootUnknownRunId,
+      failedConvergenceRunId: marker.failedConvergenceRunId,
+      verificationDryRunIds: clone(marker.verificationDryRunIds),
+      resolvedAt: marker.resolvedAt,
+      markerSha256: marker.markerSha256,
+      blockerCleared: true,
+      externalWrites: 0
+    })
+    const resultFromExistingMarker = (db) => {
+      ensureState(db)
+      const failed = runById(db, failedConvergenceRunId)
+      const rootRunId = failed && failed.supersedesBlockedRunId
+      const markerMap = db.feishuSyncConvergenceResolutions || {}
+      if (!rootRunId || !Object.prototype.hasOwnProperty.call(markerMap, rootRunId)) {
+        return null
+      }
+      const marker = markerMap[rootRunId]
+      if (!manualNoopResolutionMatches(db, failed) ||
+          marker.approvalSha256 !== approvalSha256 ||
+          JSON.stringify(marker.verificationDryRunIds) !==
+            JSON.stringify([firstDryRunId, secondDryRunId]) ||
+          db.feishuSyncScheduler.blockedRunId) {
+        throw manualNoopResolutionFailure()
+      }
+      return publicResultFromMarker(marker)
+    }
+    const existingResult = resultFromExistingMarker(clone(dbStore.readDb()))
+    if (existingResult) return existingResult
+    let result = null
+    dbStore.updateDb((db) => {
+      const concurrentResult = resultFromExistingMarker(db)
+      if (concurrentResult) {
+        result = concurrentResult
+        return
+      }
+      const atMs = Number(now())
+      const context = manualNoopResolutionContext(
+        db,
+        failedConvergenceRunId,
+        firstDryRunId,
+        secondDryRunId,
+        atMs
+      )
+      const approvalBody = manualNoopApprovalBody(context)
+      if (stableSha256(approvalBody) !== approvalSha256) {
+        throw manualNoopResolutionFailure()
+      }
+      const markerBody = {
+        contract: MANUAL_NOOP_RESOLUTION_CONTRACT,
+        rootUnknownRunId: context.rootUnknownRun.runId,
+        rootUnknownRunSha256: stableSha256(context.rootUnknownRun),
+        failedConvergenceRunId: context.failedConvergenceRun.runId,
+        failedConvergenceRunSha256: stableSha256(context.failedConvergenceRun),
+        failedConvergenceBaselineDryRunId: context.failedConvergenceBaselineDryRun.runId,
+        failedConvergenceBaselineDryRunSha256: stableSha256(
+          context.failedConvergenceBaselineDryRun
+        ),
+        verificationDryRunIds: [context.firstDryRun.runId, context.secondDryRun.runId],
+        verificationDryRunSha256s: [
+          stableSha256(context.firstDryRun),
+          stableSha256(context.secondDryRun)
+        ],
+        evidenceSha256: approvalBody.evidenceSha256,
+        businessSnapshotSha256: context.businessSnapshotSha256,
+        approvalSha256,
+        resolvedAt: atMs
+      }
+      const marker = { ...markerBody, markerSha256: stableSha256(markerBody) }
+      db.feishuSyncConvergenceResolutions[context.rootUnknownRun.runId] = marker
+      db.feishuSyncScheduler.blockedRunId = ''
+      trimRuns(db, maxRuns)
+      if (!manualNoopResolutionMatches(db, context.rootUnknownRun) ||
+          !manualNoopResolutionMatches(db, context.failedConvergenceRun) ||
+          db.feishuSyncScheduler.blockedRunId) {
+        throw manualNoopResolutionFailure()
+      }
+      result = publicResultFromMarker(marker)
+    })
+    if (!result) throw manualNoopResolutionFailure()
+    return result
   }
 
   function createCurrentConvergence(blockedRunIdInput, baselineDryRunIdInput) {
@@ -3223,6 +3767,8 @@ function createFeishuSyncWorker(dependencies = {}) {
     resolveLegacyPrewriteDigestUnknown,
     resolveAndEnqueueReconciledPartial,
     createCurrentConvergence,
+    planManualNoopResolution,
+    applyManualNoopResolution,
     getStatus,
     status: getStatus
   }
@@ -3242,7 +3788,10 @@ module.exports = {
     sanitizeSchemaBindings,
     markerMatches,
     validComponentEvidence,
+    manualNoopResolutionMatches,
     validatePartialReconciliationEvidence,
-    safeErrorCode
+    safeErrorCode,
+    MANUAL_NOOP_APPROVAL_CONTRACT,
+    MANUAL_NOOP_RESOLUTION_CONTRACT
   }
 }

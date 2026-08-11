@@ -12,6 +12,9 @@
 const fs = require('fs')
 const path = require('path')
 const { execSync } = require('child_process')
+const {
+  _internal: { manualNoopResolutionMatches }
+} = require('../src/feishu-sync-worker')
 
 const SERVER_DIR = path.join(__dirname, '..')
 
@@ -57,15 +60,30 @@ function evaluateFeishuSyncState(db, options = {}) {
     ? db.feishuSyncScheduler
     : {}
   const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now()
-  const terminalStates = new Set(['dry-succeeded', 'succeeded', 'failed-before-write', 'unknown', 'blocked'])
+  const terminalStates = new Set([
+    'dry-succeeded',
+    'succeeded',
+    'failed-before-write',
+    'unknown',
+    'blocked',
+    'reconciled-partial'
+  ])
   const validLease = (lease) => Boolean(lease) && typeof lease === 'object' && !Array.isArray(lease) &&
     typeof lease.runId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(lease.runId) &&
     typeof lease.owner === 'string' && lease.owner.length > 0 && lease.owner.length <= 128 &&
     Number.isSafeInteger(lease.fence) && lease.fence > 0 &&
     Number.isFinite(lease.acquiredAt) && lease.acquiredAt >= 0 &&
     Number.isFinite(lease.expiresAt) && lease.expiresAt > lease.acquiredAt
+  const manualNoopResolved = (run) => {
+    try {
+      return manualNoopResolutionMatches(db, run)
+    } catch (error) {
+      return false
+    }
+  }
   const unresolved = runs.filter((run) => (
-    run && ['unknown', 'blocked'].includes(String(run.state || '')) && !Number(run.resolvedAt || 0)
+    run && ['unknown', 'blocked'].includes(String(run.state || '')) &&
+    !Number(run.resolvedAt || 0) && !manualNoopResolved(run)
   ))
   // 关闭自动同步通常正是 UNKNOWN/BLOCKED 的处置动作之一；不能因为关闭开关就把事故假报为健康。
   if (unresolved.length) {

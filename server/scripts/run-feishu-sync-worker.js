@@ -27,6 +27,26 @@ function parseArgs(argv = []) {
       baselineDryRunId: argv[2]
     }
   }
+  if (argv.length === 4 && argv[0] === '--plan-manual-noop-resolution' &&
+      argv.slice(1).every(validRunId) && new Set(argv.slice(1)).size === 3) {
+    return {
+      mode: 'plan-manual-noop-resolution',
+      failedConvergenceRunId: argv[1],
+      firstDryRunId: argv[2],
+      secondDryRunId: argv[3]
+    }
+  }
+  if (argv.length === 5 && argv[0] === '--apply-manual-noop-resolution' &&
+      argv.slice(1, 4).every(validRunId) && new Set(argv.slice(1, 4)).size === 3 &&
+      /^[a-f0-9]{64}$/.test(String(argv[4] || ''))) {
+    return {
+      mode: 'apply-manual-noop-resolution',
+      failedConvergenceRunId: argv[1],
+      firstDryRunId: argv[2],
+      secondDryRunId: argv[3],
+      approvalSha256: argv[4]
+    }
+  }
   const error = new Error('同步 worker 参数无效')
   error.code = 'WORKER_ARGUMENT_INVALID'
   throw error
@@ -73,7 +93,13 @@ async function main(argv = process.argv.slice(2), runtime = {}) {
     throw error
   }
   const args = parseArgs(argv)
-  if (['run', 'continue-reconciled-partial', 'create-current-convergence'].includes(args.mode) &&
+  if ([
+    'run',
+    'continue-reconciled-partial',
+    'create-current-convergence',
+    'plan-manual-noop-resolution',
+    'apply-manual-noop-resolution'
+  ].includes(args.mode) &&
       config.feishu.autoSyncEnabled) {
     const error = new Error('人工运行、恢复或收敛前必须先关闭自动同步')
     error.code = 'WORKER_CONFIGURATION_INVALID'
@@ -89,6 +115,25 @@ async function main(argv = process.argv.slice(2), runtime = {}) {
   }
 
   const worker = createWorker()
+  if (args.mode === 'plan-manual-noop-resolution') {
+    const plan = worker.planManualNoopResolution(
+      args.failedConvergenceRunId,
+      args.firstDryRunId,
+      args.secondDryRunId
+    )
+    writeOutput(`${JSON.stringify({ ok: true, skipped: false, ...plan })}\n`)
+    return 0
+  }
+  if (args.mode === 'apply-manual-noop-resolution') {
+    const resolved = worker.applyManualNoopResolution(
+      args.failedConvergenceRunId,
+      args.firstDryRunId,
+      args.secondDryRunId,
+      args.approvalSha256
+    )
+    writeOutput(`${JSON.stringify({ ok: true, skipped: false, ...resolved })}\n`)
+    return 0
+  }
   if (args.mode === 'continue-reconciled-partial') {
     const resolved = await worker.resolveAndEnqueueReconciledPartial(args.runId)
     writeOutput(`${JSON.stringify({

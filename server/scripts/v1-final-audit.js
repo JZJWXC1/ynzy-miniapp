@@ -125,6 +125,9 @@ const criticalScripts = [
   // 原子业务提交与每日三次 systemd 调度必须同时受行为测试锁定。
   'server/scripts/feishu-sync-worker-v2-test.js',
   'server/scripts/feishu-sync-partial-reconcile-v1-test.js',
+  // 旧 V5 写后 UNKNOWN 只允许凭两次事故后五表零操作 dry 与人工批准摘要，原子写本地 marker 解屏；
+  // 不得重跑旧任务、不得联网或把旧 UNKNOWN 改成成功。
+  'server/scripts/feishu-sync-manual-noop-resolution-v1-test.js',
   'server/scripts/feishu-sync-job-v1-test.js',
   // 员工源 Base 只读、目标 Base 专用表唯一写，以及半配置不得回退旧 Base。
   'server/scripts/feishu-cross-base-source-v1-test.js',

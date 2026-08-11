@@ -577,6 +577,24 @@ recover 或执行的 pristine queued 记录时，重复入口才会原样返回�
 
 内部 dry 只要出现素材部分失败就停在写前，不能降级进入正式写。Base、Drive 与 OSS 依靠稳定记录键、对象键和内容摘要精确复用已经完成的同内容结果，发现同身份异内容则失败关闭，只补齐当前态仍缺少的结果。写前漂移或写前租约过期会把本次任务终结为 `failed-before-write`，保留旧 blocker，并要求以全新 dry、新 run 重建；首写后异常建立新的 UNKNOWN blocker，任何原 run 都不自动重试。V5 commit marker 额外绑定语义摘要和本次完整分项证据，resolution v2 同时绑定基线完整摘要、稳定语义摘要和本次正式完整摘要。只有二者在同一事务内完整落盘，才清除 scheduler blocker；旧 UNKNOWN 原记录永久不改，标记丢失、篡改或引用任务被改后，`recover()` 会重新阻断。收敛成功后必须再完成目标 Base、Drive/OSS、库存、首页 v2 快照和数据库五端对账，确认业务后置状态一致后才允许恢复自动同步。该入口不替代普通部分写入恢复，也不能跳过成功后的五端验收。
 
+若当前 blocker **本身已经是正式写后的 V5 UNKNOWN**，不得再次创建 V5、重跑旧任务或继续叠加新的自动恢复协议。小数据过渡期采用一次性的人工五表零差异解屏：先关闭自动开关和 timer，由人工把 source/location/mini/rented/history 五表核对到当前员工源事实；然后通过现有后台人工预演连续生成两条全新的 `dry-succeeded`。两条都必须晚于失败 V5，第二条晚于第一条，且五表摘要、schema/resource、完整与语义镜像摘要、component/content plan、素材数量和本地结果汇总完全一致；`main/archive/history/baselineMarker` 四类 Base 操作的 `count` 必须全为 0，摘要也必须等于空操作摘要。事故前 dry、重复使用同一 dry、超过 30 分钟的证据、任何素材或五表漂移都不能解屏。
+
+确认两条新预演后，先运行只读计划命令；它只输出脱敏计数、摘要和批准 SHA，不写数据库、不访问飞书：
+
+```bash
+node scripts/run-feishu-sync-worker.js \
+  --plan-manual-noop-resolution <failed-v5-run-id> <first-new-dry-run-id> <second-new-dry-run-id>
+```
+
+人工逐项确认输出的两条任务身份、五表计数/摘要和四类 `0` 操作后，再把同一 `approvalSha256` 原样传给本地应用命令：
+
+```bash
+node scripts/run-feishu-sync-worker.js \
+  --apply-manual-noop-resolution <failed-v5-run-id> <first-new-dry-run-id> <second-new-dry-run-id> <approval-sha256>
+```
+
+应用命令只在一个本地数据库事务中写 `feishu-manual-five-table-noop-resolution-v1` marker 并清 blocker，外部写入次数固定为 0；原 V3/V5 UNKNOWN 记录逐字保留。marker 绑定旧事故链、两条新 dry、共同证据、批准 SHA 和应用时业务快照；marker 缺失、结构或引用不闭合、摘要与批准不一致、历史裁剪不完整时，`recover()` 会自动重新阻断。该回执只表示“旧 Base 写入歧义已被当前五表零差异证据解释”，不等于同步恢复成功。随后仍须保持 auto/timer 关闭，执行一条全新的普通 manual formal，同步成功并完成目标 Base、Drive/OSS、本地库存、首页 v2 和数据库提交五端核对后，才可另行批准恢复每日三次。
+
 `FEISHU_SYNC_INTERVAL_MINUTES` 当前固定为 `30` 分钟，只用于把同一短时间窗口内的重复唤醒归并为一个任务，
 不再表示真实运行频率。真正调度由 systemd `ynzy-feishu-sync.timer` 按北京时间每天
 `08:00 / 14:00 / 20:00` 触发独立 oneshot worker；完整成功的新鲜度使用独立的 18 小时健康窗口：
@@ -601,6 +619,8 @@ FEISHU_AUTO_SYNC_ENABLED=false
 1. **员工源表（员工源 Base）**：员工继续维护，不由同步程序改名、补列或反向写入；`record_id` 只是在同一张源表内部稳定的追溯键，复制或迁移整张表时会整体变化，不能把它当成跨表永久房源身份。
 2. **小程序位置字典（小程序专用 Base）**：每个标准小区一行，维护 `locationId / 城市 / 行政区 / 板块或商圈 / 标准小区 / 别名 / 经纬度 / 启用`。新增行政区、板块或小区只改字典，不再改服务端硬编码。
 3. **小程序专用房源源表（小程序专用 Base）**：只允许服务端写。它保存已按字典归一并完整回读校验的 canonical 房源，库存、地图和固定十列待租表只消费这一批结果。
+
+当前实现仍明确以员工源表为过渡期业务权威：管家在员工源更新新空出/已出租房源，系统按每日三次计划镜像到小程序专用表。未来若改为管家直接维护小程序表，必须新增并审计显式的权威源模式切换，使员工源读取和目标 Base 回写同时归零；当前版本尚无该模式。仅停用员工源、交换 token 或继续运行现有同步都会失败或被旧员工源覆盖，不能作为切换方法。
 
 两套 Base 使用两个资源 token 定位。`FEISHU_SOURCE_BITABLE_APP_TOKEN` 与 `FEISHU_TARGET_BITABLE_APP_TOKEN` 必须成对配置：前者只读取员工源 Base，后者读取位置字典并写入对应 profile 明确允许的目标业务表；current-stock 基础模式只写小程序专用房源源表，AI 数据底座 profile 按后文扩展写同一目标 Base 的已出租表与状态流水表。只配置其中一个会 fail-closed，绝不偷偷回退到旧 `FEISHU_BITABLE_APP_TOKEN`。两项都未配置时才保留旧单 Base 配置兼容，便于尚未启用镜像的环境安全回滚。Base token 和所有已配置 table ID 在配置解析、资源重叠比较与真实请求前统一去除前后空白，不能用空格把同一资源伪装成两份配置。
 
