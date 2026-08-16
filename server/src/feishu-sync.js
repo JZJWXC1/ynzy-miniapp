@@ -5409,7 +5409,9 @@ async function executeMirrorTableSync(options = {}) {
     allowEmpty: true,
     ...excludedVideoReadOption
   })
-  const inventorySourceSnapshot = snapshotWithoutVideoFields(sourceSnapshot, options.materialPolicy)
+  // 原始员工源快照已在兼容投影前完成 video 排除；兼容层随后会补 listingStatus、rentMode 等
+  // 业务语义并生成自己的去视频摘要，不能再按原始 Base schemaBindings 重建第二次。
+  const inventorySourceSnapshot = sourceSnapshot
   const mirrorSnapshot = snapshotWithoutVideoFields(rawMirrorSnapshot, options.materialPolicy)
   if (foundationProfile) {
     const rawRentedSnapshot = await targetClient.readValidatedTableSnapshot({

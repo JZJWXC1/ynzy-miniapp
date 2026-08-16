@@ -871,6 +871,18 @@ async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
     const sourceFieldBindings = employeeSourceBindings()
     sourceFieldBindings.video = fieldBinding('src-video', 17, false)
     const miniFieldBindings = { ...bindings.mini, video: fieldBinding('mini-video', 17, false) }
+    const productionSourceSnapshot = {
+      ...sourceRecords,
+      schemaBindings: Object.keys(sourceFieldBindings).sort().map((semantic) => ({
+        semantic,
+        fieldName: semantic,
+        type: String(sourceFieldBindings[semantic].type)
+      })),
+      fieldNames: Object.keys(sourceFieldBindings).reduce((result, semantic) => {
+        result[semantic] = semantic
+        return result
+      }, {})
+    }
     Object.assign(config.feishu, {
       appId: 'app-id',
       appSecret: 'app-secret',
@@ -928,7 +940,7 @@ async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
       ...patch
     })
 
-    const dryClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords })
+    const dryClients = makeClients({ sourceSnapshot: productionSourceSnapshot, initialMirrorRecords })
     const dryDb = createDb()
     const expectedDryVideoState = videoState(dryDb)
     const dryResult = await feishuSync.sync(dryDb, 'A1', syncOptions(dryClients, {
@@ -951,7 +963,7 @@ async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
 
     const videoChangedMirrorRecords = JSON.parse(JSON.stringify(initialMirrorRecords))
     videoChangedMirrorRecords[0].fields.video = [{ file_token: 'another-target-video-token' }]
-    const videoChangedClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords: videoChangedMirrorRecords })
+    const videoChangedClients = makeClients({ sourceSnapshot: productionSourceSnapshot, initialMirrorRecords: videoChangedMirrorRecords })
     const videoChangedResult = await feishuSync.sync(createDb(), 'A1', syncOptions(videoChangedClients, {
       dryRun: true,
       runId: 'current-stock-listing-only-dry'
@@ -959,7 +971,7 @@ async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
     assert.strictEqual(videoChangedResult.mirrorPlanSha256, dryResult.mirrorPlanSha256, '仅目标 video 变化不得改变纯房源镜像计划摘要')
     assert.strictEqual(videoChangedResult.semanticMirrorPlanSha256, dryResult.semanticMirrorPlanSha256, '仅目标 video 变化不得改变语义计划摘要')
 
-    const applyClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords })
+    const applyClients = makeClients({ sourceSnapshot: productionSourceSnapshot, initialMirrorRecords })
     const applyDb = createDb()
     const expectedApplyVideoState = videoState(applyDb)
     let frozenCount = 0
