@@ -80,7 +80,11 @@ function snapshot(role, schema, digest, recordCount, semantic) {
   }
 }
 
-function buildEvidence({ zeroOperations, nonzeroOperation = 'main' }) {
+function buildEvidence({
+  zeroOperations,
+  nonzeroOperation = 'main',
+  optionalRoles = ['rented', 'history']
+}) {
   const operation = {
     type: 'update',
     recordId: 'record-current-1',
@@ -91,8 +95,12 @@ function buildEvidence({ zeroOperations, nonzeroOperation = 'main' }) {
     sourceSnapshot: snapshot('source', SHA.schema, 'a'.repeat(64), 43, 'community'),
     locationSnapshot: snapshot('location', '4'.repeat(64), 'b'.repeat(64), 34, 'community'),
     mirrorSnapshot: snapshot('mini', '5'.repeat(64), 'c'.repeat(64), 76, 'community'),
-    rentedSnapshot: snapshot('rented', '6'.repeat(64), 'd'.repeat(64), 23, 'listingStatus'),
-    historySnapshot: snapshot('history', '7'.repeat(64), 'e'.repeat(64), 54, 'eventType'),
+    rentedSnapshot: optionalRoles.includes('rented')
+      ? snapshot('rented', '6'.repeat(64), 'd'.repeat(64), 23, 'listingStatus')
+      : null,
+    historySnapshot: optionalRoles.includes('history')
+      ? snapshot('history', '7'.repeat(64), 'e'.repeat(64), 54, 'eventType')
+      : null,
     resources: {},
     operations: selectedOperation === 'main' ? [operation] : [],
     archiveOperations: selectedOperation === 'archive' ? [operation] : [],
@@ -226,7 +234,7 @@ function seedState(oldEvidence, initialNowMs) {
 function makeFixture({ maxRuns = 50, extraRunIds = [] } = {}) {
   const initialNowMs = 1_900_000_000_000
   const oldEvidence = buildEvidence({ zeroOperations: false })
-  const zeroEvidence = buildEvidence({ zeroOperations: true })
+  const zeroEvidence = buildEvidence({ zeroOperations: true, optionalRoles: [] })
   const seeded = seedState(oldEvidence, initialNowMs)
   const store = createStore(seeded.db)
   let nowMs = initialNowMs + 86_400_000
@@ -420,6 +428,16 @@ function replaceDryEvidence(db, runId, evidence) {
   run.schemaBindings = clone(evidence.schemaBindings)
 }
 
+function evidenceWithoutRequiredRole(evidence, role) {
+  const result = clone(evidence)
+  result.componentEvidence.snapshots = result.componentEvidence.snapshots.filter((item) => (
+    item.role !== role
+  ))
+  result.componentEvidenceSha256 = stableSha256(result.componentEvidence)
+  result.schemaBindings = result.schemaBindings.filter((item) => item.role !== role)
+  return result
+}
+
 function rehashManualResolutionMarker(db, plan) {
   const marker = db.feishuSyncConvergenceResolutions[plan.rootUnknownRun.runId]
   const root = rawRun(db, marker.rootUnknownRunId)
@@ -479,8 +497,19 @@ async function testPlanAndApplyAreLocalAtomicAndAuditable() {
   assert.strictEqual(plan.contract, 'feishu-manual-five-table-noop-approval-v1')
   assert.match(plan.approvalSha256, /^[a-f0-9]{64}$/)
   assert.deepStrictEqual(plan.evidence.snapshots.map((item) => item.role), [
-    'source', 'location', 'mini', 'rented', 'history'
+    'source', 'location', 'mini'
   ])
+  assert.deepStrictEqual(
+    rawRun(beforePlan, fixture.seeded.baselineDryRunId).componentEvidence.snapshots
+      .map((item) => item.role),
+    ['source', 'location', 'mini', 'rented', 'history'],
+    '事故基线 dry 仍必须保留五表历史证据'
+  )
+  assert.deepStrictEqual(
+    rawRun(beforePlan, failedV5.runId).componentEvidence.snapshots.map((item) => item.role),
+    ['source', 'location', 'mini', 'rented', 'history'],
+    '失败 convergence 仍必须保留五表历史证据'
+  )
   const emptyOperationsSha256 = stableSha256([])
   for (const key of ['main', 'archive', 'history', 'baselineMarker']) {
     assert.deepStrictEqual(plan.evidence.operations[key], {
@@ -661,6 +690,42 @@ async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
       firstResult.runId,
       secondResult.runId
     ), 'updated 与 sourceRecordCount 不相等时必须拒绝解屏')
+  }
+
+  for (const missingRole of ['source', 'location', 'mini']) {
+    const built = await buildFailedV5AndTwoFreshDryRuns()
+    const { fixture, failedV5, firstResult, secondResult } = built
+    const fourRoleEvidence = buildEvidence({
+      zeroOperations: true,
+      optionalRoles: ['rented']
+    })
+    const missingEvidence = evidenceWithoutRequiredRole(fourRoleEvidence, missingRole)
+    fixture.store.updateDb((db) => {
+      replaceDryEvidence(db, firstResult.runId, missingEvidence)
+      replaceDryEvidence(db, secondResult.runId, missingEvidence)
+    })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), `verification dry 缺少必要 ${missingRole} 角色必须拒绝`)
+  }
+
+  {
+    const built = await buildFailedV5AndTwoFreshDryRuns()
+    const { fixture, failedV5, firstResult, secondResult } = built
+    const fourRoleEvidence = buildEvidence({
+      zeroOperations: true,
+      optionalRoles: ['rented']
+    })
+    fixture.store.updateDb((db) => {
+      replaceDryEvidence(db, secondResult.runId, fourRoleEvidence)
+    })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), '两轮 verification dry 的合法角色集合漂移仍必须拒绝')
   }
 
   {
