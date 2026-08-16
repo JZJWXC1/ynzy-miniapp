@@ -23,6 +23,7 @@ const {
   isKnownMaterialRowWarningReport,
   isExternalWriteStateUnknownError,
   isExternalWriteIntentPersistenceError,
+  buildContentPlanSummary,
   buildNoteMaterialSourceFieldPlan
 } = noteMaterialSync._internal
 const sourceMirror = require('./feishu-source-mirror')
@@ -2587,12 +2588,10 @@ function mirrorConfigurationStatus() {
   const noteMaterialModeRequested = config.feishu.noteMaterialSyncEnabled === true
   const noteMaterialsReady = noteMaterialModeRequested && effectiveNoteMaterialSyncEnabled() &&
     formalNoteMaterialConfigurationReady()
-  const legacyMaterialsReady = Boolean(
-    config.feishu.folderToken || config.feishu.materialsFile || config.feishu.sourceFieldBindings.video
-  )
   // 启用新房源笔记管线后，只认正式 field_id、域名、独立目标目录和 OSS 契约；遗留
-  // 目录不得把错误 profile 或缺失新配置伪装成 ready。未启用时保留人工 legacy 兼容口径。
-  const materialsReady = noteMaterialModeRequested ? noteMaterialsReady : legacyMaterialsReady
+  // 目录不得把错误 profile 或缺失新配置伪装成 ready。未启用时就是纯房源信息模式，
+  // 不得再要求或读取任何 legacy 素材目录、清单或视频字段。
+  const materialsReady = noteMaterialModeRequested ? noteMaterialsReady : true
   return {
     ready: hasAuth && sourceBaseReadOnlyBoundaryReady &&
       sourceTableReady && miniTableReady && locationTableReady && tableResourcesDistinct &&
@@ -4083,8 +4082,8 @@ async function sha256LegacyMaterialFile(filePath) {
 
 function automaticWorkerConfigurationStatus(options = {}) {
   const mirrorState = mirrorConfigurationStatus()
-  const noteMaterialsReady = effectiveNoteMaterialSyncEnabled() &&
-    formalNoteMaterialConfigurationReady(options)
+  const noteMaterialsEnabled = config.feishu.noteMaterialSyncEnabled === true
+  const noteMaterialsReady = !noteMaterialsEnabled || formalNoteMaterialConfigurationReady(options)
   const controllerReady = config.feishu.syncControllerMode === 'worker-v2'
   const schemaApproved = /^[a-f0-9]{64}$/.test(String(config.feishu.approvedSchemaSha256 || ''))
   const resourceApproved = /^[a-f0-9]{64}$/.test(
@@ -5808,7 +5807,7 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
     ? mirrorResult.sourceNoteMaterials
     : []
   if (!effectiveNoteMaterialSyncEnabled()) {
-    return {
+    const report = {
       complete: true,
       published: options.dryRun !== true,
       dryRun: options.dryRun === true,
@@ -5820,6 +5819,12 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       skipped: true,
       rows: []
     }
+    Object.assign(report, buildContentPlanSummary(
+      [],
+      [],
+      buildNoteMaterialSourceFieldPlan([])
+    ))
+    return report
   }
   if (sourceRows.length === 0) {
     const emptyPlan = await syncNoteMaterialsForInventory({
@@ -6216,10 +6221,14 @@ async function syncViaMirror(db, adminId, options = {}) {
         ? options.expectedComponentEvidenceSha256
         : undefined,
       // 源表房源笔记字段属于已确认内容计划的一部分；镜像可刷新，素材来源不可刷新。
-      expectedSourceMaterialFieldSha256: confirmedContentPlan &&
-        confirmedContentPlan.expectedSourceMaterialFieldSha256,
-      expectedSourceMaterialFieldRecordCount: confirmedContentPlan &&
-        confirmedContentPlan.expectedSourceMaterialFieldRecordCount,
+      ...(confirmedContentPlan
+        ? {
+            expectedSourceMaterialFieldSha256:
+              confirmedContentPlan.expectedSourceMaterialFieldSha256,
+            expectedSourceMaterialFieldRecordCount:
+              confirmedContentPlan.expectedSourceMaterialFieldRecordCount
+          }
+        : {}),
       feishuToken: options.feishuToken || preflightFeishuToken || ''
     })
     if (!mirrorSafetyPreflight || mirrorSafetyPreflight.complete !== true ||
@@ -6504,7 +6513,7 @@ async function sync(db, adminId, options = {}) {
     throw error
   }
   if (options.syncController === 'worker-v2' &&
-      (!effectiveNoteMaterialSyncEnabled() || !formalNoteMaterialConfigurationReady(options))) {
+      config.feishu.noteMaterialSyncEnabled === true && !formalNoteMaterialConfigurationReady(options)) {
     const error = new Error('worker-v2 只允许执行配置完整的房源笔记确定性素材管线')
     error.code = 'WORKER_NOTE_MATERIAL_MODE_REQUIRED'
     error.statusCode = 409

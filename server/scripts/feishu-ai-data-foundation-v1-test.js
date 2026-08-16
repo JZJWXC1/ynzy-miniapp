@@ -6,9 +6,14 @@ const crypto = require('crypto')
 const config = require('../src/config')
 const bitableClient = require('../src/feishu-bitable-client')
 const feishuSync = require('../src/feishu-sync')
+const noteMaterialSync = require('../src/feishu-note-material-sync')
 const {
   syncNoteMaterialsForInventory
-} = require('../src/feishu-note-material-sync')
+} = noteMaterialSync
+const {
+  buildContentPlanSummary,
+  buildNoteMaterialSourceFieldPlan
+} = noteMaterialSync._internal
 const {
   buildCompanySheetSnapshot,
   buildLocationCatalog,
@@ -942,6 +947,157 @@ async function testConfiguredFoundationForwardsPartialReconciliationCapture() {
     assertNoWrites(clients.calls, 'configured 对账捕获只能读取五表，禁止写入')
   } finally {
     restoreObject(config.feishu, previous)
+  }
+}
+
+async function testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled() {
+  const previousFeishu = clone(config.feishu)
+  const previousOss = clone(config.oss)
+  let materialProcessingCalls = 0
+  const forbiddenMaterialAdapter = new Proxy({}, {
+    get() {
+      materialProcessingCalls += 1
+      throw new Error('素材关闭时不得访问 Drive 或 OSS 适配器')
+    }
+  })
+  const expectedEmptyPlan = buildContentPlanSummary(
+    [],
+    [],
+    buildNoteMaterialSourceFieldPlan([])
+  )
+  const createDb = () => ({
+    users: [{ id: 'A1', name: '管理员', role: '管理员', isAdmin: true }],
+    listings: [],
+    footprints: [],
+    pointLogs: [],
+    feishuSyncLogs: []
+  })
+  const assertDisabledMaterialReport = (result, label) => {
+    assert.ok(result && result.noteMaterials, `${label}必须返回素材关闭报告`)
+    assert.strictEqual(result.noteMaterials.skipped, true, `${label}必须明确跳过素材处理`)
+    assert.strictEqual(result.noteMaterials.failed, 0, `${label}素材关闭不得产生失败`)
+    assert.strictEqual(result.noteMaterials.contentPlanAssetCount, 0, `${label}空内容计划素材数必须为 0`)
+    assert.strictEqual(
+      result.noteMaterials.contentPlanSha256,
+      expectedEmptyPlan.contentPlanSha256,
+      `${label}必须复用素材模块的稳定空内容计划摘要`
+    )
+  }
+  const configure = (clients) => {
+    Object.assign(config.feishu, {
+      appId: 'synthetic-app-id',
+      appSecret: 'synthetic-app-secret',
+      syncEnabled: true,
+      autoSyncEnabled: true,
+      mirrorSyncEnabled: true,
+      syncControllerMode: 'worker-v2',
+      approvedSchemaSha256: 'a'.repeat(64),
+      approvedResourceIdentitySha256: 'b'.repeat(64),
+      sourceBitableAppToken: 'synthetic-source-base',
+      targetBitableAppToken: 'synthetic-target-base',
+      crossBaseTokenPartial: false,
+      sourceTableId: clients.tableIds.source,
+      locationTableId: clients.tableIds.location,
+      miniTableId: clients.tableIds.mini,
+      rentedTableId: clients.tableIds.rented,
+      historyTableId: clients.tableIds.history,
+      sourceCompatibilityProfile: PROFILE,
+      sourceFieldBindings: sourceBindings(),
+      locationFieldBindings: locationBindings(),
+      miniFieldBindings: miniBindings(),
+      rentedFieldBindings: rentedBindings(),
+      historyFieldBindings: historyBindings(),
+      noteMaterialSyncEnabled: false,
+      noteMaterialFieldId: '',
+      noteMaterialTargetRootFolderToken: '',
+      noteMaterialAllowedHosts: [],
+      folderToken: '',
+      materialsFile: ''
+    })
+    Object.assign(config.oss, {
+      bucket: '',
+      region: '',
+      accessKeyId: '',
+      accessKeySecret: ''
+    })
+  }
+  const syncOptions = (clients, patch = {}) => ({
+    syncController: 'worker-v2',
+    disableLegacyMaterials: true,
+    feishuToken: 'synthetic-tenant-token',
+    clientFactory(options) {
+      if (options.appToken === 'synthetic-source-base') return clients.sourceClient
+      if (options.appToken === 'synthetic-target-base') return clients.targetClient
+      throw new Error(`创建了非预期 Base 客户端：${options.appToken}`)
+    },
+    noteMaterialDrive: forbiddenMaterialAdapter,
+    noteMaterialOss: forbiddenMaterialAdapter,
+    prepareMaterial() {
+      materialProcessingCalls += 1
+      throw new Error('素材关闭时不得准备素材')
+    },
+    ...patch
+  })
+  try {
+    const dryClients = makeLifecycleClients()
+    configure(dryClients)
+    assert.strictEqual(
+      feishuSync.automaticWorkerConfigurationStatus().ready,
+      true,
+      '素材开关关闭时，完整房源五表配置必须允许每天三次 worker 运行'
+    )
+    const dryResult = await feishuSync.sync(createDb(), 'A1', syncOptions(dryClients, {
+      dryRun: true,
+      runId: 'worker-v2-listing-only-dry',
+      nowMs: FIXED_NOW_MS
+    }))
+    assert.strictEqual(dryResult.status, 'success-dry-run', '素材关闭时 worker-v2 必须完成五表 dry-run')
+    assertDisabledMaterialReport(dryResult, 'worker-v2 dry-run')
+    assertNoWrites(dryClients.calls, '素材关闭的 worker-v2 dry-run 必须保持五表零写')
+    assert.deepStrictEqual(
+      [...new Set(dryClients.calls.filter((call) => call.action === 'read').map((call) => call.tableId))].sort(),
+      Object.values(dryClients.tableIds).sort(),
+      '素材关闭的 worker-v2 dry-run 必须完整读取员工源与目标四表'
+    )
+
+    const applyClients = makeLifecycleClients()
+    configure(applyClients)
+    let frozenCount = 0
+    let writeIntentCount = 0
+    const applyResult = await feishuSync.sync(createDb(), 'A1', syncOptions(applyClients, {
+      dryRun: false,
+      runId: 'worker-v2-listing-only-apply',
+      nowMs: FIXED_NOW_MS,
+      onApplyPlanFrozen(plan) {
+        frozenCount += 1
+        assert.match(plan.mirrorPlanSha256, /^[0-9a-f]{64}$/)
+      },
+      onExternalWriteDispatched() {
+        writeIntentCount += 1
+      }
+    }))
+    assert.ok(/^success(?:-|$)/.test(applyResult.status), '素材关闭时 worker-v2 必须完成五表正式同步')
+    assertDisabledMaterialReport(applyResult, 'worker-v2 正式同步')
+    assert.strictEqual(frozenCount, 1, '正式写前必须仍冻结一次权威镜像计划')
+    assert.ok(writeIntentCount > 0, '房源正式同步必须真实产生目标 Base 写意图')
+    assert.ok(
+      applyClients.calls.some((call) => call.client === 'target' && ['create', 'update'].includes(call.action)),
+      '素材关闭不得阻断房源与五表正式写入'
+    )
+    assert.deepStrictEqual(
+      [...new Set(applyClients.calls.filter((call) => call.action === 'read').map((call) => call.tableId))].sort(),
+      Object.values(applyClients.tableIds).sort(),
+      '素材关闭的正式预检与写入必须继续覆盖员工源与目标四表'
+    )
+    assert.strictEqual(
+      applyClients.calls.some((call) => call.client === 'source' && call.action !== 'read'),
+      false,
+      '员工源表在素材关闭的正式同步中仍必须严格只读'
+    )
+    assert.strictEqual(materialProcessingCalls, 0, 'dry/apply 全程不得处理 Drive、OSS 或素材字节')
+  } finally {
+    restoreObject(config.feishu, previousFeishu)
+    restoreObject(config.oss, previousOss)
   }
 }
 
@@ -3173,6 +3329,7 @@ async function main() {
     ['基线标记真实性与流水 ID 唯一性', testBaselineMarkerAndHistoryIdsFailClosed],
     ['生产配置五表完整性', testConfiguredFoundationRequiresAllResources],
     ['configured 入口转发部分写入对账快照', testConfiguredFoundationForwardsPartialReconciliationCapture],
+    ['素材关闭时 worker-v2 仍完整同步房源五表', testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled],
     ['三张目标业务表资源独立', testLifecycleTableResourcesMustBeDistinct],
     ['负责人部门与内部 ID 不进入公开投影', testInternalFoundationFieldsStayOutOfPublicProjection],
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
