@@ -1126,11 +1126,16 @@ function manualNoopFailedConvergenceShapeValid(run) {
     stableSha256(run.dryResultSummary) === stableSha256(run.baselineDryResultSummary)
 }
 
+function manualNoopRootRequestKeyValid(value) {
+  return value === '' || validSha256(value)
+}
+
 function manualNoopRootUnknownShapeValid(db, run) {
   try {
     const lineage = validateUnknownContinuationLineage(db, run)
     const root = runById(db, lineage.rootRunId)
-    return lineage.depth <= 1 && Boolean(root) && root.requestKeySha256 === ''
+    return lineage.depth <= 1 && Boolean(root) &&
+      manualNoopRootRequestKeyValid(root.requestKeySha256)
   } catch (error) {
     return false
   }

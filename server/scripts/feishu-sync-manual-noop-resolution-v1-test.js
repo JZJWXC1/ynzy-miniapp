@@ -143,8 +143,11 @@ function frozenPlan(evidence) {
   }
 }
 
-function exactPartialUnknownRun(runId, nowMs, evidence) {
-  return {
+function exactPartialUnknownRun(runId, nowMs, evidence, {
+  requestKeySha256 = '',
+  omitRequestKeySha256 = false
+} = {}) {
+  const run = {
     version: 3,
     runId,
     runNowMs: nowMs,
@@ -154,7 +157,7 @@ function exactPartialUnknownRun(runId, nowMs, evidence) {
     actorType: 'manual',
     actorId: 'admin:manual-noop-resolution',
     bucket: null,
-    requestKeySha256: '',
+    requestKeySha256,
     errorCode: 'UNKNOWN_ERROR',
     mirrorPlanSha256: evidence.mirrorPlanSha256,
     schemaSha256: SHA.schema,
@@ -172,6 +175,8 @@ function exactPartialUnknownRun(runId, nowMs, evidence) {
     finishedAt: nowMs + 2_000,
     lease: null
   }
+  if (omitRequestKeySha256) delete run.requestKeySha256
+  return run
 }
 
 function partialReconciliationEvidence(runId, evidence) {
@@ -198,9 +203,15 @@ function partialReconciliationEvidence(runId, evidence) {
   return { ...body, evidenceSha256: stableSha256(body) }
 }
 
-function seedState(oldEvidence, initialNowMs) {
+function seedState(oldEvidence, initialNowMs, {
+  rootLineageDepth = 1,
+  rootRequestKeySha256 = '',
+  omitRootRequestKeySha256 = false
+} = {}) {
   const parentUnknownRunId = 'feishu-sync-parent-partial-unknown-01'
-  const rootUnknownRunId = 'feishu-sync-root-unknown-01'
+  const rootUnknownRunId = rootLineageDepth === 0
+    ? parentUnknownRunId
+    : 'feishu-sync-root-unknown-01'
   const baselineDryRunId = 'feishu-sync-baseline-dry-01'
   return {
     parentUnknownRunId,
@@ -215,7 +226,11 @@ function seedState(oldEvidence, initialNowMs) {
       feishuSyncRuns: [exactPartialUnknownRun(
         parentUnknownRunId,
         initialNowMs,
-        oldEvidence
+        oldEvidence,
+        {
+          requestKeySha256: rootRequestKeySha256,
+          omitRequestKeySha256: omitRootRequestKeySha256
+        }
       )],
       feishuSyncScheduler: {
         nextFence: 0,
@@ -234,7 +249,10 @@ function seedState(oldEvidence, initialNowMs) {
 function makeFixture({
   maxRuns = 50,
   extraRunIds = [],
-  verificationOptionalRoles = []
+  verificationOptionalRoles = [],
+  rootLineageDepth = 1,
+  rootRequestKeySha256 = '',
+  omitRootRequestKeySha256 = false
 } = {}) {
   const initialNowMs = 1_900_000_000_000
   const oldEvidence = buildEvidence({ zeroOperations: false })
@@ -242,7 +260,11 @@ function makeFixture({
     zeroOperations: true,
     optionalRoles: verificationOptionalRoles
   })
-  const seeded = seedState(oldEvidence, initialNowMs)
+  const seeded = seedState(oldEvidence, initialNowMs, {
+    rootLineageDepth,
+    rootRequestKeySha256,
+    omitRootRequestKeySha256
+  })
   const store = createStore(seeded.db)
   let nowMs = initialNowMs + 86_400_000
   let phase = 'continuation-failure'
@@ -253,7 +275,7 @@ function makeFixture({
     oldEvidence
   )
   const initialIds = [
-    seeded.rootUnknownRunId,
+    ...(rootLineageDepth === 1 ? [seeded.rootUnknownRunId] : []),
     seeded.baselineDryRunId,
     'feishu-sync-failed-v5-01',
     'feishu-sync-verify-dry-01',
@@ -319,6 +341,7 @@ function makeFixture({
   }
   const worker = createWorkerInstance(maxRuns, initialIds)
   return {
+    rootLineageDepth,
     seeded,
     store,
     worker,
@@ -350,31 +373,40 @@ function makeFixture({
 
 async function buildFailedV5AndTwoFreshDryRuns(options) {
   const fixture = makeFixture(options)
-  const reconciled = await fixture.worker.resolveAndEnqueueReconciledPartial(
-    fixture.seeded.parentUnknownRunId
-  )
-  assert.strictEqual(reconciled.resolvedRun.state, STATES.RECONCILED_PARTIAL)
-  assert.strictEqual(reconciled.continuationRun.runId, fixture.seeded.rootUnknownRunId)
-  assert.strictEqual(
-    reconciled.continuationRun.continuationOfRunId,
-    fixture.seeded.parentUnknownRunId
-  )
-  const rawContinuation = rawRun(
-    fixture.store.snapshot(),
-    reconciled.continuationRun.runId
-  )
-  assert.match(rawContinuation.requestKeySha256, /^[a-f0-9]{64}$/)
-  const rootUnknown = await fixture.worker.run(
-    reconciled.continuationRun.runId,
-    { workerId: 'manual:test-v3-continuation' }
-  )
-  assert.strictEqual(rootUnknown.state, STATES.UNKNOWN)
-  assert.strictEqual(rootUnknown.externalWritesMayHaveOccurred, true)
-  const rawRootUnknown = rawRun(fixture.store.snapshot(), rootUnknown.runId)
-  assert.strictEqual(rawRootUnknown.continuationOfRunId, fixture.seeded.parentUnknownRunId)
-  assert.match(rawRootUnknown.sourceUnknownRunSha256, /^[a-f0-9]{64}$/)
-  assert.match(rawRootUnknown.reconciliationEvidenceSha256, /^[a-f0-9]{64}$/)
-  assert.match(rawRootUnknown.requestKeySha256, /^[a-f0-9]{64}$/)
+  if (fixture.rootLineageDepth === 1) {
+    const reconciled = await fixture.worker.resolveAndEnqueueReconciledPartial(
+      fixture.seeded.parentUnknownRunId
+    )
+    assert.strictEqual(reconciled.resolvedRun.state, STATES.RECONCILED_PARTIAL)
+    assert.strictEqual(reconciled.continuationRun.runId, fixture.seeded.rootUnknownRunId)
+    assert.strictEqual(
+      reconciled.continuationRun.continuationOfRunId,
+      fixture.seeded.parentUnknownRunId
+    )
+    const rawContinuation = rawRun(
+      fixture.store.snapshot(),
+      reconciled.continuationRun.runId
+    )
+    assert.match(rawContinuation.requestKeySha256, /^[a-f0-9]{64}$/)
+    const rootUnknown = await fixture.worker.run(
+      reconciled.continuationRun.runId,
+      { workerId: 'manual:test-v3-continuation' }
+    )
+    assert.strictEqual(rootUnknown.state, STATES.UNKNOWN)
+    assert.strictEqual(rootUnknown.externalWritesMayHaveOccurred, true)
+    const rawRootUnknown = rawRun(fixture.store.snapshot(), rootUnknown.runId)
+    assert.strictEqual(rawRootUnknown.continuationOfRunId, fixture.seeded.parentUnknownRunId)
+    assert.match(rawRootUnknown.sourceUnknownRunSha256, /^[a-f0-9]{64}$/)
+    assert.match(rawRootUnknown.reconciliationEvidenceSha256, /^[a-f0-9]{64}$/)
+    assert.match(rawRootUnknown.requestKeySha256, /^[a-f0-9]{64}$/)
+  } else {
+    const rootUnknown = rawRun(fixture.store.snapshot(), fixture.seeded.rootUnknownRunId)
+    assert.strictEqual(rootUnknown.state, STATES.UNKNOWN)
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(rootUnknown, 'continuationOfRunId'),
+      false
+    )
+  }
 
   fixture.switchToBaseline()
   const baselineQueued = fixture.worker.enqueue({
@@ -636,6 +668,64 @@ async function testCanonicalOptionalVerificationRoleSequencesAreAccepted() {
       ['source', 'location', 'mini', ...optionalRoles],
       '生产 canonical 可选角色序列必须保持可用'
     )
+  }
+}
+
+async function testRootRequestKeyContractAcrossSupportedLineages() {
+  const validRootRequestKeySha256 = 'c'.repeat(64)
+  for (const rootLineageDepth of [0, 1]) {
+    for (const rootRequestKeySha256 of ['', validRootRequestKeySha256]) {
+      const { fixture, failedV5, firstResult, secondResult } =
+        await buildFailedV5AndTwoFreshDryRuns({
+          rootLineageDepth,
+          rootRequestKeySha256
+        })
+      const plan = fixture.worker.planManualNoopResolution(
+        failedV5.runId,
+        firstResult.runId,
+        secondResult.runId
+      )
+      assert.strictEqual(plan.rootUnknownRun.runId, fixture.seeded.rootUnknownRunId)
+      assert.strictEqual(
+        rawRun(fixture.store.snapshot(), fixture.seeded.parentUnknownRunId).requestKeySha256,
+        rootRequestKeySha256,
+        `depth ${rootLineageDepth} 的历史根请求摘要必须保持原值并可批准`
+      )
+    }
+  }
+
+  for (const invalid of [
+    { label: 'missing', omitRootRequestKeySha256: true },
+    { label: 'null', rootRequestKeySha256: null },
+    { label: '空白', rootRequestKeySha256: ' ' },
+    { label: 'uppercase', rootRequestKeySha256: 'A'.repeat(64) },
+    { label: '63 位', rootRequestKeySha256: 'a'.repeat(63) },
+    { label: '65 位', rootRequestKeySha256: 'a'.repeat(65) },
+    { label: '非 hex', rootRequestKeySha256: 'g'.repeat(64) }
+  ]) {
+    const { fixture, failedV5, firstResult, secondResult } =
+      await buildFailedV5AndTwoFreshDryRuns({ rootLineageDepth: 0, ...invalid })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), `ultimate root requestKeySha256 为 ${invalid.label} 时必须拒绝`)
+  }
+
+  for (const rootLineageDepth of [0, 1]) {
+    const { fixture, failedV5, firstResult, secondResult } =
+      await buildFailedV5AndTwoFreshDryRuns({
+        rootLineageDepth,
+        rootRequestKeySha256: 'a'.repeat(64)
+      })
+    fixture.store.updateDb((db) => {
+      rawRun(db, fixture.seeded.parentUnknownRunId).requestKeySha256 = 'b'.repeat(64)
+    })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), `depth ${rootLineageDepth} 的合法 SHA 单点漂移不得绕过全链绑定`)
   }
 }
 
@@ -1095,6 +1185,7 @@ async function testCliPlanAndApplyNeverEnterSyncExecution() {
 async function main() {
   await testPlanAndApplyAreLocalAtomicAndAuditable()
   await testCanonicalOptionalVerificationRoleSequencesAreAccepted()
+  await testRootRequestKeyContractAcrossSupportedLineages()
   await testInvalidEvidenceAndConcurrentDriftFailClosed()
   await testLocalTransactionFailureRollsBackAndStructuralMarkerMutationReblocks()
   await testRunTrimmingRetainsCompleteResolutionEvidence()
