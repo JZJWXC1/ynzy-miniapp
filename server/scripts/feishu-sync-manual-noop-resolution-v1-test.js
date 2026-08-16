@@ -231,10 +231,17 @@ function seedState(oldEvidence, initialNowMs) {
   }
 }
 
-function makeFixture({ maxRuns = 50, extraRunIds = [] } = {}) {
+function makeFixture({
+  maxRuns = 50,
+  extraRunIds = [],
+  verificationOptionalRoles = []
+} = {}) {
   const initialNowMs = 1_900_000_000_000
   const oldEvidence = buildEvidence({ zeroOperations: false })
-  const zeroEvidence = buildEvidence({ zeroOperations: true, optionalRoles: [] })
+  const zeroEvidence = buildEvidence({
+    zeroOperations: true,
+    optionalRoles: verificationOptionalRoles
+  })
   const seeded = seedState(oldEvidence, initialNowMs)
   const store = createStore(seeded.db)
   let nowMs = initialNowMs + 86_400_000
@@ -615,6 +622,23 @@ async function testPlanAndApplyAreLocalAtomicAndAuditable() {
   )
 }
 
+async function testCanonicalOptionalVerificationRoleSequencesAreAccepted() {
+  for (const optionalRoles of [['rented'], ['history'], ['rented', 'history']]) {
+    const { fixture, failedV5, firstResult, secondResult } =
+      await buildFailedV5AndTwoFreshDryRuns({ verificationOptionalRoles: optionalRoles })
+    const plan = fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    )
+    assert.deepStrictEqual(
+      plan.evidence.snapshots.map((snapshot) => snapshot.role),
+      ['source', 'location', 'mini', ...optionalRoles],
+      '生产 canonical 可选角色序列必须保持可用'
+    )
+  }
+}
+
 async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
   {
     const built = await buildFailedV5AndTwoFreshDryRuns()
@@ -726,6 +750,27 @@ async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
       firstResult.runId,
       secondResult.runId
     ), '两轮 verification dry 的合法角色集合漂移仍必须拒绝')
+  }
+
+  {
+    const built = await buildFailedV5AndTwoFreshDryRuns()
+    const { fixture, failedV5, firstResult, secondResult } = built
+    fixture.store.updateDb((db) => {
+      for (const runId of [firstResult.runId, secondResult.runId]) {
+        const run = rawRun(db, runId)
+        const snapshots = new Map(run.componentEvidence.snapshots.map((item) => [item.role, item]))
+        const bindings = new Map(run.schemaBindings.map((item) => [item.role, item]))
+        run.componentEvidence.snapshots = ['mini', 'source', 'location']
+          .map((role) => snapshots.get(role))
+        run.componentEvidenceSha256 = stableSha256(run.componentEvidence)
+        run.schemaBindings = ['mini', 'source', 'location'].map((role) => bindings.get(role))
+      }
+    })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), '两轮同时重排角色并重哈希也必须拒绝')
   }
 
   {
@@ -1049,6 +1094,7 @@ async function testCliPlanAndApplyNeverEnterSyncExecution() {
 
 async function main() {
   await testPlanAndApplyAreLocalAtomicAndAuditable()
+  await testCanonicalOptionalVerificationRoleSequencesAreAccepted()
   await testInvalidEvidenceAndConcurrentDriftFailClosed()
   await testLocalTransactionFailureRollsBackAndStructuralMarkerMutationReblocks()
   await testRunTrimmingRetainsCompleteResolutionEvidence()

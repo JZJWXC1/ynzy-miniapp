@@ -1021,8 +1021,15 @@ function manualNoopVerificationEvidence(run) {
     evidence,
     run && run.componentEvidenceSha256
   )) return null
-  const roles = new Set(evidence.snapshots.map((snapshot) => snapshot.role))
-  if (!['source', 'location', 'mini'].every((role) => roles.has(role))) return null
+  const roles = evidence.snapshots.map((snapshot) => snapshot.role)
+  const canonicalRoles = [
+    'source',
+    'location',
+    'mini',
+    ...(roles.includes('rented') ? ['rented'] : []),
+    ...(roles.includes('history') ? ['history'] : [])
+  ]
+  if (JSON.stringify(roles) !== JSON.stringify(canonicalRoles)) return null
   return {
     schemaSha256: run.schemaSha256,
     resourceIdentitySha256: run.resourceIdentitySha256,
