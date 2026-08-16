@@ -179,6 +179,19 @@ function stableDigestValue(value, fieldType) {
   }).sort((left, right) => left.file_token.localeCompare(right.file_token))
 }
 
+function excludedRecordSemanticSet(value) {
+  if (value === undefined) return new Set()
+  if (!Array.isArray(value)) throw new Error('飞书快照 excludedRecordSemantics 必须是数组')
+  const result = new Set()
+  value.forEach((semantic) => {
+    if (semantic !== 'video' || result.has(semantic)) {
+      throw new Error('飞书快照 excludedRecordSemantics 只允许唯一的 video')
+    }
+    result.add(semantic)
+  })
+  return result
+}
+
 function rebuildValidatedTableSnapshot(snapshot, records, options = {}) {
   const source = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
     ? snapshot
@@ -501,7 +514,8 @@ function createBitableClient(options) {
     requireCreatedTime = false,
     nowMs,
     createdTimeCutoffMs,
-    expectedSchemaFingerprint
+    expectedSchemaFingerprint,
+    excludedRecordSemantics
   }) {
     if (typeof requireCreatedTime !== 'boolean') {
       throw new Error('飞书快照 requireCreatedTime 必须是布尔值')
@@ -509,6 +523,7 @@ function createBitableClient(options) {
     if (createdTimeCutoffMs !== undefined && requireCreatedTime !== true) {
       throw new Error('飞书快照 createdTimeCutoffMs 只能与 requireCreatedTime=true 同时使用')
     }
+    const excludedSemantics = excludedRecordSemanticSet(excludedRecordSemantics)
     const explicitSnapshotNowMs = nowMs === undefined
       ? null
       : normalizePositiveIntegerMillis(nowMs, '飞书快照 nowMs')
@@ -549,6 +564,7 @@ function createBitableClient(options) {
         : {}
       const semanticFields = {}
       Object.keys(contract.bySemantic).sort().forEach((semantic) => {
+        if (excludedSemantics.has(semantic)) return
         const contractField = contract.bySemantic[semantic]
         const value = rawFields[contractField.fieldName]
         if (contractField.required && isEmptyRequiredValue(value)) {

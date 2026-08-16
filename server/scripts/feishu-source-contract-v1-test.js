@@ -281,6 +281,45 @@ async function testAttachmentDigestIgnoresTemporaryMetadata() {
   assert.strictEqual(first.digest, second.digest, '完整快照摘要只能依赖稳定 file_token，不能被 tmp_url、文件名或大小制造假变化')
 }
 
+async function testExcludedVideoKeepsSchemaButSkipsRecordValue() {
+  const approved = await makeClient(makeRenameSafeFetch({
+    canonicalName: '小区（纯房源）',
+    communityValue: '风雅乐府',
+    videoValue: [{ file_token: 'approved-video-token' }]
+  })).readValidatedTableSnapshot({ tableId: 'tbl-source', bindings: BINDINGS, allowEmpty: false })
+  const readExcluded = (videoValue) => makeClient(makeRenameSafeFetch({
+    canonicalName: '小区（纯房源）',
+    communityValue: '风雅乐府',
+    videoValue
+  })).readValidatedTableSnapshot({
+    tableId: 'tbl-source',
+    bindings: BINDINGS,
+    allowEmpty: false,
+    excludedRecordSemantics: ['video']
+  })
+  const malformed = await readExcluded([{ name: '缺少稳定 token.mp4' }])
+  const changed = await readExcluded([{ file_token: 'changed-video-token' }])
+
+  assert.strictEqual(malformed.schemaFingerprint, approved.schemaFingerprint, '忽略视频值不得改变完整字段契约指纹')
+  assert.ok(malformed.schemaBindings.some((binding) => binding.semantic === 'video'), 'schema 审计证据仍必须包含 video 契约')
+  assert.strictEqual(malformed.fieldNames.video, '视频链接', '写入字段映射仍必须保留完整 schema 映射')
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(malformed.records[0].fields, 'video'), false, '纯房源读取不得输出 video 单元格')
+  assert.strictEqual(malformed.digest, changed.digest, '只改变 video 内容不得改变纯房源数据摘要')
+
+  const invalidFetch = makeRenameSafeFetch({ canonicalName: '小区（纯房源）', communityValue: '风雅乐府' })
+  await expectReject(
+    () => makeClient(invalidFetch).readValidatedTableSnapshot({
+      tableId: 'tbl-source',
+      bindings: BINDINGS,
+      allowEmpty: false,
+      excludedRecordSemantics: ['rent']
+    }),
+    /excludedRecordSemantics|video/i,
+    '受控读取排除项不得扩展到房源事实字段'
+  )
+  assert.strictEqual(invalidFetch.calls.length, 0, '非法排除项必须在任何飞书读取前阻断')
+}
+
 async function testSemanticDigestNormalizesOptionalEmptyAndMultiSelectValues() {
   const emptyRepresentations = [undefined, null, '', [], {}]
   const emptySnapshots = []
@@ -1393,6 +1432,7 @@ async function main() {
   await testFieldIdSurvivesDisplayRename()
   await testExpectedSchemaFingerprintStopsBeforeRecordRead()
   await testAttachmentDigestIgnoresTemporaryMetadata()
+  await testExcludedVideoKeepsSchemaButSkipsRecordValue()
   await testSemanticDigestNormalizesOptionalEmptyAndMultiSelectValues()
   await testNumberFieldStringReadbackNormalizesAtContractBoundary()
   await testRequiredCellValueMustExist()

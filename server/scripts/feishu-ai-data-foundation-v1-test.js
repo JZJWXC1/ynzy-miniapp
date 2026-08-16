@@ -431,7 +431,7 @@ function makeLifecycleClients(options = {}) {
   const targetClient = {
     writeDispatchEvidenceVersion: 1,
     async readValidatedTableSnapshot(readOptions) {
-      calls.push({ client: 'target', action: 'read', tableId: readOptions.tableId })
+      calls.push({ client: 'target', action: 'read', tableId: readOptions.tableId, readOptions: clone(readOptions) })
       if (readOptions.tableId === tableIds.location) return locationSnapshot()
       assert.ok(
         Object.prototype.hasOwnProperty.call(tableRecords, readOptions.tableId),
@@ -965,9 +965,92 @@ async function testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled() {
     [],
     buildNoteMaterialSourceFieldPlan([])
   )
-  const createDb = () => ({
+  const preservedVideoFields = [
+    'videoUrl',
+    'videoKey',
+    'sourceMaterialToken',
+    'sourceMaterialName',
+    'sourceMaterialPath',
+    'sourceMaterialUrl',
+    'videoMaterialStatus',
+    'syncStatus',
+    'missingVideoMaterial',
+    'videoLabel',
+    'mediaAssets',
+    'noteMaterialState'
+  ]
+  const existingVideoState = {
+    videoUrl: 'https://video.example.test/listing-only-existing.mp4',
+    videoKey: '',
+    sourceMaterialToken: 'synthetic-existing-material-token',
+    sourceMaterialName: 'existing-room-video.mp4',
+    sourceMaterialPath: '风雅乐府/1幢/1单元/101/existing-room-video.mp4',
+    sourceMaterialUrl: 'https://material.example.test/existing-room-video.mp4',
+    videoMaterialStatus: '已匹配视频素材',
+    syncStatus: '已同步飞书',
+    missingVideoMaterial: false,
+    videoLabel: '既有房源实拍',
+    mediaAssets: [{
+      assetId: 'synthetic-existing-video-asset',
+      kind: 'video',
+      objectKey: 'house-videos/synthetic/existing-room-video.mp4'
+    }],
+    noteMaterialState: {
+      version: 1,
+      sourceRecordId: 'source-record-foundation-1',
+      contentSha256: 'c'.repeat(64)
+    }
+  }
+  const videoStateOf = (listing) => preservedVideoFields.reduce((state, field) => {
+    state[field] = listing[field]
+    return state
+  }, {})
+  const existingListing = () => ({
+    id: 'listing-foundation-existing-video',
+    uploaderId: 'A1',
+    externalSource: 'feishu',
+    feishuRecordId: 'source-record-foundation-1',
+    feishuRoomIdentityKey: '风雅乐府|1|1|101',
+    city: '杭州市',
+    district: '余杭区',
+    area: '余杭区',
+    block: '城北万象城',
+    community: '风雅乐府',
+    building: '1',
+    unit: '1',
+    roomNumber: '101',
+    address: '1-1-101',
+    roomAddress: '1-1-101',
+    layout: '2室1厅',
+    rent: 3100,
+    landlordPhone: '',
+    contact: '',
+    landlordCommissionPercent: 50,
+    commissionRate: 0,
+    source: '公司房源',
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    companyListing: true,
+    isCompanyListing: true,
+    noCommission: true,
+    type: '整租',
+    rentMode: '整租',
+    room: '2',
+    hall: '1',
+    bath: '',
+    features: ['免押金', '不分佣'],
+    status: '在租',
+    lifecycleStatus: 'active',
+    reviewStatus: '无需审核',
+    requiresManualReview: false,
+    manualReviewRequired: false,
+    communityMatched: true,
+    communityMatchStatus: '已匹配',
+    ...clone(existingVideoState)
+  })
+  const createDb = (withExistingVideo = false) => ({
     users: [{ id: 'A1', name: '管理员', role: '管理员', isAdmin: true }],
-    listings: [],
+    listings: withExistingVideo ? [existingListing()] : [],
     footprints: [],
     pointLogs: [],
     feishuSyncLogs: []
@@ -981,6 +1064,27 @@ async function testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled() {
       result.noteMaterials.contentPlanSha256,
       expectedEmptyPlan.contentPlanSha256,
       `${label}必须复用素材模块的稳定空内容计划摘要`
+    )
+  }
+  const assertListingOnlyInventory = (result, label) => {
+    ;[
+      'materialCount',
+      'skippedNoMaterial',
+      'missingVideoMaterial',
+      'ambiguousVideoMaterial',
+      'materialTransferFailed'
+    ].forEach((field) => {
+      assert.strictEqual(result[field], 0, `${label}的 ${field} 必须为 0`)
+    })
+    assert.strictEqual(
+      (result.auditRows || []).some((row) => /缺视频素材|沿用上次视频|素材转存|未匹配素材|素材匹配/.test(String(row && `${row.syncResult} ${row.failureReason}`))),
+      false,
+      `${label}逐行对账不得启动或伪装任何素材处理`
+    )
+    assert.strictEqual(
+      (result.messages || []).some((message) => /缺视频素材|沿用上次视频|素材转存|未匹配素材|素材匹配/.test(String(message))),
+      false,
+      `${label}摘要不得出现素材处理文案`
     )
   }
   const configure = (clients) => {
@@ -1039,32 +1143,62 @@ async function testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled() {
     ...patch
   })
   try {
-    const dryClients = makeLifecycleClients()
+    const existingMiniRecords = [legacyMiniRecord(
+      'mini-record-foundation-existing-video',
+      'source-record-foundation-1',
+      '101',
+      {
+        video: [{
+          file_token: 'synthetic-target-existing-video-token',
+          name: 'existing-room-video.mp4',
+          type: 'video/mp4'
+        }]
+      }
+    )]
+    const dryClients = makeLifecycleClients({ miniRecords: existingMiniRecords })
     configure(dryClients)
     assert.strictEqual(
       feishuSync.automaticWorkerConfigurationStatus().ready,
       true,
       '素材开关关闭时，完整房源五表配置必须允许每天三次 worker 运行'
     )
-    const dryResult = await feishuSync.sync(createDb(), 'A1', syncOptions(dryClients, {
+    const dryDb = createDb(true)
+    const dryResult = await feishuSync.sync(dryDb, 'A1', syncOptions(dryClients, {
       dryRun: true,
       runId: 'worker-v2-listing-only-dry',
       nowMs: FIXED_NOW_MS
     }))
     assert.strictEqual(dryResult.status, 'success-dry-run', '素材关闭时 worker-v2 必须完成五表 dry-run')
     assertDisabledMaterialReport(dryResult, 'worker-v2 dry-run')
+    assertListingOnlyInventory(dryResult, 'worker-v2 dry-run')
+    assert.deepStrictEqual(
+      videoStateOf(dryDb.listings[0]),
+      existingVideoState,
+      '素材关闭的 worker-v2 dry-run 只能刷新房源事实，不得清空同一在租房源的既有视频字段'
+    )
     assertNoWrites(dryClients.calls, '素材关闭的 worker-v2 dry-run 必须保持五表零写')
     assert.deepStrictEqual(
       [...new Set(dryClients.calls.filter((call) => call.action === 'read').map((call) => call.tableId))].sort(),
       Object.values(dryClients.tableIds).sort(),
       '素材关闭的 worker-v2 dry-run 必须完整读取员工源与目标四表'
     )
+    assert.ok(
+      dryClients.calls.filter((call) => call.action === 'read' && [
+        dryClients.tableIds.source,
+        dryClients.tableIds.mini,
+        dryClients.tableIds.rented
+      ].includes(call.tableId)).every((call) => (
+        JSON.stringify(call.readOptions.excludedRecordSemantics) === JSON.stringify(['video'])
+      )),
+      '五表纯房源读取必须在员工源、当前表和已出租表的记录归一前排除 video 值'
+    )
 
-    const applyClients = makeLifecycleClients()
+    const applyClients = makeLifecycleClients({ miniRecords: existingMiniRecords })
     configure(applyClients)
     let frozenCount = 0
     let writeIntentCount = 0
-    const applyResult = await feishuSync.sync(createDb(), 'A1', syncOptions(applyClients, {
+    const applyDb = createDb(true)
+    const applyResult = await feishuSync.sync(applyDb, 'A1', syncOptions(applyClients, {
       dryRun: false,
       runId: 'worker-v2-listing-only-apply',
       nowMs: FIXED_NOW_MS,
@@ -1078,11 +1212,34 @@ async function testWorkerV2CanSyncFiveTablesWhenNoteMaterialsAreDisabled() {
     }))
     assert.ok(/^success(?:-|$)/.test(applyResult.status), '素材关闭时 worker-v2 必须完成五表正式同步')
     assertDisabledMaterialReport(applyResult, 'worker-v2 正式同步')
+    assertListingOnlyInventory(applyResult, 'worker-v2 正式同步')
+    assert.deepStrictEqual(
+      videoStateOf(applyDb.listings[0]),
+      existingVideoState,
+      '素材关闭的 worker-v2 正式同步只能更新房源事实，不得用空素材结果覆盖既有视频字段'
+    )
     assert.strictEqual(frozenCount, 1, '正式写前必须仍冻结一次权威镜像计划')
     assert.ok(writeIntentCount > 0, '房源正式同步必须真实产生目标 Base 写意图')
     assert.ok(
       applyClients.calls.some((call) => call.client === 'target' && ['create', 'update'].includes(call.action)),
       '素材关闭不得阻断房源与五表正式写入'
+    )
+    const mediaBearingWrites = applyClients.calls.filter((call) => (
+      call.client === 'target' &&
+      ['create', 'update'].includes(call.action) &&
+      [applyClients.tableIds.mini, applyClients.tableIds.rented].includes(call.tableId)
+    ))
+    assert.ok(mediaBearingWrites.length > 0, '五表正式同步必须真实触发当前表或已出租表房源事实写入')
+    assert.ok(
+      mediaBearingWrites.every((call) => call.records.every((record) => (
+        !Object.prototype.hasOwnProperty.call(record.fields, 'video')
+      ))),
+      '五表纯房源正式写入的当前表与已出租表载荷不得包含 video'
+    )
+    assert.deepStrictEqual(
+      applyClients.tableRecords[applyClients.tableIds.mini][0].fields.video,
+      existingMiniRecords[0].fields.video,
+      '五表纯房源正式同步必须原样保留目标当前表既有附件'
     )
     assert.deepStrictEqual(
       [...new Set(applyClients.calls.filter((call) => call.action === 'read').map((call) => call.tableId))].sort(),

@@ -49,6 +49,7 @@ const COMPANY_SOURCE = '公司房源'
 const COMPANY_FEATURES = ['免押金', '不分佣']
 const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
 const RETAINED_VIDEO_MATERIAL_STATUS = '沿用上次视频·素材待核'
+const DISABLED_MATERIAL_POLICY = 'disabled'
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
 const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
 const UP_STATUS_PATTERN = /上架|在租|待租|待出租|即将空出|空置|可租|有效|up|on|active/i
@@ -2157,31 +2158,34 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
     ? 50
     : Number(listing.landlordCommissionPercent)
   listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
-  const hasMaterial = Boolean(material)
+  const materialDisabled = options.materialPolicy === DISABLED_MATERIAL_POLICY
+  const hasMaterial = !materialDisabled && Boolean(material)
   const materialReady = hasMaterial && !materialFailureReason
   // domain.updateNormalListing 会在本轮视频字段为空时保留旧值，因此这里仍能先验证并快照最后一份有效视频。
   // 只接受受控 uploadDir/OSS 源；任意外链、客户端 URL 或畸形 object key 均不得进入沿用路径。
-  const retainedManagedVideo = materialReady || options.allowRetainedVideo === false
+  const retainedManagedVideo = materialDisabled || materialReady || options.allowRetainedVideo === false
     ? null
     : managedVideoSnapshot(listing)
-  listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
-  listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''
-  listing.sourceMaterialPath = hasMaterial ? (material.sourcePath || '') : ''
-  listing.sourceMaterialUrl = hasMaterial && !video.reusedExisting ? (video.materialUrl || material.url || '') : ''
-  if (materialReady) {
-    // updateNormalListing 为普通编辑兼容“空值不覆盖”，但飞书同步必须让本轮素材成为唯一真相：
-    // URL-only 新素材要显式清旧 key，key-only/受控复用要显式清旧 URL，避免新旧两个房源媒体拼接。
-    listing.videoKey = String(video.videoKey || '')
-    listing.videoUrl = video.reusedExisting ? '' : String(video.videoUrl || '')
-    clearListingDerivedVideoFields(listing)
-  }
-  listing.syncStatus = materialReady ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
-  listing.videoMaterialStatus = materialReady ? '已匹配视频素材' : (hasMaterial ? '素材转存失败' : MISSING_VIDEO_MATERIAL_STATUS)
-  listing.missingVideoMaterial = !materialReady
-  if (materialFailureReason) {
-    listing.videoMaterialFailureReason = materialFailureReason
-  } else {
-    delete listing.videoMaterialFailureReason
+  if (!materialDisabled) {
+    listing.sourceMaterialToken = hasMaterial ? (material.token || '') : ''
+    listing.sourceMaterialName = hasMaterial ? (material.name || '') : ''
+    listing.sourceMaterialPath = hasMaterial ? (material.sourcePath || '') : ''
+    listing.sourceMaterialUrl = hasMaterial && !video.reusedExisting ? (video.materialUrl || material.url || '') : ''
+    if (materialReady) {
+      // updateNormalListing 为普通编辑兼容“空值不覆盖”，但飞书同步必须让本轮素材成为唯一真相：
+      // URL-only 新素材要显式清旧 key，key-only/受控复用要显式清旧 URL，避免新旧两个房源媒体拼接。
+      listing.videoKey = String(video.videoKey || '')
+      listing.videoUrl = video.reusedExisting ? '' : String(video.videoUrl || '')
+      clearListingDerivedVideoFields(listing)
+    }
+    listing.syncStatus = materialReady ? '已同步飞书' : MISSING_VIDEO_MATERIAL_STATUS
+    listing.videoMaterialStatus = materialReady ? '已匹配视频素材' : (hasMaterial ? '素材转存失败' : MISSING_VIDEO_MATERIAL_STATUS)
+    listing.missingVideoMaterial = !materialReady
+    if (materialFailureReason) {
+      listing.videoMaterialFailureReason = materialFailureReason
+    } else {
+      delete listing.videoMaterialFailureReason
+    }
   }
   listing.syncedAt = nowText()
   listing.feishuLastSyncAt = listing.syncedAt
@@ -2191,7 +2195,28 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   listing.reviewStatus = '无需审核'
   listing.lastVerifiedAt = listing.syncedAt
   listing.updatedAt = listing.syncedAt
-  if (!materialReady) {
+  if (materialDisabled) {
+    if (options.allowRetainedVideo === true) {
+      // 纯房源模式只更新房源事实；同一套持续在租房源的已有媒体包和素材状态保持原样。
+      // 请求级签名 URL 不属于持久事实，仍应随本轮库存刷新失效并由读取链重新签发。
+      clearListingDerivedVideoFields(listing)
+    } else {
+      // 新房源、重新上架或物理身份变化不得从旧对象继承视频及确定性素材状态。
+      clearListingVideoFields(listing)
+      listing.sourceMaterialToken = ''
+      listing.sourceMaterialName = ''
+      listing.sourceMaterialPath = ''
+      listing.sourceMaterialUrl = ''
+      listing.syncStatus = '已同步飞书'
+      delete listing.videoMaterialStatus
+      delete listing.missingVideoMaterial
+      delete listing.videoMaterialFailureReason
+      delete listing.mediaAssets
+      delete listing.noteMaterialState
+      delete listing.videoLabel
+      refreshRecommendationProfile(listing, { generatedAt: listing.updatedAt })
+    }
+  } else if (!materialReady) {
     if (retainedManagedVideo) {
       restoreManagedVideoSnapshot(listing, retainedManagedVideo)
       listing.syncStatus = '视频沿用待核'
@@ -2208,7 +2233,7 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
   delete listing.expiredStaleDays
 }
 
-function upsertFeishuListing(db, adminId, existing, byExternalId, row, material, video, materialFailureReason = '') {
+function upsertFeishuListing(db, adminId, existing, byExternalId, row, material, video, materialFailureReason = '', options = {}) {
   const payload = buildListingPayload(row, video)
   if (existing) {
     const snapshot = clone(existing)
@@ -2224,7 +2249,10 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
       domain.updateNormalListing(db, adminId, existing.id, payload, { admin: true, allowMissingLandlordPhone: true })
       // 曾下架后重新出现的房源可能已换租客/装修/拍摄内容；没有本轮素材时不能复活旧视频。
       // 只有持续在架的同一房源遇到瞬时漏素材/转存失败，才允许沿用上次受控视频。
-      attachFeishuFields(existing, row, material, video, materialFailureReason, { allowRetainedVideo })
+      attachFeishuFields(existing, row, material, video, materialFailureReason, {
+        allowRetainedVideo,
+        materialPolicy: options.materialPolicy
+      })
       existing.feishuLastSyncAction = 'updated'
       return { action: 'updated', listing: existing }
     } catch (error) {
@@ -2236,7 +2264,10 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
   }
   const detail = domain.addNormalListing(db, adminId, payload, { admin: true, skipPointLog: true, allowMissingLandlordPhone: true })
   const listing = db.listings.find((item) => item.id === detail.id)
-  attachFeishuFields(listing, row, material, video, materialFailureReason, { allowRetainedVideo: false })
+  attachFeishuFields(listing, row, material, video, materialFailureReason, {
+    allowRetainedVideo: false,
+    materialPolicy: options.materialPolicy
+  })
   if (listing) listing.feishuLastSyncAction = 'created'
   if (listing && row.externalId) byExternalId.set(String(row.externalId), listing)
   if (listing && row.roomIdentityKey) byExternalId.set(String(row.roomIdentityKey), listing)
@@ -2278,7 +2309,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
   db.listings = db.listings || []
   db.feishuSyncLogs = db.feishuSyncLogs || []
   const actorId = syncActorId(db, adminId)
-  const matcher = createMaterialMatcher(materials)
+  const materialDisabled = options.materialPolicy === DISABLED_MATERIAL_POLICY
+  const effectiveMaterials = materialDisabled ? [] : materials
+  const matcher = materialDisabled ? () => null : createMaterialMatcher(effectiveMaterials)
   const byExternalId = existingByExternalId(db)
   const seen = new Set()
   const result = {
@@ -2286,7 +2319,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     startedAt: nowText(),
     finishedAt: '',
     sourceRecordCount: rows.length,
-    materialCount: materials.length,
+    materialCount: effectiveMaterials.length,
     created: 0,
     updated: 0,
     down: 0,
@@ -2341,7 +2374,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     const matchedMaterial = matcher(row)
     const materialAmbiguous = isAmbiguousMaterialMatch(matchedMaterial)
     const material = materialAmbiguous ? null : matchedMaterial
-    if (!material) {
+    if (!materialDisabled && !material) {
       result.skippedNoMaterial += 1
       result.missingVideoMaterial += 1
       if (materialAmbiguous) result.ambiguousVideoMaterial += 1
@@ -2365,7 +2398,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
             hasSamePhysicalRoomIdentity(existing, row)
         })
         : { videoKey: '', videoUrl: '', materialUrl: '' }
-      const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video)
+      const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, '', {
+        materialPolicy: options.materialPolicy
+      })
       if (upsert.action === 'updated') {
         result.updated += 1
       } else {
@@ -2374,10 +2409,15 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       result.auditRows.push(buildAuditRow(
         row,
         material,
-        material
+        materialDisabled
+          ? '上架-仅同步房源信息'
+          : material
           ? '上架-已配视频'
           : (isRetainingManagedVideo(upsert.listing) ? '上架-沿用上次视频·素材待核' : '上架-缺视频素材'),
-        combineFailureReasons(material ? '' : (materialAmbiguous ? '素材匹配歧义' : '未匹配素材'), missingContactReason)
+        combineFailureReasons(
+          materialDisabled || material ? '' : (materialAmbiguous ? '素材匹配歧义' : '未匹配素材'),
+          missingContactReason
+        )
       ))
     } catch (error) {
       if (material) {
@@ -2386,7 +2426,9 @@ async function applySync(db, rows, materials, adminId, options = {}) {
         // 降级重试也可能因校验/判重（400/409）再次失败——必须自行兜住，
         // 否则异常穿出 applySync：整轮同步中断、后续行不处理、自动下架与同步日志全部丢失
         try {
-          const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, failureReason)
+          const upsert = upsertFeishuListing(db, actorId, existing, byExternalId, row, material, video, failureReason, {
+            materialPolicy: options.materialPolicy
+          })
           if (upsert.action === 'updated') {
             result.updated += 1
           } else {
@@ -3725,7 +3767,7 @@ function canonicalVideoAttachment(value) {
   return candidates[0]
 }
 
-function validateCanonicalMirrorRecords(records) {
+function validateCanonicalMirrorRecords(records, options = {}) {
   const seen = new Set()
   records.forEach((record, index) => {
     const fields = record && record.fields && typeof record.fields === 'object' ? record.fields : {}
@@ -3747,7 +3789,7 @@ function validateCanonicalMirrorRecords(records) {
     if (!roomParts.building || !roomParts.roomNumber) {
       throw new Error(`专用源表 ${sourceRecordId} 无法从房号字段解析楼栋与房间号`)
     }
-    canonicalVideoAttachment(fields.video)
+    if (options.materialPolicy !== DISABLED_MATERIAL_POLICY) canonicalVideoAttachment(fields.video)
     const hasLatitude = fields.latitude !== undefined && fields.latitude !== null && fields.latitude !== ''
     const hasLongitude = fields.longitude !== undefined && fields.longitude !== null && fields.longitude !== ''
     if (hasLatitude !== hasLongitude) throw new Error(`专用源表 ${sourceRecordId} 经纬度必须成对出现`)
@@ -3755,14 +3797,16 @@ function validateCanonicalMirrorRecords(records) {
   return records
 }
 
-function canonicalMirrorRecordToSyncRow(record, index) {
+function canonicalMirrorRecordToSyncRow(record, index, options = {}) {
   const fields = record && record.fields && typeof record.fields === 'object' ? record.fields : (record || {})
   const sourceRecordId = normalizeText(fields.sourceRecordId)
   const roomParts = canonicalRoomParts(fields)
   return {
     record_id: sourceRecordId,
     rowNumber: index + 1,
-    video: canonicalVideoAttachment(fields.video),
+    video: options.materialPolicy === DISABLED_MATERIAL_POLICY
+      ? null
+      : canonicalVideoAttachment(fields.video),
     fields: {
       房源编号: sourceRecordId,
       importKey: sourceRecordId,
@@ -4728,11 +4772,15 @@ async function executeAiFoundationSync({
     options
   )
 
-  const rentedReadback = await targetClient.readValidatedTableSnapshot({
+  const rawRentedReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.rentedTableId,
     bindings: options.rentedBindings,
-    allowEmpty: true
+    allowEmpty: true,
+    ...(options.materialPolicy === DISABLED_MATERIAL_POLICY
+      ? { excludedRecordSemantics: ['video'] }
+      : {})
   })
+  const rentedReadback = snapshotWithoutVideoFields(rawRentedReadback, options.materialPolicy)
   const historyReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.historyTableId,
     bindings: options.historyBindings,
@@ -4772,11 +4820,15 @@ async function executeAiFoundationSync({
     plan.operations,
     { ...options, runId, nowMs }
   )
-  const mirrorReadback = await targetClient.readValidatedTableSnapshot({
+  const rawMirrorReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
-    allowEmpty: false
+    allowEmpty: false,
+    ...(options.materialPolicy === DISABLED_MATERIAL_POLICY
+      ? { excludedRecordSemantics: ['video'] }
+      : {})
   })
+  const mirrorReadback = snapshotWithoutVideoFields(rawMirrorReadback, options.materialPolicy)
   const remainingPlan = buildFoundationMirrorPlan({
     sourceSnapshot,
     mirrorSnapshot: mirrorReadback,
@@ -5249,6 +5301,49 @@ function noteMaterialFieldContractReady() {
   }
 }
 
+function mirrorMaterialPolicy(options = {}) {
+  return options.disableLegacyMaterials === true && !effectiveNoteMaterialSyncEnabled()
+    ? DISABLED_MATERIAL_POLICY
+    : 'enabled'
+}
+
+function snapshotWithoutVideoFields(snapshot = {}, materialPolicy = '') {
+  if (materialPolicy !== DISABLED_MATERIAL_POLICY || !Array.isArray(snapshot.records)) return snapshot
+  const records = snapshot.records.map((record) => {
+    const fields = record && record.fields && typeof record.fields === 'object'
+      ? { ...record.fields }
+      : {}
+    delete fields.video
+    return { ...record, fields }
+  })
+  const schemaBindings = Array.isArray(snapshot.schemaBindings)
+    ? snapshot.schemaBindings
+    : null
+  const fieldNames = snapshot.fieldNames && typeof snapshot.fieldNames === 'object'
+    ? { ...snapshot.fieldNames }
+    : null
+  if (fieldNames) delete fieldNames.video
+  const sanitized = {
+    ...snapshot,
+    records,
+    ...(schemaBindings ? { schemaBindings } : {}),
+    ...(fieldNames ? { fieldNames } : {})
+  }
+  if (schemaBindings && schemaBindings.length) {
+    return rebuildValidatedTableSnapshot(sanitized, records, {
+      includeCreatedTime: records.some((record) => Object.prototype.hasOwnProperty.call(record, 'createdTimeMs'))
+    })
+  }
+  const digestRecords = records.map((record) => ({
+    recordId: normalizeText(record && (record.recordId || record.record_id)),
+    fields: record && record.fields && typeof record.fields === 'object' ? record.fields : {},
+    ...(Object.prototype.hasOwnProperty.call(record || {}, 'createdTimeMs')
+      ? { createdTimeMs: record.createdTimeMs }
+      : {})
+  })).sort((left, right) => left.recordId.localeCompare(right.recordId))
+  return { ...sanitized, digest: stableSha256(digestRecords) }
+}
+
 async function executeMirrorTableSync(options = {}) {
   const legacyMaterialEvidence = options.legacyMaterialEvidence
     ? normalizeLegacyMaterialEvidence(options.legacyMaterialEvidence)
@@ -5278,12 +5373,18 @@ async function executeMirrorTableSync(options = {}) {
   if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('飞书同步 nowMs 必须是正整数毫秒时间戳')
   const runId = normalizeText(options.runId) || `mirror-${nowMs}-${Math.floor(Math.random() * 100000)}`
   const foundationProfile = aiFoundationProfileEnabled(options.sourceCompatibilityProfile)
+  const sourceBindings = options.sourceBindings
+  const miniBindings = options.miniBindings
+  const excludedVideoReadOption = options.materialPolicy === DISABLED_MATERIAL_POLICY
+    ? { excludedRecordSemantics: ['video'] }
+    : {}
   const rawSourceSnapshot = await sourceClient.readValidatedTableSnapshot({
     tableId: options.sourceTableId,
-    bindings: options.sourceBindings,
+    bindings: sourceBindings,
     allowEmpty: false,
     requireCreatedTime: foundationProfile,
-    ...(foundationProfile ? { createdTimeCutoffMs: nowMs } : {})
+    ...(foundationProfile ? { createdTimeCutoffMs: nowMs } : {}),
+    ...excludedVideoReadOption
   })
   const locationSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.locationTableId,
@@ -5291,9 +5392,10 @@ async function executeMirrorTableSync(options = {}) {
     allowEmpty: false
   })
   const locationCatalog = buildLocationCatalog(flattenLocationSnapshot(locationSnapshot))
-  const sourceSnapshot = prepareSourceSnapshotForCompatibility(rawSourceSnapshot, {
+  const inventoryRawSourceSnapshot = snapshotWithoutVideoFields(rawSourceSnapshot, options.materialPolicy)
+  const sourceSnapshot = prepareSourceSnapshotForCompatibility(inventoryRawSourceSnapshot, {
     profile: options.sourceCompatibilityProfile,
-    sourceBindings: options.sourceBindings,
+    sourceBindings,
     locationCatalog
   })
   const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
@@ -5301,17 +5403,22 @@ async function executeMirrorTableSync(options = {}) {
     : []
   const sourceMaterialFieldPlan = buildNoteMaterialSourceFieldPlan(sourceNoteMaterials)
   assertNoteMaterialSourceFieldPlan(options, sourceMaterialFieldPlan)
-  const mirrorSnapshot = await targetClient.readValidatedTableSnapshot({
+  const rawMirrorSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
-    bindings: options.miniBindings,
-    allowEmpty: true
+    bindings: miniBindings,
+    allowEmpty: true,
+    ...excludedVideoReadOption
   })
+  const inventorySourceSnapshot = snapshotWithoutVideoFields(sourceSnapshot, options.materialPolicy)
+  const mirrorSnapshot = snapshotWithoutVideoFields(rawMirrorSnapshot, options.materialPolicy)
   if (foundationProfile) {
-    const rentedSnapshot = await targetClient.readValidatedTableSnapshot({
+    const rawRentedSnapshot = await targetClient.readValidatedTableSnapshot({
       tableId: options.rentedTableId,
       bindings: options.rentedBindings,
-      allowEmpty: true
+      allowEmpty: true,
+      ...excludedVideoReadOption
     })
+    const rentedSnapshot = snapshotWithoutVideoFields(rawRentedSnapshot, options.materialPolicy)
     const historySnapshot = await targetClient.readValidatedTableSnapshot({
       tableId: options.historyTableId,
       bindings: options.historyBindings,
@@ -5319,13 +5426,13 @@ async function executeMirrorTableSync(options = {}) {
     })
     const foundationResult = await executeAiFoundationSync({
       targetClient,
-      sourceSnapshot,
+      sourceSnapshot: inventorySourceSnapshot,
       locationSnapshot,
       mirrorSnapshot,
       rentedSnapshot,
       historySnapshot,
       locationCatalog,
-      options,
+      options: { ...options, sourceBindings, miniBindings },
       runId,
       nowMs
     })
@@ -5337,14 +5444,14 @@ async function executeMirrorTableSync(options = {}) {
   )
   const ignoreVacancyNote = !hasExplicitVacancyNote
   const plan = planMirrorSync({
-    sourceSnapshot,
+    sourceSnapshot: inventorySourceSnapshot,
     mirrorSnapshot,
     locationCatalog,
     runId,
     ignoreVacancyNote
   })
   const plannedRecords = activeMirrorRecords({
-    records: plannedActiveMirrorRecords(sourceSnapshot, mirrorSnapshot, plan)
+    records: plannedActiveMirrorRecords(inventorySourceSnapshot, mirrorSnapshot, plan)
   })
   validateCanonicalMirrorRecords(plannedRecords)
   assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, {
@@ -5355,7 +5462,7 @@ async function executeMirrorTableSync(options = {}) {
   })
 
   const safetyDigests = buildMirrorSafetyDigests({
-    sourceSnapshot,
+    sourceSnapshot: inventorySourceSnapshot,
     locationSnapshot,
     mirrorSnapshot,
     resources: mirrorSafetyResources(options),
@@ -5395,7 +5502,7 @@ async function executeMirrorTableSync(options = {}) {
   const updates = plan.operations.filter((operation) => operation.type !== 'create')
   // AI 数据底座启用后若误切回旧 profile，环境中可能仍保留 18 个内部字段绑定。
   // 旧镜像只能管理原业务列；即便本轮有普通业务更新，也不得以 full write 把底座列清空。
-  const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames, options.sourceBindings)
+  const writableFieldNames = legacyMirrorFieldNames(mirrorSnapshot.fieldNames, sourceBindings)
   for (const batch of chunksOf(creates)) {
     await targetClient.batchCreateRecords(options.miniTableId, batch.map((operation) => ({
       fields: semanticFieldsForCreate(writableFieldNames, operation.fields)
@@ -5418,13 +5525,15 @@ async function executeMirrorTableSync(options = {}) {
     })
   }
 
-  const readback = await targetClient.readValidatedTableSnapshot({
+  const rawReadback = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
-    bindings: options.miniBindings,
-    allowEmpty: false
+    bindings: miniBindings,
+    allowEmpty: false,
+    ...excludedVideoReadOption
   })
+  const readback = snapshotWithoutVideoFields(rawReadback, options.materialPolicy)
   const remainingPlan = planMirrorSync({
-    sourceSnapshot,
+    sourceSnapshot: inventorySourceSnapshot,
     mirrorSnapshot: readback,
     locationCatalog,
     runId: `${runId}-readback`,
@@ -5492,6 +5601,7 @@ async function configuredMirrorTableSync(options = {}) {
   // 新“房源笔记”确定性管线是 worker-v2 唯一允许的素材写通道。启用它或由 worker-v2
   // 发起时，旧目录/本地清单不得再参与匹配、随机 OSS 上传或数据库视频地址写入。
   const disableLegacyMaterials = noteMaterialSyncEnabled || options.disableLegacyMaterials === true
+  const materialPolicy = mirrorMaterialPolicy({ disableLegacyMaterials })
   const legacyMaterialSourceConfigured = !disableLegacyMaterials && (
     Array.isArray(options.materials) || Boolean(config.feishu.materialsFile || config.feishu.folderToken)
   )
@@ -5590,7 +5700,8 @@ async function configuredMirrorTableSync(options = {}) {
     materials,
     legacyMaterialSourceConfigured,
     legacyMaterialEvidence,
-    noteMaterialSyncEnabled
+    noteMaterialSyncEnabled,
+    materialPolicy
   })
   return { ...result, feishuToken: token }
 }
@@ -6302,9 +6413,12 @@ async function syncViaMirror(db, adminId, options = {}) {
       baselinePublishedFoundationIdentityKeys
     }),
     applyInventory: async (workingDb, records, mirrorResult) => {
-      const rows = validateCanonicalMirrorRecords(records).map(canonicalMirrorRecordToSyncRow)
+      const materialPolicy = mirrorMaterialPolicy(effectiveOptions)
+      const rows = validateCanonicalMirrorRecords(records, { materialPolicy })
+        .map((record, index) => canonicalMirrorRecordToSyncRow(record, index, { materialPolicy }))
       const inventory = await applySync(workingDb, rows, mirrorResult.materials || [], adminId, {
         ...effectiveOptions,
+        materialPolicy,
         dryRun: effectiveOptions.dryRun === true,
         skipSheetSnapshot: true,
         feishuToken: mirrorResult.feishuToken || effectiveOptions.feishuToken || '',

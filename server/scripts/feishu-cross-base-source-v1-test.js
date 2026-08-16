@@ -245,7 +245,8 @@ function makeClients(options = {}) {
         client: 'source',
         action: 'read',
         tableId: readOptions.tableId,
-        bindings: JSON.parse(JSON.stringify(readOptions.bindings || {}))
+        bindings: JSON.parse(JSON.stringify(readOptions.bindings || {})),
+        excludedRecordSemantics: JSON.parse(JSON.stringify(readOptions.excludedRecordSemantics || []))
       })
       assert.strictEqual(readOptions.tableId, 'tbl-source', '源客户端只能读取员工源表')
       return options.sourceSnapshot || sourceSnapshot()
@@ -264,27 +265,38 @@ function makeClients(options = {}) {
     }
   }
   const targetClient = {
+    writeDispatchEvidenceVersion: 1,
     async readValidatedTableSnapshot(readOptions) {
       calls.push({
         client: 'target',
         action: 'read',
         tableId: readOptions.tableId,
-        bindings: JSON.parse(JSON.stringify(readOptions.bindings || {}))
+        bindings: JSON.parse(JSON.stringify(readOptions.bindings || {})),
+        excludedRecordSemantics: JSON.parse(JSON.stringify(readOptions.excludedRecordSemantics || []))
       })
       if (readOptions.tableId === 'tbl-location') return locationSnapshot()
       assert.strictEqual(readOptions.tableId, 'tbl-mini', '目标客户端只能读取位置字典或专用表')
       return snapshot(mirrorRecords, mirrorFieldNames())
     },
-    async batchCreateRecords(tableId, records) {
-      calls.push({ client: 'target', action: 'create', tableId, count: records.length })
+    async batchCreateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
+      calls.push({
+        client: 'target',
+        action: 'create',
+        tableId,
+        count: records.length,
+        records: JSON.parse(JSON.stringify(records))
+      })
       assert.strictEqual(tableId, 'tbl-mini', '目标新增只能写专用表')
-      mirrorRecords = records.map((record, index) => ({
-        recordId: `mirror-record-${index + 1}`,
+      const created = records.map((record, index) => ({
+        recordId: `mirror-record-${mirrorRecords.length + index + 1}`,
         fields: JSON.parse(JSON.stringify(record.fields))
       }))
-      return { records: mirrorRecords }
+      mirrorRecords.push(...created)
+      return { records: created }
     },
-    async batchUpdateRecords(tableId, records) {
+    async batchUpdateRecords(tableId, records, writeOptions = {}) {
+      if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
       calls.push({
         client: 'target',
         action: 'update',
@@ -301,7 +313,12 @@ function makeClients(options = {}) {
       return { records }
     }
   }
-  return { sourceClient, targetClient, calls }
+  return {
+    sourceClient,
+    targetClient,
+    calls,
+    mirrorRecords: () => JSON.parse(JSON.stringify(mirrorRecords))
+  }
 }
 
 function restore(target, snapshotValue) {
@@ -660,56 +677,413 @@ async function testConfiguredSyncCreatesSeparateBaseClients() {
 }
 
 async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
-  const previous = JSON.parse(JSON.stringify(config.feishu))
+  const previousFeishu = JSON.parse(JSON.stringify(config.feishu))
+  const previousOss = JSON.parse(JSON.stringify(config.oss))
   const previousFetch = global.fetch
   const bindings = validBindings()
-  const clients = makeClients()
+  bindings.mini.video = fieldBinding('mini-video', 17, false)
   const poisonMaterials = []
   Object.defineProperty(poisonMaterials, Symbol.iterator, {
     value() {
       throw new Error('worker-v2 不得枚举旧素材清单')
     }
   })
-  let fetchCalls = 0
+  const sourceRecords = snapshot([
+    {
+      recordId: 'source-record-listing-only-with-target-video',
+      fields: {
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 1幢1单元101',
+        layoutDescription: '2室1厅（整）',
+        layoutCategory: '两室',
+        monthlyRent: 3200,
+        viewingMethod: '',
+        remark: '',
+        video: [{ name: '员工源畸形旧附件.mp4' }]
+      }
+    },
+    {
+      recordId: 'source-record-listing-only-without-target-video',
+      fields: {
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 1幢1单元101A',
+        layoutDescription: '单间',
+        layoutCategory: '单间',
+        monthlyRent: 1800,
+        viewingMethod: '',
+        remark: ''
+      }
+    },
+    {
+      recordId: 'source-record-listing-only-new',
+      fields: {
+        community: '风雅乐府',
+        roomLabel: '风雅乐府 1幢1单元102',
+        layoutDescription: '单间',
+        layoutCategory: '单间',
+        monthlyRent: 2100,
+        viewingMethod: '',
+        remark: ''
+      }
+    },
+    {
+      recordId: 'source-record-listing-only-video-only-template',
+      fields: {
+        video: [{ name: '仅视频模板行且无稳定 token.mp4' }]
+      }
+    }
+  ])
+  const initialMirrorRecords = [
+    mirrorRecord(
+      'mini-record-listing-only-with-target-video',
+      'source-record-listing-only-with-target-video',
+      {
+        monthlyRent: 3100,
+        listingStatus: '在租',
+        video: [
+          {
+            file_token: 'synthetic-current-stock-target-video-token',
+            name: 'existing-target-video.mp4',
+            type: 'video/mp4'
+          },
+          { name: 'target-malformed-video-without-token.mp4' }
+        ]
+      }
+    ),
+    mirrorRecord(
+      'mini-record-listing-only-without-target-video',
+      'source-record-listing-only-without-target-video',
+      {
+        roomLabel: '风雅乐府 1幢1单元101A',
+        roomNumber: '101A',
+        layoutDescription: '单间',
+        layoutCategory: '单间',
+        monthlyRent: 1700,
+        rentMode: '合租',
+        listingStatus: '在租'
+      }
+    )
+  ]
+  const videoFields = [
+    'videoUrl', 'videoKey', 'sourceMaterialToken', 'sourceMaterialName',
+    'sourceMaterialPath', 'sourceMaterialUrl', 'videoMaterialStatus', 'syncStatus',
+    'missingVideoMaterial', 'videoMaterialFailureReason', 'videoLabel', 'mediaAssets', 'noteMaterialState'
+  ]
+  const preservedRecordIds = [
+    'source-record-listing-only-with-target-video',
+    'source-record-listing-only-without-target-video'
+  ]
+  const existingListing = (sourceRecordId, roomNumber, rentMode) => ({
+    id: `listing-${sourceRecordId}`,
+    uploaderId: 'A1',
+    externalSource: 'feishu',
+    feishuRecordId: sourceRecordId,
+    feishuRoomIdentityKey: `风雅乐府|1|1|${roomNumber}`,
+    city: '杭州市',
+    district: '余杭区',
+    area: '余杭区',
+    block: '城北万象城',
+    community: '风雅乐府',
+    building: '1',
+    unit: '1',
+    roomNumber,
+    address: `1-1-${roomNumber}`,
+    roomAddress: `1-1-${roomNumber}`,
+    layout: roomNumber === '101A' ? '单间' : '2室1厅（整）',
+    rent: roomNumber === '101A' ? 1700 : 3100,
+    landlordPhone: '',
+    contact: '',
+    landlordCommissionPercent: 50,
+    commissionRate: 0,
+    source: '公司房源',
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    companyListing: true,
+    isCompanyListing: true,
+    noCommission: true,
+    type: rentMode,
+    rentMode,
+    room: roomNumber === '101A' ? '1' : '2',
+    hall: roomNumber === '101A' ? '' : '1',
+    bath: '',
+    features: ['免押金', '不分佣'],
+    status: '在租',
+    lifecycleStatus: 'active',
+    reviewStatus: '无需审核',
+    requiresManualReview: false,
+    manualReviewRequired: false,
+    communityMatched: true,
+    communityMatchStatus: '已匹配',
+    videoUrl: `https://video.example.test/${roomNumber}.mp4`,
+    videoKey: '',
+    sourceMaterialToken: `synthetic-local-${roomNumber}`,
+    sourceMaterialName: `${roomNumber}.mp4`,
+    sourceMaterialPath: `风雅乐府/1/1/${roomNumber}.mp4`,
+    sourceMaterialUrl: `https://material.example.test/${roomNumber}.mp4`,
+    videoMaterialStatus: '已匹配视频素材',
+    syncStatus: '已同步飞书',
+    missingVideoMaterial: false,
+    videoMaterialFailureReason: `既有状态-${roomNumber}`,
+    videoLabel: '既有房源实拍',
+    mediaAssets: [{ assetId: `asset-${roomNumber}`, kind: 'video' }],
+    noteMaterialState: { version: 1, contentSha256: 'd'.repeat(64) }
+  })
+  const createDb = () => ({
+    users: [{ id: 'A1', name: '管理员', role: '管理员', isAdmin: true }],
+    listings: [
+      existingListing('source-record-listing-only-with-target-video', '101', '整租'),
+      existingListing('source-record-listing-only-without-target-video', '101A', '合租')
+    ],
+    footprints: [],
+    pointLogs: [],
+    feishuSyncLogs: []
+  })
+  const videoState = (db) => preservedRecordIds.map((recordId) => db.listings.find((listing) => (
+    listing.feishuRecordId === recordId
+  ))).map((listing) => videoFields.reduce((state, field) => {
+    state[field] = Object.prototype.hasOwnProperty.call(listing, field)
+      ? JSON.parse(JSON.stringify(listing[field]))
+      : undefined
+    return state
+  }, {}))
+  const assertListingOnlyResult = (result, label) => {
+    ;['materialCount', 'skippedNoMaterial', 'missingVideoMaterial', 'ambiguousVideoMaterial', 'materialTransferFailed']
+      .forEach((field) => assert.strictEqual(result[field], 0, `${label}的 ${field} 必须为 0`))
+    assert.strictEqual(
+      (result.auditRows || []).some((row) => /缺视频素材|沿用上次视频|素材转存|未匹配素材|素材匹配/.test(`${row.syncResult} ${row.failureReason}`)),
+      false,
+      `${label}逐行结果不得出现素材处理`
+    )
+    assert.strictEqual(
+      (result.messages || []).some((message) => /缺视频素材|沿用上次视频|素材转存|未匹配素材|素材匹配/.test(String(message))),
+      false,
+      `${label}摘要不得出现素材处理`
+    )
+  }
+  let materialProcessingCalls = 0
+  const forbiddenMaterialAdapter = new Proxy({}, {
+    get() {
+      materialProcessingCalls += 1
+      throw new Error('纯房源模式不得访问 Drive 或 OSS 适配器')
+    }
+  })
   try {
+    const sourceFieldBindings = employeeSourceBindings()
+    sourceFieldBindings.video = fieldBinding('src-video', 17, false)
+    const miniFieldBindings = { ...bindings.mini, video: fieldBinding('mini-video', 17, false) }
     Object.assign(config.feishu, {
       appId: 'app-id',
       appSecret: 'app-secret',
-      bitableAppToken: 'legacy-token',
+      syncEnabled: true,
+      autoSyncEnabled: true,
+      mirrorSyncEnabled: true,
+      syncControllerMode: 'worker-v2',
+      approvedSchemaSha256: 'a'.repeat(64),
+      approvedResourceIdentitySha256: 'b'.repeat(64),
       sourceBitableAppToken: 'source-base',
       targetBitableAppToken: 'target-base',
       crossBaseTokenPartial: false,
       sourceTableId: 'tbl-source',
       miniTableId: 'tbl-mini',
       locationTableId: 'tbl-location',
-      sourceFieldBindings: bindings.source,
-      miniFieldBindings: bindings.mini,
+      rentedTableId: '',
+      historyTableId: '',
+      sourceFieldBindings,
+      miniFieldBindings,
       locationFieldBindings: bindings.location,
-      sourceCompatibilityProfile: '',
+      sourceCompatibilityProfile: EMPLOYEE_SOURCE_COMPATIBILITY_PROFILE,
       noteMaterialSyncEnabled: false,
-      folderToken: 'legacy-folder-must-not-be-read'
+      noteMaterialFieldId: '',
+      noteMaterialTargetRootFolderToken: '',
+      noteMaterialAllowedHosts: [],
+      folderToken: '',
+      materialsFile: ''
+    })
+    Object.assign(config.oss, {
+      bucket: '',
+      region: '',
+      accessKeyId: '',
+      accessKeySecret: ''
     })
     global.fetch = async () => {
-      fetchCalls += 1
-      throw new Error('worker-v2 不得请求旧素材 Drive')
+      materialProcessingCalls += 1
+      throw new Error('纯房源模式不得请求旧素材 Drive')
     }
-    const result = await feishuSync._internal.configuredMirrorTableSync({
-      feishuToken: 'tenant-token-for-test',
-      dryRun: true,
+    const syncOptions = (clients, patch = {}) => ({
+      syncController: 'worker-v2',
       disableLegacyMaterials: true,
+      feishuToken: 'tenant-token-for-test',
       materials: poisonMaterials,
       clientFactory(options) {
         if (options.appToken === 'source-base') return clients.sourceClient
         if (options.appToken === 'target-base') return clients.targetClient
         throw new Error(`创建了非预期 Base 客户端：${options.appToken}`)
+      },
+      noteMaterialDrive: forbiddenMaterialAdapter,
+      noteMaterialOss: forbiddenMaterialAdapter,
+      prepareMaterial() {
+        materialProcessingCalls += 1
+        throw new Error('纯房源模式不得准备素材')
+      },
+      ...patch
+    })
+
+    const dryClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords })
+    const dryDb = createDb()
+    const expectedDryVideoState = videoState(dryDb)
+    const dryResult = await feishuSync.sync(dryDb, 'A1', syncOptions(dryClients, {
+      dryRun: true,
+      runId: 'current-stock-listing-only-dry'
+    }))
+    assert.strictEqual(dryResult.status, 'success-dry-run', 'current-stock 三表纯房源 dry-run 必须成功')
+    assertListingOnlyResult(dryResult, 'current-stock dry-run')
+    assert.deepStrictEqual(videoState(dryDb), expectedDryVideoState, 'current-stock dry-run 必须逐字段保留两套本地既有媒体')
+    assert.strictEqual(
+      dryClients.calls.some((call) => ['create', 'update'].includes(call.action)),
+      false,
+      'current-stock dry-run 必须保持三表零写'
+    )
+    assert.ok(
+      dryClients.calls.filter((call) => call.action === 'read' && ['tbl-source', 'tbl-mini'].includes(call.tableId))
+        .every((call) => JSON.stringify(call.excludedRecordSemantics) === JSON.stringify(['video'])),
+      '纯房源 dry-run 的员工源与目标表读取必须在记录归一前排除 video 值'
+    )
+
+    const videoChangedMirrorRecords = JSON.parse(JSON.stringify(initialMirrorRecords))
+    videoChangedMirrorRecords[0].fields.video = [{ file_token: 'another-target-video-token' }]
+    const videoChangedClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords: videoChangedMirrorRecords })
+    const videoChangedResult = await feishuSync.sync(createDb(), 'A1', syncOptions(videoChangedClients, {
+      dryRun: true,
+      runId: 'current-stock-listing-only-dry'
+    }))
+    assert.strictEqual(videoChangedResult.mirrorPlanSha256, dryResult.mirrorPlanSha256, '仅目标 video 变化不得改变纯房源镜像计划摘要')
+    assert.strictEqual(videoChangedResult.semanticMirrorPlanSha256, dryResult.semanticMirrorPlanSha256, '仅目标 video 变化不得改变语义计划摘要')
+
+    const applyClients = makeClients({ sourceSnapshot: sourceRecords, initialMirrorRecords })
+    const applyDb = createDb()
+    const expectedApplyVideoState = videoState(applyDb)
+    let frozenCount = 0
+    let writeIntentCount = 0
+    const applyResult = await feishuSync.sync(applyDb, 'A1', syncOptions(applyClients, {
+      dryRun: false,
+      runId: 'current-stock-listing-only-apply',
+      onApplyPlanFrozen() {
+        frozenCount += 1
+      },
+      onExternalWriteDispatched() {
+        writeIntentCount += 1
+      }
+    }))
+    assert.ok(/^success(?:-|$)/.test(applyResult.status), 'current-stock 三表纯房源正式同步必须成功')
+    assertListingOnlyResult(applyResult, 'current-stock 正式同步')
+    assert.deepStrictEqual(videoState(applyDb), expectedApplyVideoState, 'current-stock 正式同步必须逐字段保留两套本地既有媒体')
+    assert.strictEqual(frozenCount, 1, 'current-stock 正式写前必须冻结一次权威镜像计划')
+    assert.ok(writeIntentCount > 0, 'current-stock 房源事实差异必须继续产生目标表写意图')
+    assert.deepStrictEqual(
+      applyDb.listings.map((listing) => listing.rent).sort((left, right) => left - right),
+      [1800, 2100, 3200],
+      '员工源租金事实必须真实更新到本地既有房源并新增房源'
+    )
+    const targetUpdates = applyClients.calls.filter((call) => call.client === 'target' && call.action === 'update')
+    assert.ok(targetUpdates.length > 0, 'current-stock 正式同步必须真实更新目标房源事实')
+    assert.ok(
+      targetUpdates.every((call) => call.records.every((record) => !Object.prototype.hasOwnProperty.call(record.fields, 'video'))),
+      '纯房源模式的目标表更新载荷不得写 video 字段'
+    )
+    const targetCreates = applyClients.calls.filter((call) => call.client === 'target' && call.action === 'create')
+    assert.ok(targetCreates.length > 0, 'current-stock 新房源必须真实走目标表 create')
+    assert.ok(
+      targetCreates.every((call) => call.records.every((record) => !Object.prototype.hasOwnProperty.call(record.fields, 'video'))),
+      '纯房源模式的目标表新增载荷不得写 video 字段'
+    )
+    const finalTargetRecords = applyClients.mirrorRecords()
+    assert.deepStrictEqual(
+      finalTargetRecords.map((record) => record.fields.monthlyRent).sort((left, right) => left - right),
+      [1800, 2100, 3200],
+      '员工源租金事实必须真实更新到目标当前表并新增房源'
+    )
+    assert.deepStrictEqual(
+      finalTargetRecords.find((record) => record.recordId === 'mini-record-listing-only-with-target-video').fields.video,
+      initialMirrorRecords[0].fields.video,
+      '目标表既有附件必须原样保留'
+    )
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(
+        finalTargetRecords.find((record) => record.recordId === 'mini-record-listing-only-without-target-video').fields,
+        'video'
+      ),
+      false,
+      '目标表原本没有附件的房源不得被补写 video'
+    )
+    const createdListing = applyDb.listings.find((listing) => listing.feishuRecordId === 'source-record-listing-only-new')
+    assert.ok(createdListing, 'current-stock 正式同步必须在本地创建员工源新房源')
+    assert.strictEqual(createdListing.videoUrl, '', '本地新房源不得生成 videoUrl')
+    assert.strictEqual(createdListing.videoKey, '', '本地新房源不得生成 videoKey')
+    ;['videoLabel', 'mediaAssets', 'noteMaterialState', 'videoMaterialStatus', 'missingVideoMaterial', 'videoMaterialFailureReason']
+      .forEach((field) => assert.strictEqual(Object.prototype.hasOwnProperty.call(createdListing, field), false, `本地新房源不得生成 ${field}`))
+    assert.strictEqual(createdListing.recommendationProfile.hasVideo, false, '本地新房源推荐画像不得标记有视频')
+
+    const inventoryRow = (sourceRecordId, roomNumber) => ({
+      record_id: sourceRecordId,
+      fields: {
+        房源编号: sourceRecordId,
+        城市: '杭州市',
+        canonicalDistrict: '余杭区',
+        canonicalBlock: '城北万象城',
+        小区: '风雅乐府',
+        几栋: '1',
+        几单元: '1',
+        房间号: roomNumber,
+        户型: '2室1厅（整）',
+        月租金: 3200,
+        出租方式: '整租',
+        房源状态: '在租'
       }
     })
-    assert.strictEqual(result.status, 'success-dry-run')
-    assert.deepStrictEqual(result.materials, [], 'worker-v2 真实配置入口不得把旧素材清单传给库存阶段')
-    assert.strictEqual(fetchCalls, 0, 'worker-v2 真实配置入口不得读取旧素材目录')
+    const assertOldMediaCleared = (listing, label) => {
+      assert.strictEqual(listing.videoUrl, '', `${label}不得继承旧 videoUrl`)
+      assert.strictEqual(listing.videoKey, '', `${label}不得继承旧 videoKey`)
+      ;['sourceMaterialToken', 'sourceMaterialName', 'sourceMaterialPath', 'sourceMaterialUrl']
+        .forEach((field) => assert.strictEqual(listing[field], '', `${label}不得继承 ${field}`))
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(listing, 'mediaAssets'), false, `${label}不得继承 mediaAssets`)
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(listing, 'noteMaterialState'), false, `${label}不得继承 noteMaterialState`)
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(listing, 'videoLabel'), false, `${label}不得继承 videoLabel`)
+      ;['videoMaterialStatus', 'missingVideoMaterial', 'videoMaterialFailureReason']
+        .forEach((field) => assert.strictEqual(Object.prototype.hasOwnProperty.call(listing, field), false, `${label}不得继承 ${field}`))
+      assert.strictEqual(listing.syncStatus, '已同步飞书', `${label}只允许保留本轮纯房源同步状态`)
+      assert.strictEqual(listing.recommendationProfile.hasVideo, false, `${label}推荐画像不得残留 hasVideo=true`)
+      assert.doesNotMatch(listing.recommendationProfile.searchText, /有视频/, `${label}推荐搜索词不得残留“有视频”`)
+    }
+    const changedIdentityDb = createDb()
+    changedIdentityDb.listings = [changedIdentityDb.listings[0]]
+    changedIdentityDb.listings[0].feishuRecordId = 'source-record-listing-only-changed-identity'
+    await feishuSync.applySync(
+      changedIdentityDb,
+      [inventoryRow('source-record-listing-only-changed-identity', '102')],
+      [],
+      'A1',
+      { dryRun: true, trustedCanonicalCoordinates: true, materialPolicy: 'disabled' }
+    )
+    assertOldMediaCleared(changedIdentityDb.listings[0], '物理身份变化的房源')
+
+    const reactivatedDb = createDb()
+    reactivatedDb.listings = [reactivatedDb.listings[0]]
+    reactivatedDb.listings[0].feishuRecordId = 'source-record-listing-only-reactivated'
+    reactivatedDb.listings[0].status = '已下架'
+    reactivatedDb.listings[0].lifecycleStatus = 'expired'
+    await feishuSync.applySync(
+      reactivatedDb,
+      [inventoryRow('source-record-listing-only-reactivated', '101')],
+      [],
+      'A1',
+      { dryRun: true, trustedCanonicalCoordinates: true, materialPolicy: 'disabled' }
+    )
+    assertOldMediaCleared(reactivatedDb.listings[0], '重新上架的房源')
+    assert.strictEqual(materialProcessingCalls, 0, 'current-stock dry/apply 全程必须保持下载、Drive、OSS、prepare 调用为 0')
   } finally {
     global.fetch = previousFetch
-    restore(config.feishu, previous)
+    restore(config.feishu, previousFeishu)
+    restore(config.oss, previousOss)
   }
 }
 
