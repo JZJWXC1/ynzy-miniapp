@@ -7,7 +7,8 @@ const { spawnSync } = require('child_process')
 
 const {
   STATES,
-  createFeishuSyncWorker
+  createFeishuSyncWorker,
+  _internal: workerInternal
 } = require('../src/feishu-sync-worker')
 
 const SHA = Object.freeze({
@@ -327,6 +328,37 @@ function partialReconciliationEvidence(runId, patch = {}) {
   return {
     ...body,
     evidenceSha256: stableSha256(body)
+  }
+}
+
+function testManualNoopAllowsOnlyExactCurrentInventoryRefresh() {
+  const valid = {
+    created: 0,
+    updated: 54,
+    down: 0,
+    sourceRecordCount: 54
+  }
+  assert.strictEqual(
+    workerInternal.manualNoopResultSummaryValid(valid),
+    true,
+    '54 套当前库存的 54 条本地刷新必须允许进入人工解屏证据'
+  )
+  assert.strictEqual(
+    workerInternal.manualNoopResultSummaryValid({ ...valid, updated: 53 }),
+    false,
+    'updated 与 sourceRecordCount 不相等必须失败关闭'
+  )
+  for (const invalid of [
+    { ...valid, updated: -1, sourceRecordCount: -1 },
+    { ...valid, updated: 1.5, sourceRecordCount: 1.5 },
+    { ...valid, created: 1 },
+    { ...valid, down: 1 }
+  ]) {
+    assert.strictEqual(
+      workerInternal.manualNoopResultSummaryValid(invalid),
+      false,
+      '非负安全整数、created=0、down=0 任一条件不满足都必须拒绝'
+    )
   }
 }
 
@@ -3519,6 +3551,7 @@ function testCliAndDailyTimerStayNoopWhenDisabled() {
 }
 
 async function main() {
+  testManualNoopAllowsOnlyExactCurrentInventoryRefresh()
   await testDbWriteLockIsMandatoryBeforeAnyMutation()
   await testManualDryOnlyDoesNotNeedApprovalOrApply()
   await testSuccessIsAtomicAndReturnsExpectedDigests()

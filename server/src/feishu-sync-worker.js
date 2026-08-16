@@ -1043,6 +1043,13 @@ function manualNoopVerificationEvidence(run) {
   }
 }
 
+function manualNoopResultSummaryValid(summary) {
+  return summary.created === 0 && summary.down === 0 &&
+    Number.isSafeInteger(summary.updated) && summary.updated >= 0 &&
+    Number.isSafeInteger(summary.sourceRecordCount) && summary.sourceRecordCount >= 0 &&
+    summary.updated === summary.sourceRecordCount
+}
+
 function manualNoopDryRunShapeValid(run, afterMs) {
   const absent = [
     'applyIntentAt',
@@ -1079,9 +1086,7 @@ function manualNoopDryRunShapeValid(run, afterMs) {
     )) &&
     run.resultSummary && stableSha256(run.resultSummary) === stableSha256(summary) &&
     summary.success === true && summary.complete === true && summary.dryRun === true &&
-    summary.failed === 0 && ['created', 'updated', 'down'].every((key) => (
-      Object.prototype.hasOwnProperty.call(summary, key) && summary[key] === 0
-    ))
+    summary.failed === 0 && manualNoopResultSummaryValid(summary)
 }
 
 function manualNoopFailedConvergenceShapeValid(run) {
@@ -3788,6 +3793,7 @@ module.exports = {
     sanitizeSchemaBindings,
     markerMatches,
     validComponentEvidence,
+    manualNoopResultSummaryValid,
     manualNoopResolutionMatches,
     validatePartialReconciliationEvidence,
     safeErrorCode,

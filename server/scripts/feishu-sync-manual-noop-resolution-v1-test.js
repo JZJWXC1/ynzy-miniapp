@@ -80,12 +80,13 @@ function snapshot(role, schema, digest, recordCount, semantic) {
   }
 }
 
-function buildEvidence({ zeroOperations }) {
+function buildEvidence({ zeroOperations, nonzeroOperation = 'main' }) {
   const operation = {
     type: 'update',
     recordId: 'record-current-1',
     fields: { listingStatus: '待出租' }
   }
+  const selectedOperation = zeroOperations ? '' : nonzeroOperation
   return feishuSync._internal.buildMirrorSafetyDigests({
     sourceSnapshot: snapshot('source', SHA.schema, 'a'.repeat(64), 43, 'community'),
     locationSnapshot: snapshot('location', '4'.repeat(64), 'b'.repeat(64), 34, 'community'),
@@ -93,10 +94,10 @@ function buildEvidence({ zeroOperations }) {
     rentedSnapshot: snapshot('rented', '6'.repeat(64), 'd'.repeat(64), 23, 'listingStatus'),
     historySnapshot: snapshot('history', '7'.repeat(64), 'e'.repeat(64), 54, 'eventType'),
     resources: {},
-    operations: zeroOperations ? [] : [operation],
-    archiveOperations: [],
-    historyOperations: [],
-    baselineMarkerOperation: null,
+    operations: selectedOperation === 'main' ? [operation] : [],
+    archiveOperations: selectedOperation === 'archive' ? [operation] : [],
+    historyOperations: selectedOperation === 'history' ? [operation] : [],
+    baselineMarkerOperation: selectedOperation === 'baselineMarker' ? operation : null,
     plannedRecords: []
   })
 }
@@ -108,7 +109,7 @@ function dryResult(evidence) {
     dryRun: true,
     failed: 0,
     created: 0,
-    updated: 0,
+    updated: 43,
     down: 0,
     sourceRecordCount: 43,
     schemaSha256: SHA.schema,
@@ -488,8 +489,9 @@ async function testPlanAndApplyAreLocalAtomicAndAuditable() {
     }, `${key} 必须有 count+digest 双零证据`)
   }
   assert.strictEqual(plan.evidence.resultSummary.created, 0)
-  assert.strictEqual(plan.evidence.resultSummary.updated, 0)
+  assert.strictEqual(plan.evidence.resultSummary.updated, 43)
   assert.strictEqual(plan.evidence.resultSummary.down, 0)
+  assert.strictEqual(plan.evidence.resultSummary.sourceRecordCount, 43)
   assert.strictEqual(
     JSON.stringify(plan).includes('privacy-sentinel-13800000000'),
     false,
@@ -614,18 +616,19 @@ async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
     assert.strictEqual(JSON.stringify(fixture.store.snapshot()), drifted)
   }
 
-  {
+  for (const nonzeroOperation of ['main', 'archive', 'history', 'baselineMarker']) {
     const built = await buildFailedV5AndTwoFreshDryRuns()
     const { fixture, failedV5, firstResult, secondResult } = built
+    const nonzeroEvidence = buildEvidence({ zeroOperations: false, nonzeroOperation })
     fixture.store.updateDb((db) => {
-      replaceDryEvidence(db, firstResult.runId, fixture.oldEvidence)
-      replaceDryEvidence(db, secondResult.runId, fixture.oldEvidence)
+      replaceDryEvidence(db, firstResult.runId, nonzeroEvidence)
+      replaceDryEvidence(db, secondResult.runId, nonzeroEvidence)
     })
     assertManualFailure(() => fixture.worker.planManualNoopResolution(
       failedV5.runId,
       firstResult.runId,
       secondResult.runId
-    ), '两次一致但仍有 Base update 的证据不得解屏')
+    ), `${nonzeroOperation} 任一 Base 操作非零都不得解屏`)
   }
 
   {
@@ -635,7 +638,6 @@ async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
       for (const runId of [firstResult.runId, secondResult.runId]) {
         const run = rawRun(db, runId)
         run.resultSummary.created = 1
-        run.resultSummary.updated = 2
         run.resultSummary.down = 3
       }
     })
@@ -643,7 +645,22 @@ async function testInvalidEvidenceAndConcurrentDriftFailClosed() {
       failedV5.runId,
       firstResult.runId,
       secondResult.runId
-    ), '四类操作为零但业务汇总非零的矛盾证据不得解屏')
+    ), '四类操作为零但 created/down 非零的矛盾证据不得解屏')
+  }
+
+  {
+    const built = await buildFailedV5AndTwoFreshDryRuns()
+    const { fixture, failedV5, firstResult, secondResult } = built
+    fixture.store.updateDb((db) => {
+      for (const runId of [firstResult.runId, secondResult.runId]) {
+        rawRun(db, runId).resultSummary.updated = 42
+      }
+    })
+    assertManualFailure(() => fixture.worker.planManualNoopResolution(
+      failedV5.runId,
+      firstResult.runId,
+      secondResult.runId
+    ), 'updated 与 sourceRecordCount 不相等时必须拒绝解屏')
   }
 
   {
