@@ -13,6 +13,9 @@ const DEFAULT_MAX_BYTES = 300 * 1024 * 1024
 const SMALL_UPLOAD_LIMIT = 20 * 1024 * 1024
 const NOTE_ROOT_FOLDER_NAME = '房源笔记导入-v1'
 const FILE_STREAM_HIGH_WATER_MARK = 64 * 1024
+const SOURCE_DOWNLOAD_MAX_REQUESTS = 3
+const SOURCE_DOWNLOAD_RETRY_DELAYS_MS = Object.freeze([200, 400])
+const SOURCE_DOWNLOAD_HTTP_STATUS = Symbol('sourceDownloadHttpStatus')
 
 function normalizeText(value) {
   return value === undefined || value === null ? '' : String(value).normalize('NFKC').trim()
@@ -194,6 +197,51 @@ function materialDownloadError(message, statusCode, code) {
   error.statusCode = statusCode
   if (code) error.code = code
   return error
+}
+
+function sourceDownloadHttpError(response) {
+  const status = Number(response && response.status)
+  const error = materialDownloadError(
+    '下载飞书房源素材失败',
+    Number.isInteger(status) && status > 0 ? status : 502,
+    'FEISHU_MATERIAL_DOWNLOAD_HTTP_ERROR'
+  )
+  if (Number.isInteger(status) && status > 0) error[SOURCE_DOWNLOAD_HTTP_STATUS] = status
+  return error
+}
+
+function isRetryableSourceDownloadError(error) {
+  const retryable = /^(?:FEISHU_MATERIAL_(?:REQUEST|DOWNLOAD)_TIMEOUT|FEISHU_MATERIAL_(?:EMPTY|LENGTH_MISMATCH)|ETIMEDOUT|ENOTFOUND)$/
+  const retryableUndici = /^UND_ERR_(?:SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT|DESTROYED|CLOSED|RES_CONTENT_LENGTH_MISMATCH)$/
+  const localIo = /^(?:EIO|ENOSPC|EACCES|EPERM|EROFS|EBADF|EINVAL|EMFILE|ENFILE)$/
+  const seen = new Set()
+  let current = error
+  while (current && (typeof current === 'object' || typeof current === 'function') &&
+    seen.size < 4 && !seen.has(current)) {
+    seen.add(current)
+    const code = normalizeText(current.code).toUpperCase()
+    if (retryable.test(code)) return true
+    if (code.startsWith('FEISHU_MATERIAL_') || localIo.test(code)) return false
+    if (code.startsWith('UND_ERR_')) return retryableUndici.test(code)
+    if (/^ECONN[A-Z0-9_]*$/.test(code) || /^EAI_[A-Z0-9_]+$/.test(code) ||
+      /^(?:ENETUNREACH|EHOSTUNREACH)$/.test(code)) return true
+    current = current.cause
+  }
+  return false
+}
+
+async function waitForSourceDownloadRetry(delayMs, stopPromise) {
+  let timer
+  try {
+    await Promise.race([
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, delayMs)
+      }),
+      stopPromise
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function assertWritableFileHandle(fileHandle) {
@@ -754,85 +802,125 @@ function createFeishuNoteMaterialClient(options = {}) {
           `/drive/v1/medias/${encodeURIComponent(safeToken)}/download`,
           `/drive/v1/files/${encodeURIComponent(safeToken)}/download`
         ]
-    let lastError = null
-    for (const endpoint of endpoints) {
-      const controller = new AbortController()
-      const externalSignal = downloadOptions.signal
-      const forwardExternalAbort = () => controller.abort()
-      if (externalSignal && typeof externalSignal.addEventListener === 'function') {
-        externalSignal.addEventListener('abort', forwardExternalAbort, { once: true })
-        if (externalSignal.aborted) controller.abort()
+    const externalSignal = downloadOptions.signal
+    const abortedError = materialDownloadError('下载飞书房源素材已取消', 499, 'FEISHU_MATERIAL_DOWNLOAD_ABORTED')
+    if (externalSignal && externalSignal.aborted) {
+      await truncateAfterFailure(fileHandle)
+      throw abortedError
+    }
+
+    const timeoutError = materialDownloadError('下载飞书房源素材超时', 504, 'FEISHU_MATERIAL_DOWNLOAD_TIMEOUT')
+    let controller = null
+    let rejectStop
+    let stopError = null
+    const stopPromise = new Promise((_, reject) => { rejectStop = reject })
+    // stopPromise 也可能在本地清理期间先失败；预挂处理器避免产生未处理拒绝。
+    stopPromise.catch(() => {})
+    const stop = (error) => {
+      if (stopError) return
+      stopError = error
+      if (controller) controller.abort()
+      rejectStop(error)
+    }
+    const forwardExternalAbort = () => stop(abortedError)
+    if (externalSignal && typeof externalSignal.addEventListener === 'function') {
+      externalSignal.addEventListener('abort', forwardExternalAbort, { once: true })
+      if (externalSignal.aborted) forwardExternalAbort()
+    }
+    const deadlineTimer = setTimeout(() => stop(timeoutError), downloadTimeoutMs)
+
+    let endpointIndex = 0
+    let retried404 = false
+    let requestCount = 0
+    try {
+      if (stopError) {
+        await truncateAfterFailure(fileHandle)
+        throw stopError
       }
-      const timeoutError = materialDownloadError(
-        '下载飞书房源素材超时',
-        504,
-        'FEISHU_MATERIAL_DOWNLOAD_TIMEOUT'
-      )
-      let timedOut = false
-      let timer
-      const deadlinePromise = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true
-          controller.abort()
-          reject(timeoutError)
-        }, downloadTimeoutMs)
-      })
-      let response = null
-      try {
-        await fileHandle.truncate(0)
-        response = await Promise.race([
-          options.fetchImpl(`${baseUrl}${endpoint}`, {
-            method: 'GET',
-            redirect: 'error',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Accept-Encoding': 'identity'
-            },
-            signal: controller.signal
-          }),
-          deadlinePromise
-        ])
-        if (!response || !response.ok) {
-          await cancelResponseBody(response, null)
-          const error = new Error('下载飞书房源素材失败')
-          error.statusCode = Number(response && response.status) || 502
-          throw error
+      while (endpointIndex < endpoints.length && requestCount < SOURCE_DOWNLOAD_MAX_REQUESTS) {
+        if (stopError) throw stopError
+        if (requestCount > 0) {
+          await waitForSourceDownloadRetry(SOURCE_DOWNLOAD_RETRY_DELAYS_MS[requestCount - 1], stopPromise)
         }
-        return await readResponseToFileBounded(response, {
-          fileHandle,
-          maxBytes: downloadMaxBytes,
-          deadlinePromise,
-          isTimedOut: () => timedOut,
-          timeoutError
-        })
-      } catch (error) {
-        controller.abort()
-        await cancelResponseBody(response, null)
+        if (stopError) throw stopError
+
+        // 每个网络请求前先清空目标文件；清理失败时不允许发请求。
+        await truncateAfterFailure(fileHandle)
+        if (stopError) throw stopError
+
+        const endpoint = endpoints[endpointIndex]
+        const attemptController = new AbortController()
+        controller = attemptController
+        let response = null
+        let failure = null
+        requestCount += 1
         try {
+          response = await Promise.race([
+            Promise.resolve().then(() => options.fetchImpl(`${baseUrl}${endpoint}`, {
+              method: 'GET',
+              redirect: 'error',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Accept-Encoding': 'identity'
+              },
+              signal: attemptController.signal
+            })),
+            stopPromise
+          ])
+          if (!response || !response.ok) throw sourceDownloadHttpError(response)
+          const result = await readResponseToFileBounded(response, {
+            fileHandle,
+            maxBytes: downloadMaxBytes,
+            deadlinePromise: stopPromise,
+            isTimedOut: () => stopError === timeoutError,
+            timeoutError
+          })
+          if (stopError) throw stopError
+          return result
+        } catch (error) {
+          attemptController.abort()
+          await cancelResponseBody(response, null)
+          if (error && error.code === 'FEISHU_MATERIAL_FILE_CLEANUP_FAILED') throw error
           await truncateAfterFailure(fileHandle)
-        } catch (cleanupError) {
-          throw cleanupError
+          if (externalSignal && externalSignal.aborted) throw abortedError
+          if (stopError) throw stopError
+          failure = error
+        } finally {
+          if (controller === attemptController) controller = null
         }
-        if (error && [
-          'FEISHU_MATERIAL_FILE_CLEANUP_FAILED',
-          'FEISHU_MATERIAL_FILE_WRITE_FAILED'
-        ].includes(error.code)) throw error
-        if (externalSignal && externalSignal.aborted) {
-          throw materialDownloadError(
-            '下载飞书房源素材已取消',
-            499,
-            'FEISHU_MATERIAL_DOWNLOAD_ABORTED'
-          )
+
+        const httpStatus = Number(failure && failure[SOURCE_DOWNLOAD_HTTP_STATUS]) || 0
+        const hasBudget = requestCount < SOURCE_DOWNLOAD_MAX_REQUESTS
+        const hasFallback = endpointIndex + 1 < endpoints.length
+        if (httpStatus === 400 && hasBudget && hasFallback) {
+          endpointIndex += 1
+          retried404 = false
+          continue
         }
-        lastError = timedOut ? timeoutError : error
-      } finally {
-        clearTimeout(timer)
-        if (externalSignal && typeof externalSignal.removeEventListener === 'function') {
-          externalSignal.removeEventListener('abort', forwardExternalAbort)
+        if (httpStatus === 404 && hasBudget) {
+          if (!retried404) {
+            retried404 = true
+            continue
+          }
+          if (hasFallback) {
+            endpointIndex += 1
+            retried404 = false
+            continue
+          }
         }
+        const retryableHttp = httpStatus === 408 || httpStatus === 425 || httpStatus === 429 ||
+          (httpStatus >= 500 && httpStatus <= 599)
+        if (hasBudget && (retryableHttp || isRetryableSourceDownloadError(failure))) continue
+        throw failure
+      }
+      throw new Error('下载飞书房源素材失败')
+    } finally {
+      clearTimeout(deadlineTimer)
+      if (controller) controller.abort()
+      if (externalSignal && typeof externalSignal.removeEventListener === 'function') {
+        externalSignal.removeEventListener('abort', forwardExternalAbort)
       }
     }
-    throw lastError || new Error('下载飞书房源素材失败')
   }
 
   async function downloadTokenDigestExact(rawToken, preferredKind, expectedSize, downloadOptions = {}) {

@@ -124,8 +124,17 @@ async function writeStaleFile(fileHandle) {
 async function assertDownloadFailureClearsFile(input) {
   await withTemporaryFile(async (fileHandle) => {
     await writeStaleFile(fileHandle)
-    const response = input.response
-    const client = createStreamingClient(async () => response)
+    const responses = []
+    let requestCount = 0
+    const client = createStreamingClient(async () => {
+      assert.strictEqual((await fileHandle.stat()).size, 0, `${input.message}，每次请求前必须清空目标文件`)
+      requestCount += 1
+      const response = typeof input.responseFactory === 'function'
+        ? input.responseFactory(requestCount)
+        : input.response
+      responses.push(response)
+      return response
+    })
     await assert.rejects(
       client.downloadTokenToFile('streamToken123', 'drive-file', {
         fileHandle,
@@ -134,8 +143,11 @@ async function assertDownloadFailureClearsFile(input) {
       (error) => error && error.statusCode === input.statusCode && error.code === input.code,
       input.message
     )
+    assert.strictEqual(requestCount, input.expectedRequests || 1, `${input.message}，请求次数必须符合重试合同`)
     assert.strictEqual((await fileHandle.stat()).size, 0, `${input.message}，失败后必须清空目标文件`)
-    assert.strictEqual(response.wasCancelled(), true, `${input.message}，失败后必须取消响应正文`)
+    for (const response of responses) {
+      assert.strictEqual(response.wasCancelled(), true, `${input.message}，失败后必须取消每次响应正文`)
+    }
   })
 }
 
@@ -217,10 +229,11 @@ async function testStreamingMaterialClient() {
     message: '无长度声明时实际累计超过上限必须拒绝'
   })
   await assertDownloadFailureClearsFile({
-    response: createStreamingResponse([Buffer.from('short')], {
+    responseFactory: () => createStreamingResponse([Buffer.from('short')], {
       'content-length': '6',
       'content-type': 'video/mp4'
     }),
+    expectedRequests: 3,
     maxBytes: 10,
     statusCode: 502,
     code: 'FEISHU_MATERIAL_LENGTH_MISMATCH',
@@ -240,11 +253,16 @@ async function testStreamingMaterialClient() {
   await withTemporaryFile(async (fileHandle, targetPath) => {
     await writeStaleFile(fileHandle)
     const fallbackBody = Buffer.from('fallback-file-body')
-    const mediaResponse = createStreamingResponse([], {}, { status: 404 })
+    const mediaResponses = []
     const requestedUrls = []
     const fallbackClient = createStreamingClient(async (url) => {
+      assert.strictEqual((await fileHandle.stat()).size, 0, 'fallback 每次请求前必须清空复用目标文件')
       requestedUrls.push(url)
-      if (url.includes('/drive/v1/medias/')) return mediaResponse
+      if (url.includes('/drive/v1/medias/')) {
+        const response = createStreamingResponse([], {}, { status: 404 })
+        mediaResponses.push(response)
+        return response
+      }
       return createStreamingResponse([fallbackBody], {
         'content-length': fallbackBody.length,
         'content-type': 'video/quicktime'
@@ -254,10 +272,14 @@ async function testStreamingMaterialClient() {
       fileHandle,
       maxBytes: 1024
     })
-    assert.strictEqual(requestedUrls.length, 2, '媒体端点失败后必须且仅回退一次文件端点')
+    assert.strictEqual(requestedUrls.length, 3, '媒体端点必须同端点重读一次，再在总预算内回退文件端点')
     assert.match(requestedUrls[0], /\/drive\/v1\/medias\//, '默认下载必须先尝试媒体端点')
-    assert.match(requestedUrls[1], /\/drive\/v1\/files\//, '媒体端点失败后必须回退文件端点')
-    assert.strictEqual(mediaResponse.wasCancelled(), true, '回退前必须取消失败端点的响应正文')
+    assert.match(requestedUrls[1], /\/drive\/v1\/medias\//, '首次 404 后只允许同媒体端点重读一次')
+    assert.match(requestedUrls[2], /\/drive\/v1\/files\//, '第二次 404 后必须在总预算内回退文件端点')
+    assert.strictEqual(mediaResponses.length, 2)
+    for (const response of mediaResponses) {
+      assert.strictEqual(response.wasCancelled(), true, '回退前必须取消每次失败端点的响应正文')
+    }
     assert.strictEqual(result.size, fallbackBody.length)
     assert.deepStrictEqual(await fs.readFile(targetPath), fallbackBody, '回退成功不得残留前一次尝试内容')
   })

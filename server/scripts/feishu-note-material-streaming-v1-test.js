@@ -23,6 +23,7 @@ if (process.env.YNZY_OSS_STREAMING_CHILD !== '1') {
   process.exit(0)
 }
 const { EventEmitter } = require('events')
+const { createFeishuNoteMaterialClient } = require('../src/feishu-note-material-client')
 
 process.env.ALI_OSS_BUCKET = 'synthetic-streaming-bucket'
 process.env.ALI_OSS_REGION = 'oss-cn-hangzhou'
@@ -76,6 +77,434 @@ function createPatternFile(filePath, size) {
     fs.closeSync(handle)
   }
   return sha256FilePattern(size)
+}
+
+function noteDownloadResponse(chunks = [], options = {}) {
+  const bodies = chunks.map((chunk) => Buffer.from(chunk))
+  const status = Number(options.status || 200)
+  const declaredLength = options.contentLength === undefined
+    ? bodies.reduce((sum, chunk) => sum + chunk.length, 0)
+    : options.contentLength
+  let readerCancelled = 0
+  let bodyCancelled = 0
+  return {
+    response: {
+      ok: options.ok === undefined ? status >= 200 && status < 300 : options.ok,
+      status,
+      headers: {
+        get(name) {
+          const key = String(name).toLowerCase()
+          if (key === 'content-length') return declaredLength === null ? null : String(declaredLength)
+          if (key === 'content-type') return options.contentType || 'video/mp4'
+          if (key === 'content-encoding') return options.contentEncoding || ''
+          return ''
+        }
+      },
+      body: {
+        async cancel() { bodyCancelled += 1 },
+        getReader() {
+          let index = 0
+          return {
+            async read() {
+              if (index < bodies.length) return { done: false, value: bodies[index++] }
+              if (options.terminalError) throw options.terminalError
+              return { done: true }
+            },
+            async cancel() { readerCancelled += 1 },
+            releaseLock() {}
+          }
+        }
+      }
+    },
+    readerCancelled: () => readerCancelled,
+    bodyCancelled: () => bodyCancelled
+  }
+}
+
+function noteDownloadError(code, message = code) {
+  const error = new Error(message)
+  if (code) error.code = code
+  return error
+}
+
+function createNoteDownloadSequence(steps) {
+  const pending = steps.slice()
+  const calls = []
+  return {
+    calls,
+    remaining: () => pending.length,
+    async fetchImpl(url, options = {}) {
+      const parsed = new URL(url)
+      calls.push({
+        at: Date.now(),
+        method: options.method,
+        pathname: parsed.pathname,
+        redirect: options.redirect,
+        acceptEncoding: options.headers && options.headers['Accept-Encoding']
+      })
+      if (!pending.length) throw new Error('下载重试序列收到额外请求')
+      const step = pending.shift()
+      if (step && Object.prototype.hasOwnProperty.call(step, 'throwValue')) throw step.throwValue
+      return typeof step === 'function' ? step(options, calls.length) : step
+    }
+  }
+}
+
+function assertNoteDownloadCalls(calls, expectedPaths) {
+  assert.deepStrictEqual(calls.map((call) => call.pathname), expectedPaths)
+  for (const call of calls) {
+    assert.strictEqual(call.method, 'GET')
+    assert.strictEqual(call.redirect, 'error')
+    assert.strictEqual(call.acceptEncoding, 'identity')
+  }
+}
+
+async function withNoteDownloadFile(tempRoot, label, task) {
+  const targetPath = path.join(tempRoot, `note-download-${label}.tmp`)
+  const fileHandle = await originalPromisesOpen.call(fs.promises, targetPath, 'w+', 0o600)
+  try {
+    return await task(fileHandle, targetPath)
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+function createNoteDownloadClient(sequence, downloadTimeoutMs = 3000) {
+  return createFeishuNoteMaterialClient({
+    accessToken: 'syntheticTenantToken123',
+    downloadTimeoutMs,
+    fetchImpl: sequence.fetchImpl
+  })
+}
+
+async function readExactFileBytes(fileHandle) {
+  const size = (await fileHandle.stat()).size
+  const bytes = Buffer.alloc(size)
+  if (size) {
+    const readResult = await fileHandle.read(bytes, 0, size, 0)
+    assert.strictEqual(readResult.bytesRead, size)
+  }
+  return bytes
+}
+
+async function testDownloadTransientRetryAndReset(tempRoot) {
+  const sentinel = noteDownloadError('ECONNRESET', 'synthetic-download-stream-failure')
+  const failed = noteDownloadResponse([
+    Buffer.from('partial-old-bytes-that-are-longer-than-success')
+  ], { terminalError: sentinel })
+  const expected = Buffer.from('fresh')
+  const succeeded = noteDownloadResponse([
+    expected.subarray(0, 2),
+    expected.subarray(2)
+  ])
+  let sequence
+
+  await withNoteDownloadFile(tempRoot, 'transient-reset', async (fileHandle) => {
+    sequence = createNoteDownloadSequence([
+      async () => {
+        assert.strictEqual((await fileHandle.stat()).size, 0, '首次 GET 发出前必须清除调用前旧尾部')
+        return failed.response
+      },
+      async () => {
+        assert.strictEqual((await fileHandle.stat()).size, 0, '重试 GET 发出前必须清除失败尝试部分字节')
+        return succeeded.response
+      }
+    ])
+    const client = createNoteDownloadClient(sequence)
+    await fileHandle.writeFile(Buffer.from('stale-tail-must-not-survive'))
+    const result = await client.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+      fileHandle,
+      maxBytes: 1024
+    })
+    assert.strictEqual(result.size, expected.length)
+    assert.strictEqual(result.contentSha256, crypto.createHash('sha256').update(expected).digest('hex'))
+    assert.deepStrictEqual(
+      await readExactFileBytes(fileHandle),
+      expected,
+      '成功重试不得混入失败尝试或调用前旧尾部'
+    )
+  })
+  assert.strictEqual(failed.readerCancelled(), 1, '流中途失败必须取消对应 reader')
+  assert.strictEqual(sequence.remaining(), 0)
+  assertNoteDownloadCalls(sequence.calls, [
+    '/open-apis/drive/v1/files/fileSequenceToken123/download',
+    '/open-apis/drive/v1/files/fileSequenceToken123/download'
+  ])
+  assert.ok(sequence.calls[1].at - sequence.calls[0].at >= 175, '首次重试必须执行固定 200ms 退避')
+}
+
+async function testDownloadRetryableClosedSet(tempRoot) {
+  const nestedUndici = new TypeError('fetch failed')
+  nestedUndici.cause = noteDownloadError('UND_ERR_SOCKET')
+  const cases = [
+    ['request-timeout', { throwValue: noteDownloadError('FEISHU_MATERIAL_REQUEST_TIMEOUT') }],
+    ['download-timeout', { throwValue: noteDownloadError('FEISHU_MATERIAL_DOWNLOAD_TIMEOUT') }],
+    ['nested-undici', { throwValue: nestedUndici }],
+    ['undici-connect-timeout', { throwValue: noteDownloadError('UND_ERR_CONNECT_TIMEOUT') }],
+    ['undici-length-mismatch', { throwValue: noteDownloadError('UND_ERR_RES_CONTENT_LENGTH_MISMATCH') }],
+    ['eai-again', { throwValue: noteDownloadError('EAI_AGAIN') }],
+    ['not-found-network', { throwValue: noteDownloadError('ENOTFOUND') }],
+    ['net-unreachable', { throwValue: noteDownloadError('ENETUNREACH') }],
+    ['host-unreachable', { throwValue: noteDownloadError('EHOSTUNREACH') }],
+    ['http-408', noteDownloadResponse([], { status: 408 }).response],
+    ['http-425', noteDownloadResponse([], { status: 425 }).response],
+    ['http-429', noteDownloadResponse([], { status: 429 }).response],
+    ['http-503', noteDownloadResponse([], { status: 503 }).response],
+    ['empty-stream', noteDownloadResponse([]).response],
+    ['length-mismatch', noteDownloadResponse([Buffer.from('short')], { contentLength: 99 }).response]
+  ]
+
+  for (const [label, firstStep] of cases) {
+    const expected = Buffer.from(`fresh-${label}`)
+    const sequence = createNoteDownloadSequence([
+      firstStep,
+      noteDownloadResponse([expected]).response
+    ])
+    const client = createNoteDownloadClient(sequence)
+    await withNoteDownloadFile(tempRoot, `retryable-${label}`, async (fileHandle) => {
+      const result = await client.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+        fileHandle,
+        maxBytes: 1024
+      })
+      assert.strictEqual(result.size, expected.length, `${label} 必须在一次有界重试后成功`)
+      assert.deepStrictEqual(await readExactFileBytes(fileHandle), expected)
+    })
+    assert.strictEqual(sequence.calls.length, 2, `${label} 必须且只能重试一次`)
+    assert.strictEqual(sequence.remaining(), 0)
+  }
+}
+
+async function testDownloadGlobalBudgetAndFallback(tempRoot) {
+  const mediaPath = '/open-apis/drive/v1/medias/fileSequenceToken123/download'
+  const filePath = '/open-apis/drive/v1/files/fileSequenceToken123/download'
+  const fallbackBytes = Buffer.from('fallback-file-bytes')
+  const fallbackSequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 404 }).response,
+    noteDownloadResponse([], { status: 404 }).response,
+    noteDownloadResponse([fallbackBytes]).response
+  ])
+  const fallbackClient = createNoteDownloadClient(fallbackSequence)
+  await withNoteDownloadFile(tempRoot, 'fallback-budget', async (fileHandle) => {
+    const result = await fallbackClient.downloadTokenToFile('fileSequenceToken123', '', {
+      fileHandle,
+      maxBytes: 1024
+    })
+    assert.strictEqual(result.size, fallbackBytes.length)
+    assert.deepStrictEqual(await readExactFileBytes(fileHandle), fallbackBytes)
+  })
+  assertNoteDownloadCalls(fallbackSequence.calls, [mediaPath, mediaPath, filePath])
+  assert.strictEqual(fallbackSequence.remaining(), 0, '404 同端点重读与 fallback 必须共用总计 3 次预算')
+  assert.ok(fallbackSequence.calls[1].at - fallbackSequence.calls[0].at >= 175)
+  assert.ok(fallbackSequence.calls[2].at - fallbackSequence.calls[1].at >= 375)
+
+  const directFallbackSequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 400 }).response,
+    noteDownloadResponse([fallbackBytes]).response
+  ])
+  const directFallbackClient = createNoteDownloadClient(directFallbackSequence)
+  await withNoteDownloadFile(tempRoot, 'fallback-400', async (fileHandle) => {
+    await directFallbackClient.downloadTokenToFile('fileSequenceToken123', '', {
+      fileHandle,
+      maxBytes: 1024
+    })
+  })
+  assertNoteDownloadCalls(directFallbackSequence.calls, [mediaPath, filePath])
+
+  const exhaustedResponses = Array.from({ length: 3 }, () => noteDownloadResponse([], { status: 503 }))
+  const exhaustedSequence = createNoteDownloadSequence(exhaustedResponses.map((entry) => entry.response))
+  const exhaustedClient = createNoteDownloadClient(exhaustedSequence)
+  await withNoteDownloadFile(tempRoot, 'exhausted-budget', async (fileHandle) => {
+    await assert.rejects(
+      () => exhaustedClient.downloadTokenToFile('fileSequenceToken123', '', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error.statusCode === 503,
+      '临时 HTTP 失败耗尽 3 次后必须返回最后错误'
+    )
+    assert.strictEqual((await fileHandle.stat()).size, 0)
+  })
+  assertNoteDownloadCalls(exhaustedSequence.calls, [mediaPath, mediaPath, mediaPath])
+  assert.strictEqual(exhaustedSequence.remaining(), 0, '临时失败耗尽原端点预算后不得再 fallback 成第 4 次请求')
+  for (const response of exhaustedResponses) {
+    assert.strictEqual(response.bodyCancelled(), 1, '每个失败 HTTP 响应体都必须在下一次请求前取消')
+  }
+
+  const drive404Sequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 404 }).response,
+    noteDownloadResponse([], { status: 404 }).response
+  ])
+  const drive404Client = createNoteDownloadClient(drive404Sequence)
+  await withNoteDownloadFile(tempRoot, 'drive-file-404', async (fileHandle) => {
+    await assert.rejects(
+      () => drive404Client.downloadTokenToFile('fileSequenceToken123', 'drive-file', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error.statusCode === 404
+    )
+  })
+  assertNoteDownloadCalls(drive404Sequence.calls, [filePath, filePath])
+}
+
+async function testDownloadPermanentFailuresAndAbort(tempRoot) {
+  const permanentCases = [
+    ['http-401', noteDownloadResponse([], { status: 401 }).response],
+    ['http-403', noteDownloadResponse([], { status: 403 }).response],
+    ['http-409', noteDownloadResponse([], { status: 409 }).response],
+    ['http-413', noteDownloadResponse([], { status: 413 }).response],
+    ['http-416', noteDownloadResponse([], { status: 416 }).response],
+    ['http-422', noteDownloadResponse([], { status: 422 }).response],
+    ['undici-aborted', { throwValue: noteDownloadError('UND_ERR_ABORTED') }],
+    ['undici-size-limit', { throwValue: noteDownloadError('UND_ERR_RES_EXCEEDED_MAX_SIZE') }],
+    ['content-encoding', noteDownloadResponse([Buffer.from('encoded')], { contentEncoding: 'gzip' }).response],
+    ['too-large', noteDownloadResponse([Buffer.alloc(32)], { contentLength: 32 }).response, 16]
+  ]
+  for (const [label, response, caseMaxBytes = 1024] of permanentCases) {
+    const sequence = createNoteDownloadSequence([response])
+    const client = createNoteDownloadClient(sequence)
+    await withNoteDownloadFile(tempRoot, `permanent-${label}`, async (fileHandle) => {
+      await assert.rejects(
+        () => client.downloadTokenToFile('fileSequenceToken123', '', {
+          fileHandle,
+          maxBytes: caseMaxBytes
+        })
+      )
+      assert.strictEqual((await fileHandle.stat()).size, 0)
+    })
+    assert.strictEqual(sequence.calls.length, 1, `${label} 是确定性失败，既不得重试也不得 fallback`)
+  }
+
+  const abortController = new AbortController()
+  const abortSequence = createNoteDownloadSequence([
+    (options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('synthetic aborted fetch')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    })
+  ])
+  const abortClient = createNoteDownloadClient(abortSequence)
+  await withNoteDownloadFile(tempRoot, 'external-abort', async (fileHandle) => {
+    const download = abortClient.downloadTokenToFile('fileSequenceToken123', '', {
+      fileHandle,
+      maxBytes: 1024,
+      signal: abortController.signal
+    })
+    setTimeout(() => abortController.abort(), 10)
+    await assert.rejects(
+      () => download,
+      (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_ABORTED'
+    )
+  })
+  assert.strictEqual(abortSequence.calls.length, 1, '外部 abort 必须终止当前请求且不得重试或 fallback')
+
+  let abortedReads = 0
+  let addedListeners = 0
+  let removedListeners = 0
+  const racedAbortSignal = {
+    get aborted() {
+      abortedReads += 1
+      return abortedReads >= 2
+    },
+    addEventListener() { addedListeners += 1 },
+    removeEventListener() { removedListeners += 1 }
+  }
+  const racedAbortSequence = createNoteDownloadSequence([
+    noteDownloadResponse([Buffer.from('must-not-request')]).response
+  ])
+  const racedAbortClient = createNoteDownloadClient(racedAbortSequence)
+  await withNoteDownloadFile(tempRoot, 'raced-external-abort', async (fileHandle) => {
+    await fileHandle.writeFile(Buffer.from('stale-aborted-bytes'))
+    await assert.rejects(
+      () => racedAbortClient.downloadTokenToFile('fileSequenceToken123', '', {
+        fileHandle,
+        maxBytes: 1024,
+        signal: racedAbortSignal
+      }),
+      (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_ABORTED'
+    )
+    assert.strictEqual((await fileHandle.stat()).size, 0, '注册监听时竞态取消也必须清空复用目标文件')
+  })
+  assert.strictEqual(racedAbortSequence.calls.length, 0, '初检与监听注册之间的 abort 不得漏发一次请求')
+  assert.strictEqual(addedListeners, 1)
+  assert.strictEqual(removedListeners, 1)
+}
+
+async function testDownloadLocalIoAndCleanupStop(tempRoot) {
+  await withNoteDownloadFile(tempRoot, 'local-write', async (realHandle) => {
+    const localIoSequence = createNoteDownloadSequence([
+      noteDownloadResponse([Buffer.from('write-must-fail')]).response
+    ])
+    const client = createNoteDownloadClient(localIoSequence)
+    const fileHandle = {
+      truncate: realHandle.truncate.bind(realHandle),
+      async write() {
+        const error = noteDownloadError('EIO', 'synthetic local write failure')
+        error.statusCode = 503
+        error.cause = noteDownloadError('ECONNRESET', '不得穿透本地 IO 主错误读取网络 cause')
+        throw error
+      }
+    }
+    await assert.rejects(
+      () => client.downloadTokenToFile('fileSequenceToken123', '', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error.code === 'EIO'
+    )
+    assert.strictEqual(localIoSequence.calls.length, 1, '本地 IO 错误不得重试或 fallback')
+  })
+
+  await withNoteDownloadFile(tempRoot, 'cleanup-stop', async (realHandle) => {
+    let truncateCalls = 0
+    const fileHandle = {
+      write: realHandle.write.bind(realHandle),
+      async truncate(size) {
+        truncateCalls += 1
+        if (truncateCalls === 3) throw noteDownloadError('EIO', 'synthetic cleanup failure')
+        return realHandle.truncate(size)
+      }
+    }
+    const streamError = noteDownloadError('ECONNRESET', 'synthetic partial stream failure')
+    const sequence = createNoteDownloadSequence([
+      noteDownloadResponse([Buffer.from('partial')], { terminalError: streamError }).response
+    ])
+    const client = createNoteDownloadClient(sequence)
+    await assert.rejects(
+      () => client.downloadTokenToFile('fileSequenceToken123', '', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error.code === 'FEISHU_MATERIAL_FILE_CLEANUP_FAILED'
+    )
+    assert.strictEqual(truncateCalls, 3, '清理失败后不得再次清理并掩盖结论')
+    assert.strictEqual(sequence.calls.length, 1, '清理失败必须立即终止，禁止重试或 fallback')
+  })
+}
+
+async function testDownloadSharedDeadline(tempRoot) {
+  const sequence = createNoteDownloadSequence([
+    { throwValue: noteDownloadError('ECONNRESET') },
+    (options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('synthetic deadline abort')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    }),
+    noteDownloadResponse([Buffer.from('must-not-run')]).response
+  ])
+  const client = createNoteDownloadClient(sequence, 350)
+  const startedAt = Date.now()
+  await withNoteDownloadFile(tempRoot, 'shared-deadline', async (fileHandle) => {
+    await assert.rejects(
+      () => client.downloadTokenToFile('fileSequenceToken123', '', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_TIMEOUT'
+    )
+  })
+  const elapsed = Date.now() - startedAt
+  assert.strictEqual(sequence.calls.length, 2, '第二次挂起不得刷新总体 deadline 或发出第三次请求')
+  assert.strictEqual(sequence.remaining(), 1)
+  assert.ok(elapsed >= 300 && elapsed < 700, `总体 deadline 应接近原始 350ms，实际 ${elapsed}ms`)
+}
+
+async function testDownloadRetryContract(tempRoot) {
+  await testDownloadTransientRetryAndReset(tempRoot)
+  await testDownloadRetryableClosedSet(tempRoot)
+  await testDownloadGlobalBudgetAndFallback(tempRoot)
+  await testDownloadPermanentFailuresAndAbort(tempRoot)
+  await testDownloadLocalIoAndCleanupStop(tempRoot)
+  await testDownloadSharedDeadline(tempRoot)
 }
 
 function objectKeyFromPath(requestPath) {
@@ -499,6 +928,7 @@ async function main() {
     earlyPutConflict = null
     slowDripResponse = false
     fs.promises.open = originalPromisesOpen
+    await testDownloadRetryContract(tempRoot)
   } finally {
     https.request = originalRequest
     fs.readFile = originalReadFile

@@ -728,6 +728,124 @@ function fileStreamResponse(filePath, contentType = 'video/mp4') {
   }
 }
 
+function createReadFailureSequenceHarness(steps) {
+  if (!Array.isArray(steps) || !steps.length) throw new TypeError('读取失败序列夹具缺少步骤')
+  const pending = steps.slice()
+  const calls = []
+  return {
+    calls,
+    remaining() {
+      return pending.length
+    },
+    async fetchImpl(url, options = {}) {
+      if (!pending.length) throw new Error('读取失败序列夹具收到额外请求')
+      const parsed = new URL(url)
+      const headers = options.headers && typeof options.headers === 'object' ? options.headers : {}
+      const call = {
+        method: String(options.method || 'GET').toUpperCase(),
+        pathname: parsed.pathname,
+        search: parsed.search,
+        redirect: options.redirect,
+        contentType: String(headers['Content-Type'] || headers['content-type'] || ''),
+        body: typeof options.body === 'string' ? options.body : null
+      }
+      calls.push(call)
+      const step = pending.shift()
+      if (step && Object.prototype.hasOwnProperty.call(step, 'throwValue')) throw step.throwValue
+      return typeof step === 'function' ? step(call) : step
+    }
+  }
+}
+
+async function testReadFailureSequenceHarness() {
+  const scenarios = [
+    {
+      label: '解析知识库节点',
+      expectedMethod: 'GET',
+      expectedPath: '/open-apis/wiki/v2/spaces/get_node',
+      expectedSearch: '?token=wikiSequenceToken123',
+      success: () => jsonResponse({
+        node: { obj_token: 'docxSequenceToken123', obj_type: 'docx' }
+      }),
+      invoke: (client) => client.resolveWikiNode('wikiSequenceToken123'),
+      assertResult(result) {
+        assert.deepStrictEqual(result, { objToken: 'docxSequenceToken123', objType: 'docx' })
+      }
+    },
+    {
+      label: '读取文件元数据',
+      expectedMethod: 'POST',
+      expectedPath: '/open-apis/drive/v1/metas/batch_query',
+      expectedSearch: '',
+      success: () => jsonResponse({
+        metas: [{
+          doc_token: 'fileSequenceToken123',
+          title: '序列素材.mp4',
+          doc_type: 'file',
+          latest_modify_time: 'synthetic-time',
+          size: 321
+        }]
+      }),
+      invoke: (client) => client.getFile('fileSequenceToken123'),
+      assertResult(result) {
+        assert.strictEqual(result.token, 'fileSequenceToken123')
+        assert.strictEqual(result.size, 321)
+      },
+      assertCall(call) {
+        assert.strictEqual(call.contentType, 'application/json; charset=utf-8')
+        assert.deepStrictEqual(JSON.parse(call.body), {
+          request_docs: [{ doc_token: 'fileSequenceToken123', doc_type: 'file' }],
+          with_url: false
+        })
+      }
+    },
+    {
+      label: '下载源文件',
+      expectedMethod: 'GET',
+      expectedPath: '/open-apis/drive/v1/files/fileSequenceToken123/download',
+      expectedSearch: '',
+      success: () => bufferResponse('fresh-download-bytes'),
+      invoke: (client) => client.downloadToken('fileSequenceToken123', 'drive-file'),
+      assertResult(result) {
+        assert.strictEqual(result.buffer.toString(), 'fresh-download-bytes')
+      }
+    }
+  ]
+
+  for (const scenario of scenarios) {
+    const sentinel = new Error(`synthetic-${scenario.label}`)
+    const harness = createReadFailureSequenceHarness([
+      { throwValue: sentinel },
+      scenario.success
+    ])
+    const client = createFeishuNoteMaterialClient({
+      accessToken: 'syntheticTenantToken123',
+      fetchImpl: harness.fetchImpl
+    })
+    let observed = null
+    try {
+      await scenario.invoke(client)
+    } catch (error) {
+      observed = error
+    }
+    assert.strictEqual(observed, sentinel, `${scenario.label}首个无分类失败必须可按身份观测`)
+    assert.strictEqual(harness.calls.length, 1, `${scenario.label}在固定重试分类前不得由夹具猜测第二次请求`)
+    assert.strictEqual(harness.remaining(), 1)
+
+    const result = await scenario.invoke(client)
+    scenario.assertResult(result)
+    assert.strictEqual(harness.calls.length, 2, `${scenario.label}显式第二次调用必须消费成功步骤`)
+    assert.strictEqual(harness.remaining(), 0)
+    for (const call of harness.calls) {
+      assert.strictEqual(call.method, scenario.expectedMethod)
+      assert.strictEqual(call.pathname, scenario.expectedPath)
+      assert.strictEqual(call.search, scenario.expectedSearch)
+      assert.strictEqual(call.redirect, 'error')
+      if (typeof scenario.assertCall === 'function') scenario.assertCall(call)
+    }
+  }
+}
+
 async function testSourceClientHardReadOnly() {
   let fetchCount = 0
   const client = createBitableClient({
@@ -2556,6 +2674,7 @@ async function run() {
     await testLegacyMaterialEvidenceBindsLocalBytes()
     await testLegacyDrivePaginationAndJsonDeadline()
     await testNoteMaterialJsonBodyDeadline()
+    await testReadFailureSequenceHarness()
     await testSourceClientHardReadOnly()
     await testDriveHierarchyAndRedirectPolicy()
     await testDrivePaginationContract()
