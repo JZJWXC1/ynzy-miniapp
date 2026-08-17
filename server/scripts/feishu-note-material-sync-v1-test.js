@@ -7,7 +7,10 @@ const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
 const domain = require('../src/domain')
-const { createFeishuNoteMaterialClient } = require('../src/feishu-note-material-client')
+const {
+  createFeishuNoteMaterialClient,
+  SMALL_UPLOAD_LIMIT
+} = require('../src/feishu-note-material-client')
 const noteMaterialSync = require('../src/feishu-note-material-sync')
 const {
   assertIsolatedStatePaths,
@@ -367,6 +370,405 @@ async function testStreamingMaterialClient() {
     crypto.createHash('sha256').update(legacyBody).digest('hex'),
     '旧 downloadToken SHA-256 语义不得改变'
   )
+}
+
+async function testBitableAttachmentUploadUsesDedicatedMediaScope() {
+  const body = Buffer.from('standardized-primary-video-for-bitable')
+  const contentSha256 = crypto.createHash('sha256').update(body).digest('hex')
+  const requests = []
+  const client = createStreamingClient(async (url, options) => {
+    const chunks = []
+    for await (const chunk of options.body) chunks.push(Buffer.from(chunk))
+    requests.push({ url, options, multipartBody: Buffer.concat(chunks).toString('utf8') })
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          code: 0,
+          data: { file_token: 'bitableAttachmentToken123' }
+        }
+      }
+    }
+  })
+
+  await withTemporaryFile(async (fileHandle, targetPath) => {
+    await fileHandle.write(body, 0, body.length, 0)
+    await fileHandle.sync()
+    const result = await client.uploadBitableFileDescriptor({
+      filePath: targetPath,
+      size: body.length,
+      contentType: 'video/mp4',
+      contentSha256
+    }, 'targetBitableAppToken123', `YNZY-${contentSha256}.mp4`)
+
+    assert.strictEqual(requests.length, 1, '小于 20 MiB 的附件只允许一次完整素材上传')
+    assert.match(requests[0].url, /\/drive\/v1\/medias\/upload_all$/, 'Base 附件必须走 medias 而不是 explorer files 接口')
+    assert.match(requests[0].multipartBody, /name="parent_type"\r\n\r\nbitable_file\r\n/, 'Base 视频必须上传为 bitable_file')
+    assert.match(requests[0].multipartBody, /name="parent_node"\r\n\r\ntargetBitableAppToken123\r\n/, 'parent_node 必须是目标 Base app_token')
+    assert.match(
+      requests[0].multipartBody,
+      /name="extra"\r\n\r\n\{"drive_route_token":"targetBitableAppToken123"\}\r\n/,
+      'Base 小附件必须携带精确 drive_route_token 路由'
+    )
+    assert.notStrictEqual(
+      result.fileToken,
+      'explorerDriveFileTokenMustNotBeReused',
+      'Explorer 云盘 token 不能直接复用为 Base 附件 token'
+    )
+    assert.strictEqual(result.contentSha256, contentSha256, '附件上传结果必须绑定同一标准化成品摘要')
+    assert.strictEqual(result.size, body.length, '附件上传结果必须绑定同一标准化成品大小')
+  })
+}
+
+async function testLargeBitableAttachmentUsesStreamingMediaParts() {
+  const size = SMALL_UPLOAD_LIMIT + 1
+  const zeroChunk = Buffer.alloc(64 * 1024)
+  const hash = crypto.createHash('sha256')
+  let remaining = size
+  while (remaining > 0) {
+    const chunk = remaining >= zeroChunk.length ? zeroChunk : zeroChunk.subarray(0, remaining)
+    hash.update(chunk)
+    remaining -= chunk.length
+  }
+  const contentSha256 = hash.digest('hex')
+  const endpoints = []
+  const partBytes = []
+  let dispatches = 0
+  const blockSize = 8 * 1024 * 1024
+  const blockNum = Math.ceil(size / blockSize)
+  const client = createStreamingClient(async (url, options) => {
+    endpoints.push(url)
+    if (/\/medias\/upload_prepare$/.test(url)) {
+      const prepared = JSON.parse(options.body)
+      assert.strictEqual(prepared.parent_type, 'bitable_file', '大附件 prepare 必须保持 bitable_file')
+      assert.strictEqual(prepared.parent_node, 'targetBaseLargeMedia123', '大附件 prepare 必须绑定目标 Base')
+      assert.deepStrictEqual(
+        JSON.parse(prepared.extra),
+        { drive_route_token: 'targetBaseLargeMedia123' },
+        'Base 大附件 prepare 必须携带精确 drive_route_token 路由'
+      )
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { code: 0, data: { upload_id: 'largeMediaUpload123', block_size: blockSize, block_num: blockNum } }
+        }
+      }
+    }
+    if (/\/medias\/upload_part$/.test(url)) {
+      let bytes = 0
+      for await (const chunk of options.body) bytes += Buffer.byteLength(chunk)
+      partBytes.push(bytes)
+      return { ok: true, status: 200, async json() { return { code: 0, data: {} } } }
+    }
+    assert.match(url, /\/medias\/upload_finish$/, '分片上传最后必须调用 medias upload_finish')
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { code: 0, data: { file_token: 'bitableLargeAttachmentToken123' } } }
+    }
+  }, { maxBytes: size + 1024 })
+
+  const originalReadFile = fs.readFile
+  try {
+    fs.readFile = async () => { throw new Error('大附件上传禁止整文件 readFile') }
+    await withTemporaryFile(async (fileHandle, targetPath) => {
+      await fileHandle.truncate(size)
+      await fileHandle.sync()
+      const result = await client.uploadBitableFileDescriptor({
+        filePath: targetPath,
+        size,
+        contentType: 'video/mp4',
+        contentSha256
+      }, 'targetBaseLargeMedia123', `YNZY-${contentSha256}.mp4`, () => {
+        dispatches += 1
+      })
+      assert.strictEqual(result.fileToken, 'bitableLargeAttachmentToken123')
+    })
+  } finally {
+    fs.readFile = originalReadFile
+  }
+  assert.strictEqual(endpoints.filter((url) => /\/medias\/upload_part$/.test(url)).length, blockNum, '大附件必须按飞书策略逐片上传')
+  assert.strictEqual(dispatches, blockNum + 2, 'prepare、每个 part 与 finish 都必须逐请求派发写意图')
+  assert.ok(partBytes.every((bytes) => bytes > 0 && bytes < size), '每个 multipart 请求只能流式携带当前分片')
+  assert.ok(endpoints.every((url) => /\/drive\/v1\/medias\//.test(url)), 'Base 大附件全程不得调用 explorer files 接口')
+}
+
+async function testPrimaryVideoAttachmentPublishesAfterWholeMaterialSet() {
+  const events = []
+  const sourceBodies = new Map(syntheticAssets().map((asset) => [
+    asset.sourceToken,
+    Buffer.from(`target-body:${asset.sourceToken}`)
+  ]))
+  const result = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-record-primary-target',
+    assets: syntheticAssets(),
+    existingMediaAssets: [],
+    uploadDir: 'house-videos',
+    drive: {
+      writeDispatchEvidenceVersion: 1,
+      async downloadToken(sourceToken) {
+        const buffer = Buffer.from(sourceBodies.get(sourceToken))
+        return {
+          buffer,
+          size: buffer.length,
+          contentType: 'video/mp4',
+          contentSha256: crypto.createHash('sha256').update(buffer).digest('hex')
+        }
+      },
+      async ensureListingFolder() {
+        return { token: 'target-folder-primary-attachment' }
+      },
+      async materializeAsset(input) {
+        events.push(`drive:${input.asset.sourceToken}`)
+        return {
+          targetToken: `explorer-${input.asset.sourceToken}`,
+          targetName: input.targetName,
+          contentType: input.sourceEvidence.contentType,
+          contentSha256: input.sourceEvidence.contentSha256,
+          size: input.sourceEvidence.size,
+          verified: true
+        }
+      }
+    },
+    oss: {
+      writeDispatchEvidenceVersion: 1,
+      async putMaterialDeterministic(input) {
+        events.push(`oss:${input.objectKey}`)
+        return {
+          objectKey: input.objectKey,
+          contentSha256: input.contentSha256,
+          size: input.size,
+          verified: true
+        }
+      }
+    },
+    primaryVideoAttachment: {
+      writeDispatchEvidenceVersion: 1,
+      async verifyExact() {
+        return { verified: false, expectedStateKey: 'target-video-state-before' }
+      },
+      async publishExact(input) {
+        events.push(`bitable:${input.assetId}`)
+        return {
+          verified: true,
+          contentSha256: input.contentSha256,
+          size: input.size,
+          contentType: input.contentType,
+          attachmentTokenFingerprint: 'a'.repeat(64),
+          targetRecordFingerprint: 'b'.repeat(64)
+        }
+      }
+    }
+  })
+
+  assert.strictEqual(events.filter((item) => item.startsWith('bitable:')).length, 1, '每套房只允许主视频写入一次目标附件列')
+  assert.ok(events[events.length - 1].startsWith('bitable:'), '整套其他素材全部通过 Drive/OSS 后才允许更新目标附件')
+  assert.strictEqual(result.primaryTargetAttachment.verified, true, '结果必须携带已回读的目标附件内容证据')
+  assert.strictEqual(
+    result.primaryTargetAttachment.contentSha256,
+    result.primaryVideo.contentSha256,
+    '目标附件必须与确定的 primaryVideo 内容完全相同'
+  )
+}
+
+async function testPrimaryTargetFailureReuseAndNoopBoundaries() {
+  const assets = syntheticAssets()
+  const sourceBodies = new Map(assets.map((asset) => [
+    asset.sourceToken,
+    Buffer.from(`target-idempotency:${asset.sourceToken}`)
+  ]))
+  const counters = {
+    driveWrites: 0,
+    ossWrites: 0,
+    targetPublishes: 0,
+    targetDispatches: 0
+  }
+  const drive = {
+    writeDispatchEvidenceVersion: 1,
+    async downloadToken(sourceToken) {
+      const buffer = Buffer.from(sourceBodies.get(sourceToken))
+      return {
+        buffer,
+        size: buffer.length,
+        contentType: 'video/mp4',
+        contentSha256: crypto.createHash('sha256').update(buffer).digest('hex')
+      }
+    },
+    async ensureListingFolder() { return { token: 'target-idempotency-folder' } },
+    async materializeAsset(input) {
+      counters.driveWrites += 1
+      return {
+        targetToken: `target-idempotency-${input.asset.sourceToken}`,
+        targetName: input.targetName,
+        contentType: input.sourceEvidence.contentType,
+        contentSha256: input.sourceEvidence.contentSha256,
+        size: input.sourceEvidence.size,
+        verified: true
+      }
+    }
+  }
+  const oss = {
+    writeDispatchEvidenceVersion: 1,
+    async putMaterialDeterministic(input) {
+      counters.ossWrites += 1
+      return {
+        objectKey: input.objectKey,
+        contentSha256: input.contentSha256,
+        size: input.size,
+        verified: true
+      }
+    }
+  }
+  const publishingAttachment = {
+    writeDispatchEvidenceVersion: 1,
+    async verifyExact() { return { verified: false, expectedStateKey: 'target-before-first-publish' } },
+    async publishExact(input) {
+      counters.targetPublishes += 1
+      return {
+        verified: true,
+        contentSha256: input.contentSha256,
+        size: input.size,
+        contentType: input.contentType,
+        attachmentTokenFingerprint: 'd'.repeat(64),
+        targetRecordFingerprint: 'e'.repeat(64)
+      }
+    }
+  }
+  const first = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-target-idempotency',
+    assets,
+    existingMediaAssets: [],
+    uploadDir: 'house-videos',
+    drive,
+    oss,
+    primaryVideoAttachment: publishingAttachment
+  })
+  assert.strictEqual(first.noop, false, '首次 Drive/OSS/目标表发布不得报告 noop')
+  assert.strictEqual(first.counts.targetMediaUploaded, 1, '首次目标附件上传必须计数')
+  assert.strictEqual(first.counts.targetRecordUpdated, 1, '首次目标记录更新必须计数')
+
+  const exactAttachment = {
+    writeDispatchEvidenceVersion: 1,
+    async verifyExact() {
+      return {
+        verified: true,
+        contentSha256: first.primaryVideo.contentSha256,
+        size: first.primaryVideo.size,
+        contentType: first.primaryVideo.mimeType,
+        attachmentTokenFingerprint: 'd'.repeat(64),
+        targetRecordFingerprint: 'e'.repeat(64)
+      }
+    },
+    async publishExact() { throw new Error('二次精确同步不得发布目标附件') }
+  }
+  const driveWritesBeforeReuse = counters.driveWrites
+  const ossWritesBeforeReuse = counters.ossWrites
+  const publishesBeforeReuse = counters.targetPublishes
+  const reused = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-target-idempotency',
+    assets,
+    existingMediaAssets: first.mediaAssets,
+    uploadDir: 'house-videos',
+    drive,
+    oss,
+    primaryVideoAttachment: exactAttachment,
+    async verifyExisting() {
+      return { sourceVerified: true, driveVerified: true, ossVerified: true }
+    }
+  })
+  assert.strictEqual(reused.noop, true, '连续第二轮内容、token 与真字节一致时必须报告 noop')
+  assert.strictEqual(counters.driveWrites, driveWritesBeforeReuse, '第二轮不得重复写 Drive')
+  assert.strictEqual(counters.ossWrites, ossWritesBeforeReuse, '第二轮不得重复写 OSS')
+  assert.strictEqual(counters.targetPublishes, publishesBeforeReuse, '第二轮不得重复上传或更新目标表')
+  assert.deepStrictEqual(
+    [reused.counts.targetMediaUploaded, reused.counts.targetRecordUpdated, reused.counts.targetAttachmentReused],
+    [0, 0, 1],
+    '第二轮计数必须明确区分目标附件复用与外写'
+  )
+
+  const missingTargetAttachment = {
+    writeDispatchEvidenceVersion: 1,
+    async verifyExact() { return { verified: false, expectedStateKey: 'target-before-backfill' } },
+    async publishExact(input) {
+      counters.targetPublishes += 1
+      return {
+        verified: true,
+        contentSha256: input.contentSha256,
+        size: input.size,
+        contentType: input.contentType,
+        attachmentTokenFingerprint: 'f'.repeat(64),
+        targetRecordFingerprint: '1'.repeat(64)
+      }
+    }
+  }
+  const backfilled = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-target-idempotency',
+    assets,
+    existingMediaAssets: first.mediaAssets,
+    uploadDir: 'house-videos',
+    drive: {
+      ...drive,
+      async materializeAsset() { throw new Error('目标表首次补附件不得重复写 Drive') }
+    },
+    oss: {
+      ...oss,
+      async putMaterialDeterministic() { throw new Error('目标表首次补附件不得重复写 OSS') }
+    },
+    primaryVideoAttachment: missingTargetAttachment,
+    async verifyExisting() {
+      return { sourceVerified: true, driveVerified: true, ossVerified: true }
+    }
+  })
+  assert.strictEqual(backfilled.noop, false, 'Drive/OSS 已复用但首次补目标附件不能报告 noop')
+  assert.deepStrictEqual(
+    [backfilled.counts.transferred, backfilled.counts.targetMediaUploaded, backfilled.counts.targetRecordUpdated],
+    [0, 1, 1],
+    '目标表首次补附件必须只计目标 media/Base 外写'
+  )
+
+  let dryPublishCalls = 0
+  let dryDispatchCalls = 0
+  const dry = await syncNoteMaterialVideos({
+    sourceRecordId: 'source-target-idempotency',
+    assets,
+    uploadDir: 'house-videos',
+    drive,
+    oss,
+    dryRun: true,
+    onExternalWriteDispatched() { dryDispatchCalls += 1 },
+    primaryVideoAttachment: {
+      writeDispatchEvidenceVersion: 1,
+      async verifyExact() { return { verified: false, expectedStateKey: 'dry-target-state' } },
+      async publishExact() { dryPublishCalls += 1 },
+      async clearExact() { dryPublishCalls += 1 }
+    }
+  })
+  assert.strictEqual(dry.dryRun, true, '目标附件 dry-run 必须保留只读计划语义')
+  assert.deepStrictEqual([dryPublishCalls, dryDispatchCalls], [0, 0], 'dry-run 的 media/Base 外写和 dispatch 必须全为 0')
+
+  let failureTargetPublishes = 0
+  await assert.rejects(
+    () => syncNoteMaterialVideos({
+      sourceRecordId: 'source-target-failure-before-primary',
+      assets,
+      uploadDir: 'house-videos',
+      drive,
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic() { throw new Error('其他素材 OSS 回读失败') }
+      },
+      primaryVideoAttachment: {
+        writeDispatchEvidenceVersion: 1,
+        async verifyExact() { return { verified: false, expectedStateKey: 'target-stays-old' } },
+        async publishExact() { failureTargetPublishes += 1 }
+      }
+    }),
+    /其他素材 OSS 回读失败/,
+    '其他素材失败必须在 primary 目标附件发布前中止'
+  )
+  assert.strictEqual(failureTargetPublishes, 0, '后续素材失败时目标旧附件必须保持未触碰')
 }
 
 function preparedVideoFixture() {
@@ -864,6 +1266,293 @@ async function testInventoryForwardsExternalWriteDispatchBoundary() {
   assert.strictEqual(possibleWriteCalls, 0, '库存入口的外层写意图未落盘时不得调用任何可能写适配器')
 }
 
+function identityChangedFailureListing(recordId, suffix = '') {
+  return {
+    id: `listing-note-target-failure${suffix}`,
+    feishuRecordId: recordId,
+    status: '在租',
+    lifecycleStatus: 'active',
+    district: '拱墅区',
+    block: '新天地',
+    community: '测试小区',
+    building: '1幢',
+    unit: '1单元',
+    roomNumber: '101',
+    videoKey: `house-videos/feishu-note-v1/old${suffix}.mp4`,
+    mediaAssets: [{
+      assetId: `old-note-video${suffix}`,
+      kind: 'video',
+      objectKey: `house-videos/feishu-note-v1/old${suffix}.mp4`,
+      contentSha256: '1'.repeat(64),
+      sourceFingerprint: `old-source${suffix}`,
+      targetDriveFingerprint: '2'.repeat(64),
+      displayOrder: 0,
+      mimeType: 'video/mp4',
+      size: 10,
+      verified: true
+    }],
+    noteMaterialState: {
+      sourceLinkFingerprint: '3'.repeat(64),
+      physicalUnitFingerprint: '4'.repeat(64),
+      status: 'verified',
+      primaryTargetAttachment: {
+        version: 1,
+        sourceRecordFingerprint: crypto.createHash('sha256').update(recordId).digest('hex'),
+        physicalUnitFingerprint: '4'.repeat(64),
+        targetRecordFingerprint: '5'.repeat(64),
+        attachmentTokenFingerprint: '6'.repeat(64),
+        contentSha256: '1'.repeat(64),
+        size: 10,
+        contentType: 'video/mp4'
+      }
+    }
+  }
+}
+
+function continuousActiveFailureListing(recordId, suffix = '') {
+  const listing = identityChangedFailureListing(recordId, suffix)
+  const currentPhysical = crypto.createHash('sha256').update([
+    listing.district,
+    listing.block,
+    listing.community,
+    listing.building,
+    listing.unit,
+    listing.roomNumber
+  ].join('\n')).digest('hex')
+  listing.noteMaterialState.physicalUnitFingerprint = currentPhysical
+  listing.noteMaterialState.primaryTargetAttachment.physicalUnitFingerprint = currentPhysical
+  return listing
+}
+
+function failureCleanupAdapter(calls, options = {}) {
+  return {
+    writeDispatchEvidenceVersion: 1,
+    async verifyExact(input) {
+      calls.push(input.primaryVideo ? 'verify-primary' : 'verify-empty')
+      if (input.primaryVideo) return { verified: false, expectedStateKey: 'target-before-primary' }
+      return {
+        verified: false,
+        expectedStateKey: 'target-before-clear',
+        forceClearForIdentityChange: true
+      }
+    },
+    async publishExact() {
+      throw new Error('素材失败前不得发布目标附件')
+    },
+    async clearExact(input) {
+      calls.push('clear')
+      assert.strictEqual(input.forceClearForIdentityChange, true, '物理身份变化必须显式强制清理受管旧附件')
+      input.onWriteDispatched()
+      if (options.unknownAfterDispatch === true) throw new Error('synthetic target clear unknown')
+      input.onWriteVerified()
+      return { verified: true, cleared: true, recordUpdated: true }
+    }
+  }
+}
+
+async function testInactiveRowsSkipAndIdentityFailuresClearManagedTarget() {
+  const inactive = identityChangedFailureListing('record-note-inactive', '-inactive')
+  inactive.status = '已下架'
+  inactive.lifecycleStatus = 'expired'
+  const inactiveBefore = JSON.stringify(inactive)
+  let inactiveReads = 0
+  let inactiveAdapters = 0
+  const inactiveReport = await syncNoteMaterialsForInventory({
+    db: { listings: [inactive] },
+    sourceRows: [{
+      sourceRecordId: inactive.feishuRecordId,
+      value: 'https://example.test/drive/folder/non-empty-note-must-not-be-read'
+    }],
+    allowedHosts: ['example.test'],
+    drive: {
+      async listFolder() { inactiveReads += 1; throw new Error('非在租房源不得解析 Note') }
+    },
+    primaryVideoAttachmentForListing() {
+      inactiveAdapters += 1
+      throw new Error('非在租房源不得读取或写入目标附件')
+    }
+  })
+  assert.strictEqual(inactiveReport.complete, true, '非在租行必须从 Note 素材动作中过滤')
+  assert.strictEqual(inactiveReport.rows[0].status, 'inactive-skipped')
+  assert.deepStrictEqual([inactiveReads, inactiveAdapters], [0, 0], '撤下行必须零解析、零素材、零附件动作')
+  assert.strictEqual(JSON.stringify(inactive), inactiveBefore, '撤下行必须保留私有附件指纹供未来安全识别')
+
+  const deleted = identityChangedFailureListing('record-note-deleted', '-deleted')
+  deleted.status = '已下架'
+  deleted.lifecycleStatus = 'expired'
+  const deletedBefore = JSON.stringify(deleted)
+  const deletedReport = await syncNoteMaterialsForInventory({
+    db: { listings: [deleted] },
+    sourceRows: [],
+    primaryVideoAttachmentForListing() { throw new Error('源删除不得触发 Note 附件扫描') }
+  })
+  assert.strictEqual(deletedReport.complete, true)
+  assert.strictEqual(deletedReport.rows.length, 0, '源记录删除时 Note 不得扩展跨集合扫描')
+  assert.strictEqual(JSON.stringify(deleted), deletedBefore, '源删除后附件是否公开只由普通镜像下架事实控制')
+
+  const changedLink = continuousActiveFailureListing('record-note-changed-link', '-changed-link')
+  const changedLinkAssets = JSON.stringify(changedLink.mediaAssets)
+  const changedLinkVideoKey = changedLink.videoKey
+  const previousLinkFingerprint = changedLink.noteMaterialState.sourceLinkFingerprint
+  let changedLinkTargetCalls = 0
+  const changedLinkReport = await syncNoteMaterialsForInventory({
+    db: { listings: [changedLink] },
+    sourceRows: [{
+      sourceRecordId: changedLink.feishuRecordId,
+      value: 'https://example.test/drive/folder/fldChangedNoteLink123'
+    }],
+    allowedHosts: ['example.test'],
+    drive: {
+      async listFolder() {
+        const error = new Error('synthetic changed Note link temporary failure')
+        error.statusCode = 503
+        throw error
+      }
+    },
+    primaryVideoAttachmentForListing() {
+      changedLinkTargetCalls += 1
+      throw new Error('同物理持续在租的失败不得读写目标附件')
+    },
+    nowText: '2026-08-17T00:00:00.000Z'
+  })
+  assert.strictEqual(changedLinkReport.retained, 1, 'Note 链接变化后的临时失败必须保留上次已验证素材')
+  assert.strictEqual(changedLinkReport.rows[0].status, 'retained-temporary-failure')
+  assert.strictEqual(JSON.stringify(changedLink.mediaAssets), changedLinkAssets, '链接变化失败不得清本地素材')
+  assert.strictEqual(changedLink.videoKey, changedLinkVideoKey, '链接变化失败不得清小程序视频键')
+  assert.strictEqual(
+    changedLink.noteMaterialState.sourceLinkFingerprint,
+    previousLinkFingerprint,
+    '失败保留必须继续绑定上次成功的 Note 指纹，不能把失败链接伪装成已验证'
+  )
+  assert.strictEqual(changedLinkTargetCalls, 0, '失败保留不得产生目标附件读取或写入')
+
+  for (const failureKind of ['unsupported', 'over-limit']) {
+    const listing = continuousActiveFailureListing(
+      `record-note-${failureKind}`,
+      `-${failureKind}`
+    )
+    const beforeAssets = JSON.stringify(listing.mediaAssets)
+    let targetCalls = 0
+    const children = failureKind === 'unsupported'
+      ? [{ token: 'fileUnsupportedPdf123', name: '租赁合同.pdf', type: 'file', size: 10 }]
+      : Array.from({ length: domain.MAX_LISTING_MEDIA_ASSETS + 1 }, (_, index) => ({
+          token: `fileOverLimit${String(index).padStart(3, '0')}Token`,
+          name: `房源视频-${index}.mp4`,
+          type: 'file',
+          size: 10,
+          modifiedTime: '10'
+        }))
+    const report = await syncNoteMaterialsForInventory({
+      db: { listings: [listing] },
+      sourceRows: [{
+        sourceRecordId: listing.feishuRecordId,
+        value: `https://example.test/drive/folder/fld${failureKind.replace('-', '')}123`
+      }],
+      allowedHosts: ['example.test'],
+      drive: { async listFolder() { return children } },
+      primaryVideoAttachmentForListing() {
+        targetCalls += 1
+        throw new Error('同物理持续在租的规则失败不得读写目标附件')
+      }
+    })
+    assert.strictEqual(report.retained, 1, `${failureKind} 失败必须保留上次已验证素材`)
+    assert.strictEqual(
+      report.rows[0].status,
+      failureKind === 'unsupported' ? 'unsupported-non-video' : 'media-limit-exceeded'
+    )
+    assert.strictEqual(JSON.stringify(listing.mediaAssets), beforeAssets, `${failureKind} 失败不得清本地素材`)
+    assert.strictEqual(targetCalls, 0, `${failureKind} 失败不得产生目标附件读取或写入`)
+  }
+
+  const parseListing = identityChangedFailureListing('record-note-parse-failure', '-parse')
+  const parseCalls = []
+  const parseReport = await syncNoteMaterialsForInventory({
+    db: { listings: [parseListing] },
+    sourceRows: [{ sourceRecordId: parseListing.feishuRecordId, value: 'https://forbidden.test/note' }],
+    allowedHosts: ['example.test'],
+    primaryVideoAttachmentForListing(targetOptions) {
+      assert.strictEqual(targetOptions.failureCleanup, true, '解析前失败必须进入专用目标清理路径')
+      return failureCleanupAdapter(parseCalls)
+    }
+  })
+  assert.deepStrictEqual(parseCalls, ['verify-empty', 'clear'], '解析前失败必须先回读再清理受管旧附件')
+  assert.strictEqual(parseReport.failed, 1)
+  assert.strictEqual(parseReport.targetRecordUpdated, 1, '库存汇总必须计入失败清理产生的 Base 附件更新')
+  assert.strictEqual(parseReport.noop, false, '发生附件清理时库存素材报告不得误报 noop')
+  assert.strictEqual(parseListing.mediaAssets.length, 0, '目标清理确认后才允许清本地旧素材')
+  assert.strictEqual(
+    Object.prototype.hasOwnProperty.call(parseListing.noteMaterialState, 'primaryTargetAttachment'),
+    false,
+    '目标附件已确认清空后不得保留陈旧私有指纹'
+  )
+
+  const executionListing = identityChangedFailureListing('record-note-execution-failure', '-execution')
+  const executionCalls = []
+  const executionBody = Buffer.from('execution-failure-video')
+  const executionReport = await syncNoteMaterialsForInventory({
+    db: { listings: [executionListing] },
+    sourceRows: [{
+      sourceRecordId: executionListing.feishuRecordId,
+      value: 'https://example.test/drive/folder/fldExecutionFailure123'
+    }],
+    allowedHosts: ['example.test'],
+    uploadDir: 'house-videos',
+    drive: {
+      writeDispatchEvidenceVersion: 1,
+      async listFolder() {
+        return [{
+          token: 'fileExecutionFailure123',
+          name: '执行期失败.mp4',
+          type: 'file',
+          modifiedTime: '10',
+          size: executionBody.length
+        }]
+      },
+      async downloadToken() {
+        return {
+          buffer: Buffer.from(executionBody),
+          contentType: 'video/mp4',
+          contentSha256: crypto.createHash('sha256').update(executionBody).digest('hex'),
+          size: executionBody.length
+        }
+      },
+      async ensureListingFolder() {
+        const error = new Error('synthetic read-before-write failure')
+        error.statusCode = 503
+        throw error
+      }
+    },
+    oss: { writeDispatchEvidenceVersion: 1 },
+    primaryVideoAttachmentForListing(targetOptions) {
+      executionCalls.push(targetOptions.failureCleanup === true ? 'factory-cleanup' : 'factory-primary')
+      return failureCleanupAdapter(executionCalls)
+    }
+  })
+  assert.ok(executionCalls.includes('verify-primary'), '执行期必须先形成目标附件 CAS 计划')
+  assert.deepStrictEqual(
+    executionCalls.slice(-3),
+    ['factory-cleanup', 'verify-empty', 'clear'],
+    '执行期素材失败后必须另行双回读清理受管旧附件'
+  )
+  assert.strictEqual(executionReport.failed, 1)
+  assert.strictEqual(executionReport.targetAttachmentCleared, 1)
+  assert.strictEqual(executionListing.mediaAssets.length, 0)
+
+  const unknownListing = identityChangedFailureListing('record-note-clear-unknown', '-unknown')
+  await assert.rejects(
+    () => syncNoteMaterialsForInventory({
+      db: { listings: [unknownListing] },
+      sourceRows: [{ sourceRecordId: unknownListing.feishuRecordId, value: 'https://forbidden.test/note' }],
+      allowedHosts: ['example.test'],
+      primaryVideoAttachmentForListing() {
+        return failureCleanupAdapter([], { unknownAfterDispatch: true })
+      }
+    }),
+    (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+    '目标清空派发后结果不确定必须中止整轮，不能降级成可提交告警'
+  )
+}
+
 function successfulPreparedMaterialTargets(writeCalls, outputBuffer) {
   return {
     drive: {
@@ -988,6 +1677,186 @@ async function testPreparedMaterialFinallyDisposalRetry() {
       '外部内容寻址写已完成时只保留既有语义，不得因清理失败伪造回滚或重复写入'
     )
   }
+}
+
+async function testVerifiedTargetPublishCleanupWarningCommitsLocalState() {
+  const sourceRecordId = 'record-note-target-cleanup-warning'
+  const listing = continuousActiveFailureListing(sourceRecordId, '-cleanup-warning')
+  const oldVideoKey = listing.videoKey
+  const sourceBody = Buffer.from('cleanup-warning-source-video')
+  const outputBody = Buffer.from('cleanup-warning-standardized-video')
+  const sourceContentSha256 = crypto.createHash('sha256').update(sourceBody).digest('hex')
+  const outputContentSha256 = crypto.createHash('sha256').update(outputBody).digest('hex')
+  const profile = {
+    transformProfileVersion: 'cleanup-warning-profile-v1',
+    transformProfileSha256: crypto.createHash('sha256').update('cleanup-warning-profile').digest('hex'),
+    transformToolFingerprint: crypto.createHash('sha256').update('cleanup-warning-tool').digest('hex')
+  }
+  const writes = { drive: 0, oss: 0, target: 0, dispatch: 0 }
+  let retainedCleanupAttempts = 0
+  let targetEvidence = null
+  let targetFolderCreated = false
+
+  const drive = {
+    writeDispatchEvidenceVersion: 1,
+    async listFolder() {
+      return [{
+        token: 'fileCleanupWarningPrimary123',
+        name: '清理告警主视频.mp4',
+        type: 'file',
+        size: sourceBody.length,
+        modifiedTime: '10'
+      }]
+    },
+    async downloadToken() {
+      return {
+        buffer: Buffer.from(sourceBody),
+        contentType: 'video/mp4',
+        contentSha256: sourceContentSha256,
+        size: sourceBody.length
+      }
+    },
+    async ensureListingFolder(input) {
+      if (!targetFolderCreated) {
+        input.onWriteDispatched()
+        writes.drive += 1
+        targetFolderCreated = true
+        input.onWriteVerified()
+      }
+      return { token: 'folderCleanupWarningTarget123' }
+    },
+    async materializeAsset(input) {
+      input.onWriteDispatched()
+      writes.drive += 1
+      input.onWriteVerified()
+      return {
+        targetToken: 'explorerCleanupWarningFile123',
+        targetName: input.targetName,
+        contentType: input.sourceEvidence.contentType,
+        contentSha256: input.sourceEvidence.contentSha256,
+        size: input.sourceEvidence.size,
+        verified: true
+      }
+    },
+    async verifyMaterializedAsset() {
+      return { verified: true }
+    }
+  }
+  const oss = {
+    writeDispatchEvidenceVersion: 1,
+    async putMaterialDeterministic(input) {
+      input.onWriteDispatched()
+      writes.oss += 1
+      input.onWriteVerified()
+      return {
+        objectKey: input.objectKey,
+        contentSha256: input.contentSha256,
+        size: input.size,
+        verified: true
+      }
+    },
+    async verifyMaterialDeterministic() {
+      return { verified: true }
+    }
+  }
+  async function prepareMaterial({ sourceEvidence, keepPreparedFile }) {
+    return {
+      buffer: Buffer.from(outputBody),
+      keepPreparedFile: keepPreparedFile === true,
+      sourceContentSha256: sourceEvidence.contentSha256,
+      sourceSize: sourceEvidence.size,
+      sourceMimeType: sourceEvidence.contentType,
+      kind: 'video',
+      extension: 'mp4',
+      contentSha256: outputContentSha256,
+      size: outputBody.length,
+      contentType: 'video/mp4',
+      ...profile,
+      transformAction: 'transcode'
+    }
+  }
+  async function disposePreparedMaterial(prepared) {
+    if (prepared.keepPreparedFile !== true) return
+    retainedCleanupAttempts += 1
+    throw new Error('合成标准化临时文件清理失败')
+  }
+  function primaryVideoAttachmentForListing() {
+    return {
+      writeDispatchEvidenceVersion: 1,
+      async verifyExact(input) {
+        if (targetEvidence && input.primaryVideo &&
+            input.primaryVideo.contentSha256 === targetEvidence.contentSha256) {
+          return { ...targetEvidence }
+        }
+        return { verified: false, expectedStateKey: 'cleanup-warning-target-before' }
+      },
+      async publishExact(input) {
+        input.onWriteDispatched()
+        writes.target += 1
+        targetEvidence = {
+          verified: true,
+          contentSha256: input.contentSha256,
+          size: input.size,
+          contentType: input.contentType,
+          attachmentTokenFingerprint: '7'.repeat(64),
+          targetRecordFingerprint: '8'.repeat(64)
+        }
+        input.onWriteVerified()
+        return { ...targetEvidence }
+      }
+    }
+  }
+  const syncInput = {
+    db: { listings: [listing] },
+    sourceRows: [{
+      sourceRecordId,
+      value: 'https://example.test/drive/folder/fldCleanupWarningPrimary123'
+    }],
+    allowedHosts: ['example.test'],
+    uploadDir: 'house-videos',
+    targetRootFolderToken: 'fldCleanupWarningRoot123',
+    drive,
+    oss,
+    prepareMaterial,
+    disposePreparedMaterial,
+    primaryVideoAttachmentForListing,
+    onExternalWriteDispatched() { writes.dispatch += 1 },
+    nowText: '2026-08-17T08:00:00.000Z'
+  }
+
+  const first = await syncNoteMaterialsForInventory(syncInput)
+  assert.deepStrictEqual(
+    [first.complete, first.published, first.failed, first.cleanupWarnings, first.externalWriteStateUnknown === true],
+    [true, true, 0, 1, false],
+    '目标附件已双回读后，临时文件清理失败只能形成非致命脱敏告警'
+  )
+  assert.strictEqual(first.status, 'cleanup-warning', '清理告警必须有固定安全状态，不得包含原始异常')
+  assert.ok(!JSON.stringify(first).includes('合成标准化临时文件清理失败'), '清理告警不得回显底层异常正文')
+  assert.strictEqual(retainedCleanupAttempts, 2, '已验证发布后的临时文件清理必须恰好重试一次')
+  assert.notStrictEqual(listing.videoKey, oldVideoKey, '清理告警不得回退已经验证的新本地视频')
+  assert.strictEqual(listing.mediaAssets[0].contentSha256, outputContentSha256, '本地媒体清单必须提交新成品摘要')
+  assert.strictEqual(listing.noteMaterialState.status, 'verified', '本地 Note 状态必须提交为已验证')
+  assert.strictEqual(
+    listing.noteMaterialState.primaryTargetAttachment.contentSha256,
+    outputContentSha256,
+    '私有目标附件状态必须与新本地媒体绑定'
+  )
+  assert.deepStrictEqual([writes.drive, writes.oss, writes.target], [2, 1, 1], '首轮只允许目标链各写一次')
+
+  const second = await syncNoteMaterialsForInventory({
+    ...syncInput,
+    nowText: '2026-08-17T14:00:00.000Z'
+  })
+  assert.deepStrictEqual(
+    [second.complete, second.published, second.failed, Number(second.cleanupWarnings || 0), second.noop],
+    [true, true, 0, 0, true],
+    '第二轮必须精确复用已提交的新本地与目标状态并恢复无告警 noop'
+  )
+  assert.deepStrictEqual(
+    [writes.drive, writes.oss, writes.target],
+    [2, 1, 1],
+    '清理告警后的第二轮不得重复写 Drive、OSS 或目标附件'
+  )
 }
 
 async function testConfirmedFormalSyncStreamsOneCompressedFileOnce() {
@@ -1452,10 +2321,16 @@ function assertBoundedMaterialMemory() {
 
 async function run() {
   await testStreamingMaterialClient()
+  await testBitableAttachmentUploadUsesDedicatedMediaScope()
+  await testLargeBitableAttachmentUsesStreamingMediaParts()
+  await testPrimaryVideoAttachmentPublishesAfterWholeMaterialSet()
+  await testPrimaryTargetFailureReuseAndNoopBoundaries()
   await testPreparedMaterialFailureDisposal()
   await testExactExternalWriteDispatchBoundary()
   await testInventoryForwardsExternalWriteDispatchBoundary()
+  await testInactiveRowsSkipAndIdentityFailuresClearManagedTarget()
   await testPreparedMaterialFinallyDisposalRetry()
+  await testVerifiedTargetPublishCleanupWarningCommitsLocalState()
   await testConfirmedFormalSyncStreamsOneCompressedFileOnce()
   assert.strictEqual(domain.MAX_LISTING_MEDIA_ASSETS, 64, '单套房源视频素材安全上限必须固定为 64')
   assert.throws(
@@ -1579,14 +2454,16 @@ async function run() {
       'download:mediaSourceB123456',
       'download:boxSourceA123456',
       'download:mediaSourceB123456',
-      'download:boxSourceA123456',
-      'consume:boxSourceA123456',
       'download:mediaSourceB123456',
-      'consume:mediaSourceB123456'
+      'consume:mediaSourceB123456',
+      'download:boxSourceA123456',
+      'consume:boxSourceA123456'
     ],
-    '正式同步必须先形成无 Buffer 计划、再全批预检，全部通过后才逐项重下、消费并释放'
+    '正式同步必须先形成无 Buffer 计划、再全批预检，全部通过后先处理其他素材并把原始第一视频留到最后'
   )
-  const initialDriveTargetName = calls.find((call) => call[0] === 'drive')[2]
+  const initialDriveTargetName = calls.find((call) => (
+    call[0] === 'drive' && call[1] === syntheticAssets()[0].sourceToken
+  ))[2]
   assert.ok(
     initialDriveTargetName.includes(result.mediaAssets[0].contentSha256),
     '目标 Drive 文件名必须包含真实内容 SHA-256'

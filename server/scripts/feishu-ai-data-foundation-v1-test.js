@@ -8,6 +8,7 @@ const bitableClient = require('../src/feishu-bitable-client')
 const feishuSync = require('../src/feishu-sync')
 const noteMaterialSync = require('../src/feishu-note-material-sync')
 const {
+  syncNoteMaterialVideos,
   syncNoteMaterialsForInventory
 } = noteMaterialSync
 const {
@@ -1498,6 +1499,700 @@ async function testEmptyTemplateCannotPoisonNoteMaterialSync() {
     halfFilledClients.calls,
     '半填素材行阻断时不得写目标当前状态、已出租或流水表'
   )
+}
+
+async function testNoteModeMakesVideoOwnedOnlyByNotePipeline() {
+  const savedFeishu = JSON.parse(JSON.stringify(config.feishu))
+  try {
+    Object.assign(config.feishu, {
+      noteMaterialSyncEnabled: true,
+      sourceCompatibilityProfile: PROFILE
+    })
+    assert.strictEqual(
+      typeof feishuSync._internal.mirrorMaterialPolicy,
+      'function',
+      'Note 素材所有权必须由统一镜像策略显式表达'
+    )
+    const materialPolicy = feishuSync._internal.mirrorMaterialPolicy({ disableLegacyMaterials: true })
+    assert.strictEqual(materialPolicy, 'note-managed', 'note=true 时普通房源镜像必须显式交由 Note 管线单一所有 video')
+
+    const noteSourceBindings = sourceBindings({ includeNoteMaterial: true })
+    const source = sourceRecord('source-note-video-owned', '103', {
+      noteMaterialLink: 'https://example.feishu.test/file/primary-note-video',
+      video: [{ file_token: 'employee-source-video-token', name: '员工旧视频.mp4' }]
+    })
+    const clients = makeLifecycleClients({
+      sourceSnapshot: sourceSnapshotOf([source]),
+      miniRecords: [legacyMiniRecord(
+        'mini-note-video-owned',
+        'source-note-video-owned',
+        '103',
+        { video: [{ file_token: 'target-existing-video-token', name: '目标旧视频.mp4' }] }
+      )]
+    })
+    await feishuSync._internal.executeMirrorTableSync(executeOptions(clients, {
+      dryRun: true,
+      sourceBindings: noteSourceBindings,
+      noteMaterialSyncEnabled: true,
+      materialPolicy
+    }))
+
+    const sourceAndVideoTableReads = clients.calls.filter((call) => (
+      call.action === 'read' &&
+      [clients.tableIds.source, clients.tableIds.mini, clients.tableIds.rented].includes(call.tableId)
+    ))
+    assert.ok(sourceAndVideoTableReads.length >= 3, '员工源、当前表与已出租表都必须进入同一视频所有权门')
+    assert.ok(
+      sourceAndVideoTableReads.every((call) => (
+        JSON.stringify(call.readOptions.excludedRecordSemantics) === JSON.stringify(['video'])
+      )),
+      'Note 模式必须在三张表记录归一和摘要前排除 video，不能先清覆再由 Note 重写'
+    )
+
+    const driftClients = makeLifecycleClients({
+      sourceSnapshot: sourceSnapshotOf([source]),
+      miniRecords: [legacyMiniRecord(
+        'mini-note-video-owned',
+        'source-note-video-owned',
+        '103',
+        { video: [{ file_token: 'target-existing-video-token', name: '目标旧视频.mp4' }] }
+      )]
+    })
+    await assert.rejects(
+      () => feishuSync._internal.executeMirrorTableSync(executeOptions(driftClients, {
+        dryRun: false,
+        sourceBindings: noteSourceBindings,
+        noteMaterialSyncEnabled: true,
+        materialPolicy,
+        expectedSourceMaterialFieldSha256: '0'.repeat(64),
+        expectedSourceMaterialFieldRecordCount: 1
+      })),
+      (error) => error && error.code === 'NOTE_MATERIAL_SOURCE_FIELD_CHANGED',
+      'AI 五表正式同步必须在首笔生命周期或主表写入前核对 active-only Note 源字段摘要'
+    )
+    assertNoWrites(
+      driftClients.calls,
+      'AI 五表 active-only Note 摘要漂移必须在首笔目标 Base 写入前失败关闭'
+    )
+  } finally {
+    restoreObject(config.feishu, savedFeishu)
+  }
+}
+
+function testFormalNoteConfigurationRequiresTargetAttachmentContract() {
+  assert.strictEqual(
+    typeof feishuSync._internal.formalNoteMaterialConfigurationReady,
+    'function',
+    '正式素材首 I/O 门必须可复用同一目标附件合同'
+  )
+  const savedFeishu = JSON.parse(JSON.stringify(config.feishu))
+  const savedOss = JSON.parse(JSON.stringify(config.oss))
+  const completeDrive = {
+    writeDispatchEvidenceVersion: 1,
+    listFolder() {},
+    downloadToken() {},
+    downloadTokenDigestExact() {},
+    ensureListingFolder() {},
+    materializeVideo() {},
+    verifyMaterializedVideo() {},
+    uploadBitableFileDescriptor() {}
+  }
+  const completeTarget = {
+    writeDispatchEvidenceVersion: 1,
+    readValidatedTableSnapshot() {},
+    batchUpdateRecords() {}
+  }
+  try {
+    const bindings = {
+      source: sourceBindings({ includeNoteMaterial: true }),
+      mini: miniBindings()
+    }
+    bindings.mini.video = { ...bindings.mini.video, type: 17 }
+    Object.assign(config.feishu, {
+      noteMaterialSyncEnabled: true,
+      sourceCompatibilityProfile: PROFILE,
+      noteMaterialFieldId: 'fldNoteMaterialTargetContract',
+      noteMaterialAllowedHosts: ['example.test'],
+      noteMaterialTargetRootFolderToken: 'folderTargetContract123',
+      folderToken: '',
+      targetBitableAppToken: 'targetBaseContract123',
+      miniTableId: 'tblMiniContract123',
+      sourceFieldBindings: bindings.source,
+      miniFieldBindings: bindings.mini
+    })
+    Object.assign(config.oss, {
+      bucket: 'synthetic-bucket',
+      region: 'oss-cn-hangzhou',
+      accessKeyId: 'synthetic-key',
+      accessKeySecret: 'synthetic-secret'
+    })
+    assert.strictEqual(
+      feishuSync._internal.formalNoteMaterialConfigurationReady({
+        noteMaterialDrive: completeDrive,
+        noteMaterialTargetClient: completeTarget,
+        noteMaterialOss: {
+          putVideoDeterministic() {},
+          verifyVideoDeterministic() {}
+        }
+      }),
+      true,
+      '目标 Base/table/type17 video 与两只精确写派发适配器齐全时正式门才可放行'
+    )
+
+    const missingVideo = { ...config.feishu.miniFieldBindings }
+    delete missingVideo.video
+    config.feishu.miniFieldBindings = missingVideo
+    assert.strictEqual(
+      feishuSync._internal.formalNoteMaterialConfigurationReady({
+        noteMaterialDrive: completeDrive,
+        noteMaterialTargetClient: completeTarget,
+        noteMaterialOss: {
+          putVideoDeterministic() {},
+          verifyVideoDeterministic() {}
+        }
+      }),
+      false,
+      '目标专用表缺少稳定 type17 video 绑定必须在首个 Base/Drive I/O 前失败关闭'
+    )
+    config.feishu.miniFieldBindings = bindings.mini
+    assert.strictEqual(
+      feishuSync._internal.formalNoteMaterialConfigurationReady({
+        noteMaterialDrive: { ...completeDrive, writeDispatchEvidenceVersion: 0 },
+        noteMaterialTargetClient: completeTarget,
+        noteMaterialOss: {
+          putVideoDeterministic() {},
+          verifyVideoDeterministic() {}
+        }
+      }),
+      false,
+      '附件上传适配器缺少精确 dispatch 证据必须在首 I/O 前阻断'
+    )
+  } finally {
+    restoreObject(config.feishu, savedFeishu)
+    restoreObject(config.oss, savedOss)
+  }
+}
+
+async function testTargetAttachmentAdapterPublishesReadsBackAndReusesExactly() {
+  const savedMiniBindings = clone(config.feishu.miniFieldBindings)
+  const sourceRecordId = 'source-target-adapter-1'
+  const targetRecordId = 'target-record-adapter-1'
+  const targetToken = 'bitableTargetAttachmentToken123'
+  const body = Buffer.from('standardized-target-adapter-video')
+  const contentSha256 = crypto.createHash('sha256').update(body).digest('hex')
+  const physicalUnitFingerprint = 'c'.repeat(64)
+  let currentVideo = []
+  let localStateKey = 'local-media-state-1'
+  let uploadCount = 0
+  let updateCount = 0
+  let dispatchCount = 0
+  let verifiedCount = 0
+  const clientTokens = []
+  const downloadOptions = []
+  try {
+    config.feishu.miniFieldBindings = {
+      video: { fieldId: 'fldMiniVideoAdapter123', type: 17 }
+    }
+    const targetClient = {
+      writeDispatchEvidenceVersion: 1,
+      async readValidatedTableSnapshot() {
+        return {
+          fieldNames: { video: '视频' },
+          schemaBindings: [{ semantic: 'video', fieldName: '视频', type: 17 }],
+          records: [{
+            recordId: targetRecordId,
+            fields: { sourceRecordId, video: clone(currentVideo) }
+          }]
+        }
+      },
+      async batchUpdateRecords(_tableId, records, options) {
+        options.onWriteDispatched()
+        updateCount += 1
+        clientTokens.push(options.clientToken)
+        currentVideo = records[0].fields['视频'].map((attachment) => ({
+          ...attachment,
+          size: body.length,
+          type: 'video/mp4',
+          url: 'https://example.test/download?extra=opaque-permission-proof'
+        }))
+        return { updated: records.length }
+      }
+    }
+    const drive = {
+      async uploadBitableFileDescriptor(descriptor, appToken, fileName, onWriteDispatched) {
+        onWriteDispatched()
+        uploadCount += 1
+        assert.strictEqual(appToken, 'targetBaseAdapter123', '附件上传必须绑定目标 Base')
+        assert.strictEqual(descriptor.contentSha256, contentSha256, '附件上传必须沿用同一标准化成品')
+        assert.ok(fileName.includes(contentSha256), '确定性附件名必须绑定成品摘要')
+        return {
+          fileToken: targetToken,
+          contentSha256,
+          size: body.length,
+          contentType: 'video/mp4'
+        }
+      },
+      async downloadTokenDigestExact(token, preferredKind, expectedSize, options) {
+        assert.strictEqual(token, targetToken, '回读必须使用当前唯一 Base 附件 token')
+        assert.strictEqual(preferredKind, 'bitable-file', 'Base 附件不得回退 explorer 文件下载')
+        assert.strictEqual(expectedSize, body.length, '回读必须绑定标准化成品大小')
+        downloadOptions.push(clone(options || {}))
+        if (options && /bitablePerm/.test(String(options.extra || ''))) {
+          assert.strictEqual(updateCount, 0, '新 token 必须先完成高级权限真字节回读，不能提前更新 Base 附件列')
+        }
+        return {
+          contentSha256,
+          size: body.length,
+          contentType: 'video/mp4'
+        }
+      }
+    }
+    const listing = { noteMaterialState: {} }
+    const adapterOptions = {
+      context: {
+        targetClient,
+        drive,
+        targetBaseToken: 'targetBaseAdapter123',
+        miniTableId: 'tblMiniAdapter123',
+        miniBindings: { video: { fieldId: 'fldMiniVideoAdapter123', type: 17 } },
+        runId: 'adapter-run-123',
+        nowMs: FIXED_NOW_MS
+      },
+      listing,
+      sourceRecordId,
+      expectedLocalStateKey: localStateKey,
+      physicalUnitFingerprint,
+      localStateKey: () => localStateKey,
+      currentPhysicalUnitFingerprint: () => physicalUnitFingerprint
+    }
+    const adapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter(adapterOptions)
+    const desired = {
+      assetId: 'primary-video-adapter',
+      contentSha256,
+      size: body.length,
+      contentType: 'video/mp4',
+      displayOrder: 0
+    }
+    const before = await adapter.verifyExact({ sourceRecordId, primaryVideo: desired })
+    assert.strictEqual(before.verified, false, '目标附件为空时必须形成 CAS 发布计划')
+    const published = await adapter.publishExact({
+      sourceRecordId,
+      assetId: desired.assetId,
+      fileName: `primary-${contentSha256}.mp4`,
+      contentSha256,
+      size: body.length,
+      contentType: 'video/mp4',
+      writeEvidence: {
+        filePath: 'C:\\synthetic\\primary.mp4',
+        contentSha256,
+        size: body.length,
+        contentType: 'video/mp4'
+      },
+      expectedStateKey: before.expectedStateKey,
+      onWriteDispatched() { dispatchCount += 1 },
+      onWriteVerified() { verifiedCount += 1 }
+    })
+    assert.strictEqual(published.verified, true, '媒体与记录两层回读后才允许返回 verified')
+    assert.strictEqual(uploadCount, 1, '首次补表只上传一个主视频附件')
+    assert.strictEqual(updateCount, 1, '首次补表只更新一次目标记录')
+    assert.strictEqual(dispatchCount, 2, '媒体上传与 Base 更新必须分别派发写意图')
+    assert.strictEqual(verifiedCount, 2, '媒体和 Base 必须分别完成回读闭环')
+    assert.ok(clientTokens.every((token) => /^[0-9a-f-]{36}$/i.test(token)), 'Base 更新必须使用稳定 UUID client_token')
+    assert.ok(!JSON.stringify(published).includes(targetToken), '适配器结果不得泄露真实附件 token')
+    assert.deepStrictEqual(
+      JSON.parse(downloadOptions[0].extra),
+      {
+        bitablePerm: {
+          tableId: 'tblMiniAdapter123',
+          attachments: {
+            fldMiniVideoAdapter123: {
+              [targetRecordId]: [targetToken]
+            }
+          }
+        }
+      },
+      '新上传 token 在 Base 更新前的真字节回读必须携带官方高级权限附件坐标'
+    )
+    assert.ok(!JSON.stringify(published).includes(downloadOptions[0].extra), '高级权限 extra 不得进入适配器公开结果')
+
+    listing.noteMaterialState = {
+      primaryTargetAttachment: {
+        version: 1,
+        sourceRecordFingerprint: crypto.createHash('sha256').update(sourceRecordId).digest('hex'),
+        physicalUnitFingerprint,
+        targetRecordFingerprint: published.targetRecordFingerprint,
+        attachmentTokenFingerprint: published.attachmentTokenFingerprint,
+        contentSha256,
+        size: body.length,
+        contentType: 'video/mp4'
+      }
+    }
+    const exactAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter(adapterOptions)
+    const exact = await exactAdapter.verifyExact({ sourceRecordId, primaryVideo: desired })
+    assert.strictEqual(exact.verified, true, '当前唯一 token 真字节一致时必须直接复用')
+    assert.strictEqual(uploadCount, 1, '二次精确复用不得再次上传 media')
+    assert.strictEqual(updateCount, 1, '二次精确复用不得再次更新 Base')
+    assert.deepStrictEqual(
+      downloadOptions[downloadOptions.length - 1],
+      { extra: 'opaque-permission-proof' },
+      '高级权限附件的 extra 只能私下透传给回读请求'
+    )
+
+    const manualListing = { noteMaterialState: {} }
+    const manualAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      ...adapterOptions,
+      listing: manualListing
+    })
+    const manualEmpty = await manualAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(manualEmpty.preserved, true, '首次空笔记不得清除未知或人工附件')
+    assert.strictEqual(updateCount, 1, '人工附件保留路径不得更新 Base')
+
+    const managedEmpty = await exactAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    const cleared = await exactAdapter.clearExact({
+      sourceRecordId,
+      expectedStateKey: managedEmpty.expectedStateKey,
+      forceClearForIdentityChange: managedEmpty.forceClearForIdentityChange === true,
+      forceClearForWithdrawn: managedEmpty.forceClearForWithdrawn === true,
+      onWriteDispatched() { dispatchCount += 1 },
+      onWriteVerified() { verifiedCount += 1 }
+    })
+    assert.strictEqual(cleared.cleared, true, '仅本管线确认管理的旧附件允许写空')
+    assert.strictEqual(updateCount, 2, '安全清空只允许一次 Base 更新')
+    assert.deepStrictEqual(currentVideo, [], '清空后目标记录回读必须为空数组')
+
+    const missingTargetAllowEmpty = []
+    const missingTargetClient = {
+      writeDispatchEvidenceVersion: 1,
+      async readValidatedTableSnapshot(options) {
+        missingTargetAllowEmpty.push(options.allowEmpty)
+        return {
+          fieldNames: { video: '视频' },
+          schemaBindings: [{ semantic: 'video', fieldName: '视频', type: 17 }],
+          records: []
+        }
+      },
+      async batchUpdateRecords() { throw new Error('dry-run 不得更新目标表') }
+    }
+    const plannedCreateContext = {
+      ...adapterOptions.context,
+      targetClient: missingTargetClient,
+      dryRun: true,
+      plannedCreateSourceRecordFingerprints: new Set([
+        crypto.createHash('sha256').update(sourceRecordId).digest('hex')
+      ])
+    }
+    const plannedCreateAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      ...adapterOptions,
+      context: plannedCreateContext,
+      listing: { noteMaterialState: {} }
+    })
+    const plannedCreate = await plannedCreateAdapter.verifyExact({ sourceRecordId, primaryVideo: desired })
+    assert.strictEqual(plannedCreate.verified, false, '受信镜像 create 计划允许 dry-run 形成待发布附件动作')
+    assert.strictEqual(uploadCount, 1, '新增房源 dry-run 不得上传附件')
+    assert.strictEqual(updateCount, 2, '新增房源 dry-run 不得更新 Base')
+    const untrustedMissingAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      ...adapterOptions,
+      context: {
+        ...plannedCreateContext,
+        plannedCreateSourceRecordFingerprints: new Set()
+      },
+      listing: { noteMaterialState: {} }
+    })
+    await assert.rejects(
+      () => untrustedMissingAdapter.verifyExact({ sourceRecordId, primaryVideo: desired }),
+      /无法唯一命中/,
+      '没有镜像 create 证据的缺失目标记录必须失败关闭'
+    )
+    assert.deepStrictEqual(
+      missingTargetAllowEmpty,
+      [true, false],
+      '只有受信新增房源 dry-run 才允许真实客户端读取全空目标表，非受信缺记录仍失败关闭'
+    )
+  } finally {
+    config.feishu.miniFieldBindings = savedMiniBindings
+  }
+}
+
+async function testManagedTargetCleanupCoversIdentityReactivationAndRecordRotation() {
+  const savedMiniBindings = clone(config.feishu.miniFieldBindings)
+  const sourceRecordId = 'source-target-current-lineage'
+  const oldSourceRecordId = 'source-target-old-lineage'
+  const targetRecordId = 'target-record-managed-lineage'
+  const targetToken = 'bitableManagedLineageToken123'
+  const targetRecordFingerprint = crypto.createHash('sha256').update(targetRecordId).digest('hex')
+  const targetTokenFingerprint = crypto.createHash('sha256').update(targetToken).digest('hex')
+  const currentPhysical = '7'.repeat(64)
+  const oldPhysical = '8'.repeat(64)
+  const body = Buffer.from('managed-lineage-video')
+  const contentSha256 = crypto.createHash('sha256').update(body).digest('hex')
+  const attachment = () => [{
+    file_token: targetToken,
+    size: body.length,
+    type: 'video/mp4',
+    url: 'https://example.test/download?extra=managed-lineage-extra'
+  }]
+  let currentVideo = attachment()
+  let updateCount = 0
+  let failTargetUpdateAfterDispatch = false
+  let driftLocalStateAfterUpdate = false
+  let driftLocalStateKey = 'drift-local-stable'
+  try {
+    config.feishu.miniFieldBindings = {
+      video: { fieldId: 'fldMiniVideoLineage123', type: 17 }
+    }
+    const targetClient = {
+      writeDispatchEvidenceVersion: 1,
+      async readValidatedTableSnapshot() {
+        return {
+          fieldNames: { video: '视频' },
+          schemaBindings: [{ semantic: 'video', fieldName: '视频', type: 17 }],
+          records: [{
+            recordId: targetRecordId,
+            fields: { sourceRecordId, video: clone(currentVideo) }
+          }]
+        }
+      },
+      async batchUpdateRecords(_tableId, records, options) {
+        options.onWriteDispatched()
+        if (failTargetUpdateAfterDispatch) throw new Error('synthetic managed clear response unknown')
+        updateCount += 1
+        currentVideo = records[0].fields['视频'].map((item) => ({
+          ...item,
+          size: body.length,
+          type: 'video/mp4'
+        }))
+        if (driftLocalStateAfterUpdate) driftLocalStateKey = 'drift-local-changed'
+        return { updated: 1 }
+      }
+    }
+    const drive = {
+      writeDispatchEvidenceVersion: 1,
+      async downloadTokenDigestExact(token, preferredKind, expectedSize) {
+        assert.strictEqual(token, targetToken)
+        assert.strictEqual(preferredKind, 'bitable-file')
+        assert.strictEqual(expectedSize, body.length)
+        return { contentSha256, size: body.length, contentType: 'video/mp4' }
+      },
+      async uploadBitableFileDescriptor(descriptor, appToken, _fileName, onWriteDispatched) {
+        onWriteDispatched()
+        assert.strictEqual(appToken, 'targetBaseLineage123')
+        return {
+          fileToken: targetToken,
+          contentSha256: descriptor.contentSha256,
+          size: descriptor.size,
+          contentType: descriptor.contentType
+        }
+      }
+    }
+    const context = {
+      targetClient,
+      drive,
+      targetBaseToken: 'targetBaseLineage123',
+      miniTableId: 'tblMiniLineage123',
+      miniBindings: { video: { fieldId: 'fldMiniVideoLineage123', type: 17 } },
+      runId: 'lineage-run-123',
+      nowMs: FIXED_NOW_MS
+    }
+    const managedListing = (managedSourceRecordId, managedPhysical) => ({
+      noteMaterialState: {
+        primaryTargetAttachment: {
+          version: 1,
+          sourceRecordFingerprint: crypto.createHash('sha256').update(managedSourceRecordId).digest('hex'),
+          physicalUnitFingerprint: managedPhysical,
+          targetRecordFingerprint,
+          attachmentTokenFingerprint: targetTokenFingerprint,
+          contentSha256,
+          size: body.length,
+          contentType: 'video/mp4'
+        }
+      }
+    })
+    const makeAdapter = (listing, extra = {}) => feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      context,
+      listing,
+      sourceRecordId,
+      expectedLocalStateKey: 'local-lineage-stable',
+      physicalUnitFingerprint: currentPhysical,
+      localStateKey: () => 'local-lineage-stable',
+      currentPhysicalUnitFingerprint: () => currentPhysical,
+      ...extra
+    })
+    const clearVerified = async (adapter, verification) => adapter.clearExact({
+      sourceRecordId,
+      expectedStateKey: verification.expectedStateKey,
+      forceClearForIdentityChange: verification.forceClearForIdentityChange === true,
+      forceClearForWithdrawn: verification.forceClearForWithdrawn === true,
+      forceClearForReactivation: verification.forceClearForReactivation === true,
+      onWriteDispatched() {},
+      onWriteVerified() {}
+    })
+
+    const identityListing = managedListing(oldSourceRecordId, oldPhysical)
+    const identityAdapter = makeAdapter(identityListing, { failureCleanup: true })
+    const identityVerification = await identityAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(identityVerification.forceClearForIdentityChange, true, 'source record_id 与物理身份同时变化时仍必须按目标记录和 token 识别旧受管附件')
+    assert.strictEqual((await clearVerified(identityAdapter, identityVerification)).cleared, true)
+    assert.deepStrictEqual(currentVideo, [], '物理身份变化失败路径必须写空并回读目标附件')
+
+    currentVideo = attachment()
+    const mismatchedTokenListing = managedListing(oldSourceRecordId, oldPhysical)
+    mismatchedTokenListing.noteMaterialState.primaryTargetAttachment.attachmentTokenFingerprint = '9'.repeat(64)
+    const mismatchedTokenAdapter = makeAdapter(mismatchedTokenListing, { failureCleanup: true })
+    const mismatchedToken = await mismatchedTokenAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(mismatchedToken.preserved, true, '目标 token 指纹不符必须视为人工或未知附件并保留')
+
+    const unknownClearAdapter = makeAdapter(identityListing, { failureCleanup: true })
+    const unknownClear = await unknownClearAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    failTargetUpdateAfterDispatch = true
+    await assert.rejects(
+      () => clearVerified(unknownClearAdapter, unknownClear),
+      (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+      '真实适配器清空请求派发后结果不明必须升级 UNKNOWN'
+    )
+    failTargetUpdateAfterDispatch = false
+
+    currentVideo = attachment()
+    const samePhysicalListing = managedListing(sourceRecordId, currentPhysical)
+    const samePhysicalAdapter = makeAdapter(samePhysicalListing, { failureCleanup: true })
+    const samePhysical = await samePhysicalAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(samePhysical.preserved, true, '持续在租同物理的临时/普通素材失败必须保留旧受管附件')
+    assert.strictEqual(updateCount, 1, '同物理失败保留路径不得更新目标 Base')
+
+    const reactivatedAdapter = makeAdapter(samePhysicalListing, {
+      failureCleanup: true,
+      reactivated: true
+    })
+    const reactivated = await reactivatedAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(reactivated.forceClearForReactivation, true, '同物理复活后 Note 失败必须识别上一出租周期受管附件')
+    await clearVerified(reactivatedAdapter, reactivated)
+    assert.deepStrictEqual(currentVideo, [], '复活失败不得重新公开上一出租周期视频')
+
+    currentVideo = attachment()
+    const rotatedListing = managedListing(oldSourceRecordId, currentPhysical)
+    const rotatedAdapter = makeAdapter(rotatedListing)
+    const rotatedEmpty = await rotatedAdapter.verifyExact({ sourceRecordId, primaryVideo: null })
+    assert.strictEqual(rotatedEmpty.verified, false, '同物理、同目标、同 token 的 record_id 轮换必须继续识别管线 lineage')
+    assert.strictEqual((await clearVerified(rotatedAdapter, rotatedEmpty)).cleared, true, 'record_id 轮换后的权威空 Note 必须清旧受管附件')
+
+    currentVideo = attachment()
+    const imageBody = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46])
+    const imageSha256 = crypto.createHash('sha256').update(imageBody).digest('hex')
+    const imageDrive = {
+      ...drive,
+      async downloadToken() {
+        return {
+          buffer: Buffer.from(imageBody),
+          size: imageBody.length,
+          contentType: 'image/jpeg',
+          contentSha256: imageSha256
+        }
+      },
+      async ensureListingFolder(input) {
+        input.onWriteDispatched()
+        input.onWriteVerified()
+        return { token: 'lineageImageFolder123' }
+      },
+      async materializeAsset(input) {
+        input.onWriteDispatched()
+        input.onWriteVerified()
+        return {
+          targetToken: 'lineageImageFile123',
+          targetName: input.targetName,
+          contentType: input.sourceEvidence.contentType,
+          contentSha256: input.sourceEvidence.contentSha256,
+          size: input.sourceEvidence.size,
+          verified: true
+        }
+      }
+    }
+    const imageAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      context: { ...context, drive: imageDrive },
+      listing: rotatedListing,
+      sourceRecordId,
+      expectedLocalStateKey: 'local-lineage-stable',
+      physicalUnitFingerprint: currentPhysical,
+      localStateKey: () => 'local-lineage-stable',
+      currentPhysicalUnitFingerprint: () => currentPhysical
+    })
+    const imageOnly = await syncNoteMaterialVideos({
+      sourceRecordId,
+      assets: [{
+        sourceToken: 'lineageImageSource123',
+        sourceKind: 'drive-file',
+        kind: 'image',
+        name: '轮换后图片.jpg',
+        extension: 'jpg',
+        mimeType: 'image/jpeg',
+        sourceOrder: 0,
+        sourceFingerprint: 'lineage-image-source'
+      }],
+      existingMediaAssets: [],
+      uploadDir: 'house-videos',
+      targetRootFolderToken: 'lineageRootFolder123',
+      drive: imageDrive,
+      oss: {
+        writeDispatchEvidenceVersion: 1,
+        async putMaterialDeterministic(input) {
+          input.onWriteDispatched()
+          input.onWriteVerified()
+          return {
+            objectKey: input.objectKey,
+            contentSha256: input.contentSha256,
+            size: input.size,
+            verified: true
+          }
+        }
+      },
+      primaryVideoAttachment: imageAdapter
+    })
+    assert.strictEqual(imageOnly.mediaAssets[0].kind, 'image')
+    assert.strictEqual(imageOnly.counts.targetAttachmentCleared, 1, 'record_id 轮换后的图片-only Note 必须在全素材成功后清旧视频')
+    assert.deepStrictEqual(currentVideo, [])
+
+    currentVideo = []
+    driftLocalStateAfterUpdate = true
+    const driftListing = { noteMaterialState: {} }
+    const driftAdapter = feishuSync._internal.createNotePrimaryVideoAttachmentAdapter({
+      context,
+      listing: driftListing,
+      sourceRecordId,
+      expectedLocalStateKey: driftLocalStateKey,
+      physicalUnitFingerprint: currentPhysical,
+      localStateKey: () => driftLocalStateKey,
+      currentPhysicalUnitFingerprint: () => currentPhysical
+    })
+    const driftDesired = {
+      assetId: 'drift-primary-video',
+      contentSha256,
+      size: body.length,
+      contentType: 'video/mp4',
+      displayOrder: 0
+    }
+    const driftBefore = await driftAdapter.verifyExact({ sourceRecordId, primaryVideo: driftDesired })
+    await assert.rejects(
+      () => driftAdapter.publishExact({
+        sourceRecordId,
+        assetId: driftDesired.assetId,
+        fileName: `drift-${contentSha256}.mp4`,
+        contentSha256,
+        size: body.length,
+        contentType: 'video/mp4',
+        writeEvidence: {
+          filePath: 'C:\\synthetic\\drift-primary.mp4',
+          contentSha256,
+          size: body.length,
+          contentType: 'video/mp4'
+        },
+        expectedStateKey: driftBefore.expectedStateKey,
+        onWriteDispatched() {},
+        onWriteVerified() {}
+      }),
+      (error) => error && error.code === 'MATERIAL_EXTERNAL_WRITE_STATE_UNKNOWN',
+      '目标 Base 已写后本地 CAS 漂移必须升级 UNKNOWN，不能提交旧本地状态'
+    )
+  } finally {
+    config.feishu.miniFieldBindings = savedMiniBindings
+  }
 }
 
 async function testApplyWritesOnlyTargetClient() {
@@ -3364,7 +4059,10 @@ async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
     'noteMaterialFieldId',
     'noteMaterialTargetRootFolderToken',
     'noteMaterialAllowedHosts',
-    'folderToken'
+    'folderToken',
+    'targetBitableAppToken',
+    'miniTableId',
+    'miniFieldBindings'
   ]
   const savedConfig = Object.fromEntries(configKeys.map((key) => [key, config.feishu[key]]))
   const sourceBuffer = Buffer.from('mirror-material-intent-source')
@@ -3400,7 +4098,13 @@ async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
       noteMaterialFieldId: 'fldNoteMaterialTest123',
       noteMaterialTargetRootFolderToken: 'fldTargetRootTest123',
       noteMaterialAllowedHosts: ['example.test'],
-      folderToken: 'fldLegacyRootTest123'
+      folderToken: 'fldLegacyRootTest123',
+      targetBitableAppToken: 'targetBaseMaterialIntent123',
+      miniTableId: 'tblMiniMaterialIntent123',
+      miniFieldBindings: {
+        ...miniBindings(),
+        video: { ...miniBindings().video, type: 17 }
+      }
     })
     await assert.rejects(
       () => feishuSync._internal.syncMirrorNoteMaterials(
@@ -3432,6 +4136,7 @@ async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
             throw new Error('synthetic write-intent persistence failure')
           },
           noteMaterialDrive: {
+            writeDispatchEvidenceVersion: 1,
             async listFolder() {
               return [{
                 token: 'fileMaterialIntent123',
@@ -3449,7 +4154,8 @@ async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
                 size: sourceBuffer.length
               }
             },
-            async ensureListingFolder() {
+            async ensureListingFolder(input) {
+              input.onWriteDispatched()
               possibleWrites += 1
               throw new Error('写意图持久化失败后不得调用 Drive 写方法')
             },
@@ -3457,7 +4163,23 @@ async function testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded() {
               possibleWrites += 1
               throw new Error('不得进入 Drive 素材写入')
             },
-            async verifyMaterializedVideo() { return true }
+            async verifyMaterializedVideo() { return true },
+            async downloadTokenDigestExact() { return true },
+            async uploadBitableFileDescriptor() { return true }
+          },
+          noteMaterialTargetClient: {
+            writeDispatchEvidenceVersion: 1,
+            async readValidatedTableSnapshot() {
+              return {
+                fieldNames: { video: '视频' },
+                schemaBindings: [{ semantic: 'video', fieldName: '视频', type: 17 }],
+                records: [{
+                  recordId: 'target-record-material-intent',
+                  fields: { sourceRecordId: 'record-material-intent', video: [] }
+                }]
+              }
+            },
+            async batchUpdateRecords() { return {} }
           },
           noteMaterialOss: {
             async putVideoDeterministic() {
@@ -3492,6 +4214,10 @@ async function main() {
     ['dry-run 四表零写', testDryRunReadsAllLifecycleTablesAndWritesNone],
     ['源表实时校验时钟与批次截止分离', testSourceSnapshotSeparatesCutoffFromLiveValidationClock],
     ['全空模板不污染房源笔记素材同步', testEmptyTemplateCannotPoisonNoteMaterialSync],
+    ['Note 单一所有目标视频列', testNoteModeMakesVideoOwnedOnlyByNotePipeline],
+    ['正式素材首 I/O 目标附件合同', testFormalNoteConfigurationRequiresTargetAttachmentContract],
+    ['目标附件 CAS 发布、回读与二次复用', testTargetAttachmentAdapterPublishesReadsBackAndReusesExactly],
+    ['受管附件身份变化、复活与源记录轮换边界', testManagedTargetCleanupCoversIdentityReactivationAndRecordRotation],
     ['素材写意图落盘失败整轮中止', testMirrorMaterialIntentPersistenceFailureCannotBeDowngraded],
     ['正式写只走目标客户端', testApplyWritesOnlyTargetClient],
     ['新增省略缺失可选字段且更新保留清空语义', testCreateOmitsMissingOptionalFieldsAndUpdateKeepsClearSemantics],

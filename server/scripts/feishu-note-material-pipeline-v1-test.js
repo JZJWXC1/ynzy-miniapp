@@ -1850,7 +1850,7 @@ async function testAtomicInventoryState() {
     oss: adapters.oss,
     nowText: '2026-07-26T10:01:00.000Z'
   })
-  assert.strictEqual(sameLinkFailure.retained, 1, '同链接、同房间、仍在架时才允许临时沿用')
+  assert.strictEqual(sameLinkFailure.retained, 1, '同物理房源持续在租时，素材失败只告警并沿用最后一次已验证素材')
   assert.strictEqual(JSON.stringify(db.listings[0].mediaAssets), beforeRetain)
 
   db.listings[0].roomNumber = '999'
@@ -1882,9 +1882,9 @@ async function testAtomicInventoryState() {
     oss: adapters.oss,
     nowText: '2026-07-26T10:02:30.000Z'
   })
-  assert.strictEqual(permanentFailure.retained, 0, '结构或校验类永久错误不得沿用旧素材')
+  assert.strictEqual(permanentFailure.retained, 1, '结构或校验类错误也只能告警，不得破坏同物理在租房源的旧素材')
   assert.strictEqual(permanentFailure.published, false)
-  assert.deepStrictEqual(db.listings[0].mediaAssets, [])
+  assert.deepStrictEqual(db.listings[0].mediaAssets, JSON.parse(beforeRetain))
 
   const noIdentity = {
     id: 'listing-no-identity',
@@ -2027,7 +2027,11 @@ async function testMaterialTargetMustBeIndependentFromLegacySource() {
     sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile,
     hosts: config.feishu.noteMaterialAllowedHosts,
     root: config.feishu.noteMaterialTargetRootFolderToken,
-    legacyRoot: config.feishu.folderToken
+    legacyRoot: config.feishu.folderToken,
+    targetBaseToken: config.feishu.targetBitableAppToken,
+    miniTableId: config.feishu.miniTableId,
+    noteMaterialFieldId: config.feishu.noteMaterialFieldId,
+    miniFieldBindings: JSON.parse(JSON.stringify(config.feishu.miniFieldBindings || {}))
   }
   const sharedRoot = 'sharedLegacyAndTarget123'
   const adapters = materialAdapters()
@@ -2205,7 +2209,11 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
   let materializeCalls = 0
   let sourceReadbacks = 0
   const sourceToken = 'boxStableSourceToken123'
+  const targetBodyByToken = new Map()
+  let targetVideo = []
+  let targetUploadSequence = 0
   const drive = {
+    writeDispatchEvidenceVersion: 1,
     async listFolder() {
       return [{
         token: sourceToken,
@@ -2215,12 +2223,16 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
         size: 4
       }]
     },
-    async ensureListingFolder() {
+    async ensureListingFolder(input = {}) {
+      if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
       return { token: 'fldStableTarget123' }
     },
     async materializeVideo(input) {
+      if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
       materializeCalls += 1
       const buffer = Buffer.from(sourceBody)
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
       return {
         targetToken: 'targetStableVideo123',
         targetName: input.targetName,
@@ -2243,14 +2255,35 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     },
     async verifyMaterializedVideo() {
       return { verified: true }
+    },
+    async uploadBitableFileDescriptor(descriptor, appToken, _name, onWriteDispatched) {
+      onWriteDispatched()
+      assert.strictEqual(appToken, 'targetBasePipeline123')
+      const token = `bitablePipelineToken${String(++targetUploadSequence).padStart(3, '0')}`
+      targetBodyByToken.set(token, {
+        contentSha256: descriptor.contentSha256,
+        size: descriptor.size,
+        contentType: descriptor.contentType
+      })
+      return { fileToken: token, ...targetBodyByToken.get(token) }
+    },
+    async downloadTokenDigestExact(token, preferredKind, expectedSize) {
+      assert.strictEqual(preferredKind, 'bitable-file')
+      const evidence = targetBodyByToken.get(token)
+      assert.ok(evidence, '目标附件回读必须命中本轮上传或目标记录中的私有 token')
+      assert.strictEqual(expectedSize, evidence.size)
+      return { ...evidence }
     }
   }
   const ossAdapter = {
+    writeDispatchEvidenceVersion: 1,
     async putVideoDeterministic(input) {
+      if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
       return {
         objectKey: input.objectKey,
         contentSha256: input.contentSha256,
-        size: input.buffer.length,
+        size: input.size,
         verified: true
       }
     },
@@ -2258,11 +2291,40 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
       return { ...asset, verified: true }
     }
   }
+  const targetClient = {
+    writeDispatchEvidenceVersion: 1,
+    async readValidatedTableSnapshot() {
+      return {
+        fieldNames: { video: '视频' },
+        schemaBindings: [{ semantic: 'video', fieldName: '视频', type: 17 }],
+        records: [{
+          recordId: 'targetPipelineRecord123',
+          fields: { sourceRecordId: 'rec-1', video: JSON.parse(JSON.stringify(targetVideo)) }
+        }]
+      }
+    },
+    async batchUpdateRecords(_tableId, records, options) {
+      options.onWriteDispatched()
+      targetVideo = records[0].fields['视频'].map((item) => {
+        const evidence = targetBodyByToken.get(item.file_token)
+        return {
+          ...item,
+          size: evidence.size,
+          type: evidence.contentType
+        }
+      })
+      return { updated: 1 }
+    }
+  }
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ynzy-pipeline-target-'))
   async function prepareMaterial({ sourceEvidence }) {
     const buffer = Buffer.from(sourceEvidence.buffer)
     const hash = crypto.createHash('sha256').update(buffer).digest('hex')
+    const filePath = path.join(tempRoot, `${hash}.mp4`)
+    fs.writeFileSync(filePath, buffer)
     return {
       buffer,
+      filePath,
       sourceContentSha256: hash,
       sourceSize: buffer.length,
       sourceMimeType: 'video/mp4',
@@ -2283,6 +2345,23 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
   config.feishu.noteMaterialAllowedHosts = [HOST]
   config.feishu.noteMaterialTargetRootFolderToken = ROOT
   config.feishu.folderToken = 'legacyIndependentRoot123'
+  config.feishu.targetBitableAppToken = 'targetBasePipeline123'
+  config.feishu.miniTableId = 'tblMiniPipeline123'
+  config.feishu.noteMaterialFieldId = 'fldNotePipeline123'
+  config.feishu.miniFieldBindings = Object.fromEntries([
+    'sourceRecordId', 'locationId', 'locationRecordId', 'city', 'district', 'block', 'community',
+    'roomLabel', 'building', 'unit', 'roomNumber', 'layoutDescription', 'layoutCategory', 'rentMode',
+    'viewingMethod', 'viewingPassword', 'remark', 'listingStatus'
+  ].map((semantic) => [semantic, { fieldId: `fld-${semantic}`, type: 1 }]))
+  Object.assign(config.feishu.miniFieldBindings, {
+    latitude: { fieldId: 'fld-latitude', type: 2 },
+    longitude: { fieldId: 'fld-longitude', type: 2 },
+    monthlyRent: { fieldId: 'fld-monthlyRent', type: 2 },
+    published: { fieldId: 'fld-published', type: 7 },
+    canonical: { fieldId: 'fld-canonical', type: 7 },
+    enabled: { fieldId: 'fld-enabled', type: 7 },
+    video: { fieldId: 'fldMiniVideoPipeline123', type: 17 }
+  })
   const mirrorResult = {
     feishuToken: 'tenantToken123',
     sourceNoteMaterials: [{
@@ -2291,13 +2370,28 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     }]
   }
   try {
-    const first = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
-      dryRun: false,
+    const dry = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
+      dryRun: true,
       noteMaterialDrive: drive,
+      noteMaterialTargetClient: targetClient,
       noteMaterialOss: ossAdapter,
       prepareMaterial
     })
-    assert.strictEqual(first.published, true)
+    assert.strictEqual(dry.dryRun, true)
+    assert.strictEqual(dry.rows[0].status, 'planned', 'production-like current-stock Note dry-run 必须只形成计划')
+    assert.deepStrictEqual(
+      [materializeCalls, targetUploadSequence, targetVideo.length],
+      [0, 0, 0],
+      'current-stock Note dry-run 必须保持 Drive、Bitable media 与 Base 附件写为 0'
+    )
+    const first = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
+      dryRun: false,
+      noteMaterialDrive: drive,
+      noteMaterialTargetClient: targetClient,
+      noteMaterialOss: ossAdapter,
+      prepareMaterial
+    })
+    assert.strictEqual(first.published, true, `正式 Note 首轮必须发布：${JSON.stringify(first)}`)
     assert.strictEqual(item.missingVideoMaterial, false, '房源笔记视频成功落库后必须清除旧缺视频标记')
     assert.strictEqual(item.videoMaterialStatus, '已匹配视频素材')
     assert.strictEqual(item.syncStatus, '已同步飞书')
@@ -2330,6 +2424,7 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     const second = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
       dryRun: false,
       noteMaterialDrive: drive,
+      noteMaterialTargetClient: targetClient,
       noteMaterialOss: ossAdapter,
       prepareMaterial
     })
@@ -2337,12 +2432,36 @@ async function testSourceContentIsRevalidatedBeforeReuse() {
     assert.ok(sourceReadbacks >= 1, '同 token 元数据不变时也必须重新读取源内容')
     assert.strictEqual(materializeCalls, 2, '源内容变化后必须重新物化 Drive 与 OSS 素材')
     assert.notStrictEqual(item.mediaAssets[0].contentSha256, oldHash, '源内容变化必须进入新的素材状态')
+    const beforeExact = {
+      materializeCalls,
+      targetUploadSequence,
+      targetVideo: JSON.stringify(targetVideo)
+    }
+    const exact = await feishuSync._internal.syncMirrorNoteMaterials(db, mirrorResult, {
+      dryRun: false,
+      noteMaterialDrive: drive,
+      noteMaterialTargetClient: targetClient,
+      noteMaterialOss: ossAdapter,
+      prepareMaterial
+    })
+    assert.strictEqual(exact.published, true)
+    assert.strictEqual(exact.noop, true, 'current-stock Note 第二轮同内容必须报告素材外写 noop')
+    assert.deepStrictEqual({
+      materializeCalls,
+      targetUploadSequence,
+      targetVideo: JSON.stringify(targetVideo)
+    }, beforeExact, '第二轮同内容必须零 Drive 重写、零 Bitable media 上传、零 Base 附件更新')
   } finally {
     config.feishu.noteMaterialSyncEnabled = previous.enabled
     config.feishu.sourceCompatibilityProfile = previous.sourceCompatibilityProfile
     config.feishu.noteMaterialAllowedHosts = previous.hosts
     config.feishu.noteMaterialTargetRootFolderToken = previous.root
     config.feishu.folderToken = previous.legacyRoot
+    config.feishu.targetBitableAppToken = previous.targetBaseToken
+    config.feishu.miniTableId = previous.miniTableId
+    config.feishu.noteMaterialFieldId = previous.noteMaterialFieldId
+    config.feishu.miniFieldBindings = previous.miniFieldBindings
+    fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 }
 

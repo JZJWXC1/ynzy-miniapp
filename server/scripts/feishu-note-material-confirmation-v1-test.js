@@ -128,13 +128,16 @@ function inventoryFixture(options = {}) {
     download: 0,
     folderWrite: 0,
     driveWrite: 0,
+    bitableMediaWrite: 0,
     ossWrite: 0,
     dbWrite: 0,
     driveBuffers: [],
     ossBuffers: []
   }
   const downloadCounts = new Map()
+  const bitableMediaByToken = new Map()
   const drive = {
+    writeDispatchEvidenceVersion: 1,
     async listFolder(folderToken) {
       calls.list += 1
       const record = byFolder.get(folderToken)
@@ -159,12 +162,16 @@ function inventoryFixture(options = {}) {
       return downloadEvidence(body, record.mimeType)
     },
     async ensureListingFolder(input) {
+      if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
       calls.folderWrite += 1
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
       return { token: `target-folder-${sha256(input.sourceRecordId).slice(0, 12)}` }
     },
     async materializeVideo(input) {
+      if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
       calls.driveWrite += 1
       calls.driveBuffers.push(input.sourceEvidence.buffer)
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
       return {
         targetToken: `target-file-${sha256(input.asset.sourceToken).slice(0, 12)}`,
         targetName: input.targetName,
@@ -177,16 +184,43 @@ function inventoryFixture(options = {}) {
     },
     async verifyMaterializedVideo() {
       return { verified: true }
+    },
+    async uploadBitableFileDescriptor(descriptor, targetBaseToken, fileName, onWriteDispatched) {
+      assert.strictEqual(targetBaseToken, 'target-base-confirmation')
+      assert.match(fileName, /^[A-Za-z0-9_-]+\.mp4$/)
+      if (typeof onWriteDispatched === 'function') onWriteDispatched()
+      const body = await fs.promises.readFile(descriptor.filePath)
+      assert.deepStrictEqual(
+        [sha256(body), body.length],
+        [descriptor.contentSha256, descriptor.size],
+        '合成 Bitable media 上传必须消费同一份已标准化成品'
+      )
+      calls.bitableMediaWrite += 1
+      const fileToken = `bitable-media-${descriptor.contentSha256.slice(0, 24)}`
+      bitableMediaByToken.set(fileToken, {
+        contentSha256: descriptor.contentSha256,
+        size: descriptor.size,
+        contentType: descriptor.contentType
+      })
+      return { fileToken, ...bitableMediaByToken.get(fileToken) }
+    },
+    async downloadTokenDigestExact(fileToken) {
+      const evidence = bitableMediaByToken.get(fileToken)
+      if (!evidence) throw new Error('合成 Bitable media token 不存在')
+      return { ...evidence }
     }
   }
   const oss = {
     async putVideoDeterministic(input) {
       calls.ossWrite += 1
-      calls.ossBuffers.push(input.buffer)
+      const body = Buffer.isBuffer(input.buffer)
+        ? input.buffer
+        : await fs.promises.readFile(input.filePath)
+      calls.ossBuffers.push(body)
       return {
         objectKey: input.objectKey,
         contentSha256: input.contentSha256,
-        size: input.buffer.length,
+        size: body.length,
         verified: true
       }
     },
@@ -195,6 +229,21 @@ function inventoryFixture(options = {}) {
     }
   }
   const prepareMaterial = options.prepareMaterial || createFakePrepareMaterial()
+  const openPreparedFile = async (prepared) => {
+    const temporaryPath = path.join(
+      os.tmpdir(),
+      `ynzy-confirmation-${process.pid}-${crypto.randomBytes(8).toString('hex')}.${prepared.extension}`
+    )
+    await fs.promises.writeFile(temporaryPath, prepared.buffer, { flag: 'wx' })
+    prepared.temporaryPath = temporaryPath
+    return { ...prepared, filePath: temporaryPath }
+  }
+  const disposePreparedMaterial = async (prepared) => {
+    if (prepared && prepared.temporaryPath) {
+      await fs.promises.rm(prepared.temporaryPath, { force: true })
+      prepared.temporaryPath = ''
+    }
+  }
   return {
     records,
     db,
@@ -202,6 +251,8 @@ function inventoryFixture(options = {}) {
     drive,
     oss,
     prepareMaterial,
+    openPreparedFile,
+    disposePreparedMaterial,
     transformProfile: prepareMaterial.profile,
     sourceRows: records.map((record) => ({
       sourceRecordId: record.sourceRecordId,
@@ -211,7 +262,7 @@ function inventoryFixture(options = {}) {
 }
 
 function writeCount(calls) {
-  return calls.folderWrite + calls.driveWrite + calls.ossWrite + calls.dbWrite
+  return calls.folderWrite + calls.driveWrite + calls.bitableMediaWrite + calls.ossWrite + calls.dbWrite
 }
 
 async function runInventory(fixture, options = {}) {
@@ -312,7 +363,8 @@ function e2eMirrorBindings() {
       listingStatus: fieldBinding('mini-status', 1, true),
       published: fieldBinding('mini-published', 7, true),
       canonical: fieldBinding('mini-canonical', 7, true),
-      enabled: fieldBinding('mini-enabled', 7, true)
+      enabled: fieldBinding('mini-enabled', 7, true),
+      video: fieldBinding('mini-video', 17, false)
     },
     location: {
       locationId: fieldBinding('loc-id', 1, true),
@@ -327,14 +379,23 @@ function e2eMirrorBindings() {
   }
 }
 
-function e2eSnapshot(records, fieldNames = {}) {
+function e2eSnapshot(records, fieldNames = {}, bindings = null) {
+  const schemaBindings = bindings && typeof bindings === 'object'
+    ? Object.entries(bindings).map(([semantic, binding]) => ({
+        semantic,
+        fieldName: fieldNames[semantic] || semantic,
+        fieldId: binding.fieldId,
+        type: String(binding.type)
+      }))
+    : null
   return {
     complete: true,
     records: clone(records),
     recordCount: records.length,
     digest: sha256(JSON.stringify(records)),
     schemaFingerprint: sha256(JSON.stringify(fieldNames)),
-    fieldNames: clone(fieldNames)
+    fieldNames: clone(fieldNames),
+    ...(schemaBindings ? { schemaBindings } : {})
   }
 }
 
@@ -343,7 +404,7 @@ function e2eMirrorFieldNames() {
     'sourceRecordId', 'locationId', 'locationRecordId', 'city', 'district', 'block',
     'community', 'latitude', 'longitude', 'roomLabel', 'building', 'unit', 'roomNumber',
     'layoutDescription', 'layoutCategory', 'monthlyRent', 'rentMode', 'viewingMethod',
-    'viewingPassword', 'remark', 'listingStatus', 'published', 'canonical', 'enabled'
+    'viewingPassword', 'remark', 'listingStatus', 'published', 'canonical', 'enabled', 'video'
   ].reduce((result, semantic) => {
     result[semantic] = semantic
     return result
@@ -420,11 +481,17 @@ function e2eSyncFixture(options = {}) {
       baseCalls.push({ client: 'target', action: 'read', tableId: readOptions.tableId })
       if (readOptions.tableId === 'tbl-location-confirmation') return e2eLocationSnapshot()
       assert.strictEqual(readOptions.tableId, 'tbl-mini-confirmation')
-      return e2eSnapshot(mirrorRecords, e2eMirrorFieldNames())
+      return e2eSnapshot(mirrorRecords, e2eMirrorFieldNames(), readOptions.bindings)
     },
     async batchCreateRecords(tableId, records, writeOptions = {}) {
       if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
-      baseCalls.push({ client: 'target', action: 'create', tableId, count: records.length })
+      baseCalls.push({
+        client: 'target',
+        action: 'create',
+        tableId,
+        count: records.length,
+        fieldNames: records.map((record) => Object.keys(record.fields || {}).sort())
+      })
       assert.strictEqual(tableId, 'tbl-mini-confirmation')
       const created = records.map((record, index) => ({
         recordId: `mirror-record-${mirrorRecords.length + index + 1}`,
@@ -435,7 +502,13 @@ function e2eSyncFixture(options = {}) {
     },
     async batchUpdateRecords(tableId, records, writeOptions = {}) {
       if (typeof writeOptions.onWriteDispatched === 'function') writeOptions.onWriteDispatched()
-      baseCalls.push({ client: 'target', action: 'update', tableId, count: records.length })
+      baseCalls.push({
+        client: 'target',
+        action: 'update',
+        tableId,
+        count: records.length,
+        fieldNames: records.map((record) => Object.keys(record.fields || {}).sort())
+      })
       assert.strictEqual(tableId, 'tbl-mini-confirmation')
       const byId = new Map(mirrorRecords.map((record) => [record.recordId, record]))
       records.forEach((record) => {
@@ -511,6 +584,8 @@ function e2eSyncOptions(fixture, options = {}) {
     noteMaterialDrive: fixture.drive,
     noteMaterialOss: fixture.oss,
     prepareMaterial: fixture.prepareMaterial,
+    openPreparedFile: fixture.openPreparedFile,
+    disposePreparedMaterial: fixture.disposePreparedMaterial,
     describeProfile: async () => fixture.transformProfile,
     materials: [],
     feishuToken: 'synthetic-confirmation-tenant-token',
@@ -530,6 +605,18 @@ function targetBaseWriteCount(fixture) {
   return fixture.baseCalls.filter((call) => (
     call.client === 'target' && ['create', 'update', 'delete'].includes(call.action)
   )).length
+}
+
+function targetVideoBaseWriteCount(fixture) {
+  return fixture.baseCalls.filter((call) => (
+    call.client === 'target' && call.action === 'update' &&
+    Array.isArray(call.fieldNames) && call.fieldNames.length > 0 &&
+    call.fieldNames.every((names) => names.length === 1 && names[0] === 'video')
+  )).length
+}
+
+function targetInventoryBaseWriteCount(fixture) {
+  return targetBaseWriteCount(fixture) - targetVideoBaseWriteCount(fixture)
 }
 
 function loadFeishuSyncWithFormalSummaryDrift() {
@@ -1397,10 +1484,12 @@ async function testActualFeishuSyncEndToEndGate() {
         formal.noteMaterials.contentPlanAssetCount,
         humanDry.noteMaterials.contentPlanAssetCount
       )
-      assert.strictEqual(targetBaseWriteCount(fixture), 1, '确认一致后目标专用 Base 必须真实写入一次')
+      assert.strictEqual(targetInventoryBaseWriteCount(fixture), 1, '确认一致后目标专用 Base 必须写入一次房源事实')
+      assert.strictEqual(targetVideoBaseWriteCount(fixture), 1, '确认一致后目标专用 Base 必须单独写入一次 type17 附件')
       assert.strictEqual(fixture.calls.folderWrite, 1, '确认一致后目标 Drive 房源目录必须真实创建')
       assert.strictEqual(fixture.calls.driveWrite, 1, '确认一致后目标 Drive 素材必须真实写入')
       assert.strictEqual(fixture.calls.ossWrite, 1, '确认一致后 OSS 素材必须真实写入')
+      assert.strictEqual(fixture.calls.bitableMediaWrite, 1, '确认一致后必须上传一次独立 Bitable media 成品')
       assert.deepStrictEqual(
         [prepareState.calls, fixture.calls.download],
         [1, 3],
@@ -1648,7 +1737,8 @@ async function testActualFeishuSyncEndToEndGate() {
         1,
         '正式预检与 apply 必须按受信延期计划跳过失败行，不得盲目重试或产生未知写入'
       )
-      assert.strictEqual(targetBaseWriteCount(fixture), 1, '逐行素材失败不得阻断库存目标表发布')
+      assert.strictEqual(targetInventoryBaseWriteCount(fixture), 1, '逐行素材失败不得阻断库存目标表发布')
+      assert.strictEqual(targetVideoBaseWriteCount(fixture), 1, '仅计划成功行必须单独发布一次 type17 主视频')
       assert.strictEqual(
         fixture.driveWritesBySourceRecord.get('source-record-confirm-ready'),
         1,
@@ -1711,7 +1801,8 @@ async function testActualFeishuSyncEndToEndGate() {
           expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
         })
       )
-      assert.strictEqual(targetBaseWriteCount(fixture), 1, '摘要漂移故障注入必须发生在真实目标 Base 写入之后')
+      assert.strictEqual(targetInventoryBaseWriteCount(fixture), 1, '摘要漂移故障注入必须发生在房源事实写入之后')
+      assert.strictEqual(targetVideoBaseWriteCount(fixture), 1, '摘要漂移故障注入必须发生在主视频附件写入之后')
       assert.strictEqual(fixture.calls.driveWrite, 1, '摘要漂移故障注入必须发生在真实素材写入之后')
       assert.strictEqual(formal.complete, false, '最终素材摘要漂移时整批结果必须降级失败')
       assert.strictEqual(formal.success, false)
@@ -1764,7 +1855,8 @@ async function testActualFeishuSyncEndToEndGate() {
           expectedContentAssetCount: humanDry.noteMaterials.contentPlanAssetCount
         })
       )
-      assert.strictEqual(targetBaseWriteCount(fixture), 1, '两行镜像计划允许一次批量目标 Base 写入')
+      assert.strictEqual(targetInventoryBaseWriteCount(fixture), 1, '两行镜像计划允许一次批量房源事实写入')
+      assert.strictEqual(targetVideoBaseWriteCount(fixture), 1, '仅写前未漂移的第一行允许一次 type17 主视频写入')
       assert.strictEqual(
         fixture.driveWritesBySourceRecord.get('source-record-confirm-alpha'),
         1,
@@ -2336,7 +2428,11 @@ async function testDeferredMaterialActionsAreBoundAndApplied() {
   assert.strictEqual(dry.failed, 2)
   assert.strictEqual(dry.contentPlanAssetCount, 1, '正常行仍须进入可确认素材计划')
   const dryRows = new Map(dry.rows.map((row) => [row.sourceRecordId, row]))
-  assert.strictEqual(dryRows.get('source-record-action-clear').deferredAction, 'clear')
+  assert.strictEqual(
+    dryRows.get('source-record-action-clear').deferredAction,
+    'retain',
+    '同物理持续在租时，Note 换链后的确定性处理失败也只能告警并保留旧 verified 素材'
+  )
   assert.strictEqual(dryRows.get('source-record-action-retain').deferredAction, 'retain')
   assert.strictEqual(dryRows.get('source-record-action-good').status, 'planned')
   const confirmation = confirmationFromReport(dry)
@@ -2350,7 +2446,7 @@ async function testDeferredMaterialActionsAreBoundAndApplied() {
   })
   assert.strictEqual(formal.complete, false)
   assert.strictEqual(formal.failed, 2)
-  const cleared = formalFixture.db.listings.find((item) => (
+  const retainedChangedLink = formalFixture.db.listings.find((item) => (
     item.feishuRecordId === 'source-record-action-clear'
   ))
   const retained = formalFixture.db.listings.find((item) => (
@@ -2359,8 +2455,9 @@ async function testDeferredMaterialActionsAreBoundAndApplied() {
   const published = formalFixture.db.listings.find((item) => (
     item.feishuRecordId === 'source-record-action-good'
   ))
-  assert.deepStrictEqual(cleared.mediaAssets, [], '链接变化或确定性失败必须清空旧笔记素材')
-  assert.strictEqual(cleared.videoKey, '')
+  assert.strictEqual(retainedChangedLink.mediaAssets.length, 1, '链接变化或确定性失败不得清空同物理在租房源的旧素材')
+  assert.strictEqual(retainedChangedLink.noteMaterialState.status, 'retained-temporary-failure')
+  assert.strictEqual(retainedChangedLink.videoKey, retainedChangedLink.mediaAssets[0].objectKey)
   assert.strictEqual(retained.mediaAssets.length, 1, '同链接同房间的临时失败必须保留已验证素材')
   assert.strictEqual(retained.noteMaterialState.status, 'retained-temporary-failure')
   assert.strictEqual(published.mediaAssets.length, 1, '正常素材行仍须发布')

@@ -835,18 +835,26 @@ function createFeishuNoteMaterialClient(options = {}) {
     throw lastError || new Error('下载飞书房源素材失败')
   }
 
-  async function downloadTokenDigestExact(rawToken, preferredKind, expectedSize) {
+  async function downloadTokenDigestExact(rawToken, preferredKind, expectedSize, downloadOptions = {}) {
     const safeToken = tokenText(rawToken)
     const size = Number(expectedSize)
     if (!Number.isSafeInteger(size) || size < 1) {
       throw new TypeError('飞书目标素材 expected size 无效')
     }
+    const extra = normalizeText(downloadOptions && downloadOptions.extra)
+    if (extra && (extra.length > 8192 || /[\r\n\u0000]/.test(extra))) {
+      throw new Error('飞书目标素材下载扩展参数无效')
+    }
+    const mediaParams = extra ? `?${new URLSearchParams({ extra }).toString()}` : ''
+    const mediaEndpoint = `/drive/v1/medias/${encodeURIComponent(safeToken)}/download${mediaParams}`
     const endpoints = preferredKind === 'drive-file'
       ? [`/drive/v1/files/${encodeURIComponent(safeToken)}/download`]
-      : [
-          `/drive/v1/medias/${encodeURIComponent(safeToken)}/download`,
-          `/drive/v1/files/${encodeURIComponent(safeToken)}/download`
-        ]
+      : (preferredKind === 'bitable-file'
+          ? [mediaEndpoint]
+          : [
+              mediaEndpoint,
+              `/drive/v1/files/${encodeURIComponent(safeToken)}/download`
+            ])
     let lastError = null
     for (const endpoint of endpoints) {
       const controller = new AbortController()
@@ -1102,6 +1110,92 @@ function createFeishuNoteMaterialClient(options = {}) {
     return uploadCheckedFileDescriptor(fileDescriptor, targetFolderToken, name, onWriteDispatched)
   }
 
+  async function uploadSmallBitableFile(fileDescriptor, targetAppToken, name, onWriteDispatched) {
+    const targetBaseToken = tokenText(targetAppToken)
+    const checksum = await adler32FileRange(fileDescriptor.filePath, 0, fileDescriptor.size)
+    const multipart = createFileMultipart({
+      file_name: multipartText(name, '小程序专用表附件名称'),
+      parent_type: 'bitable_file',
+      parent_node: targetBaseToken,
+      extra: JSON.stringify({ drive_route_token: targetBaseToken }),
+      size: fileDescriptor.size,
+      checksum
+    }, fileDescriptor)
+    const data = await requestJson('/drive/v1/medias/upload_all', {
+      method: 'POST',
+      headers: multipart.headers,
+      body: multipart.body,
+      duplex: 'half',
+      onWriteDispatched
+    }, '上传主视频到小程序专用表')
+    return tokenText(data.file_token || data.token)
+  }
+
+  async function uploadLargeBitableFile(fileDescriptor, targetAppToken, name, onWriteDispatched) {
+    const fileName = multipartText(name, '小程序专用表附件名称')
+    const targetBaseToken = tokenText(targetAppToken)
+    const prepared = await requestJson('/drive/v1/medias/upload_prepare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        file_name: fileName,
+        parent_type: 'bitable_file',
+        parent_node: targetBaseToken,
+        extra: JSON.stringify({ drive_route_token: targetBaseToken }),
+        size: fileDescriptor.size
+      }),
+      onWriteDispatched
+    }, '准备分片上传主视频到小程序专用表')
+    const uploadId = normalizeText(prepared.upload_id)
+    const blockSize = Number(prepared.block_size)
+    const blockNum = Number(prepared.block_num)
+    if (!uploadId || !Number.isSafeInteger(blockSize) || blockSize < 1 ||
+        !Number.isSafeInteger(blockNum) || blockNum < 1 ||
+        Math.ceil(fileDescriptor.size / blockSize) !== blockNum) {
+      throw new Error('小程序专用表附件分片策略无效')
+    }
+    for (let seq = 0; seq < blockNum; seq += 1) {
+      const start = seq * blockSize
+      const endExclusive = Math.min(fileDescriptor.size, (seq + 1) * blockSize)
+      const partSize = endExclusive - start
+      const checksum = await adler32FileRange(fileDescriptor.filePath, start, endExclusive)
+      const multipart = createFileMultipart({
+        upload_id: uploadId,
+        seq,
+        size: partSize,
+        checksum,
+        file_name: fileName
+      }, fileDescriptor, { start, endExclusive })
+      await requestJson('/drive/v1/medias/upload_part', {
+        method: 'POST',
+        headers: multipart.headers,
+        body: multipart.body,
+        duplex: 'half',
+        onWriteDispatched
+      }, `分片上传主视频到小程序专用表 ${seq + 1}/${blockNum}`)
+    }
+    const finished = await requestJson('/drive/v1/medias/upload_finish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ upload_id: uploadId, block_num: blockNum }),
+      onWriteDispatched
+    }, '完成分片上传主视频到小程序专用表')
+    return tokenText(finished.file_token || finished.token)
+  }
+
+  async function uploadBitableFileDescriptor(rawDescriptor, targetAppToken, name, onWriteDispatched) {
+    const fileDescriptor = await checkedPreparedFileEvidence(rawDescriptor)
+    const fileToken = fileDescriptor.size <= SMALL_UPLOAD_LIMIT
+      ? await uploadSmallBitableFile(fileDescriptor, targetAppToken, name, onWriteDispatched)
+      : await uploadLargeBitableFile(fileDescriptor, targetAppToken, name, onWriteDispatched)
+    return {
+      fileToken,
+      contentType: fileDescriptor.contentType,
+      contentSha256: fileDescriptor.contentSha256,
+      size: fileDescriptor.size
+    }
+  }
+
   function folderNameForRecord(sourceRecordId) {
     const fingerprint = crypto.createHash('sha256').update(normalizeText(sourceRecordId)).digest('hex').slice(0, 24)
     if (!fingerprint) throw new Error('房源素材目录缺少 sourceRecordId')
@@ -1297,6 +1391,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     createFolder,
     uploadFile,
     uploadFileDescriptor,
+    uploadBitableFileDescriptor,
     ensureListingFolder,
     materializeAsset,
     verifyMaterializedAsset,

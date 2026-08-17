@@ -1078,19 +1078,65 @@ async function testWorkerV2DisablesLegacyMaterialSourceBehaviorally() {
     )
     assertOldMediaCleared(changedIdentityDb.listings[0], '物理身份变化的房源')
 
-    const reactivatedDb = createDb()
-    reactivatedDb.listings = [reactivatedDb.listings[0]]
-    reactivatedDb.listings[0].feishuRecordId = 'source-record-listing-only-reactivated'
-    reactivatedDb.listings[0].status = '已下架'
-    reactivatedDb.listings[0].lifecycleStatus = 'expired'
-    await feishuSync.applySync(
+    const persistedSoldDb = createDb()
+    persistedSoldDb.listings = [persistedSoldDb.listings[0]]
+    persistedSoldDb.listings[0].feishuRecordId = 'source-record-listing-only-reactivated'
+    persistedSoldDb.listings[0].status = '已成交'
+    persistedSoldDb.listings[0].lifecycleStatus = 'sold'
+    const reactivatedDb = JSON.parse(JSON.stringify(persistedSoldDb))
+    const reactivatedInventory = await feishuSync.applySync(
       reactivatedDb,
       [inventoryRow('source-record-listing-only-reactivated', '101')],
       [],
       'A1',
       { dryRun: true, trustedCanonicalCoordinates: true, materialPolicy: 'disabled' }
     )
-    assertOldMediaCleared(reactivatedDb.listings[0], '重新上架的房源')
+    assertOldMediaCleared(reactivatedDb.listings[0], '历史已成交后重新上架的房源')
+    const reactivatedSets = Object.getOwnPropertySymbols(reactivatedInventory)
+      .map((symbol) => reactivatedInventory[symbol])
+      .filter((value) => value instanceof Set)
+    assert.ok(
+      reactivatedSets.some((set) => set.has('source-record-listing-only-reactivated')),
+      'sold/已成交等非持续在租状态必须进入本轮私有复活集合，供 Note 失败时清旧受管附件'
+    )
+    config.feishu.noteMaterialSyncEnabled = true
+    config.feishu.noteMaterialAllowedHosts = ['example.test']
+    let reactivatedNoteReads = 0
+    let reactivatedExternalWrites = 0
+    const reactivatedNoteDry = await feishuSync._internal.syncNoteMaterialsAfterInventory(
+      reactivatedDb,
+      reactivatedInventory,
+      {
+        sourceNoteMaterials: [{
+          sourceRecordId: 'source-record-listing-only-reactivated',
+          value: 'https://example.test/drive/folder/fldReactivatedNoteFailure123'
+        }]
+      },
+      {
+        dryRun: true,
+        noteMaterialDrive: {
+          async listFolder() {
+            reactivatedNoteReads += 1
+            const error = new Error('synthetic sold reactivation Note failure')
+            error.statusCode = 503
+            throw error
+          }
+        },
+        onExternalWriteDispatched() {
+          reactivatedExternalWrites += 1
+        }
+      }
+    )
+    assert.strictEqual(reactivatedNoteReads, 1, 'sold/已成交复活 dry 必须真实进入 Note 读取并命中失败')
+    assert.strictEqual(reactivatedNoteDry.complete, false, '复活后的 Note 失败必须让整轮 dry 在写前失败关闭')
+    assert.strictEqual(reactivatedNoteDry.published, false)
+    assert.strictEqual(reactivatedNoteDry.failed, 1)
+    assert.strictEqual(reactivatedExternalWrites, 0, '复活 Note 失败 dry 不得派发 Drive、OSS、Bitable 或 Base 写入')
+    assert.deepStrictEqual(
+      [persistedSoldDb.listings[0].status, persistedSoldDb.listings[0].lifecycleStatus],
+      ['已成交', 'sold'],
+      'worker 只在克隆库存预演，失败时持久旧记录必须继续保持不公开'
+    )
     assert.strictEqual(materialProcessingCalls, 0, 'current-stock dry/apply 全程必须保持下载、Drive、OSS、prepare 调用为 0')
   } finally {
     global.fetch = previousFetch
@@ -1122,7 +1168,10 @@ async function testAutomaticWorkerRequiresFormalNoteMaterialMode() {
       miniTableId: 'tbl-mini',
       locationTableId: 'tbl-location',
       sourceFieldBindings: bindings.source,
-      miniFieldBindings: bindings.mini,
+      miniFieldBindings: {
+        ...bindings.mini,
+        video: fieldBinding('mini-video-worker-formal-note-target', 17, false)
+      },
       locationFieldBindings: bindings.location,
       sourceCompatibilityProfile: '',
       noteMaterialSyncEnabled: true,

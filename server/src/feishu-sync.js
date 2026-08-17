@@ -21,6 +21,7 @@ const {
   recallContentPlanConfirmation,
   isContentPlanConfirmationError,
   isKnownMaterialRowWarningReport,
+  externalWriteStateUnknownError,
   isExternalWriteStateUnknownError,
   isExternalWriteIntentPersistenceError,
   buildContentPlanSummary,
@@ -50,6 +51,9 @@ const COMPANY_FEATURES = ['免押金', '不分佣']
 const MISSING_VIDEO_MATERIAL_STATUS = '缺视频素材'
 const RETAINED_VIDEO_MATERIAL_STATUS = '沿用上次视频·素材待核'
 const DISABLED_MATERIAL_POLICY = 'disabled'
+const NOTE_MANAGED_MATERIAL_POLICY = 'note-managed'
+const MIRROR_NOTE_TARGET_CONTEXT = Symbol('mirror-note-target-context')
+const REACTIVATED_NOTE_SOURCE_IDS = Symbol('reactivated-note-source-ids')
 const VIDEO_EXT_PATTERN = /\.(mp4|mov|m4v|avi|webm)$/i
 const DOWN_STATUS_PATTERN = /下架|已租|已成交|成交|关闭|无效|删除|暂停|不可租|停租|down|off|inactive|rented|closed/i
 const UP_STATUS_PATTERN = /上架|在租|待租|待出租|即将空出|空置|可租|有效|up|on|active/i
@@ -2158,7 +2162,13 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
     ? 50
     : Number(listing.landlordCommissionPercent)
   listing.roomAddress = row.roomAddress || roomAddressFromParts(row)
-  const materialDisabled = options.materialPolicy === DISABLED_MATERIAL_POLICY
+  const materialDisabled = mirrorMaterialValuesExcluded(options.materialPolicy)
+  const previousPrimaryTargetAttachment = options.materialPolicy === NOTE_MANAGED_MATERIAL_POLICY &&
+    listing.noteMaterialState && typeof listing.noteMaterialState === 'object' &&
+    listing.noteMaterialState.primaryTargetAttachment &&
+    typeof listing.noteMaterialState.primaryTargetAttachment === 'object'
+    ? clone(listing.noteMaterialState.primaryTargetAttachment)
+    : null
   const hasMaterial = !materialDisabled && Boolean(material)
   const materialReady = hasMaterial && !materialFailureReason
   // domain.updateNormalListing 会在本轮视频字段为空时保留旧值，因此这里仍能先验证并快照最后一份有效视频。
@@ -2213,6 +2223,11 @@ function attachFeishuFields(listing, row, material, video, materialFailureReason
       delete listing.videoMaterialFailureReason
       delete listing.mediaAssets
       delete listing.noteMaterialState
+      if (previousPrimaryTargetAttachment) {
+        listing.noteMaterialState = {
+          primaryTargetAttachment: previousPrimaryTargetAttachment
+        }
+      }
       delete listing.videoLabel
       refreshRecommendationProfile(listing, { generatedAt: listing.updatedAt })
     }
@@ -2240,9 +2255,11 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
     try {
       // 必须在 updateNormalListing/attachFeishuFields 改写状态和物理字段之前冻结资格。
       // “持续在架”与“同一物理房源”缺一不可；成交/签单/暂停/失效、来源不明、物理键变化或不完整均清旧视频。
-      const allowRetainedVideo = wasContinuouslyActiveFeishuListing(existing) && hasSamePhysicalRoomIdentity(existing, row)
-      const wasInactive = existing.lifecycleStatus === 'expired' || existing.status === '已下架'
-      if (wasInactive) {
+      const wasContinuouslyActive = wasContinuouslyActiveFeishuListing(existing)
+      const allowRetainedVideo = wasContinuouslyActive && hasSamePhysicalRoomIdentity(existing, row)
+      const reactivated = !wasContinuouslyActive
+      const wasExplicitlyDown = existing.lifecycleStatus === 'expired' || existing.status === '已下架'
+      if (wasExplicitlyDown) {
         existing.lifecycleStatus = 'active'
         existing.status = '在租'
       }
@@ -2254,7 +2271,7 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
         materialPolicy: options.materialPolicy
       })
       existing.feishuLastSyncAction = 'updated'
-      return { action: 'updated', listing: existing }
+      return { action: 'updated', listing: existing, reactivated }
     } catch (error) {
       // 领域校验或后续字段挂载失败时，必须恢复同一个对象实例。否则调用方虽然收到失败，
       // 列表数组里却会残留“已复活但未更新完整”的半成品，并被重新公开。
@@ -2271,7 +2288,7 @@ function upsertFeishuListing(db, adminId, existing, byExternalId, row, material,
   if (listing) listing.feishuLastSyncAction = 'created'
   if (listing && row.externalId) byExternalId.set(String(row.externalId), listing)
   if (listing && row.roomIdentityKey) byExternalId.set(String(row.roomIdentityKey), listing)
-  return { action: 'created', listing }
+  return { action: 'created', listing, reactivated: false }
 }
 
 function prevalidateFeishuUpsertBeforeMaterialTransfer(db, adminId, existing, row, material) {
@@ -2309,11 +2326,12 @@ async function applySync(db, rows, materials, adminId, options = {}) {
   db.listings = db.listings || []
   db.feishuSyncLogs = db.feishuSyncLogs || []
   const actorId = syncActorId(db, adminId)
-  const materialDisabled = options.materialPolicy === DISABLED_MATERIAL_POLICY
+  const materialDisabled = mirrorMaterialValuesExcluded(options.materialPolicy)
   const effectiveMaterials = materialDisabled ? [] : materials
   const matcher = materialDisabled ? () => null : createMaterialMatcher(effectiveMaterials)
   const byExternalId = existingByExternalId(db)
   const seen = new Set()
+  const reactivatedNoteSourceIds = new Set()
   const result = {
     dryRun: Boolean(options.dryRun),
     startedAt: nowText(),
@@ -2406,6 +2424,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
       } else {
         result.created += 1
       }
+      if (upsert.reactivated === true) reactivatedNoteSourceIds.add(String(row.externalId))
       result.auditRows.push(buildAuditRow(
         row,
         material,
@@ -2434,6 +2453,7 @@ async function applySync(db, rows, materials, adminId, options = {}) {
           } else {
             result.created += 1
           }
+          if (upsert.reactivated === true) reactivatedNoteSourceIds.add(String(row.externalId))
           result.materialTransferFailed += 1
           result.missingVideoMaterial += 1
           if (result.messages.length < 20) {
@@ -2473,6 +2493,12 @@ async function applySync(db, rows, materials, adminId, options = {}) {
     messages: result.messages.slice(0, 20)
   })
   db.feishuSyncLogs = db.feishuSyncLogs.slice(0, 30)
+  Object.defineProperty(result, REACTIVATED_NOTE_SOURCE_IDS, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: reactivatedNoteSourceIds
+  })
   return result
 }
 
@@ -3789,7 +3815,7 @@ function validateCanonicalMirrorRecords(records, options = {}) {
     if (!roomParts.building || !roomParts.roomNumber) {
       throw new Error(`专用源表 ${sourceRecordId} 无法从房号字段解析楼栋与房间号`)
     }
-    if (options.materialPolicy !== DISABLED_MATERIAL_POLICY) canonicalVideoAttachment(fields.video)
+    if (!mirrorMaterialValuesExcluded(options.materialPolicy)) canonicalVideoAttachment(fields.video)
     const hasLatitude = fields.latitude !== undefined && fields.latitude !== null && fields.latitude !== ''
     const hasLongitude = fields.longitude !== undefined && fields.longitude !== null && fields.longitude !== ''
     if (hasLatitude !== hasLongitude) throw new Error(`专用源表 ${sourceRecordId} 经纬度必须成对出现`)
@@ -3804,7 +3830,7 @@ function canonicalMirrorRecordToSyncRow(record, index, options = {}) {
   return {
     record_id: sourceRecordId,
     rowNumber: index + 1,
-    video: options.materialPolicy === DISABLED_MATERIAL_POLICY
+    video: mirrorMaterialValuesExcluded(options.materialPolicy)
       ? null
       : canonicalVideoAttachment(fields.video),
     fields: {
@@ -4662,7 +4688,14 @@ async function executeAiFoundationSync({
       suppressEvents: baseline
     }
   )
-  validateCanonicalMirrorRecords(plan.plannedRecords)
+  validateCanonicalMirrorRecords(plan.plannedRecords, { materialPolicy: options.materialPolicy })
+  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
+    ? activeSourceNoteMaterialRows(options.sourceNoteMaterials, plan.plannedRecords)
+    : []
+  assertNoteMaterialSourceFieldPlan(
+    options,
+    buildNoteMaterialSourceFieldPlan(sourceNoteMaterials)
+  )
   // 旧专用表可能尚未持久化底座 ID。熔断必须比较同一轮规范化后的稳定实体身份，
   // 否则会把 UNIT 物理键升级为 TMP/寓小二 ID 误判成整批撤下。
   assertMirrorDeactivateSafety(normalizedCurrent, plan.plannedRecords, {
@@ -4746,7 +4779,8 @@ async function executeAiFoundationSync({
       baseline,
       ...safetyDigests,
       records: clone(plan.plannedRecords),
-      materials: options.materials || []
+      materials: options.materials || [],
+      sourceNoteMaterials
     }
   }
 
@@ -4776,7 +4810,7 @@ async function executeAiFoundationSync({
     tableId: options.rentedTableId,
     bindings: options.rentedBindings,
     allowEmpty: true,
-    ...(options.materialPolicy === DISABLED_MATERIAL_POLICY
+    ...(mirrorMaterialValuesExcluded(options.materialPolicy)
       ? { excludedRecordSemantics: ['video'] }
       : {})
   })
@@ -4824,7 +4858,7 @@ async function executeAiFoundationSync({
     tableId: options.miniTableId,
     bindings: options.miniBindings,
     allowEmpty: false,
-    ...(options.materialPolicy === DISABLED_MATERIAL_POLICY
+    ...(mirrorMaterialValuesExcluded(options.materialPolicy)
       ? { excludedRecordSemantics: ['video'] }
       : {})
   })
@@ -4895,7 +4929,8 @@ async function executeAiFoundationSync({
     baseline,
     ...safetyDigests,
     records: clone(remainingPlan.plannedRecords),
-    materials: options.materials || []
+    materials: options.materials || [],
+    sourceNoteMaterials
   }
 }
 
@@ -5302,13 +5337,18 @@ function noteMaterialFieldContractReady() {
 }
 
 function mirrorMaterialPolicy(options = {}) {
-  return options.disableLegacyMaterials === true && !effectiveNoteMaterialSyncEnabled()
-    ? DISABLED_MATERIAL_POLICY
-    : 'enabled'
+  if (options.disableLegacyMaterials !== true) return 'enabled'
+  return effectiveNoteMaterialSyncEnabled()
+    ? NOTE_MANAGED_MATERIAL_POLICY
+    : DISABLED_MATERIAL_POLICY
+}
+
+function mirrorMaterialValuesExcluded(materialPolicy = '') {
+  return [DISABLED_MATERIAL_POLICY, NOTE_MANAGED_MATERIAL_POLICY].includes(materialPolicy)
 }
 
 function snapshotWithoutVideoFields(snapshot = {}, materialPolicy = '') {
-  if (materialPolicy !== DISABLED_MATERIAL_POLICY || !Array.isArray(snapshot.records)) return snapshot
+  if (!mirrorMaterialValuesExcluded(materialPolicy) || !Array.isArray(snapshot.records)) return snapshot
   const records = snapshot.records.map((record) => {
     const fields = record && record.fields && typeof record.fields === 'object'
       ? { ...record.fields }
@@ -5322,7 +5362,7 @@ function snapshotWithoutVideoFields(snapshot = {}, materialPolicy = '') {
   const fieldNames = snapshot.fieldNames && typeof snapshot.fieldNames === 'object'
     ? { ...snapshot.fieldNames }
     : null
-  if (fieldNames) delete fieldNames.video
+  if (fieldNames && materialPolicy === DISABLED_MATERIAL_POLICY) delete fieldNames.video
   const sanitized = {
     ...snapshot,
     records,
@@ -5375,7 +5415,7 @@ async function executeMirrorTableSync(options = {}) {
   const foundationProfile = aiFoundationProfileEnabled(options.sourceCompatibilityProfile)
   const sourceBindings = options.sourceBindings
   const miniBindings = options.miniBindings
-  const excludedVideoReadOption = options.materialPolicy === DISABLED_MATERIAL_POLICY
+  const excludedVideoReadOption = mirrorMaterialValuesExcluded(options.materialPolicy)
     ? { excludedRecordSemantics: ['video'] }
     : {}
   const rawSourceSnapshot = await sourceClient.readValidatedTableSnapshot({
@@ -5398,11 +5438,9 @@ async function executeMirrorTableSync(options = {}) {
     sourceBindings,
     locationCatalog
   })
-  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
+  const rawSourceNoteMaterials = options.noteMaterialSyncEnabled === true
     ? sourceNoteMaterialRows(sourceSnapshot)
     : []
-  const sourceMaterialFieldPlan = buildNoteMaterialSourceFieldPlan(sourceNoteMaterials)
-  assertNoteMaterialSourceFieldPlan(options, sourceMaterialFieldPlan)
   const rawMirrorSnapshot = await targetClient.readValidatedTableSnapshot({
     tableId: options.miniTableId,
     bindings: miniBindings,
@@ -5434,11 +5472,16 @@ async function executeMirrorTableSync(options = {}) {
       rentedSnapshot,
       historySnapshot,
       locationCatalog,
-      options: { ...options, sourceBindings, miniBindings },
+      options: {
+        ...options,
+        sourceBindings,
+        miniBindings,
+        sourceNoteMaterials: rawSourceNoteMaterials
+      },
       runId,
       nowMs
     })
-    return { ...foundationResult, sourceNoteMaterials }
+    return foundationResult
   }
   const hasExplicitVacancyNote = Object.prototype.hasOwnProperty.call(
     options.sourceBindings && typeof options.sourceBindings === 'object' ? options.sourceBindings : {},
@@ -5455,7 +5498,14 @@ async function executeMirrorTableSync(options = {}) {
   const plannedRecords = activeMirrorRecords({
     records: plannedActiveMirrorRecords(inventorySourceSnapshot, mirrorSnapshot, plan)
   })
-  validateCanonicalMirrorRecords(plannedRecords)
+  const sourceNoteMaterials = options.noteMaterialSyncEnabled === true
+    ? activeSourceNoteMaterialRows(rawSourceNoteMaterials, plannedRecords)
+    : []
+  assertNoteMaterialSourceFieldPlan(
+    options,
+    buildNoteMaterialSourceFieldPlan(sourceNoteMaterials)
+  )
+  validateCanonicalMirrorRecords(plannedRecords, { materialPolicy: options.materialPolicy })
   assertMirrorDeactivateSafety(mirrorSnapshot, plannedRecords, {
     baselinePublishedSourceIds: options.baselinePublishedSourceIds,
     maxDeactivateCount: options.maxDeactivateCount,
@@ -5705,7 +5755,28 @@ async function configuredMirrorTableSync(options = {}) {
     noteMaterialSyncEnabled,
     materialPolicy
   })
-  return { ...result, feishuToken: token }
+  const output = { ...result, feishuToken: token }
+  Object.defineProperty(output, MIRROR_NOTE_TARGET_CONTEXT, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: {
+      targetClient,
+      targetBaseToken,
+      miniTableId,
+      miniBindings,
+      plannedCreateSourceRecordFingerprints: new Set(
+        result && result.dryRun === true && Array.isArray(result.records)
+          ? result.records
+              .filter((record) => /^dry-run-/.test(normalizeText(record && record.recordId)))
+              .map((record) => privateTextSha256(
+                record && record.fields && record.fields.sourceRecordId
+              ))
+          : []
+      )
+    }
+  })
+  return output
 }
 
 async function configuredFoundationEnrichment(options = {}) {
@@ -5881,18 +5952,607 @@ function adapterImplements(adapter, methods) {
   return Boolean(adapter) && methods.every((method) => typeof adapter[method] === 'function')
 }
 
+function strictPrivateSha256(value, label) {
+  const normalized = normalizeText(value)
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error(`${label}无效`)
+  return normalized
+}
+
+function privateTextSha256(value) {
+  return crypto.createHash('sha256').update(normalizeText(value)).digest('hex')
+}
+
+function privateNoteTargetState(listing = {}) {
+  const noteState = listing.noteMaterialState && typeof listing.noteMaterialState === 'object' &&
+    !Array.isArray(listing.noteMaterialState)
+    ? listing.noteMaterialState
+    : {}
+  const state = noteState.primaryTargetAttachment
+  if (state === undefined || state === null) return null
+  if (!state || typeof state !== 'object' || Array.isArray(state) || Number(state.version) !== 1) {
+    throw new Error('房源主视频目标附件私有状态无效')
+  }
+  const size = Number(state.size)
+  const contentType = normalizeText(state.contentType).toLowerCase().split(';')[0]
+  if (!Number.isSafeInteger(size) || size < 1) throw new Error('房源主视频目标附件私有大小无效')
+  if (!/^video\//.test(contentType)) throw new Error('房源主视频目标附件私有类型无效')
+  return {
+    version: 1,
+    sourceRecordFingerprint: strictPrivateSha256(
+      state.sourceRecordFingerprint,
+      '房源主视频源记录私有指纹'
+    ),
+    physicalUnitFingerprint: strictPrivateSha256(
+      state.physicalUnitFingerprint,
+      '房源主视频物理房源私有指纹'
+    ),
+    targetRecordFingerprint: strictPrivateSha256(
+      state.targetRecordFingerprint,
+      '房源主视频目标记录私有指纹'
+    ),
+    attachmentTokenFingerprint: strictPrivateSha256(
+      state.attachmentTokenFingerprint,
+      '房源主视频附件 token 私有指纹'
+    ),
+    contentSha256: strictPrivateSha256(
+      state.contentSha256,
+      '房源主视频内容私有摘要'
+    ),
+    size,
+    contentType
+  }
+}
+
+function targetAttachmentExtra(attachment = {}) {
+  const direct = normalizeText(attachment.extra)
+  if (direct) return direct
+  for (const key of ['tmp_url', 'url', 'download_url']) {
+    const value = normalizeText(attachment[key])
+    if (!value) continue
+    try {
+      const parsed = new URL(value)
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') continue
+      const extra = normalizeText(parsed.searchParams.get('extra'))
+      if (extra) return extra
+    } catch (_) {}
+  }
+  return ''
+}
+
+function targetVideoAttachments(value) {
+  if (value === undefined || value === null || value === '') return []
+  const values = Array.isArray(value) ? value : [value]
+  if (values.length > 1) throw new Error('小程序专用表同一房源存在多个主视频附件')
+  return values.map((attachment) => {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+      throw new Error('小程序专用表主视频附件结构无效')
+    }
+    const token = normalizeText(
+      attachment.file_token || attachment.token || attachment.obj_token
+    )
+    if (!/^[A-Za-z0-9_-]{8,160}$/.test(token)) {
+      throw new Error('小程序专用表主视频附件缺少稳定 token')
+    }
+    const size = Number(attachment.size)
+    const rawContentType = normalizeText(
+      attachment.mime_type || attachment.mimeType || attachment.type || attachment.file_type
+    ).toLowerCase().split(';')[0]
+    const contentType = rawContentType.includes('/') ? rawContentType : ''
+    return {
+      token,
+      tokenFingerprint: privateTextSha256(token),
+      extra: targetAttachmentExtra(attachment),
+      size: Number.isSafeInteger(size) && size > 0 ? size : null,
+      contentType
+    }
+  })
+}
+
+function activeSourceNoteMaterialRows(sourceRows, activeRecords) {
+  const rowBySourceId = new Map()
+  for (const row of Array.isArray(sourceRows) ? sourceRows : []) {
+    const sourceRecordId = normalizeText(row && row.sourceRecordId)
+    if (!sourceRecordId || rowBySourceId.has(sourceRecordId)) {
+      throw new Error('房源笔记源记录 ID 缺失或重复')
+    }
+    rowBySourceId.set(sourceRecordId, row)
+  }
+  const activeSourceIds = new Set()
+  for (const record of Array.isArray(activeRecords) ? activeRecords : []) {
+    const sourceRecordId = normalizeText(record && record.fields && record.fields.sourceRecordId)
+    if (!sourceRecordId || activeSourceIds.has(sourceRecordId) || !rowBySourceId.has(sourceRecordId)) {
+      throw new Error('在租房源笔记无法唯一绑定员工源记录')
+    }
+    activeSourceIds.add(sourceRecordId)
+  }
+  return (Array.isArray(sourceRows) ? sourceRows : []).filter((row) => (
+    activeSourceIds.has(normalizeText(row && row.sourceRecordId))
+  ))
+}
+
+function assertTargetVideoSnapshotContract(snapshot, context) {
+  if (!snapshot || !Array.isArray(snapshot.records) ||
+      !snapshot.fieldNames || typeof snapshot.fieldNames !== 'object' ||
+      !Array.isArray(snapshot.schemaBindings)) {
+    throw new Error('小程序专用表主视频快照不完整')
+  }
+  const videoSchemas = snapshot.schemaBindings.filter((binding) => (
+    normalizeText(binding && binding.semantic) === 'video'
+  ))
+  const videoFieldName = normalizeText(snapshot.fieldNames.video)
+  if (videoSchemas.length !== 1 || String(videoSchemas[0].type) !== '17' ||
+      !videoFieldName || normalizeText(videoSchemas[0].fieldName) !== videoFieldName ||
+      normalizeText(context.miniBindings && context.miniBindings.video &&
+        context.miniBindings.video.fieldId) !== normalizeText(
+        config.feishu.miniFieldBindings && config.feishu.miniFieldBindings.video && (
+          config.feishu.miniFieldBindings.video.fieldId ||
+          config.feishu.miniFieldBindings.video.field_id
+        )
+      )) {
+    throw new Error('小程序专用表主视频 type17 字段合同漂移')
+  }
+}
+
+async function readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint) {
+  const trustedPlannedCreate = context.dryRun === true &&
+    context.plannedCreateSourceRecordFingerprints instanceof Set &&
+    context.plannedCreateSourceRecordFingerprints.has(privateTextSha256(sourceRecordId))
+  const snapshot = await context.targetClient.readValidatedTableSnapshot({
+    tableId: context.miniTableId,
+    bindings: context.miniBindings,
+    allowEmpty: trustedPlannedCreate
+  })
+  assertTargetVideoSnapshotContract(snapshot, context)
+  const matches = snapshot.records.filter((record) => (
+    normalizeText(record && record.fields && record.fields.sourceRecordId) === sourceRecordId
+  ))
+  if (matches.length === 0 && trustedPlannedCreate) {
+    return {
+      recordId: '',
+      targetRecordFingerprint: '',
+      videoFieldName: normalizeText(snapshot.fieldNames.video),
+      attachments: [],
+      plannedCreate: true,
+      expectedStateKey: stableSha256({
+        sourceRecordFingerprint: privateTextSha256(sourceRecordId),
+        physicalUnitFingerprint,
+        plannedCreate: true
+      })
+    }
+  }
+  if (matches.length !== 1) throw new Error('小程序专用表主视频无法唯一命中房源记录')
+  const record = matches[0]
+  const recordId = normalizeText(record.recordId || record.record_id)
+  if (!recordId) throw new Error('小程序专用表主视频目标记录 ID 无效')
+  const attachments = targetVideoAttachments(record.fields && record.fields.video)
+  const targetRecordFingerprint = privateTextSha256(recordId)
+  return {
+    recordId,
+    targetRecordFingerprint,
+    videoFieldName: normalizeText(snapshot.fieldNames.video),
+    attachments,
+    expectedStateKey: stableSha256({
+      sourceRecordFingerprint: privateTextSha256(sourceRecordId),
+      physicalUnitFingerprint,
+      targetRecordFingerprint,
+      attachmentTokenFingerprints: attachments.map((item) => item.tokenFingerprint)
+    })
+  }
+}
+
+function createNotePrimaryVideoAttachmentAdapter(options = {}) {
+  const context = options.context && typeof options.context === 'object' ? options.context : {}
+  const listing = options.listing
+  const sourceRecordId = normalizeText(options.sourceRecordId)
+  const expectedLocalStateKey = normalizeText(options.expectedLocalStateKey)
+  const physicalUnitFingerprint = strictPrivateSha256(
+    options.physicalUnitFingerprint,
+    '房源主视频物理身份指纹'
+  )
+  if (!listing || !sourceRecordId || typeof options.localStateKey !== 'function' ||
+      typeof options.currentPhysicalUnitFingerprint !== 'function' ||
+      !adapterImplements(context.targetClient, ['readValidatedTableSnapshot', 'batchUpdateRecords']) ||
+      context.targetClient.writeDispatchEvidenceVersion !== 1 ||
+      !adapterImplements(context.drive, [
+        'uploadBitableFileDescriptor',
+        'downloadTokenDigestExact'
+      ])) {
+    throw new Error('小程序专用表主视频适配器配置不完整')
+  }
+  const targetBaseToken = normalizeResourceIdentifier(context.targetBaseToken)
+  const miniTableId = normalizeResourceIdentifier(context.miniTableId)
+  const runId = normalizeText(context.runId) ||
+    `note-target-${stableSha256(sourceRecordId).slice(0, 24)}`
+  const nowMs = Number(context.nowMs || Date.now())
+  if (!targetBaseToken || !miniTableId || !Number.isSafeInteger(nowMs) || nowMs <= 0) {
+    throw new Error('小程序专用表主视频资源坐标无效')
+  }
+
+  function assertLocalStateUnchanged() {
+    if (normalizeText(options.localStateKey(listing)) !== expectedLocalStateKey ||
+        normalizeText(options.currentPhysicalUnitFingerprint(listing)) !== physicalUnitFingerprint) {
+      const error = new Error('房源主视频本地状态在目标附件同步期间发生变化')
+      error.statusCode = 409
+      throw error
+    }
+  }
+
+  function managedStateMatchesTarget(managed, targetState) {
+    return Boolean(managed) &&
+      managed.sourceRecordFingerprint === privateTextSha256(sourceRecordId) &&
+      managed.physicalUnitFingerprint === physicalUnitFingerprint &&
+      managed.targetRecordFingerprint === targetState.targetRecordFingerprint &&
+      targetState.attachments.length === 1 &&
+      managed.attachmentTokenFingerprint === targetState.attachments[0].tokenFingerprint
+  }
+
+  function managedTargetIdentityMatches(managed, targetState) {
+    return Boolean(managed) &&
+      managed.targetRecordFingerprint === targetState.targetRecordFingerprint &&
+      targetState.attachments.length === 1 &&
+      managed.attachmentTokenFingerprint === targetState.attachments[0].tokenFingerprint
+  }
+
+  function managedPhysicalLineageMatches(managed, targetState) {
+    return Boolean(managed) &&
+      managed.physicalUnitFingerprint === physicalUnitFingerprint &&
+      managed.targetRecordFingerprint === targetState.targetRecordFingerprint &&
+      targetState.attachments.length === 1 &&
+      managed.attachmentTokenFingerprint === targetState.attachments[0].tokenFingerprint
+  }
+
+  async function digestTargetAttachment(attachment, size) {
+    try {
+      return await context.drive.downloadTokenDigestExact(
+        attachment.token,
+        'bitable-file',
+        size,
+        attachment.extra ? { extra: attachment.extra } : {}
+      )
+    } catch (error) {
+      if (['FEISHU_MATERIAL_TARGET_TOO_LARGE', 'FEISHU_MATERIAL_TARGET_SIZE_MISMATCH']
+        .includes(normalizeText(error && error.code))) {
+        return { sizeMismatch: true }
+      }
+      throw error
+    }
+  }
+
+  function safeEvidence(targetState, values = {}) {
+    return {
+      verified: true,
+      attachmentTokenFingerprint: normalizeText(values.attachmentTokenFingerprint),
+      contentSha256: normalizeText(values.contentSha256),
+      size: Number(values.size || 0),
+      contentType: normalizeText(values.contentType).toLowerCase().split(';')[0],
+      targetRecordFingerprint: targetState.targetRecordFingerprint,
+      preserved: values.preserved === true,
+      cleared: values.cleared === true,
+      expectedStateKey: targetState.expectedStateKey,
+      mediaUploaded: values.mediaUploaded === true,
+      recordUpdated: values.recordUpdated === true
+    }
+  }
+
+  function uploadedAttachmentDownloadExtra(targetState, fileToken) {
+    const videoFieldId = normalizeText(
+      context.miniBindings && context.miniBindings.video && (
+        context.miniBindings.video.fieldId || context.miniBindings.video.field_id
+      )
+    )
+    const targetRecordId = normalizeText(targetState && targetState.recordId)
+    if (!videoFieldId || !targetRecordId || !normalizeText(fileToken)) {
+      throw new Error('小程序专用表主视频高级权限回读坐标不完整')
+    }
+    return JSON.stringify({
+      bitablePerm: {
+        tableId: miniTableId,
+        attachments: {
+          [videoFieldId]: {
+            [targetRecordId]: [normalizeText(fileToken)]
+          }
+        }
+      }
+    })
+  }
+
+  async function verifyExact(input = {}) {
+    if (normalizeText(input.sourceRecordId) !== sourceRecordId) {
+      throw new Error('小程序专用表主视频适配器源记录不一致')
+    }
+    assertLocalStateUnchanged()
+    const targetState = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+    const primaryVideo = input.primaryVideo && typeof input.primaryVideo === 'object'
+      ? input.primaryVideo
+      : null
+    if (primaryVideo) {
+      const expectedHash = strictPrivateSha256(primaryVideo.contentSha256, '房源主视频期望摘要')
+      const expectedSize = Number(primaryVideo.size)
+      const expectedContentType = normalizeText(primaryVideo.contentType).toLowerCase().split(';')[0]
+      if (!Number.isSafeInteger(expectedSize) || expectedSize < 1) {
+        throw new Error('房源主视频期望大小无效')
+      }
+      if (!/^video\//.test(expectedContentType)) throw new Error('房源主视频期望类型无效')
+      if (targetState.attachments.length === 1) {
+        const attachment = targetState.attachments[0]
+        if ((attachment.size !== null && attachment.size !== expectedSize) ||
+            (attachment.contentType && attachment.contentType !== expectedContentType)) {
+          return { verified: false, expectedStateKey: targetState.expectedStateKey }
+        }
+        const downloaded = await digestTargetAttachment(attachment, expectedSize)
+        if (downloaded.sizeMismatch !== true &&
+            Number(downloaded.size) === expectedSize &&
+            normalizeText(downloaded.contentSha256) === expectedHash &&
+            normalizeText(downloaded.contentType).toLowerCase().split(';')[0] === expectedContentType) {
+          return safeEvidence(targetState, {
+            attachmentTokenFingerprint: attachment.tokenFingerprint,
+            contentSha256: expectedHash,
+            size: expectedSize,
+            contentType: expectedContentType
+          })
+        }
+      }
+      return { verified: false, expectedStateKey: targetState.expectedStateKey }
+    }
+
+    if (targetState.attachments.length === 0) {
+      return safeEvidence(targetState, { cleared: true })
+    }
+    const managed = privateNoteTargetState(listing)
+    const ordinaryManaged = managedStateMatchesTarget(managed, targetState) ||
+      managedPhysicalLineageMatches(managed, targetState)
+    const identityChangedManaged = managedTargetIdentityMatches(managed, targetState) &&
+      managed.physicalUnitFingerprint !== physicalUnitFingerprint
+    const withdrawnManaged = options.withdrawn === true &&
+      managedTargetIdentityMatches(managed, targetState)
+    const reactivatedManaged = options.reactivated === true &&
+      managedPhysicalLineageMatches(managed, targetState)
+    if (options.failureCleanup === true && !identityChangedManaged &&
+        !withdrawnManaged && !reactivatedManaged) {
+      return safeEvidence(targetState, {
+        attachmentTokenFingerprint: targetState.attachments[0].tokenFingerprint,
+        preserved: true
+      })
+    }
+    if (!ordinaryManaged && !identityChangedManaged && !withdrawnManaged) {
+      return safeEvidence(targetState, {
+        attachmentTokenFingerprint: targetState.attachments[0].tokenFingerprint,
+        preserved: true
+      })
+    }
+    const downloaded = await digestTargetAttachment(targetState.attachments[0], managed.size)
+    if (downloaded.sizeMismatch === true || Number(downloaded.size) !== managed.size ||
+        normalizeText(downloaded.contentSha256) !== managed.contentSha256 ||
+        normalizeText(downloaded.contentType).toLowerCase().split(';')[0] !== managed.contentType) {
+      throw new Error('房源主视频已管理附件内容回读不一致')
+    }
+    return {
+      verified: false,
+      expectedStateKey: targetState.expectedStateKey,
+      forceClearForIdentityChange: identityChangedManaged,
+      forceClearForWithdrawn: withdrawnManaged,
+      forceClearForReactivation: reactivatedManaged
+    }
+  }
+
+  async function updateTargetRecord(targetState, value, input, phase) {
+    const fieldName = normalizeText(targetState.videoFieldName)
+    if (!fieldName) throw new Error('小程序专用表主视频显示字段名缺失')
+    const records = [{
+      record_id: targetState.recordId,
+      fields: { [fieldName]: value }
+    }]
+    await context.targetClient.batchUpdateRecords(miniTableId, records, {
+      clientToken: stableUpdateClientToken(miniTableId, records, {
+        phase,
+        runId,
+        runNowMs: nowMs
+      }),
+      onWriteDispatched: input.onWriteDispatched
+    })
+  }
+
+  async function publishExact(input = {}) {
+    assertLocalStateUnchanged()
+    const before = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+    if (before.expectedStateKey !== normalizeText(input.expectedStateKey)) {
+      const error = new Error('小程序专用表主视频写前状态已变化')
+      error.statusCode = 409
+      throw error
+    }
+    const contentSha256 = strictPrivateSha256(input.contentSha256, '房源主视频发布摘要')
+    const size = Number(input.size)
+    const contentType = normalizeText(input.contentType).toLowerCase().split(';')[0]
+    if (!Number.isSafeInteger(size) || size < 1 || !input.writeEvidence ||
+        typeof input.writeEvidence.filePath !== 'string' || !/^video\//.test(contentType)) {
+      throw new Error('小程序专用表主视频缺少流式标准化成品')
+    }
+    let mediaWriteDispatched = false
+    let uploaded
+    let fileToken = ''
+    try {
+      uploaded = await context.drive.uploadBitableFileDescriptor(
+        input.writeEvidence,
+        targetBaseToken,
+        input.fileName,
+        () => {
+          if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
+          mediaWriteDispatched = true
+        }
+      )
+      if (!mediaWriteDispatched) {
+        throw externalWriteStateUnknownError(null, 'target-video-media-dispatch-evidence')
+      }
+      fileToken = normalizeText(uploaded && uploaded.fileToken)
+      if (!/^[A-Za-z0-9_-]{8,160}$/.test(fileToken) ||
+          normalizeText(uploaded.contentSha256) !== contentSha256 ||
+          Number(uploaded.size) !== size ||
+          normalizeText(uploaded.contentType).toLowerCase().split(';')[0] !== contentType) {
+        throw new Error('小程序专用表主视频上传响应证据无效')
+      }
+      const mediaReadback = await context.drive.downloadTokenDigestExact(
+        fileToken,
+        'bitable-file',
+        size,
+        { extra: uploadedAttachmentDownloadExtra(before, fileToken) }
+      )
+      if (Number(mediaReadback && mediaReadback.size) !== size ||
+          normalizeText(mediaReadback && mediaReadback.contentSha256) !== contentSha256 ||
+          normalizeText(mediaReadback && mediaReadback.contentType).toLowerCase().split(';')[0] !== contentType) {
+        throw new Error('小程序专用表主视频上传后内容回读不一致')
+      }
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
+      mediaWriteDispatched = false
+    } catch (error) {
+      if (mediaWriteDispatched && !isExternalWriteStateUnknownError(error)) {
+        throw externalWriteStateUnknownError(error, 'target-video-media-readback')
+      }
+      throw error
+    }
+
+    const beforeUpdate = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+    if (beforeUpdate.expectedStateKey !== before.expectedStateKey) {
+      throw externalWriteStateUnknownError(null, 'target-video-cas-after-media')
+    }
+    let baseWriteDispatched = false
+    let after
+    const tokenFingerprint = privateTextSha256(fileToken)
+    try {
+      await updateTargetRecord(beforeUpdate, [{ file_token: fileToken }], {
+        ...input,
+        onWriteDispatched: () => {
+          if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
+          baseWriteDispatched = true
+        }
+      }, 'note-primary-video')
+      if (!baseWriteDispatched) {
+        throw externalWriteStateUnknownError(null, 'target-video-base-dispatch-evidence')
+      }
+      after = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+      if (after.attachments.length !== 1 ||
+          after.attachments[0].tokenFingerprint !== tokenFingerprint) {
+        throw new Error('小程序专用表主视频记录写后回读不一致')
+      }
+      assertLocalStateUnchanged()
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
+      baseWriteDispatched = false
+    } catch (error) {
+      if (baseWriteDispatched && !isExternalWriteStateUnknownError(error)) {
+        throw externalWriteStateUnknownError(error, 'target-video-base-readback')
+      }
+      throw error
+    }
+    return safeEvidence(after, {
+      attachmentTokenFingerprint: tokenFingerprint,
+      contentSha256,
+      size,
+      contentType,
+      mediaUploaded: true,
+      recordUpdated: true
+    })
+  }
+
+  async function clearExact(input = {}) {
+    assertLocalStateUnchanged()
+    const before = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+    if (before.expectedStateKey !== normalizeText(input.expectedStateKey)) {
+      const error = new Error('小程序专用表主视频清空前状态已变化')
+      error.statusCode = 409
+      throw error
+    }
+    const managed = privateNoteTargetState(listing)
+    const ordinaryManaged = managedStateMatchesTarget(managed, before) ||
+      managedPhysicalLineageMatches(managed, before)
+    const identityChangedManaged = input.forceClearForIdentityChange === true &&
+      managedTargetIdentityMatches(managed, before) &&
+      managed.physicalUnitFingerprint !== physicalUnitFingerprint
+    const withdrawnManaged = input.forceClearForWithdrawn === true && options.withdrawn === true &&
+      managedTargetIdentityMatches(managed, before)
+    const reactivatedManaged = input.forceClearForReactivation === true &&
+      options.reactivated === true && managedPhysicalLineageMatches(managed, before)
+    if (!ordinaryManaged && !identityChangedManaged && !withdrawnManaged && !reactivatedManaged) {
+      return safeEvidence(before, {
+        attachmentTokenFingerprint: before.attachments[0] && before.attachments[0].tokenFingerprint,
+        preserved: true
+      })
+    }
+    let baseWriteDispatched = false
+    let after
+    try {
+      await updateTargetRecord(before, [], {
+        ...input,
+        onWriteDispatched: () => {
+          if (typeof input.onWriteDispatched === 'function') input.onWriteDispatched()
+          baseWriteDispatched = true
+        }
+      }, 'note-primary-clear')
+      if (!baseWriteDispatched) {
+        throw externalWriteStateUnknownError(null, 'target-video-clear-dispatch-evidence')
+      }
+      after = await readNoteTargetVideoState(context, sourceRecordId, physicalUnitFingerprint)
+      if (after.attachments.length !== 0) {
+        throw new Error('小程序专用表主视频清空写后回读不一致')
+      }
+      assertLocalStateUnchanged()
+      if (typeof input.onWriteVerified === 'function') input.onWriteVerified()
+      baseWriteDispatched = false
+    } catch (error) {
+      if (baseWriteDispatched && !isExternalWriteStateUnknownError(error)) {
+        throw externalWriteStateUnknownError(error, 'target-video-clear-readback')
+      }
+      throw error
+    }
+    return safeEvidence(after, { cleared: true, recordUpdated: true })
+  }
+
+  return {
+    writeDispatchEvidenceVersion: 1,
+    verifyExact,
+    publishExact,
+    clearExact
+  }
+}
+
 function formalNoteMaterialConfigurationReady(options = {}) {
   const targetRoot = String(config.feishu.noteMaterialTargetRootFolderToken || '').trim()
   const legacySourceRoot = String(config.feishu.folderToken || '').trim()
+  const targetBaseToken = String(config.feishu.targetBitableAppToken || '').trim()
+  const miniTableId = String(config.feishu.miniTableId || '').trim()
+  const configuredVideoBinding = config.feishu.miniFieldBindings &&
+    typeof config.feishu.miniFieldBindings === 'object'
+    ? config.feishu.miniFieldBindings.video
+    : null
+  const videoFieldId = String(configuredVideoBinding && (
+    configuredVideoBinding.fieldId || configuredVideoBinding.field_id
+  ) || '').trim()
+  const videoTypes = bindingTypes(configuredVideoBinding)
+  const targetVideoReady = Boolean(videoFieldId) &&
+    videoTypes.length === 1 && videoTypes[0] === '17'
   const explicitDrive = options.noteMaterialDrive
+  const explicitTargetClient = options.noteMaterialTargetClient
   const explicitOss = options.noteMaterialOss
-  const driveReady = !explicitDrive || adapterImplements(explicitDrive, [
-    'listFolder',
-    'downloadToken',
-    'ensureListingFolder',
-    'materializeVideo',
-    'verifyMaterializedVideo'
-  ])
+  const driveReady = !explicitDrive || (
+    explicitDrive.writeDispatchEvidenceVersion === 1 &&
+    adapterImplements(explicitDrive, [
+      'listFolder',
+      'downloadTokenDigestExact',
+      'ensureListingFolder',
+      'uploadBitableFileDescriptor'
+    ]) &&
+    (typeof explicitDrive.downloadToken === 'function' ||
+      typeof explicitDrive.downloadTokenToFile === 'function') &&
+    (typeof explicitDrive.materializeAsset === 'function' ||
+      typeof explicitDrive.materializeVideo === 'function') &&
+    (typeof explicitDrive.verifyMaterializedAsset === 'function' ||
+      typeof explicitDrive.verifyMaterializedVideo === 'function')
+  )
+  const targetClientReady = !explicitTargetClient || (
+    explicitTargetClient.writeDispatchEvidenceVersion === 1 &&
+    adapterImplements(explicitTargetClient, [
+      'readValidatedTableSnapshot',
+      'batchUpdateRecords'
+    ])
+  )
   const ossReady = explicitOss
     ? adapterImplements(explicitOss, [
         'putVideoDeterministic',
@@ -5904,7 +6564,11 @@ function formalNoteMaterialConfigurationReady(options = {}) {
     config.feishu.noteMaterialAllowedHosts.length > 0 &&
     /^[A-Za-z0-9_-]{8,160}$/.test(targetRoot) &&
     (!legacySourceRoot || targetRoot !== legacySourceRoot) &&
+    /^[A-Za-z0-9_-]{8,160}$/.test(targetBaseToken) &&
+    /^[A-Za-z0-9_-]{8,160}$/.test(miniTableId) &&
+    targetVideoReady &&
     driveReady &&
+    targetClientReady &&
     ossReady
 }
 
@@ -6004,6 +6668,53 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       ),
       targetRootFolderToken: config.feishu.noteMaterialTargetRootFolderToken
     })
+    const mirrorTargetContext = mirrorResult && mirrorResult[MIRROR_NOTE_TARGET_CONTEXT] &&
+      typeof mirrorResult[MIRROR_NOTE_TARGET_CONTEXT] === 'object'
+      ? mirrorResult[MIRROR_NOTE_TARGET_CONTEXT]
+      : {}
+    const noteAccessToken = mirrorResult.feishuToken || options.feishuToken
+    const targetBaseToken = normalizeResourceIdentifier(
+      mirrorTargetContext.targetBaseToken || config.feishu.targetBitableAppToken
+    )
+    const miniTableId = normalizeResourceIdentifier(
+      mirrorTargetContext.miniTableId || config.feishu.miniTableId
+    )
+    const miniBindings = mirrorTargetContext.miniBindings || resolvedContractBindings(
+      'mini',
+      config.feishu.miniFieldBindings,
+      { sourceCompatibilityProfile: config.feishu.sourceCompatibilityProfile }
+    )
+    const targetClient = options.noteMaterialTargetClient || mirrorTargetContext.targetClient || (
+      noteAccessToken
+        ? createBitableClient({
+            baseUrl: config.feishu.baseUrl,
+            accessToken: noteAccessToken,
+            appToken: targetBaseToken,
+            pageSize: config.feishu.pageSize,
+            requestTimeoutMs: config.feishu.requestTimeoutMs,
+            maxRetries: config.feishu.requestMaxRetries,
+            retryDelayMs: config.feishu.requestRetryDelayMs,
+            fetchImpl: options.fetchImpl || fetch
+          })
+        : null
+    )
+    const noteTargetContext = targetClient
+      ? {
+          targetClient,
+          drive,
+          targetBaseToken,
+          miniTableId,
+          miniBindings,
+          runId: options.runId,
+          nowMs: options.nowMs,
+          dryRun: options.dryRun === true,
+          plannedCreateSourceRecordFingerprints:
+            mirrorTargetContext.plannedCreateSourceRecordFingerprints
+        }
+      : null
+    if (options.dryRun !== true && !noteTargetContext) {
+      throw new Error('房源笔记正式同步缺少小程序专用表主视频目标客户端')
+    }
     return await syncNoteMaterialsForInventory({
       db: workingDb,
       sourceRows,
@@ -6033,6 +6744,21 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
       expectedSourceMaterialFieldSha256: options.expectedSourceMaterialFieldSha256,
       expectedSourceMaterialFieldRecordCount: options.expectedSourceMaterialFieldRecordCount,
       onExternalWriteDispatched: options.onExternalWriteDispatched,
+      reactivatedSourceRecordIds: options.reactivatedSourceRecordIds,
+      primaryVideoAttachmentForListing: noteTargetContext
+        ? (targetOptions) => createNotePrimaryVideoAttachmentAdapter({
+            context: noteTargetContext,
+            listing: targetOptions.listing,
+            sourceRecordId: targetOptions.sourceRecordId,
+            expectedLocalStateKey: targetOptions.expectedStateKey,
+            physicalUnitFingerprint: targetOptions.physicalUnitFingerprint,
+            withdrawn: targetOptions.withdrawn === true,
+            reactivated: targetOptions.reactivated === true,
+            failureCleanup: targetOptions.failureCleanup === true,
+            localStateKey: targetOptions.mediaAssetsStateKey,
+            currentPhysicalUnitFingerprint: targetOptions.currentPhysicalUnitFingerprint
+          })
+        : undefined,
       mediaAssetsStateKey: (listing) => domain.listingMediaAssetsStateKey(listing),
       replaceMediaAssets: (listing, mediaAssets, context = {}) => domain.replaceListingMediaAssets(
         workingDb,
@@ -6073,7 +6799,12 @@ async function syncMirrorNoteMaterials(workingDb, mirrorResult, options = {}) {
 
 async function syncNoteMaterialsAfterInventory(workingDb, inventory, mirrorResult, options = {}) {
   const inventoryComplete = inventory && inventory.failed === 0 && inventory.skippedInvalid === 0
-  if (inventoryComplete) return syncMirrorNoteMaterials(workingDb, mirrorResult, options)
+  if (inventoryComplete) {
+    return syncMirrorNoteMaterials(workingDb, mirrorResult, {
+      ...options,
+      reactivatedSourceRecordIds: inventory[REACTIVATED_NOTE_SOURCE_IDS]
+    })
+  }
   return {
     complete: false,
     published: false,
@@ -6171,6 +6902,9 @@ function recordMirrorSyncOutcome(db, result = {}) {
         cleared: Number(note.cleared || 0),
         retained: Number(note.retained || 0),
         failed: Number(note.failed || 0),
+        ...(Number(note.cleanupWarnings || 0) > 0
+          ? { cleanupWarnings: Number(note.cleanupWarnings) }
+          : {}),
         video: Number(note.video || 0),
         nonVideo: Number(note.nonVideo || 0),
         duplicateReference: Number(note.duplicateReference || 0),
@@ -6451,7 +7185,10 @@ async function syncViaMirror(db, adminId, options = {}) {
         noteMaterials,
         complete,
         published: complete,
-        noop: inventory.created === 0 && inventory.updated === 0 && inventory.down === 0
+        noop: inventory.created === 0 && inventory.updated === 0 && inventory.down === 0 && (
+          effectiveOptions.dryRun === true || !effectiveNoteMaterialSyncEnabled() ||
+          noteMaterials.noop === true
+        )
       }
     },
     publishSnapshot: async (workingDb, records) => {
@@ -6771,6 +7508,9 @@ module.exports = {
     reconcileInventoryVideoSummary,
     sourceBindingsWithNoteMaterial,
     noteMaterialFieldContractReady,
+    mirrorMaterialPolicy,
+    formalNoteMaterialConfigurationReady,
+    createNotePrimaryVideoAttachmentAdapter,
     sourceNoteMaterialRows,
     bindingContractStatus,
     resolvedContractBindings,

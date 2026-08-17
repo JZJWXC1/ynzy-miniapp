@@ -1342,6 +1342,35 @@ function cloneMediaAsset(asset) {
   }
 }
 
+function normalizedPrimaryTargetAttachmentEvidence(value, primaryPlan = null) {
+  const evidence = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  if (evidence.verified !== true) throw new Error('小程序专用表主视频未完成写后回读')
+  const attachmentTokenFingerprint = normalizeText(evidence.attachmentTokenFingerprint)
+  const targetRecordFingerprint = normalizeText(evidence.targetRecordFingerprint)
+  if (attachmentTokenFingerprint && !/^[a-f0-9]{64}$/.test(attachmentTokenFingerprint)) {
+    throw new Error('小程序专用表主视频 token 私有指纹无效')
+  }
+  if (primaryPlan) {
+    if (!attachmentTokenFingerprint || !/^[a-f0-9]{64}$/.test(targetRecordFingerprint) ||
+        normalizeText(evidence.contentSha256) !== primaryPlan.contentSha256 ||
+        Number(evidence.size) !== primaryPlan.size ||
+        normalizeText(evidence.contentType).toLowerCase().split(';')[0] !== primaryPlan.mimeType) {
+      throw new Error('小程序专用表主视频内容回读不一致')
+    }
+  }
+  return {
+    verified: true,
+    attachmentTokenFingerprint,
+    targetRecordFingerprint,
+    contentSha256: primaryPlan ? primaryPlan.contentSha256 : '',
+    size: primaryPlan ? primaryPlan.size : 0,
+    contentType: primaryPlan ? primaryPlan.mimeType : '',
+    preserved: evidence.preserved === true,
+    cleared: evidence.cleared === true,
+    expectedStateKey: normalizeText(evidence.expectedStateKey)
+  }
+}
+
 async function syncNoteMaterialVideos(input = {}) {
   if (input.onExternalWriteDispatched != null &&
       typeof input.onExternalWriteDispatched !== 'function') {
@@ -1491,6 +1520,20 @@ async function syncNoteMaterialVideos(input = {}) {
   let targetFolder = null
   let reused = 0
   let transferred = 0
+  let primaryTargetAttachment = null
+  let targetMediaUploaded = 0
+  let targetRecordUpdated = 0
+  let targetAttachmentCleared = 0
+  let targetAttachmentReused = 0
+  let targetAttachmentPreserved = 0
+  let cleanupWarnings = 0
+  let primaryPublishEvidence = null
+  let retainedPrimaryPrepared = null
+  const primaryPlan = planned.find((plan) => plan.kind === 'video') || null
+  const primaryVideoAttachment = input.primaryVideoAttachment &&
+    typeof input.primaryVideoAttachment === 'object'
+      ? input.primaryVideoAttachment
+      : null
 
   async function ensureTargetFolder() {
     if (targetFolder) return targetFolder
@@ -1514,14 +1557,63 @@ async function syncNoteMaterialVideos(input = {}) {
     return verifyPreparedSource(input, plan.asset, plan.prepared, failureMessage)
   }
 
-  async function releasePreparedMaterial(prepared) {
-    if (!prepared || typeof input.disposePreparedMaterial !== 'function') return
+  async function releasePreparedMaterial(prepared, options = {}) {
+    if (!prepared || typeof input.disposePreparedMaterial !== 'function') return { warning: false }
     const index = preparedMaterials.indexOf(prepared)
     if (index >= 0) preparedMaterials.splice(index, 1)
     try {
       await input.disposePreparedMaterial(prepared)
     } catch (_cleanupError) {
-      await input.disposePreparedMaterial(prepared)
+      try {
+        await input.disposePreparedMaterial(prepared)
+      } catch (cleanupRetryError) {
+        // 目标附件已经完成素材上传真字节回读、Base 更新和记录回读后，业务状态是确定的。
+        // 此时仅剩标准化临时文件删除失败，不得把已确认的新目标附件误降级成普通素材失败，
+        // 让库存层继续保留旧本地媒体。保留固定计数供同步日志告警；遗留文件仍由现有陈旧目录
+        // 回收规则处理。目标发布尚未验证时继续按原合同抛错并由外层 UNKNOWN/失败门接管。
+        if (options.nonFatalAfterVerifiedPublish === true) return { warning: true }
+        throw cleanupRetryError
+      }
+    }
+    return { warning: false }
+  }
+
+  async function preparePlannedWriteEvidence(plan) {
+    let preparedForWrite = plan.prepared
+    let retainedForWrite = null
+    if (typeof input.prepareMaterial === 'function') {
+      preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: true })
+      retainedForWrite = preparedForWrite
+      preparedMaterials.push(preparedForWrite)
+    } else {
+      preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: false })
+    }
+    const outputEvidence = normalizedPreparedMaterial(plan.asset, preparedForWrite)
+    if (outputEvidence.sourceContentSha256 !== plan.sourceContentSha256 ||
+        outputEvidence.sourceSize !== plan.sourceSize ||
+        outputEvidence.sourceMimeType !== plan.sourceMimeType ||
+        outputEvidence.contentSha256 !== plan.contentSha256 ||
+        outputEvidence.size !== plan.size || outputEvidence.contentType !== plan.mimeType ||
+        outputEvidence.extension !== plan.extension || outputEvidence.kind !== plan.kind ||
+        outputEvidence.transformProfileVersion !== plan.transformProfileVersion ||
+        outputEvidence.transformProfileSha256 !== plan.transformProfileSha256 ||
+        outputEvidence.transformToolFingerprint !== plan.transformToolFingerprint ||
+        outputEvidence.transformAction !== plan.transformAction) {
+      throw contentPlanConfirmationError('房源笔记处理后素材与已确认内容计划不一致')
+    }
+    let writeEvidence = outputEvidence
+    if (typeof input.openPreparedFile === 'function') {
+      writeEvidence = await input.openPreparedFile(preparedForWrite)
+    }
+    const validatedWriteEvidence = validatedPreparedWriteEvidence(
+      writeEvidence,
+      plan,
+      input.requireStreamingSource === true
+    )
+    return {
+      retainedForWrite,
+      writeEvidence: validatedWriteEvidence.writeEvidence,
+      usesPreparedFile: validatedWriteEvidence.usesPreparedFile
     }
   }
 
@@ -1537,7 +1629,51 @@ async function syncNoteMaterialVideos(input = {}) {
     }
   }
 
-  for (const plan of planned) {
+  let primaryTargetVerification = null
+  if (primaryVideoAttachment) {
+    if (typeof primaryVideoAttachment.verifyExact !== 'function') {
+      throw new Error('小程序专用表主视频缺少写前回读适配器')
+    }
+    if (input.dryRun !== true && primaryVideoAttachment.writeDispatchEvidenceVersion !== 1) {
+      throw new Error('小程序专用表主视频缺少精确外写派发证据')
+    }
+    primaryTargetVerification = await primaryVideoAttachment.verifyExact({
+      sourceRecordId,
+      primaryVideo: primaryPlan
+        ? {
+            assetId: primaryPlan.assetId,
+            contentSha256: primaryPlan.contentSha256,
+            size: primaryPlan.size,
+            contentType: primaryPlan.mimeType,
+            displayOrder: primaryPlan.displayOrder
+          }
+        : null
+    })
+    if (!primaryTargetVerification || typeof primaryTargetVerification !== 'object') {
+      throw new Error('小程序专用表主视频写前回读证据无效')
+    }
+    if (primaryTargetVerification.verified === true && primaryPlan) {
+      if (normalizeText(primaryTargetVerification.contentSha256) !== primaryPlan.contentSha256 ||
+          Number(primaryTargetVerification.size) !== primaryPlan.size ||
+          !/^[a-f0-9]{64}$/.test(normalizeText(primaryTargetVerification.attachmentTokenFingerprint))) {
+        throw new Error('小程序专用表主视频写前内容证据不一致')
+      }
+      primaryTargetAttachment = normalizedPrimaryTargetAttachmentEvidence(
+        primaryTargetVerification,
+        primaryPlan
+      )
+      targetAttachmentReused = 1
+    } else if (primaryTargetVerification.verified === true) {
+      primaryTargetAttachment = normalizedPrimaryTargetAttachmentEvidence(primaryTargetVerification)
+      if (primaryTargetVerification.preserved === true) targetAttachmentPreserved = 1
+      else targetAttachmentReused = 1
+    }
+  }
+
+  const executionPlans = primaryPlan
+    ? planned.filter((plan) => plan.assetId !== primaryPlan.assetId).concat(primaryPlan)
+    : planned.slice()
+  for (const plan of executionPlans) {
     let sourceVerification = null
     if (input.dryRun !== true) {
       sourceVerification = input.sourcesGloballyVerified === true
@@ -1584,6 +1720,15 @@ async function syncNoteMaterialVideos(input = {}) {
         ossVerifiedIds.push(plan.assetId)
         manifestIds.push(plan.assetId)
         reused += 1
+        if (primaryVideoAttachment && primaryPlan && plan.assetId === primaryPlan.assetId &&
+            primaryTargetVerification.verified !== true && input.dryRun !== true) {
+          const preparedForTarget = await preparePlannedWriteEvidence(plan)
+          retainedPrimaryPrepared = preparedForTarget.retainedForWrite
+          primaryPublishEvidence = {
+            plan,
+            writeEvidence: preparedForTarget.writeEvidence
+          }
+        }
         continue
       }
     }
@@ -1623,39 +1768,12 @@ async function syncNoteMaterialVideos(input = {}) {
       throw new Error('房源笔记素材同步缺少 OSS 写后回读适配器')
     }
     let retainedForWrite = null
+    let keepPreparedForPrimaryTarget = false
     try {
-      let preparedForWrite = plan.prepared
-      if (typeof input.prepareMaterial === 'function') {
-        preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: true })
-        retainedForWrite = preparedForWrite
-        preparedMaterials.push(preparedForWrite)
-      } else {
-        preparedForWrite = await prepareMaterialForAsset(input, plan.asset, { keepPreparedFile: false })
-      }
-      const outputEvidence = normalizedPreparedMaterial(plan.asset, preparedForWrite)
-      if (outputEvidence.sourceContentSha256 !== plan.sourceContentSha256 ||
-          outputEvidence.sourceSize !== plan.sourceSize ||
-          outputEvidence.sourceMimeType !== plan.sourceMimeType ||
-          outputEvidence.contentSha256 !== plan.contentSha256 ||
-          outputEvidence.size !== plan.size || outputEvidence.contentType !== plan.mimeType ||
-          outputEvidence.extension !== plan.extension || outputEvidence.kind !== plan.kind ||
-          outputEvidence.transformProfileVersion !== plan.transformProfileVersion ||
-          outputEvidence.transformProfileSha256 !== plan.transformProfileSha256 ||
-          outputEvidence.transformToolFingerprint !== plan.transformToolFingerprint ||
-          outputEvidence.transformAction !== plan.transformAction) {
-        throw contentPlanConfirmationError('房源笔记处理后素材与已确认内容计划不一致')
-      }
-      let writeEvidence = outputEvidence
-      if (typeof input.openPreparedFile === 'function') {
-        writeEvidence = await input.openPreparedFile(preparedForWrite)
-      }
-      const validatedWriteEvidence = validatedPreparedWriteEvidence(
-        writeEvidence,
-        plan,
-        input.requireStreamingSource === true
-      )
-      writeEvidence = validatedWriteEvidence.writeEvidence
-      const usesPreparedFile = validatedWriteEvidence.usesPreparedFile
+      const preparedForWrite = await preparePlannedWriteEvidence(plan)
+      retainedForWrite = preparedForWrite.retainedForWrite
+      const writeEvidence = preparedForWrite.writeEvidence
+      const usesPreparedFile = preparedForWrite.usesPreparedFile
       await ensureTargetFolder()
       if (!driveHasExactWriteDispatchEvidence) markExternalWriteDispatched()
       const driveResult = await materializeAsset.call(input.drive, {
@@ -1710,8 +1828,14 @@ async function syncNoteMaterialVideos(input = {}) {
       })
       manifestIds.push(plan.assetId)
       transferred += 1
+      if (primaryVideoAttachment && primaryPlan && plan.assetId === primaryPlan.assetId &&
+          primaryTargetVerification.verified !== true) {
+        retainedPrimaryPrepared = retainedForWrite
+        primaryPublishEvidence = { plan, writeEvidence }
+        keepPreparedForPrimaryTarget = true
+      }
     } finally {
-      await releasePreparedMaterial(retainedForWrite)
+      if (!keepPreparedForPrimaryTarget) await releasePreparedMaterial(retainedForWrite)
     }
   }
 
@@ -1726,11 +1850,69 @@ async function syncNoteMaterialVideos(input = {}) {
   } else {
     assertMaterialSetEquality({ source: sourceIds, manifest: manifestIds })
   }
-  const mediaAssets = resultAssets.map(cloneMediaAsset)
+
+  if (primaryVideoAttachment && input.dryRun !== true && primaryTargetVerification.verified !== true) {
+    if (primaryPlan) {
+      if (typeof primaryVideoAttachment.publishExact !== 'function' || !primaryPublishEvidence) {
+        throw new Error('小程序专用表主视频缺少发布适配器或标准化成品')
+      }
+      const published = await primaryVideoAttachment.publishExact({
+        sourceRecordId,
+        assetId: primaryPlan.assetId,
+        fileName: primaryPlan.targetName,
+        contentSha256: primaryPlan.contentSha256,
+        size: primaryPlan.size,
+        contentType: primaryPlan.mimeType,
+        writeEvidence: primaryPublishEvidence.writeEvidence,
+        expectedStateKey: normalizeText(primaryTargetVerification.expectedStateKey),
+        onWriteDispatched: markExternalWriteDispatched,
+        onWriteVerified: markExternalWriteVerified
+      })
+      primaryTargetAttachment = normalizedPrimaryTargetAttachmentEvidence(published, primaryPlan)
+      targetMediaUploaded = published && published.mediaUploaded === false ? 0 : 1
+      targetRecordUpdated = published && published.recordUpdated === false ? 0 : 1
+      externalWriteDispatched = false
+    } else {
+      if (typeof primaryVideoAttachment.clearExact !== 'function') {
+        throw new Error('小程序专用表主视频缺少安全清空适配器')
+      }
+      const cleared = await primaryVideoAttachment.clearExact({
+        sourceRecordId,
+        expectedStateKey: normalizeText(primaryTargetVerification.expectedStateKey),
+        forceClearForIdentityChange: primaryTargetVerification.forceClearForIdentityChange === true,
+        forceClearForWithdrawn: primaryTargetVerification.forceClearForWithdrawn === true,
+        forceClearForReactivation: primaryTargetVerification.forceClearForReactivation === true,
+        onWriteDispatched: markExternalWriteDispatched,
+        onWriteVerified: markExternalWriteVerified
+      })
+      primaryTargetAttachment = normalizedPrimaryTargetAttachmentEvidence(cleared)
+      targetRecordUpdated = cleared && cleared.recordUpdated === true ? 1 : 0
+      targetAttachmentCleared = cleared && cleared.cleared === true ? 1 : 0
+      targetAttachmentPreserved = cleared && cleared.preserved === true ? 1 : 0
+      externalWriteDispatched = false
+    }
+  }
+  const primaryCleanup = await releasePreparedMaterial(retainedPrimaryPrepared, {
+    nonFatalAfterVerifiedPublish: Boolean(
+      retainedPrimaryPrepared && primaryTargetAttachment && primaryTargetAttachment.verified === true
+    )
+  })
+  if (primaryCleanup.warning === true) cleanupWarnings += 1
+  retainedPrimaryPrepared = null
+
+  const mediaAssets = resultAssets
+    .slice()
+    .sort((left, right) => Number(left.displayOrder || 0) - Number(right.displayOrder || 0))
+    .map(cloneMediaAsset)
+  const primaryVideo = primaryPlan
+    ? mediaAssets.find((asset) => asset.assetId === primaryPlan.assetId) || null
+    : null
   const result = {
     mediaAssets,
-    primaryVideo: mediaAssets.find((asset) => asset.kind === 'video') || null,
-    noop: transferred === 0 && input.dryRun !== true,
+    primaryVideo,
+    primaryTargetAttachment,
+    noop: transferred === 0 && targetMediaUploaded === 0 && targetRecordUpdated === 0 &&
+      input.dryRun !== true,
     dryRun: input.dryRun === true,
     ...contentPlanSummary,
     normalization: {
@@ -1748,7 +1930,17 @@ async function syncNoteMaterialVideos(input = {}) {
       ossVerified: ossVerifiedIds.length,
       manifest: mediaAssets.length,
       reused,
-      transferred
+      transferred,
+      ...(primaryVideoAttachment
+        ? {
+            targetMediaUploaded,
+            targetRecordUpdated,
+            targetAttachmentCleared,
+            targetAttachmentReused,
+            targetAttachmentPreserved,
+            ...(cleanupWarnings > 0 ? { cleanupWarnings } : {})
+          }
+        : {})
     }
   }
   return attachContentPlanEvidence(result, contentPlanEvidence)
@@ -1832,6 +2024,12 @@ async function replaceNoteManagedMedia(listing, mediaAssets, options = {}) {
 
 async function clearNoteManagedMedia(listing, state, options = {}) {
   if (!listing) return false
+  const previousTargetAttachment = listing.noteMaterialState &&
+    typeof listing.noteMaterialState === 'object' &&
+    listing.noteMaterialState.primaryTargetAttachment &&
+    typeof listing.noteMaterialState.primaryTargetAttachment === 'object'
+    ? { ...listing.noteMaterialState.primaryTargetAttachment }
+    : null
   const currentAssets = Array.isArray(listing.mediaAssets) ? listing.mediaAssets : []
   const noteAssets = currentAssets.filter((asset) => /\/feishu-note-v1\//.test(normalizeText(asset && asset.objectKey)))
   const remainingAssets = currentAssets
@@ -1851,7 +2049,10 @@ async function clearNoteManagedMedia(listing, state, options = {}) {
     digest: '',
     status: 'cleared',
     counts: { video: 0, image: 0, unsupported: 0, nonVideo: 0, duplicateReference: 0 },
-    updatedAt: normalizeText(state && state.updatedAt)
+    updatedAt: normalizeText(state && state.updatedAt),
+    ...(options.preservePrimaryTargetAttachment === true && previousTargetAttachment
+      ? { primaryTargetAttachment: previousTargetAttachment }
+      : {})
   }
   return hadAssets || Boolean(managedPrimary)
 }
@@ -1917,7 +2118,7 @@ function hasVerifiedNoteManagedMedia(listing = {}) {
   ))
 }
 
-function deferredLocalAction(listing, linkFingerprint, expectedStateKey, error, forceClear = false) {
+function deferredLocalAction(listing, expectedStateKey, forceClearForReactivation = false) {
   if (!listing) {
     return {
       deferredAction: 'none',
@@ -1929,10 +2130,12 @@ function deferredLocalAction(listing, linkFingerprint, expectedStateKey, error, 
   const previous = listing.noteMaterialState && typeof listing.noteMaterialState === 'object'
     ? listing.noteMaterialState
     : {}
-  const mayRetain = !forceClear &&
-    normalizeText(previous.sourceLinkFingerprint) === normalizeText(linkFingerprint) &&
+  // 同一套持续在租房源的 Note 处理失败只告警并保留最后一次已验证素材；
+  // 链接变化、错误类型、超限或不支持素材都不能把仍可用的视频先清掉。
+  // 物理身份变化由指纹不一致阻断，重新上架则由显式生命周期证据阻断。
+  const mayRetain = !forceClearForReactivation &&
     normalizeText(previous.physicalUnitFingerprint) === currentPhysical &&
-    Boolean(currentPhysical) && temporaryNoteMaterialFailure(error) &&
+    Boolean(currentPhysical) &&
     activeInventoryListing(listing) && hasVerifiedNoteManagedMedia(listing)
   return {
     deferredAction: mayRetain ? 'retain' : 'clear',
@@ -1986,9 +2189,73 @@ async function syncNoteMaterialsForInventory(input = {}) {
     sourceBytes: 0,
     outputBytes: 0,
     bytesSaved: 0,
+    transferred: 0,
+    targetMediaUploaded: 0,
+    targetRecordUpdated: 0,
+    targetAttachmentCleared: 0,
+    targetAttachmentReused: 0,
+    targetAttachmentPreserved: 0,
     rows: []
   }
   const contentPlanEvidence = []
+
+  function addWriteCounts(result) {
+    const counts = result && result.counts || {}
+    for (const field of [
+      'transferred',
+      'targetMediaUploaded',
+      'targetRecordUpdated',
+      'targetAttachmentCleared',
+      'targetAttachmentReused',
+      'targetAttachmentPreserved'
+    ]) {
+      report[field] += Number(counts[field] || 0)
+    }
+    const cleanupWarnings = Number(counts.cleanupWarnings || 0)
+    if (cleanupWarnings > 0) {
+      report.cleanupWarnings = Number(report.cleanupWarnings || 0) + cleanupWarnings
+    }
+  }
+
+  function primaryVideoAttachmentFor(row, currentPhysical, targetOptions = {}) {
+    if (typeof input.primaryVideoAttachmentForListing !== 'function') {
+      return input.primaryVideoAttachment || null
+    }
+    return input.primaryVideoAttachmentForListing({
+      listing: row.listing,
+      sourceRecordId: row.sourceRecordId,
+      expectedStateKey: row.expectedStateKey,
+      physicalUnitFingerprint: currentPhysical,
+      withdrawn: !activeInventoryListing(row.listing),
+      reactivated: input.reactivatedSourceRecordIds instanceof Set &&
+        input.reactivatedSourceRecordIds.has(row.sourceRecordId),
+      failureCleanup: targetOptions.failureCleanup === true,
+      mediaAssetsStateKey: input.mediaAssetsStateKey,
+      currentPhysicalUnitFingerprint: physicalUnitFingerprint
+    })
+  }
+
+  async function syncFailureTargetCleanup(row, currentPhysical) {
+    const primaryVideoAttachment = primaryVideoAttachmentFor(row, currentPhysical, {
+      failureCleanup: true
+    })
+    if (!primaryVideoAttachment) return null
+    return syncNoteMaterialVideos({
+      sourceRecordId: row.sourceRecordId,
+      assets: [],
+      existingMediaAssets: row.listing.mediaAssets,
+      uploadDir: input.uploadDir,
+      primaryVideoAttachment,
+      onExternalWriteDispatched: input.onExternalWriteDispatched,
+      dryRun: input.dryRun === true,
+      verifyExpectedContentPlan: input.verifyExpectedContentPlan === true,
+      expectedContentPlanEvidence: expectedEvidenceForSourceRecord(
+        expectedContentPlan,
+        row.sourceRecordId
+      ),
+      sourcesGloballyVerified: Boolean(expectedContentPlan)
+    })
+  }
 
   runningInventoryDatabases.add(db)
   try {
@@ -2002,6 +2269,17 @@ async function syncNoteMaterialsForInventory(input = {}) {
       if (!sourceRecordId) throw new Error('房源笔记素材源记录缺少 sourceRecordId')
       const sourceRecordFingerprint = sha256Text(sourceRecordId)
       const sourceValueFingerprint = noteMaterialSourceValueFingerprint(row && row.value)
+      const listing = sourceListing(db, sourceRecordId)
+      // 镜像阶段已经把非在租房源从小程序公开库存撤下。Note 管线只服务当前在租房源，
+      // 不解析、不搬运也不改写其附件列；保留私有附件指纹，未来重新上架时仍可安全识别。
+      if (listing && !activeInventoryListing(listing)) {
+        report.rows.push({
+          sourceRecordId,
+          status: 'inactive-skipped',
+          sourceValueFingerprint
+        })
+        continue
+      }
       const expectedDeferred = expectedDeferredByFingerprint.get(sourceRecordFingerprint)
       if (expectedDeferred) {
         if (matchedDeferredFingerprints.has(sourceRecordFingerprint)) {
@@ -2025,7 +2303,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
             throw contentPlanConfirmationError('房源笔记延期素材源链接在预检与执行之间发生变化')
           }
         }
-        const listing = sourceListing(db, sourceRecordId)
         if (expectedDeferred.deferredAction === 'none') {
           if (listing) {
             throw contentPlanConfirmationError('延期计划中的缺失房源在执行时已出现')
@@ -2045,6 +2322,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           if (expectedDeferred.deferredAction === 'retain') report.retained += 1
           if (input.dryRun !== true) {
             pendingDeferredActions.push({
+              sourceRecordId,
               listing,
               expectedStateKey,
               sourceLinkFingerprint: currentLinkFingerprint,
@@ -2072,7 +2350,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
         parsed = parseNoteMaterialLink(row.value, { allowedHosts: input.allowedHosts })
         linkFingerprint = parsed ? sha256Text(parsed.canonicalUrl) : ''
       } catch (error) {
-        const listing = sourceListing(db, sourceRecordId)
         if (!listing) {
           report.failed += 1
           report.rows.push({
@@ -2100,7 +2377,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
         })
         continue
       }
-      const listing = sourceListing(db, sourceRecordId)
       if (!listing) {
         report.failed += 1
         report.rows.push({
@@ -2163,7 +2439,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
     overLimitRows.forEach((row) => pendingFailures.push({
       ...row,
       failureStatus: 'media-limit-exceeded',
-      forceClear: true,
       error: new Error(`单套房源视频素材超过安全上限 ${MAX_LISTING_MEDIA_ASSETS}`),
       failureDetails: {
         mediaCount: row.resolved.assets.length,
@@ -2180,7 +2455,6 @@ async function syncNoteMaterialsForInventory(input = {}) {
       unsupportedRows.forEach((row) => pendingFailures.push({
         ...row,
         failureStatus: 'unsupported-non-video',
-        forceClear: true,
         error: new Error('房源笔记包含不受支持的非图片视频素材'),
         failureDetails: {
           unsupported: Number(row.resolved.counts.unsupported || row.resolved.counts.nonVideo || 0),
@@ -2244,6 +2518,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
     }
 
     for (const action of pendingDeferredActions) {
+      let targetResult = null
       try {
         assertMediaAssetsStateUnchanged(
           action.listing,
@@ -2256,13 +2531,22 @@ async function syncNoteMaterialsForInventory(input = {}) {
           throw contentPlanConfirmationError('延期素材的房源媒体状态在本地处置前发生变化')
         }
         if (action.deferredAction === 'clear') {
+          targetResult = await syncFailureTargetCleanup(
+            action,
+            action.physicalUnitFingerprint
+          )
+          addWriteCounts(targetResult)
           await clearNoteManagedMedia(action.listing, {
             sourceLinkFingerprint: action.sourceLinkFingerprint,
             physicalUnitFingerprint: action.physicalUnitFingerprint,
             updatedAt: now
           }, {
             replaceMediaAssets: input.replaceMediaAssets,
-            expectedStateKey: action.expectedStateKey
+            expectedStateKey: action.expectedStateKey,
+            preservePrimaryTargetAttachment: !(
+              targetResult && targetResult.primaryTargetAttachment &&
+              targetResult.primaryTargetAttachment.cleared === true
+            )
           })
         } else {
           const previous = action.listing.noteMaterialState &&
@@ -2277,6 +2561,11 @@ async function syncNoteMaterialsForInventory(input = {}) {
         }
       } catch (error) {
         if (mediaAssetsStateConflict(error) || isContentPlanConfirmationError(error)) {
+          const targetCounts = targetResult && targetResult.counts || {}
+          if (Number(targetCounts.targetRecordUpdated || 0) > 0 ||
+              Number(targetCounts.targetAttachmentCleared || 0) > 0) {
+            throw externalWriteStateUnknownError(error, 'inventory-target-deferred-clear-state-conflict')
+          }
           throw externalWriteStateUnknownError(error, 'inventory-state-conflict')
         }
         throw error
@@ -2284,25 +2573,55 @@ async function syncNoteMaterialsForInventory(input = {}) {
     }
 
     for (const row of pendingClears) {
-      if (input.dryRun !== true) {
-        try {
+      let targetResult = null
+      try {
+        const currentPhysical = physicalUnitFingerprint(row.listing)
+        const primaryVideoAttachment = primaryVideoAttachmentFor(row, currentPhysical)
+        if (primaryVideoAttachment) {
+          targetResult = await syncNoteMaterialVideos({
+            sourceRecordId: row.sourceRecordId,
+            assets: [],
+            existingMediaAssets: row.listing.mediaAssets,
+            uploadDir: input.uploadDir,
+            primaryVideoAttachment,
+            onExternalWriteDispatched: input.onExternalWriteDispatched,
+            dryRun: input.dryRun === true,
+            verifyExpectedContentPlan: input.verifyExpectedContentPlan === true,
+            expectedContentPlanEvidence: expectedEvidenceForSourceRecord(
+              expectedContentPlan,
+              row.sourceRecordId
+            ),
+            sourcesGloballyVerified: Boolean(expectedContentPlan)
+          })
+          addWriteCounts(targetResult)
+        }
+        if (input.dryRun !== true) {
           assertMediaAssetsStateUnchanged(row.listing, row.expectedStateKey, input.mediaAssetsStateKey)
           await clearNoteManagedMedia(row.listing, {
             sourceLinkFingerprint: '',
-            physicalUnitFingerprint: physicalUnitFingerprint(row.listing),
+            physicalUnitFingerprint: currentPhysical,
             updatedAt: now
           }, {
             replaceMediaAssets: input.replaceMediaAssets,
             expectedStateKey: row.expectedStateKey
           })
-        } catch (error) {
-          if (!mediaAssetsStateConflict(error)) throw error
-          appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
-          continue
         }
+      } catch (error) {
+        if (!mediaAssetsStateConflict(error)) throw error
+        const targetCounts = targetResult && targetResult.counts || {}
+        if (Number(targetCounts.targetMediaUploaded || 0) > 0 ||
+            Number(targetCounts.targetRecordUpdated || 0) > 0) {
+          throw externalWriteStateUnknownError(error, 'inventory-target-clear-state-conflict')
+        }
+        appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
+        continue
       }
       report.cleared += 1
-      report.rows.push({ sourceRecordId: row.sourceRecordId, status: 'cleared' })
+      report.rows.push({
+        sourceRecordId: row.sourceRecordId,
+        status: 'cleared',
+        ...(targetResult ? { counts: targetResult.counts } : {})
+      })
     }
 
     for (const row of pendingFailures) {
@@ -2325,24 +2644,35 @@ async function syncNoteMaterialsForInventory(input = {}) {
         : {}
       const deferredActionEvidence = deferredLocalAction(
         row.listing,
-        row.linkFingerprint,
         row.expectedStateKey,
-        row.error,
-        row.forceClear === true
+        input.reactivatedSourceRecordIds instanceof Set &&
+          input.reactivatedSourceRecordIds.has(row.sourceRecordId)
       )
       const mayRetain = deferredActionEvidence.deferredAction === 'retain'
       if (input.dryRun !== true && !mayRetain) {
+        let targetResult = null
         try {
+          targetResult = await syncFailureTargetCleanup(row, currentPhysical)
+          addWriteCounts(targetResult)
           await clearNoteManagedMedia(row.listing, {
             sourceLinkFingerprint: row.linkFingerprint,
             physicalUnitFingerprint: currentPhysical,
             updatedAt: now
           }, {
             replaceMediaAssets: input.replaceMediaAssets,
-            expectedStateKey: row.expectedStateKey
+            expectedStateKey: row.expectedStateKey,
+            preservePrimaryTargetAttachment: !(
+              targetResult && targetResult.primaryTargetAttachment &&
+              targetResult.primaryTargetAttachment.cleared === true
+            )
           })
         } catch (error) {
           if (!mediaAssetsStateConflict(error)) throw error
+          const targetCounts = targetResult && targetResult.counts || {}
+          if (Number(targetCounts.targetRecordUpdated || 0) > 0 ||
+              Number(targetCounts.targetAttachmentCleared || 0) > 0) {
+            throw externalWriteStateUnknownError(error, 'inventory-target-failure-clear-state-conflict')
+          }
           appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
@@ -2369,11 +2699,13 @@ async function syncNoteMaterialsForInventory(input = {}) {
 
     for (const row of actionableResolvedRows) {
       const currentPhysical = physicalUnitFingerprint(row.listing)
+      let result = null
       try {
         if (input.dryRun !== true) {
           assertMediaAssetsStateUnchanged(row.listing, row.expectedStateKey, input.mediaAssetsStateKey)
         }
-        const result = await syncNoteMaterialVideos({
+        const primaryVideoAttachment = primaryVideoAttachmentFor(row, currentPhysical)
+        result = await syncNoteMaterialVideos({
           sourceRecordId: row.sourceRecordId,
           assets: row.resolved.assets,
           existingMediaAssets: row.listing.mediaAssets,
@@ -2396,6 +2728,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           disposePreparedMaterial: input.disposePreparedMaterial,
           verifySource: input.verifySource,
           onExternalWriteDispatched: input.onExternalWriteDispatched,
+          primaryVideoAttachment,
           requireStreamingSource: input.requireStreamingSource === true,
           dryRun: input.dryRun === true,
           verifyExpectedContentPlan: input.verifyExpectedContentPlan === true,
@@ -2450,6 +2783,7 @@ async function syncNoteMaterialsForInventory(input = {}) {
           throw new Error('房源笔记内容计划证据不完整')
         }
         contentPlanEvidence.push(...rowContentPlanEvidence)
+        addWriteCounts(result)
         report.passthrough += Number(result.normalization && result.normalization.passthrough || 0)
         report.sanitized += Number(result.normalization && result.normalization.sanitized || 0)
         report.transcoded += Number(result.normalization && result.normalization.transcoded || 0)
@@ -2465,13 +2799,32 @@ async function syncNoteMaterialsForInventory(input = {}) {
             expectedStateKey: row.expectedStateKey,
             updatedAt: now
           })
+          const primaryTargetAttachment = result.primaryTargetAttachment
+          const managedPrimaryTarget = primaryVideoAttachment && result.primaryVideo &&
+            primaryTargetAttachment && primaryTargetAttachment.verified === true
+            ? {
+                version: 1,
+                sourceRecordFingerprint: sha256Text(row.sourceRecordId),
+                physicalUnitFingerprint: currentPhysical,
+                targetRecordFingerprint: normalizeText(primaryTargetAttachment.targetRecordFingerprint),
+                attachmentTokenFingerprint: normalizeText(
+                  primaryTargetAttachment.attachmentTokenFingerprint
+                ),
+                contentSha256: normalizeText(primaryTargetAttachment.contentSha256),
+                size: Number(primaryTargetAttachment.size),
+                contentType: normalizeText(primaryTargetAttachment.contentType)
+              }
+            : null
           row.listing.noteMaterialState = {
             sourceLinkFingerprint: row.linkFingerprint,
             physicalUnitFingerprint: currentPhysical,
             digest: row.resolved.digest,
             status: 'verified',
             counts: { ...row.resolved.counts },
-            updatedAt: now
+            updatedAt: now,
+            ...(managedPrimaryTarget
+              ? { primaryTargetAttachment: managedPrimaryTarget }
+              : {})
           }
         }
         report.synced += 1
@@ -2490,6 +2843,11 @@ async function syncNoteMaterialsForInventory(input = {}) {
             (input.dryRun !== true &&
               typeof input.mediaAssetsStateKey === 'function' &&
               normalizeText(input.mediaAssetsStateKey(row.listing)) !== normalizeText(row.expectedStateKey))) {
+          const targetCounts = result && result.counts || {}
+          if (Number(targetCounts.targetMediaUploaded || 0) > 0 ||
+              Number(targetCounts.targetRecordUpdated || 0) > 0) {
+            throw externalWriteStateUnknownError(error, 'inventory-target-state-conflict')
+          }
           appendStateConflict(report, row, error, { dryRun: input.dryRun === true })
           continue
         }
@@ -2498,9 +2856,9 @@ async function syncNoteMaterialsForInventory(input = {}) {
           : {}
         const deferredActionEvidence = deferredLocalAction(
           row.listing,
-          row.linkFingerprint,
           row.expectedStateKey,
-          error
+          input.reactivatedSourceRecordIds instanceof Set &&
+            input.reactivatedSourceRecordIds.has(row.sourceRecordId)
         )
         const mayRetain = deferredActionEvidence.deferredAction === 'retain'
         if (input.dryRun !== true && mayRetain) {
@@ -2510,17 +2868,32 @@ async function syncNoteMaterialsForInventory(input = {}) {
             updatedAt: now
           }
         } else if (input.dryRun !== true) {
+          let targetCleanupResult = null
           try {
+            targetCleanupResult = await syncFailureTargetCleanup(row, currentPhysical)
+            addWriteCounts(targetCleanupResult)
             await clearNoteManagedMedia(row.listing, {
               sourceLinkFingerprint: row.linkFingerprint,
               physicalUnitFingerprint: currentPhysical,
               updatedAt: now
             }, {
               replaceMediaAssets: input.replaceMediaAssets,
-              expectedStateKey: row.expectedStateKey
+              expectedStateKey: row.expectedStateKey,
+              preservePrimaryTargetAttachment: !(
+                targetCleanupResult && targetCleanupResult.primaryTargetAttachment &&
+                targetCleanupResult.primaryTargetAttachment.cleared === true
+              )
             })
           } catch (clearError) {
             if (!mediaAssetsStateConflict(clearError)) throw clearError
+            const targetCounts = targetCleanupResult && targetCleanupResult.counts || {}
+            if (Number(targetCounts.targetRecordUpdated || 0) > 0 ||
+                Number(targetCounts.targetAttachmentCleared || 0) > 0) {
+              throw externalWriteStateUnknownError(
+                clearError,
+                'inventory-target-execution-failure-clear-state-conflict'
+              )
+            }
             appendStateConflict(report, row, clearError, { dryRun: input.dryRun === true })
             continue
           }
@@ -2540,6 +2913,11 @@ async function syncNoteMaterialsForInventory(input = {}) {
     }
     report.complete = report.failed === 0
     report.published = input.dryRun !== true && report.failed === 0
+    if (Number(report.cleanupWarnings || 0) > 0 && !normalizeText(report.status)) {
+      report.status = 'cleanup-warning'
+    }
+    report.noop = input.dryRun !== true && report.transferred === 0 &&
+      report.targetMediaUploaded === 0 && report.targetRecordUpdated === 0
     const committableWarning = isKnownMaterialRowWarningReport(report, {
       dryRun: input.dryRun === true
     })
@@ -2594,6 +2972,7 @@ module.exports = {
     buildContentPlanSummary,
     buildNoteMaterialSourceFieldPlan,
     isKnownMaterialRowWarningReport,
+    externalWriteStateUnknownError,
     isExternalWriteStateUnknownError,
     isExternalWriteIntentPersistenceError,
     contentPlanConfirmationFromReport,
