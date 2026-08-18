@@ -4,6 +4,10 @@ const crypto = require('crypto')
 
 const MAX_BATCH_RECORDS = 1000
 const MAX_PAGES = 10000
+const READ_GET_MAX_REQUESTS = 3
+const READ_GET_RETRY_DELAYS_MS = Object.freeze([1000, 3000])
+const READ_GET_MAX_RETRY_AFTER_MS = 30 * 1000
+const READ_GET_RETRY_AFTER_MS = Symbol('readGetRetryAfterMs')
 
 function normalizeFieldId(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -369,6 +373,50 @@ function safeTableId(tableId) {
   return tableId.trim()
 }
 
+function readGetRetryAfterMs(response) {
+  let rawValue = null
+  try {
+    rawValue = response && response.headers && typeof response.headers.get === 'function'
+      ? response.headers.get('retry-after')
+      : null
+  } catch (_) {
+    return null
+  }
+  if (rawValue === null || rawValue === undefined) return null
+  let rawText = ''
+  try {
+    rawText = String(rawValue)
+  } catch (_) {
+    return null
+  }
+  if (!rawText || rawText.length > 64 || /[\u0000-\u001f\u007f]/.test(rawText)) {
+    return null
+  }
+  const text = rawText.replace(/^ +| +$/g, '')
+  if (!text) return null
+
+  if (/^(?:0|[1-9][0-9]{0,9})$/.test(text)) {
+    const seconds = Number(text)
+    if (!Number.isSafeInteger(seconds) || seconds < 0) return null
+    return Math.min(seconds * 1000, READ_GET_MAX_RETRY_AFTER_MS)
+  }
+
+  const imfFixdate = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/
+  if (!imfFixdate.test(text)) return null
+  const timestamp = Date.parse(text)
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== text) return null
+  return Math.min(Math.max(0, timestamp - Date.now()), READ_GET_MAX_RETRY_AFTER_MS)
+}
+
+function retryAfterMsFromError(error) {
+  try {
+    const value = error && error[READ_GET_RETRY_AFTER_MS]
+    return Number.isFinite(value) && value >= 0 ? value : null
+  } catch (_) {
+    return null
+  }
+}
+
 function createBitableClient(options) {
   const config = validateClientOptions(options)
 
@@ -376,7 +424,7 @@ function createBitableClient(options) {
     return `${config.baseUrl}/bitable/v1/apps/${encodeURIComponent(config.appToken)}/tables/${encodeURIComponent(safeTableId(tableId))}/${suffix}`
   }
 
-  async function requestJsonOnce(url, requestOptions, operation) {
+  async function requestJsonOnce(url, requestOptions, operation, captureRetryAfter = false) {
     const controller = new AbortController()
     let timedOut = false
     let timer
@@ -403,7 +451,14 @@ function createBitableClient(options) {
       const ok = response && typeof response.ok === 'boolean'
         ? response.ok
         : Number.isFinite(status) && status >= 200 && status < 300
-      if (!ok) throw new Error(`飞书${operation}请求失败：HTTP ${Number.isFinite(status) ? status : 'unknown'}`)
+      if (!ok) {
+        const error = new Error(`飞书${operation}请求失败：HTTP ${Number.isFinite(status) ? status : 'unknown'}`)
+        if (captureRetryAfter) {
+          const retryAfterMs = readGetRetryAfterMs(response)
+          if (retryAfterMs !== null) error[READ_GET_RETRY_AFTER_MS] = retryAfterMs
+        }
+        throw error
+      }
 
       let payload
       try {
@@ -440,14 +495,23 @@ function createBitableClient(options) {
 
   async function requestJson(url, requestOptions, operation, allowRetry = false) {
     let lastError
-    const maxAttempts = allowRetry === true ? config.maxRetries + 1 : 1
+    const requestMethod = String(requestOptions && requestOptions.method || 'GET').toUpperCase()
+    const readGetRetry = allowRetry === true && requestMethod === 'GET'
+    const maxAttempts = allowRetry === true
+      ? (readGetRetry
+          ? Math.min(config.maxRetries + 1, READ_GET_MAX_REQUESTS)
+          : config.maxRetries + 1)
+      : 1
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
-        return await requestJsonOnce(url, requestOptions, operation)
+        return await requestJsonOnce(url, requestOptions, operation, readGetRetry)
       } catch (error) {
         lastError = error
         if (attempt >= maxAttempts - 1 || !retryableRequestError(error)) throw error
-        const waitMs = Math.min(config.retryDelayMs * (2 ** attempt), 5000)
+        const headerDelayMs = readGetRetry ? retryAfterMsFromError(error) : null
+        const waitMs = readGetRetry
+          ? (headerDelayMs === null ? READ_GET_RETRY_DELAYS_MS[attempt] : headerDelayMs)
+          : Math.min(config.retryDelayMs * (2 ** attempt), 5000)
         if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
       }
     }

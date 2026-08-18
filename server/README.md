@@ -745,6 +745,14 @@ FEISHU_MIRROR_ALLOW_MASS_DEACTIVATE=false
 
 同步批次的 `nowMs` 只作为本轮稳定的 `created_time` 截止时间和生命周期观察时间，不能冒充实际读取员工源表时的“当前时间”。只读源客户端会在 fields 与 records 全部分页完成后采样实时校验时钟，先对原始快照中的每一行完成 record ID、字段、附件和真实未来校验，再把 `created_time > nowMs` 的完整合法新增行延后到下一批；`created_time === nowMs` 仍纳入本批。有效 `records`、`recordCount` 与 `digest` 都在延后过滤后重算，因此同一服务端任务的 worker 预演、正式前内置预检和正式执行不会仅因运行期间新增行而漂移，下一全新批次提高截止时间后会自动接住这些行。截止后的非法行仍整批阻断；截止前旧行被修改或删除仍会让摘要/计划漂移并由预演门阻断。原表非空但本批截止内一条有效记录都没有时也 fail-closed，禁止把陈旧空快照用于批量撤下。
 
+所有显式允许重试的飞书 Base `fields/records` 只读 GET 单请求最多发送 3 次；没有有效
+`Retry-After` 时，两次冷却固定约为 `1s/3s`。可重试 HTTP 响应的 `Retry-After` 只接受十进制秒数或
+规范 IMF-fixdate，原始值最多 64 个字符、等待最多 30 秒；C0/DEL 控制字符、多值、超长或其他坏格式
+都退回默认冷却。HTTP `401/413` 等永久错误仍只发送一次；分页中某页发生可重试失败时只重读该页，
+不会从 fields 或 records 第一页重启，更不会触发整轮同步重跑。该冷却不作用于 POST：带稳定
+`client_token` 的幂等写仍沿用既有 `retryDelayMs` 指数退避（默认约 `200ms/400ms`）并在同一次调用的
+有限重试中复用原令牌；无令牌写仍不自动重放。没有新增环境变量、表、调度或状态机。
+
 当前主档新增字段及类型：
 
 - 文本：`foundationListingId / temporaryListingId / yuxiaoerListingId / yuxiaoerRoomId / identityType / physicalUnitKey / lifecycleStatusText / vacancyNote / availabilityCycleId / metricKind / listingOwner / ownerDepartment / identityAliases`

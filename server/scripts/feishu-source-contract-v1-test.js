@@ -24,10 +24,19 @@ const SEMANTIC_DIGEST_BINDINGS = Object.freeze({
   optionalVideo: { fieldId: 'fld-optional-video', type: 17, required: false }
 })
 
-function response(status, body) {
+function response(status, body, responseHeaders = {}) {
+  const headersByName = new Map(Object.entries(responseHeaders).map(([name, value]) => (
+    [String(name).toLowerCase(), value]
+  )))
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: {
+      get(name) {
+        const normalizedName = String(name).toLowerCase()
+        return headersByName.has(normalizedName) ? headersByName.get(normalizedName) : null
+      }
+    },
     json: async () => body,
     text: async () => JSON.stringify(body)
   }
@@ -64,6 +73,37 @@ async function expectReject(factory, pattern, message) {
     assert.match(String(error.message || error), pattern, `${message}；实际错误：${error && error.message}`)
   }
   return error
+}
+
+async function captureRetryDelays(factory, requestTimeoutMs) {
+  const originalSetTimeout = global.setTimeout
+  const delays = []
+  global.setTimeout = (callback, delay, ...args) => {
+    const waitMs = Number(delay)
+    if (waitMs === requestTimeoutMs) return originalSetTimeout(callback, waitMs, ...args)
+    delays.push(waitMs)
+    return originalSetTimeout(callback, 0, ...args)
+  }
+  try {
+    return { value: await factory(), delays }
+  } finally {
+    global.setTimeout = originalSetTimeout
+  }
+}
+
+function retryContractFields() {
+  return [
+    field('fld-community-canonical', '小区', 1),
+    field('fld-rent-canonical', '月租金', 2),
+    field('fld-video-canonical', '视频', 17)
+  ]
+}
+
+function retryContractRecord(recordId = 'rec-retry-contract') {
+  return {
+    record_id: recordId,
+    fields: { 小区: '重试合同小区', 月租金: 3200, 视频: [] }
+  }
 }
 
 function makeClient(fetchImpl, pageSize = 2, overrides = {}) {
@@ -605,21 +645,61 @@ async function testBatchWriteRequestContract() {
 }
 
 async function testOnlyIdempotentWritesRetry() {
+  const requestTimeoutMs = 246803
   const calls = []
   const client = makeClient(async (url, options = {}) => {
     calls.push({ url: String(url), method: requestMethod(options) })
     if (calls.length <= 2) return response(200, { code: 1254290, msg: 'synthetic transient conflict', data: {} })
     const body = JSON.parse(options.body)
     return success({ records: body.records })
-  }, 2, { maxRetries: 2, retryDelayMs: 1 })
-  const result = await client.batchCreateRecords(
-    'tbl-mini-only',
-    [{ fields: { 租金: 3300 } }],
-    { clientToken: '123e4567-e89b-42d3-a456-426614174000' }
+  }, 2, { maxRetries: 2, retryDelayMs: 7, requestTimeoutMs })
+  const observedCreate = await captureRetryDelays(
+    () => client.batchCreateRecords(
+      'tbl-mini-only',
+      [{ fields: { 租金: 3300 } }],
+      { clientToken: '123e4567-e89b-42d3-a456-426614174000' }
+    ),
+    requestTimeoutMs
   )
+  const result = observedCreate.value
   assert.strictEqual(result.length, 1, '带稳定 client_token 的批量新增短暂失败后必须返回完整结果')
   assert.strictEqual(calls.length, 3, '仅有幂等令牌的飞书写请求允许有限重试')
+  assert.deepStrictEqual(observedCreate.delays, [7, 14], 'POST 必须继续使用既有 retryDelayMs 指数退避，不得套用 GET 的 1s/3s 冷却')
   calls.forEach((call) => assert.strictEqual(call.method, 'POST', '幂等新增重试必须保持同一写方法'))
+  assert.strictEqual(
+    new Set(calls.map((call) => new URL(call.url).searchParams.get('client_token'))).size,
+    1,
+    '批量新增的所有旧退避重试必须继续复用同一 client_token'
+  )
+
+  const postHttpCalls = []
+  const postHttpClient = makeClient(async (url, options = {}) => {
+    postHttpCalls.push({ url: new URL(String(url)), method: requestMethod(options) })
+    if (postHttpCalls.length <= 2) {
+      return response(503, { code: 503, msg: 'synthetic POST throttling', data: {} }, {
+        'Retry-After': '30'
+      })
+    }
+    const body = JSON.parse(options.body)
+    return success({ records: body.records })
+  }, 2, { maxRetries: 2, retryDelayMs: 7, requestTimeoutMs })
+  const observedPostHttp = await captureRetryDelays(
+    () => postHttpClient.batchCreateRecords(
+      'tbl-mini-only',
+      [{ fields: { 租金: 3350 } }],
+      { clientToken: '123e4567-e89b-42d3-a456-426614174001' }
+    ),
+    requestTimeoutMs
+  )
+  assert.strictEqual(observedPostHttp.value.length, 1, 'HTTP 503 后的幂等 POST 必须保持既有成功合同')
+  assert.deepStrictEqual(observedPostHttp.delays, [7, 14], 'POST 必须忽略 Retry-After 并继续使用既有 retryDelayMs 退避')
+  assert.strictEqual(postHttpCalls.length, 3, 'POST 的既有有限重试次数不得漂移')
+  assert.ok(postHttpCalls.every((call) => call.method === 'POST'), 'POST 旧重试不得改写请求方法')
+  assert.strictEqual(
+    new Set(postHttpCalls.map((call) => call.url.searchParams.get('client_token'))).size,
+    1,
+    'HTTP 503 的 POST 重试必须继续固定复用同一 client_token'
+  )
 
   const updateUrls = []
   const responseBodyNeverReturns = makeClient(async (url) => {
@@ -1223,6 +1303,184 @@ async function testCreatedTimeCutoffSeparatesLiveValidationClock() {
   )
 }
 
+async function testReadGetRetryCooldownContract() {
+  const requestTimeoutMs = 246801
+
+  for (const status of [429, 503]) {
+    const calls = []
+    const fetchImpl = async (url, options = {}) => {
+      calls.push({ url: new URL(String(url)), method: requestMethod(options) })
+      return response(status, { code: status, msg: 'synthetic sustained throttling', data: {} })
+    }
+    const client = makeClient(fetchImpl, 2, {
+      maxRetries: 5,
+      retryDelayMs: 7,
+      requestTimeoutMs
+    })
+    const observed = await captureRetryDelays(
+      () => expectReject(
+        () => client.readValidatedTableSnapshot({
+          tableId: `tbl-read-${status}`,
+          bindings: BINDINGS,
+          allowEmpty: false
+        }),
+        new RegExp(String(status)),
+        `持续 HTTP ${status} 必须在有界 GET 重试耗尽后失败`
+      ),
+      requestTimeoutMs
+    )
+    assert.strictEqual(calls.length, 3, `持续 HTTP ${status} 的只读 GET 全局最多只能发 3 次`)
+    assert.deepStrictEqual(observed.delays, [1000, 3000], `持续 HTTP ${status} 无有效 Retry-After 时必须使用 1s/3s 冷却`)
+    assertOnlyGets(calls, `持续 HTTP ${status}`)
+  }
+
+  async function runHeaderRetry(rawHeader, expectedDelay, label, { nowMs, status = 429 } = {}) {
+    const calls = []
+    let fieldAttempts = 0
+    const fetchImpl = async (url, options = {}) => {
+      const parsed = new URL(String(url))
+      calls.push({ url: parsed, method: requestMethod(options) })
+      if (parsed.pathname.endsWith('/fields')) {
+        fieldAttempts += 1
+        if (fieldAttempts === 1) {
+          return response(status, { code: status, msg: 'synthetic retry-after', data: {} }, {
+            'Retry-After': rawHeader
+          })
+        }
+        return success({ items: retryContractFields(), has_more: false })
+      }
+      if (parsed.pathname.endsWith('/records')) {
+        return success({ items: [retryContractRecord()], has_more: false })
+      }
+      throw new Error(`测试触达了非预期接口：${parsed.pathname}`)
+    }
+    const client = makeClient(fetchImpl, 2, {
+      maxRetries: 5,
+      retryDelayMs: 7,
+      requestTimeoutMs
+    })
+    const originalDateNow = Date.now
+    if (nowMs !== undefined) Date.now = () => nowMs
+    try {
+      const observed = await captureRetryDelays(
+        () => client.readValidatedTableSnapshot({
+          tableId: 'tbl-retry-after',
+          bindings: BINDINGS,
+          allowEmpty: false
+        }),
+        requestTimeoutMs
+      )
+      assert.strictEqual(observed.value.recordCount, 1, `${label} 后必须继续完成同一快照`)
+      assert.deepStrictEqual(observed.delays, [expectedDelay], `${label} 的等待毫秒数必须严格受合同约束`)
+      assert.strictEqual(fieldAttempts, 2, `${label} 只允许重试当前 fields GET`)
+      assertOnlyGets(calls, label)
+    } finally {
+      Date.now = originalDateNow
+    }
+  }
+
+  await runHeaderRetry('2', 2000, '十进制 Retry-After')
+  await runHeaderRetry('1', 1000, 'HTTP 503 Retry-After', { status: 503 })
+  const fixedNowMs = Date.parse('Mon, 18 Aug 2026 06:00:00 GMT')
+  await runHeaderRetry(
+    new Date(fixedNowMs + 5000).toUTCString(),
+    5000,
+    '规范 IMF-fixdate Retry-After',
+    { nowMs: fixedNowMs }
+  )
+  await runHeaderRetry('30', 30000, '恰好 30 秒的 Retry-After')
+  await runHeaderRetry('31', 30000, '超过 30 秒的 Retry-After 上限')
+
+  for (const [rawHeader, label] of [
+    ['\r2', '含 C0 控制字符的 Retry-After'],
+    ['\t2', '含 HTAB 控制字符的 Retry-After'],
+    ['1, 2', '多值 Retry-After'],
+    ['9'.repeat(65), '超长 Retry-After']
+  ]) {
+    await runHeaderRetry(rawHeader, 1000, label)
+  }
+
+  for (const status of [401, 413]) {
+    const calls = []
+    const fetchImpl = async (url, options = {}) => {
+      calls.push({ url: new URL(String(url)), method: requestMethod(options) })
+      return response(status, { code: status, msg: 'synthetic permanent read failure', data: {} }, {
+        'Retry-After': '30'
+      })
+    }
+    const client = makeClient(fetchImpl, 2, {
+      maxRetries: 5,
+      retryDelayMs: 7,
+      requestTimeoutMs
+    })
+    const observed = await captureRetryDelays(
+      () => expectReject(
+        () => client.readValidatedTableSnapshot({
+          tableId: `tbl-no-retry-${status}`,
+          bindings: BINDINGS,
+          allowEmpty: false
+        }),
+        new RegExp(String(status)),
+        `HTTP ${status} 必须立即失败且不得采用 Retry-After`
+      ),
+      requestTimeoutMs
+    )
+    assert.strictEqual(calls.length, 1, `HTTP ${status} 永久错误不得重试`)
+    assert.deepStrictEqual(observed.delays, [], `HTTP ${status} 不得进入任何冷却等待`)
+    assertOnlyGets(calls, `HTTP ${status} 永久错误`)
+  }
+}
+
+async function testReadRetryDoesNotRestartPagination() {
+  const requestTimeoutMs = 246802
+  const calls = []
+  let secondPageAttempts = 0
+  const fetchImpl = async (url, options = {}) => {
+    const parsed = new URL(String(url))
+    const resource = parsed.pathname.endsWith('/fields') ? 'fields' : 'records'
+    const pageToken = parsed.searchParams.get('page_token') || ''
+    calls.push({ resource, pageToken, method: requestMethod(options) })
+    if (resource === 'fields') {
+      return success({ items: retryContractFields(), has_more: false })
+    }
+    if (!pageToken) {
+      return success({
+        items: [retryContractRecord('rec-page-1')],
+        has_more: true,
+        page_token: 'retry-page-2'
+      })
+    }
+    assert.strictEqual(pageToken, 'retry-page-2', '失败页重试必须保持同一个 page_token')
+    secondPageAttempts += 1
+    if (secondPageAttempts === 1) {
+      return response(503, { code: 503, msg: 'synthetic page-2 throttling', data: {} }, {
+        'Retry-After': '0'
+      })
+    }
+    return success({ items: [retryContractRecord('rec-page-2')], has_more: false })
+  }
+  const client = makeClient(fetchImpl, 1, {
+    maxRetries: 5,
+    requestTimeoutMs
+  })
+  const observed = await captureRetryDelays(
+    () => client.readValidatedTableSnapshot({
+      tableId: 'tbl-page-retry',
+      bindings: BINDINGS,
+      allowEmpty: false
+    }),
+    requestTimeoutMs
+  )
+  assert.strictEqual(observed.value.recordCount, 2, '第二页短暂失败恢复后必须得到完整两页快照')
+  assert.deepStrictEqual(observed.delays, [], 'Retry-After=0 不得额外调度默认冷却')
+  assert.deepStrictEqual(
+    calls.map(({ resource, pageToken }) => `${resource}:${pageToken || 'first'}`),
+    ['fields:first', 'records:first', 'records:retry-page-2', 'records:retry-page-2'],
+    '第二页重试只能重读失败的第二页，不得重读 fields 或第一页 records'
+  )
+  assertOnlyGets(calls, '分页失败页原位重试')
+}
+
 async function testPaginationMustBeComplete() {
   {
     const fetchImpl = makePagedFetch(({ callNumber, pageToken }) => {
@@ -1438,6 +1696,8 @@ async function main() {
   await testRequiredCellValueMustExist()
   await testRecordCreatedTimeContract()
   await testCreatedTimeCutoffSeparatesLiveValidationClock()
+  await testReadGetRetryCooldownContract()
+  await testReadRetryDoesNotRestartPagination()
   await testPaginationMustBeComplete()
   await testEmptyTablePolicy()
   await testBatchWriteRequestContract()
