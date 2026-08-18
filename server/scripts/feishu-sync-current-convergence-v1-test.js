@@ -270,6 +270,120 @@ function applyResultNotCompleteRootCanUseCurrentConvergence() {
   })
 }
 
+function componentEvidenceWithRoles(evidence, roles) {
+  const next = clone(evidence)
+  const byRole = new Map(next.componentEvidence.snapshots.map((snapshot) => [snapshot.role, snapshot]))
+  next.componentEvidence.snapshots = roles.map((role) => clone(byRole.get(role)))
+  next.componentEvidenceSha256 = stableSha256(next.componentEvidence)
+  return next
+}
+
+function canonicalThreeRoleBaselineCanUseCurrentConvergence() {
+  const nowMs = 1_900_010_000_000
+  const evidence = componentEvidenceWithRoles(
+    buildComponentEvidence(),
+    ['source', 'location', 'mini']
+  )
+  const seeded = seedState(nowMs, evidence)
+  const created = makeWorker({
+    seed: seeded.db,
+    nowMs,
+    evidence,
+    sync: async () => { throw new Error('创建阶段不得执行同步') }
+  }).worker.createCurrentConvergence(seeded.blockedRunId, seeded.baselineDryRunId)
+  assert.strictEqual(created.state, STATES.QUEUED)
+
+  const reordered = componentEvidenceWithRoles(
+    buildComponentEvidence(),
+    ['location', 'source', 'mini']
+  )
+  const reorderedSeed = seedState(nowMs, reordered)
+  assert.throws(
+    () => makeWorker({
+      seed: reorderedSeed.db,
+      nowMs,
+      evidence: reordered,
+      sync: async () => { throw new Error('乱序证据不得执行同步') }
+    }).worker.createCurrentConvergence(
+      reorderedSeed.blockedRunId,
+      reorderedSeed.baselineDryRunId
+    ),
+    (error) => error && error.code === 'CURRENT_CONVERGENCE_FAILED',
+    '三角色证据必须保持 canonical source/location/mini 顺序'
+  )
+}
+
+async function resolvedHistoricalUnknownDoesNotBlockFreshConvergence() {
+  const firstNowMs = 1_900_020_000_000
+  const evidence = buildComponentEvidence()
+  const firstSeed = seedState(firstNowMs, evidence)
+  const firstBuilt = makeWorker({
+    seed: firstSeed.db,
+    nowMs: firstNowMs + 86_400_000,
+    evidence,
+    async sync(db, _actorId, options) {
+      if (options.dryRun === true) return dryResult(evidence)
+      options.onApplyPlanFrozen(frozenPlan(evidence))
+      options.onExternalWriteDispatched()
+      db.listings.push({ id: 'resolved-history-proof' })
+      return applyResult(evidence)
+    }
+  })
+  const firstConvergence = firstBuilt.worker.createCurrentConvergence(
+    firstSeed.blockedRunId,
+    firstSeed.baselineDryRunId
+  )
+  const firstResult = await firstBuilt.worker.run(firstConvergence.runId, {
+    workerId: 'manual-cli:resolved-history'
+  })
+  assert.strictEqual(firstResult.state, STATES.SUCCEEDED)
+
+  const addFreshPair = (db) => {
+    const fresh = seedState(firstNowMs + 172_800_000, evidence)
+    fresh.blocked.runId = 'feishu-sync-unknown-current-02'
+    fresh.baseline.runId = 'feishu-sync-dry-current-02'
+    fresh.db.feishuSyncRuns = [fresh.baseline, fresh.blocked]
+    db.feishuSyncRuns.push(clone(fresh.baseline), clone(fresh.blocked))
+    db.feishuSyncScheduler.blockedRunId = fresh.blocked.runId
+    db.feishuSyncScheduler.lastRunId = fresh.baseline.runId
+    return fresh
+  }
+
+  const resolvedDb = firstBuilt.store.snapshot()
+  const fresh = addFreshPair(resolvedDb)
+  const resolvedWorker = makeWorker({
+    seed: resolvedDb,
+    nowMs: firstNowMs + 259_200_000,
+    evidence,
+    randomIdPrefix: 'feishu-sync-fresh-convergence',
+    sync: async () => { throw new Error('创建阶段不得执行同步') }
+  }).worker
+  assert.strictEqual(
+    resolvedWorker.createCurrentConvergence(fresh.blocked.runId, fresh.baseline.runId).state,
+    STATES.QUEUED,
+    '已有完整 resolution 的历史 UNKNOWN 不得重复阻断新的 current convergence'
+  )
+
+  for (const mutate of [
+    (db) => { delete db.feishuSyncConvergenceResolutions[firstSeed.blockedRunId] },
+    (db) => { db.feishuSyncConvergenceResolutions[firstSeed.blockedRunId].markerSha256 = '0'.repeat(64) }
+  ]) {
+    const unsafeDb = firstBuilt.store.snapshot()
+    const unsafeFresh = addFreshPair(unsafeDb)
+    mutate(unsafeDb)
+    assert.throws(
+      () => makeWorker({
+        seed: unsafeDb,
+        nowMs: firstNowMs + 259_200_000,
+        evidence,
+        randomIdPrefix: 'feishu-sync-unsafe-convergence',
+        sync: async () => { throw new Error('未解决历史 UNKNOWN 不得执行同步') }
+      }).worker.createCurrentConvergence(unsafeFresh.blocked.runId, unsafeFresh.baseline.runId),
+      (error) => error && error.code === 'CURRENT_CONVERGENCE_FAILED'
+    )
+  }
+}
+
 function dryResult(evidence, patch = {}) {
   return {
     success: true,
@@ -358,7 +472,15 @@ function commitDeltaChecked(store, beforeFinalize) {
   })
 }
 
-function makeWorker({ seed, nowMs, evidence, sync, maxRuns = 50, beforeFinalize }) {
+function makeWorker({
+  seed,
+  nowMs,
+  evidence,
+  sync,
+  maxRuns = 50,
+  beforeFinalize,
+  randomIdPrefix = 'feishu-sync-convergence'
+}) {
   const store = createStore(seed)
   let nextId = 0
   const worker = createFeishuSyncWorker({
@@ -368,7 +490,7 @@ function makeWorker({ seed, nowMs, evidence, sync, maxRuns = 50, beforeFinalize 
     writeLockEnabled: true,
     heartbeat: false,
     now: () => nowMs + (++nextId * 1000),
-    randomId: () => `feishu-sync-convergence-${String(nextId + 1).padStart(2, '0')}`,
+    randomId: () => `${randomIdPrefix}-${String(nextId + 1).padStart(2, '0')}`,
     config: {
       approvedSchemaSha256: SHA.schema,
       approvedResourceIdentitySha256: SHA.resource,
@@ -1923,6 +2045,8 @@ async function cliCreatesButNeverRunsTheConvergence() {
 
 async function main() {
   applyResultNotCompleteRootCanUseCurrentConvergence()
+  await resolvedHistoricalUnknownDoesNotBlockFreshConvergence()
+  canonicalThreeRoleBaselineCanUseCurrentConvergence()
   await successPathIsExactlyOnce()
   await driftFailsBeforeWriteAndPreservesOldBarrier()
   await materialWarningInInternalDryFailsBeforeWrite()

@@ -1016,6 +1016,19 @@ function validComponentEvidence(evidence, expectedSha256, options = {}) {
   return validSha256(expectedSha256) && stableSha256(evidence) === expectedSha256
 }
 
+function validCanonicalComponentEvidence(evidence, expectedSha256) {
+  if (!validComponentEvidence(evidence, expectedSha256)) return false
+  const roles = evidence.snapshots.map((snapshot) => snapshot.role)
+  const canonicalRoles = [
+    'source',
+    'location',
+    'mini',
+    ...(roles.includes('rented') ? ['rented'] : []),
+    ...(roles.includes('history') ? ['history'] : [])
+  ]
+  return JSON.stringify(roles) === JSON.stringify(canonicalRoles)
+}
+
 function manualNoopResolutionFailure() {
   return new WorkerError('MANUAL_NOOP_RESOLUTION_FAILED', '', {
     safeBeforeWrite: true,
@@ -1025,19 +1038,10 @@ function manualNoopResolutionFailure() {
 
 function manualNoopVerificationEvidence(run) {
   const evidence = run && run.componentEvidence
-  if (!validComponentEvidence(
+  if (!validCanonicalComponentEvidence(
     evidence,
     run && run.componentEvidenceSha256
   )) return null
-  const roles = evidence.snapshots.map((snapshot) => snapshot.role)
-  const canonicalRoles = [
-    'source',
-    'location',
-    'mini',
-    ...(roles.includes('rented') ? ['rented'] : []),
-    ...(roles.includes('history') ? ['history'] : [])
-  ]
-  if (JSON.stringify(roles) !== JSON.stringify(canonicalRoles)) return null
   return {
     schemaSha256: run.schemaSha256,
     resourceIdentitySha256: run.resourceIdentitySha256,
@@ -1126,10 +1130,9 @@ function manualNoopFailedConvergenceShapeValid(run) {
     safeErrorCode({ code: run.errorCode }, '') === run.errorCode && absent &&
     validSha256(run.convergenceSeedSha256) && validSha256(run.supersedesBlockedRunSha256) &&
     validSha256(run.baselineDryRunSha256) && validSha256(run.baselineComponentEvidenceSha256) &&
-    validComponentEvidence(
+    validCanonicalComponentEvidence(
       run.componentEvidence,
-      run.componentEvidenceSha256,
-      { requireFiveTables: true }
+      run.componentEvidenceSha256
     ) && run.dryResultSummary && run.baselineDryResultSummary &&
     stableSha256(run.dryResultSummary) === stableSha256(run.baselineDryResultSummary)
 }
@@ -1166,10 +1169,9 @@ function manualNoopBaselineDryRunShapeValid(db, run, blockedRun) {
       !validSha256(run.resourceIdentitySha256) || !validSha256(run.mirrorPlanSha256) ||
       !validSha256(run.semanticMirrorPlanSha256) || !validSha256(run.contentPlanSha256) ||
       !Number.isSafeInteger(run.contentPlanAssetCount) || run.contentPlanAssetCount < 0 ||
-      !validComponentEvidence(
+      !validCanonicalComponentEvidence(
         run.componentEvidence,
-        run.componentEvidenceSha256,
-        { requireFiveTables: true }
+        run.componentEvidenceSha256
       ) || !run.resultSummary || run.resultSummary.success !== true ||
       run.resultSummary.complete !== true || run.resultSummary.dryRun !== true ||
       Number(run.resultSummary.failed || 0) !== 0) return false
@@ -1254,10 +1256,9 @@ function manualNoopConvergenceBindingMatches(db, run, blocked, baseline) {
       run.createdAt <= baseline.finishedAt || run.runNowMs !== run.createdAt ||
       !validSha256(run.convergenceSeedSha256) ||
       stableSha256(manualNoopConvergenceSeedBody(run)) !== run.convergenceSeedSha256 ||
-      !validComponentEvidence(
+      !validCanonicalComponentEvidence(
         run.componentEvidence,
-        run.componentEvidenceSha256,
-        { requireFiveTables: true }
+        run.componentEvidenceSha256
       )) return false
   const expected = manualNoopSemanticDigestBundle(baseline)
   const actual = manualNoopSemanticDigestBundle(run)
@@ -2364,10 +2365,9 @@ function createFeishuSyncWorker(dependencies = {}) {
       validSha256(baseline.semanticMirrorPlanSha256) &&
       validSha256(baseline.contentPlanSha256) &&
       Number.isSafeInteger(baseline.contentPlanAssetCount) && baseline.contentPlanAssetCount >= 0 &&
-      validComponentEvidence(
+      validCanonicalComponentEvidence(
         baseline.componentEvidence,
-        baseline.componentEvidenceSha256,
-        { requireFiveTables: true }
+        baseline.componentEvidenceSha256
       ) && baseline.resultSummary && baseline.resultSummary.success === true &&
       baseline.resultSummary.complete === true && baseline.resultSummary.dryRun === true &&
       Number(baseline.resultSummary.failed || 0) === 0
@@ -2396,7 +2396,10 @@ function createFeishuSyncWorker(dependencies = {}) {
       !Object.prototype.hasOwnProperty.call(db.feishuSyncConvergenceResolutions, runId) &&
       !db.feishuSyncRuns.find((run) => (
         run && run.runId !== runId && run.runId !== convergenceRunId && (
-          !TERMINAL_STATES.has(run.state) || [STATES.UNKNOWN, STATES.BLOCKED].includes(run.state)
+          !TERMINAL_STATES.has(run.state) || (
+            [STATES.UNKNOWN, STATES.BLOCKED].includes(run.state) &&
+            !currentConvergenceResolutionMatches(db, run)
+          )
         )
       ))
     if (!exact) throw currentConvergenceFailure()
@@ -2439,14 +2442,12 @@ function createFeishuSyncWorker(dependencies = {}) {
   }
 
   function currentConvergencePreparedDigestsMatch(run, expected) {
-    if (!run || !expected || !validComponentEvidence(
+    if (!run || !expected || !validCanonicalComponentEvidence(
       run.componentEvidence,
-      run.componentEvidenceSha256,
-      { requireFiveTables: true }
-    ) || !validComponentEvidence(
+      run.componentEvidenceSha256
+    ) || !validCanonicalComponentEvidence(
       expected.componentEvidence,
-      expected.componentEvidenceSha256,
-      { requireFiveTables: true }
+      expected.componentEvidenceSha256
     )) return false
     const actualBundle = preparedConvergenceDigestBundle(run)
     const expectedBundle = preparedConvergenceDigestBundle(expected)
@@ -2631,10 +2632,9 @@ function createFeishuSyncWorker(dependencies = {}) {
         run.baselineComponentEvidenceSha256 !== baseline.componentEvidenceSha256 ||
         run.requestKeySha256 !== stableSha256(convergenceRequestBody(blocked, baseline)) ||
         run.createdAt <= baseline.finishedAt || run.runNowMs !== run.createdAt ||
-        !convergenceSeedMatches(run) || !validComponentEvidence(
+        !convergenceSeedMatches(run) || !validCanonicalComponentEvidence(
           run.componentEvidence,
-          run.componentEvidenceSha256,
-          { requireFiveTables: true }
+          run.componentEvidenceSha256
         )) return false
     const expected = semanticConvergenceDigestBundle(baseline)
     const actual = semanticConvergenceDigestBundle(run)
@@ -2741,15 +2741,13 @@ function createFeishuSyncWorker(dependencies = {}) {
 
     if (convergence.version !== 5 ||
         convergence.convergenceDigestContract !== CURRENT_CONVERGENCE_DIGEST_CONTRACT ||
-        !validComponentEvidence(
+        !validCanonicalComponentEvidence(
           baseline.componentEvidence,
-          baseline.componentEvidenceSha256,
-          { requireFiveTables: true }
+          baseline.componentEvidenceSha256
         ) ||
-        !validComponentEvidence(
+        !validCanonicalComponentEvidence(
           convergence.componentEvidence,
-          convergence.componentEvidenceSha256,
-          { requireFiveTables: true }
+          convergence.componentEvidenceSha256
         ) ||
         marker.baselineMirrorPlanSha256 !== baseline.mirrorPlanSha256 ||
         marker.baselineSemanticMirrorPlanSha256 !== baseline.semanticMirrorPlanSha256 ||
@@ -2832,10 +2830,9 @@ function createFeishuSyncWorker(dependencies = {}) {
 
   function assertCurrentConvergencePrepared(run, digests, dryResult) {
     if (!run || run.convergenceContract !== CURRENT_CONVERGENCE_CONTRACT) return false
-    if (!validComponentEvidence(
+    if (!validCanonicalComponentEvidence(
       digests.componentEvidence,
-      digests.componentEvidenceSha256,
-      { requireFiveTables: true }
+      digests.componentEvidenceSha256
     )) throw currentConvergenceFailure()
     const expected = semanticConvergenceDigestBundle(run)
     const actual = semanticConvergenceDigestBundle(digests)
