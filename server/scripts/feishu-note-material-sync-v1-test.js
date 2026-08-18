@@ -134,13 +134,15 @@ async function assertDownloadFailureClearsFile(input) {
         : input.response
       responses.push(response)
       return response
-    })
+    }, { downloadTimeoutMs: input.downloadTimeoutMs })
     await assert.rejects(
       client.downloadTokenToFile('streamToken123', 'drive-file', {
         fileHandle,
         maxBytes: input.maxBytes
       }),
-      (error) => error && error.statusCode === input.statusCode && error.code === input.code,
+      (error) => error && error.statusCode === input.statusCode && error.code === input.code &&
+        (input.sourceDownloadAttempts === undefined ||
+          error.sourceDownloadAttempts === input.sourceDownloadAttempts),
       input.message
     )
     assert.strictEqual(requestCount, input.expectedRequests || 1, `${input.message}，请求次数必须符合重试合同`)
@@ -234,9 +236,11 @@ async function testStreamingMaterialClient() {
       'content-type': 'video/mp4'
     }),
     expectedRequests: 3,
+    downloadTimeoutMs: 10000,
     maxBytes: 10,
     statusCode: 502,
-    code: 'FEISHU_MATERIAL_LENGTH_MISMATCH',
+    code: 'FEISHU_MATERIAL_SOURCE_GET_RETRY_EXHAUSTED',
+    sourceDownloadAttempts: 3,
     message: '实际大小与 Content-Length 不符必须拒绝'
   })
   await assertDownloadFailureClearsFile({
@@ -267,7 +271,7 @@ async function testStreamingMaterialClient() {
         'content-length': fallbackBody.length,
         'content-type': 'video/quicktime'
       })
-    })
+    }, { downloadTimeoutMs: 10000 })
     const result = await fallbackClient.downloadTokenToFile('fallbackToken123', '', {
       fileHandle,
       maxBytes: 1024

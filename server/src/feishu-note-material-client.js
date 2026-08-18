@@ -14,8 +14,10 @@ const SMALL_UPLOAD_LIMIT = 20 * 1024 * 1024
 const NOTE_ROOT_FOLDER_NAME = '房源笔记导入-v1'
 const FILE_STREAM_HIGH_WATER_MARK = 64 * 1024
 const SOURCE_DOWNLOAD_MAX_REQUESTS = 3
-const SOURCE_DOWNLOAD_RETRY_DELAYS_MS = Object.freeze([200, 400])
+const SOURCE_DOWNLOAD_RETRY_DELAYS_MS = Object.freeze([1000, 3000])
+const SOURCE_DOWNLOAD_MAX_RETRY_AFTER_MS = 30 * 1000
 const SOURCE_DOWNLOAD_HTTP_STATUS = Symbol('sourceDownloadHttpStatus')
+const SOURCE_DOWNLOAD_RETRY_AFTER_MS = Symbol('sourceDownloadRetryAfterMs')
 
 function normalizeText(value) {
   return value === undefined || value === null ? '' : String(value).normalize('NFKC').trim()
@@ -199,6 +201,41 @@ function materialDownloadError(message, statusCode, code) {
   return error
 }
 
+function sourceDownloadRetryAfterMs(response) {
+  let rawValue = null
+  try {
+    rawValue = response && response.headers && typeof response.headers.get === 'function'
+      ? response.headers.get('retry-after')
+      : null
+  } catch (_) {
+    return null
+  }
+  if (rawValue === null || rawValue === undefined) return null
+  let rawText = ''
+  try {
+    rawText = String(rawValue)
+  } catch (_) {
+    return null
+  }
+  if (!rawText || rawText.length > 64 || /[\r\n\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(rawText)) {
+    return null
+  }
+  const text = rawText.replace(/^[ \t]+|[ \t]+$/g, '')
+  if (!text) return null
+
+  if (/^(?:0|[1-9][0-9]{0,9})$/.test(text)) {
+    const seconds = Number(text)
+    if (!Number.isSafeInteger(seconds) || seconds < 0) return null
+    return Math.min(seconds * 1000, SOURCE_DOWNLOAD_MAX_RETRY_AFTER_MS)
+  }
+
+  const imfFixdate = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/
+  if (!imfFixdate.test(text)) return null
+  const timestamp = Date.parse(text)
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== text) return null
+  return Math.min(Math.max(0, timestamp - Date.now()), SOURCE_DOWNLOAD_MAX_RETRY_AFTER_MS)
+}
+
 function sourceDownloadHttpError(response) {
   const status = Number(response && response.status)
   const error = materialDownloadError(
@@ -207,7 +244,30 @@ function sourceDownloadHttpError(response) {
     'FEISHU_MATERIAL_DOWNLOAD_HTTP_ERROR'
   )
   if (Number.isInteger(status) && status > 0) error[SOURCE_DOWNLOAD_HTTP_STATUS] = status
+  const retryAfterMs = sourceDownloadRetryAfterMs(response)
+  if (retryAfterMs !== null) error[SOURCE_DOWNLOAD_RETRY_AFTER_MS] = retryAfterMs
   return error
+}
+
+function sourceDownloadRetryExhaustedError(error, requestCount) {
+  const attempts = Math.max(1, Math.min(SOURCE_DOWNLOAD_MAX_REQUESTS, Number(requestCount) || 1))
+  let statusCode = 502
+  try {
+    const candidate = Number(error && error.statusCode)
+    if (candidate === 408 || candidate === 425 || candidate === 429 ||
+        (Number.isInteger(candidate) && candidate >= 500 && candidate <= 599)) {
+      statusCode = candidate
+    }
+  } catch (_) {
+    // 上游错误对象不可信；耗尽分类只保留固定文案和白名单状态。
+  }
+  const failure = materialDownloadError(
+    '下载飞书房源素材重试耗尽',
+    statusCode,
+    'FEISHU_MATERIAL_SOURCE_GET_RETRY_EXHAUSTED'
+  )
+  failure.sourceDownloadAttempts = attempts
+  return failure
 }
 
 function isRetryableSourceDownloadError(error) {
@@ -832,6 +892,7 @@ function createFeishuNoteMaterialClient(options = {}) {
     let endpointIndex = 0
     let retried404 = false
     let requestCount = 0
+    let retryDelayMs = null
     try {
       if (stopError) {
         await truncateAfterFailure(fileHandle)
@@ -840,7 +901,11 @@ function createFeishuNoteMaterialClient(options = {}) {
       while (endpointIndex < endpoints.length && requestCount < SOURCE_DOWNLOAD_MAX_REQUESTS) {
         if (stopError) throw stopError
         if (requestCount > 0) {
-          await waitForSourceDownloadRetry(SOURCE_DOWNLOAD_RETRY_DELAYS_MS[requestCount - 1], stopPromise)
+          const delayMs = Number.isSafeInteger(retryDelayMs) && retryDelayMs >= 0
+            ? retryDelayMs
+            : SOURCE_DOWNLOAD_RETRY_DELAYS_MS[requestCount - 1]
+          retryDelayMs = null
+          await waitForSourceDownloadRetry(delayMs, stopPromise)
         }
         if (stopError) throw stopError
 
@@ -910,7 +975,17 @@ function createFeishuNoteMaterialClient(options = {}) {
         }
         const retryableHttp = httpStatus === 408 || httpStatus === 425 || httpStatus === 429 ||
           (httpStatus >= 500 && httpStatus <= 599)
-        if (hasBudget && (retryableHttp || isRetryableSourceDownloadError(failure))) continue
+        const retryableFailure = retryableHttp || isRetryableSourceDownloadError(failure)
+        if (hasBudget && retryableFailure) {
+          const advisedDelayMs = failure && failure[SOURCE_DOWNLOAD_RETRY_AFTER_MS]
+          retryDelayMs = Number.isSafeInteger(advisedDelayMs) && advisedDelayMs >= 0
+            ? advisedDelayMs
+            : null
+          continue
+        }
+        if (!hasBudget && retryableFailure) {
+          throw sourceDownloadRetryExhaustedError(failure, requestCount)
+        }
         throw failure
       }
       throw new Error('下载飞书房源素材失败')

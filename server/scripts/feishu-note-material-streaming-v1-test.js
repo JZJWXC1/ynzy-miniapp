@@ -97,6 +97,9 @@ function noteDownloadResponse(chunks = [], options = {}) {
           if (key === 'content-length') return declaredLength === null ? null : String(declaredLength)
           if (key === 'content-type') return options.contentType || 'video/mp4'
           if (key === 'content-encoding') return options.contentEncoding || ''
+          if (key === 'retry-after' && Object.prototype.hasOwnProperty.call(options, 'retryAfter')) {
+            return options.retryAfter === null ? null : String(options.retryAfter)
+          }
           return ''
         }
       },
@@ -230,7 +233,166 @@ async function testDownloadTransientRetryAndReset(tempRoot) {
     '/open-apis/drive/v1/files/fileSequenceToken123/download',
     '/open-apis/drive/v1/files/fileSequenceToken123/download'
   ])
-  assert.ok(sequence.calls[1].at - sequence.calls[0].at >= 175, '首次重试必须执行固定 200ms 退避')
+  assert.ok(sequence.calls[1].at - sequence.calls[0].at >= 900, '首次重试必须执行约 1 秒冷却')
+}
+
+async function testDownloadSustainedRateLimitCooldown(tempRoot) {
+  const expected = Buffer.from('fresh-after-rate-limit-window')
+  const sequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 429 }).response,
+    noteDownloadResponse([], { status: 429 }).response,
+    noteDownloadResponse([expected]).response
+  ])
+  const client = createNoteDownloadClient(sequence, 10000)
+  await withNoteDownloadFile(tempRoot, 'sustained-rate-limit', async (fileHandle) => {
+    const result = await client.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+      fileHandle,
+      maxBytes: 1024
+    })
+    assert.strictEqual(result.size, expected.length)
+    assert.deepStrictEqual(await readExactFileBytes(fileHandle), expected)
+  })
+  assert.strictEqual(sequence.calls.length, 3, '持续限流窗口内只允许使用全局 3 次 GET 预算')
+  assert.ok(sequence.calls[1].at - sequence.calls[0].at >= 900, '第一次无 Retry-After 限流必须冷却约 1 秒')
+  assert.ok(sequence.calls[2].at - sequence.calls[1].at >= 2800, '第二次无 Retry-After 限流必须冷却约 3 秒')
+}
+
+async function testDownloadRetryAfterAndHeaderSafety(tempRoot) {
+  const expected = Buffer.from('fresh-after-retry-after')
+  const retryAfterSequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 429, retryAfter: '2' }).response,
+    noteDownloadResponse([expected]).response
+  ])
+  const retryAfterClient = createNoteDownloadClient(retryAfterSequence, 5000)
+  await withNoteDownloadFile(tempRoot, 'retry-after-seconds', async (fileHandle) => {
+    await retryAfterClient.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+      fileHandle,
+      maxBytes: 1024
+    })
+  })
+  const retryAfterGap = retryAfterSequence.calls[1].at - retryAfterSequence.calls[0].at
+  assert.ok(retryAfterGap >= 1800, `Retry-After: 2 应严格控制等待，实际 ${retryAfterGap}ms`)
+
+  const unsafeRetryAfterValues = [
+    ['negative', '-1'],
+    ['decimal', '0.1'],
+    ['multi-value', '1, 2'],
+    ['leading-control', '\r\n0'],
+    ['header-injection', '1\r\nRetry-After: 0'],
+    ['invalid-date', 'Sun, 32 Jan 2026 00:00:00 GMT'],
+    ['oversized', '9'.repeat(256)]
+  ]
+  for (const [label, retryAfter] of unsafeRetryAfterValues) {
+    const sequence = createNoteDownloadSequence([
+      noteDownloadResponse([], { status: 503, retryAfter }).response,
+      noteDownloadResponse([Buffer.from('must-not-run-before-deadline')]).response
+    ])
+    const client = createNoteDownloadClient(sequence, 400)
+    await withNoteDownloadFile(tempRoot, `retry-after-${label}`, async (fileHandle) => {
+      await assert.rejects(
+        () => client.downloadTokenToFile('fileSequenceToken123', 'drive-file', { fileHandle, maxBytes: 1024 }),
+        (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_TIMEOUT'
+      )
+    })
+    assert.strictEqual(sequence.calls.length, 1, `${label} Retry-After 不得绕过有界等待或总体 deadline`)
+    assert.strictEqual(sequence.remaining(), 1)
+  }
+
+  for (const [label, retryAfter] of [
+    ['max-boundary', '30'],
+    ['above-max', '31'],
+    ['huge-valid-seconds', '999999999']
+  ]) {
+    const abortController = new AbortController()
+    const sequence = createNoteDownloadSequence([
+      noteDownloadResponse([], { status: 503, retryAfter }).response,
+      noteDownloadResponse([Buffer.from('must-not-run-before-abort')]).response
+    ])
+    const client = createNoteDownloadClient(sequence, 5000)
+    const nativeSetTimeout = global.setTimeout
+    const scheduledDelays = []
+    global.setTimeout = function observedSetTimeout(handler, delay, ...args) {
+      scheduledDelays.push(Number(delay))
+      return nativeSetTimeout(handler, delay, ...args)
+    }
+    try {
+      const download = withNoteDownloadFile(tempRoot, `retry-after-cap-${label}`, async (fileHandle) => (
+        client.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+          fileHandle,
+          maxBytes: 1024,
+          signal: abortController.signal
+        })
+      ))
+      nativeSetTimeout(() => abortController.abort(), 30)
+      await assert.rejects(
+        () => download,
+        (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_ABORTED'
+      )
+    } finally {
+      global.setTimeout = nativeSetTimeout
+    }
+    assert.deepStrictEqual(
+      scheduledDelays.filter((delay) => delay !== 5000),
+      [30000],
+      `${label} Retry-After 必须精确封顶 30 秒`
+    )
+    assert.strictEqual(sequence.calls.length, 1)
+    assert.strictEqual(sequence.remaining(), 1)
+  }
+}
+
+async function testDownloadAbortDuringRetryWait(tempRoot) {
+  const abortController = new AbortController()
+  const sequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 503, retryAfter: '10' }).response,
+    noteDownloadResponse([Buffer.from('must-not-run-after-abort')]).response
+  ])
+  const client = createNoteDownloadClient(sequence, 5000)
+  const startedAt = Date.now()
+  await withNoteDownloadFile(tempRoot, 'abort-during-retry-wait', async (fileHandle) => {
+    const download = client.downloadTokenToFile('fileSequenceToken123', 'drive-file', {
+      fileHandle,
+      maxBytes: 1024,
+      signal: abortController.signal
+    })
+    setTimeout(() => abortController.abort(), 30)
+    await assert.rejects(
+      () => download,
+      (error) => error && error.code === 'FEISHU_MATERIAL_DOWNLOAD_ABORTED'
+    )
+  })
+  assert.strictEqual(sequence.calls.length, 1, '重试冷却期间外部取消不得再发第二次 GET')
+  assert.strictEqual(sequence.remaining(), 1)
+  assert.ok(Date.now() - startedAt < 1500, '外部取消不得等待 Retry-After 或默认冷却结束')
+}
+
+async function testDownloadRetryExhaustedSafeBoundary(tempRoot) {
+  const upstreamError = noteDownloadError(
+    'ECONNRESET',
+    'synthetic fetch failed for https://tenant.example/download/privateToken123456789'
+  )
+  Object.freeze(upstreamError)
+  const sequence = createNoteDownloadSequence([
+    noteDownloadResponse([], { status: 503, retryAfter: '0' }).response,
+    noteDownloadResponse([], { status: 503, retryAfter: '0' }).response,
+    { throwValue: upstreamError }
+  ])
+  const client = createNoteDownloadClient(sequence)
+  await withNoteDownloadFile(tempRoot, 'retry-exhausted-safe-boundary', async (fileHandle) => {
+    await assert.rejects(
+      () => client.downloadTokenToFile('fileSequenceToken123', 'drive-file', { fileHandle, maxBytes: 1024 }),
+      (error) => error && error !== upstreamError &&
+        error.statusCode === 502 &&
+        error.code === 'FEISHU_MATERIAL_SOURCE_GET_RETRY_EXHAUSTED' &&
+        error.sourceDownloadAttempts === 3 &&
+        error.message === '下载飞书房源素材重试耗尽' &&
+        !error.message.includes('privateToken'),
+      '重试耗尽必须形成全新固定安全错误，不得改写或透传上游错误'
+    )
+    assert.strictEqual((await fileHandle.stat()).size, 0)
+  })
+  assert.strictEqual(sequence.calls.length, 3)
+  assert.strictEqual(sequence.remaining(), 0)
 }
 
 async function testDownloadRetryableClosedSet(tempRoot) {
@@ -283,7 +445,7 @@ async function testDownloadGlobalBudgetAndFallback(tempRoot) {
     noteDownloadResponse([], { status: 404 }).response,
     noteDownloadResponse([fallbackBytes]).response
   ])
-  const fallbackClient = createNoteDownloadClient(fallbackSequence)
+  const fallbackClient = createNoteDownloadClient(fallbackSequence, 10000)
   await withNoteDownloadFile(tempRoot, 'fallback-budget', async (fileHandle) => {
     const result = await fallbackClient.downloadTokenToFile('fileSequenceToken123', '', {
       fileHandle,
@@ -294,8 +456,8 @@ async function testDownloadGlobalBudgetAndFallback(tempRoot) {
   })
   assertNoteDownloadCalls(fallbackSequence.calls, [mediaPath, mediaPath, filePath])
   assert.strictEqual(fallbackSequence.remaining(), 0, '404 同端点重读与 fallback 必须共用总计 3 次预算')
-  assert.ok(fallbackSequence.calls[1].at - fallbackSequence.calls[0].at >= 175)
-  assert.ok(fallbackSequence.calls[2].at - fallbackSequence.calls[1].at >= 375)
+  assert.ok(fallbackSequence.calls[1].at - fallbackSequence.calls[0].at >= 900)
+  assert.ok(fallbackSequence.calls[2].at - fallbackSequence.calls[1].at >= 2800)
 
   const directFallbackSequence = createNoteDownloadSequence([
     noteDownloadResponse([], { status: 400 }).response,
@@ -312,11 +474,13 @@ async function testDownloadGlobalBudgetAndFallback(tempRoot) {
 
   const exhaustedResponses = Array.from({ length: 3 }, () => noteDownloadResponse([], { status: 503 }))
   const exhaustedSequence = createNoteDownloadSequence(exhaustedResponses.map((entry) => entry.response))
-  const exhaustedClient = createNoteDownloadClient(exhaustedSequence)
+  const exhaustedClient = createNoteDownloadClient(exhaustedSequence, 10000)
   await withNoteDownloadFile(tempRoot, 'exhausted-budget', async (fileHandle) => {
     await assert.rejects(
       () => exhaustedClient.downloadTokenToFile('fileSequenceToken123', '', { fileHandle, maxBytes: 1024 }),
-      (error) => error && error.statusCode === 503,
+      (error) => error && error.statusCode === 503 &&
+        error.code === 'FEISHU_MATERIAL_SOURCE_GET_RETRY_EXHAUSTED' &&
+        error.sourceDownloadAttempts === 3,
       '临时 HTTP 失败耗尽 3 次后必须返回最后错误'
     )
     assert.strictEqual((await fileHandle.stat()).size, 0)
@@ -343,10 +507,10 @@ async function testDownloadGlobalBudgetAndFallback(tempRoot) {
 
 async function testDownloadPermanentFailuresAndAbort(tempRoot) {
   const permanentCases = [
-    ['http-401', noteDownloadResponse([], { status: 401 }).response],
+    ['http-401', noteDownloadResponse([], { status: 401, retryAfter: '0' }).response],
     ['http-403', noteDownloadResponse([], { status: 403 }).response],
     ['http-409', noteDownloadResponse([], { status: 409 }).response],
-    ['http-413', noteDownloadResponse([], { status: 413 }).response],
+    ['http-413', noteDownloadResponse([], { status: 413, retryAfter: '0' }).response],
     ['http-416', noteDownloadResponse([], { status: 416 }).response],
     ['http-422', noteDownloadResponse([], { status: 422 }).response],
     ['undici-aborted', { throwValue: noteDownloadError('UND_ERR_ABORTED') }],
@@ -493,13 +657,17 @@ async function testDownloadSharedDeadline(tempRoot) {
     )
   })
   const elapsed = Date.now() - startedAt
-  assert.strictEqual(sequence.calls.length, 2, '第二次挂起不得刷新总体 deadline 或发出第三次请求')
-  assert.strictEqual(sequence.remaining(), 1)
+  assert.strictEqual(sequence.calls.length, 1, '重试冷却也必须共用原始 deadline，不得先发第二次请求')
+  assert.strictEqual(sequence.remaining(), 2)
   assert.ok(elapsed >= 300 && elapsed < 700, `总体 deadline 应接近原始 350ms，实际 ${elapsed}ms`)
 }
 
 async function testDownloadRetryContract(tempRoot) {
+  await testDownloadRetryExhaustedSafeBoundary(tempRoot)
   await testDownloadTransientRetryAndReset(tempRoot)
+  await testDownloadSustainedRateLimitCooldown(tempRoot)
+  await testDownloadRetryAfterAndHeaderSafety(tempRoot)
+  await testDownloadAbortDuringRetryWait(tempRoot)
   await testDownloadRetryableClosedSet(tempRoot)
   await testDownloadGlobalBudgetAndFallback(tempRoot)
   await testDownloadPermanentFailuresAndAbort(tempRoot)
