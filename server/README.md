@@ -600,7 +600,7 @@ recover 或执行的 pristine queued 记录时，重复入口才会原样返回�
 状态查询。新任务使用全新 runId/nowMs，但生命周期稳定事件身份不得随批次变化；完整成功并完成五端回读前，
 自动同步仍须关闭。
 
-如果最新 UNKNOWN 的外部写入结果无法逐项确认，而员工源或目标表在事故后又已正常变化，旧 `mirrorPlanSha256` 既不能逐字还原，也不得人工改成成功。此时先保持自动同步关闭，创建一条**晚于该 UNKNOWN** 的全新人工预演，以当前五表和素材现状作为新的权威基线。新版预演除 schema/resource/mirror/content 外，还持久化 `semanticMirrorPlanSha256`、`componentEvidenceSha256` 和只含摘要/数量的分项证据，覆盖 source/location/mini/rented/history 五表、main/archive/history 三类操作、基线标记、旧素材清单和首页十列表。镜像组合层只在该证据满足精确键集合、规范角色顺序、非负安全计数、合法 SHA-256 且整体摘要自洽时成对透传；记录正文、额外字段、坏摘要或来自 inventory/snapshot/commit 等错误阶段的注入全部省略，worker 仍会二次校验。
+如果最新 UNKNOWN 的外部写入结果无法逐项确认，而员工源或目标表在事故后又已正常变化，旧 `mirrorPlanSha256` 既不能逐字还原，也不得人工改成成功。根级人工 UNKNOWN 可以是旧通用 `UNKNOWN_ERROR`，也可以是 apply 已派发、但最终结果既非完整成功也非受控素材告警时由 worker 自身产生的 `APPLY_RESULT_NOT_COMPLETE`；后者仍必须满足相同的 version3、首写意图、attempt/recovery、摘要、无 result/apply/commit marker 与零 continuation 血缘门，其他错误码或任何额外结果证据继续拒绝。此时先保持自动同步关闭，创建一条**晚于该 UNKNOWN** 的全新人工预演，以当前五表和素材现状作为新的权威基线。新版预演除 schema/resource/mirror/content 外，还持久化 `semanticMirrorPlanSha256`、`componentEvidenceSha256` 和只含摘要/数量的分项证据，覆盖 source/location/mini/rented/history 五表、main/archive/history 三类操作、基线标记、旧素材清单和首页十列表。镜像组合层只在该证据满足精确键集合、规范角色顺序、非负安全计数、合法 SHA-256 且整体摘要自洽时成对透传；记录正文、额外字段、坏摘要或来自 inventory/snapshot/commit 等错误阶段的注入全部省略，worker 仍会二次校验。
 
 `semanticMirrorPlanSha256` 只用于**跨运行**判断当前业务计划是否仍等价：它保留五表快照、schema/resource、素材、首页快照和全部非派生字段，只归一由冻结 `runNowMs` 推导的 `lifecycleDays`，并把“除 lifecycleDays 外与当前记录完全相同”的纯生命周期 update 视为 noop。create/restore/deactivate/markRented、记录身份不明或任何其他字段变化都继续改变语义摘要并在写前阻断。完整 `mirrorPlanSha256 + componentEvidenceSha256` 不做归一，仍用于**同一次运行**的内部 dry、临写冻结、首写门、apply 结果和提交门逐字绑定；冻结后或首写后的持久证据被替换，即使新证据自身合法，也分别终结为 `failed-before-write` 或 `UNKNOWN`，不能与实际 apply 脱钩。
 

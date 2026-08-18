@@ -219,6 +219,57 @@ function seedState(nowMs, evidence) {
   }
 }
 
+function applyResultNotCompleteRootCanUseCurrentConvergence() {
+  const nowMs = 1_900_000_000_000
+  const evidence = buildComponentEvidence()
+  const seeded = seedState(nowMs, evidence)
+  seeded.blocked.errorCode = 'APPLY_RESULT_NOT_COMPLETE'
+
+  const build = (mutate) => {
+    const db = clone(seeded.db)
+    const blocked = db.feishuSyncRuns.find((run) => run.runId === seeded.blockedRunId)
+    blocked.errorCode = 'APPLY_RESULT_NOT_COMPLETE'
+    if (typeof mutate === 'function') mutate(db, blocked)
+    return makeWorker({
+      seed: db,
+      nowMs,
+      evidence,
+      sync: async () => { throw new Error('创建阶段不得执行同步') }
+    }).worker
+  }
+
+  const created = build().createCurrentConvergence(
+    seeded.blockedRunId,
+    seeded.baselineDryRunId
+  )
+  assert.strictEqual(created.state, STATES.QUEUED)
+  assert.strictEqual(created.convergenceContract, 'feishu-current-state-convergence-v2')
+
+  const unsafeMutations = [
+    (_db, blocked) => { blocked.errorCode = 'SOME_OTHER_UNKNOWN' },
+    (_db, blocked) => { blocked.resultSummary = {} },
+    (_db, blocked) => { blocked.applyResultSummary = {} },
+    (db, blocked) => { db.feishuSyncCommitMarkers[blocked.runId] = { tampered: true } },
+    (_db, blocked) => { blocked.continuationOfRunId = 'feishu-sync-parent-unknown-01' },
+    (db) => {
+      db.feishuSyncRuns.push({
+        ...exactUnknown('feishu-sync-other-unknown-01', nowMs),
+        updatedAt: nowMs - 20_000,
+        finishedAt: nowMs - 20_000
+      })
+    }
+  ]
+  unsafeMutations.forEach((mutate) => {
+    assert.throws(
+      () => build(mutate).createCurrentConvergence(
+        seeded.blockedRunId,
+        seeded.baselineDryRunId
+      ),
+      (error) => error && error.code === 'CURRENT_CONVERGENCE_FAILED'
+    )
+  })
+}
+
 function dryResult(evidence, patch = {}) {
   return {
     success: true,
@@ -1871,6 +1922,7 @@ async function cliCreatesButNeverRunsTheConvergence() {
 }
 
 async function main() {
+  applyResultNotCompleteRootCanUseCurrentConvergence()
   await successPathIsExactlyOnce()
   await driftFailsBeforeWriteAndPreservesOldBarrier()
   await materialWarningInInternalDryFailsBeforeWrite()

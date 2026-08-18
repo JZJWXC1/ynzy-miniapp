@@ -438,6 +438,14 @@ function exactPartialUnknownCore(run, commitMarker) {
   return true
 }
 
+function exactCurrentConvergenceUnknownCore(run, commitMarker) {
+  if (exactPartialUnknownCore(run, commitMarker)) return true
+  if (!run || run.errorCode !== 'APPLY_RESULT_NOT_COMPLETE') return false
+  if (['continuationOfRunId', 'sourceUnknownRunSha256', 'reconciliationEvidenceSha256']
+    .some((key) => Object.prototype.hasOwnProperty.call(run, key))) return false
+  return exactPartialUnknownCore({ ...run, errorCode: 'UNKNOWN_ERROR' }, commitMarker)
+}
+
 function validateUnknownContinuationLineage(db, unknownRun) {
   const runs = Array.isArray(db.feishuSyncRuns) ? db.feishuSyncRuns : []
   const commitMarkers = db.feishuSyncCommitMarkers || {}
@@ -2380,7 +2388,7 @@ function createFeishuSyncWorker(dependencies = {}) {
     )
     const exact = blocked &&
       db.feishuSyncRuns.filter((run) => run && run.runId === runId).length === 1 &&
-      exactPartialUnknownCore(
+      exactCurrentConvergenceUnknownCore(
         blocked,
         db.feishuSyncCommitMarkers && db.feishuSyncCommitMarkers[runId]
       ) && db.feishuSyncScheduler.blockedRunId === runId && activeLeaseAllowed &&
@@ -2392,10 +2400,12 @@ function createFeishuSyncWorker(dependencies = {}) {
         )
       ))
     if (!exact) throw currentConvergenceFailure()
-    try {
-      validateUnknownContinuationLineage(db, blocked)
-    } catch (error) {
-      throw currentConvergenceFailure()
+    if (blocked.errorCode === 'UNKNOWN_ERROR') {
+      try {
+        validateUnknownContinuationLineage(db, blocked)
+      } catch (error) {
+        throw currentConvergenceFailure()
+      }
     }
     return blocked
   }
