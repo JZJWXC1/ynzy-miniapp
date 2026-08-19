@@ -4,6 +4,7 @@ const {
   isReliableCoordinateSource,
   normalizeCommunityName
 } = require('./community-coordinates')
+const config = require('./config')
 
 const DEFAULT_RADIUS_KM = 3
 const SERVICE_AREAS = ['拱墅', '余杭', '上城']
@@ -73,6 +74,36 @@ function entriesFromObjectMap(source = {}, type) {
   }).filter(Boolean)
 }
 
+function entriesFromConfiguredBlockCenters() {
+  const location = (config && config.location) || {}
+  const blockCenters = location.blockCenters || {}
+  const blockDistrictMap = location.blockDistrictMap || {}
+  return Object.keys(blockCenters).map((name) => {
+    const center = blockCenters[name] || {}
+    return entryFromRawPlace({
+      name,
+      type: 'block',
+      area: blockDistrictMap[name] || '',
+      latitude: center.latitude,
+      longitude: center.longitude,
+      source: `block-center:${name}`,
+      coordinateVerified: true
+    })
+  }).filter(Boolean)
+}
+
+// 板块中心兜底（与 domain.blockCenterForListing 同口径；本地实现避免 place-locator↔domain 循环依赖）：
+// 小区坐标库覆盖不到时，用房源所在板块的中心近似坐标，让库外小区房源不被半径检索静默过滤（漏推）。
+function blockCenterCoordinate(listing = {}) {
+  const centers = (config.location && config.location.blockCenters) || {}
+  const block = String(listing.block || '').trim()
+  if (block && centers[block]) return { ...centers[block], block }
+  const text = [listing.block, listing.community, listing.address, listing.locationSummary]
+    .map((value) => String(value || '')).join('')
+  const matched = Object.keys(centers).find((item) => item && text.indexOf(item) !== -1)
+  return matched ? { ...centers[matched], block: matched } : null
+}
+
 function listingCoordinate(listing = {}) {
   const direct = reliableCoordinate(
     listing.mapLatitude || listing.latitude,
@@ -82,13 +113,43 @@ function listingCoordinate(listing = {}) {
   )
   if (direct) return direct
 
-  const byCommunity = coordinateByCommunity(listing.community)
-  if (!byCommunity) return null
-  return {
-    latitude: byCommunity.latitude,
-    longitude: byCommunity.longitude,
-    source: byCommunity.source
+  // match-service 只会把领域层已降精度的合作房源坐标标成 domain-v1；该标记不来自客户端表单，
+  // 允许库外小区继续参与 3 公里召回，同时距离只能指向公开约一公里粒度点。
+  if (listing.publicMapCoordinateProjection === 'domain-v1') {
+    const latitude = numberFrom(listing.mapLatitude || listing.latitude)
+    const longitude = numberFrom(listing.mapLongitude || listing.longitude)
+    const level = String(listing.coordinateLevel || '')
+    if (latitude && longitude && ['approximate', 'block-center'].includes(level) && listing.coordinateVerified === false) {
+      return {
+        latitude,
+        longitude,
+        source: listing.coordinateSource || 'guest-community-approximate',
+        level
+      }
+    }
   }
+
+  const byCommunity = coordinateByCommunity(listing.community)
+  if (byCommunity) {
+    return {
+      latitude: byCommunity.latitude,
+      longitude: byCommunity.longitude,
+      source: byCommunity.source
+    }
+  }
+
+  // MODEL-2 兜底：库外小区用板块中心近似坐标（level=block-center，不冒充精确点位）。
+  const blockCenter = blockCenterCoordinate(listing)
+  if (blockCenter && Number.isFinite(Number(blockCenter.latitude)) && Number.isFinite(Number(blockCenter.longitude))) {
+    return {
+      latitude: Number(blockCenter.latitude),
+      longitude: Number(blockCenter.longitude),
+      source: `block-center:${blockCenter.block}`,
+      level: 'block-center',
+      coordinateVerified: false
+    }
+  }
+  return null
 }
 
 function entriesFromListings(listings = []) {
@@ -106,7 +167,10 @@ function entriesFromListings(listings = []) {
       type: 'community',
       latitude: coordinate.latitude,
       longitude: coordinate.longitude,
-      source: coordinate.source
+      source: coordinate.source,
+      // 该点只用于让房源参与半径计算；同名地点已有配置锚点时，不应把降精度房源点
+      // 再当成第二个地点制造“歧义”，否则首次合法找房会被错误拦截。
+      derivedFromListing: true
     })
   })
   return Array.from(byCommunity.values())
@@ -118,6 +182,7 @@ function placeEntries(db = {}, listings = []) {
     .concat(entriesFromObjectMap(db.poiCoordinates || {}, 'poi'))
     .concat((db.places || db.pois || []).map(entryFromRawPlace).filter(Boolean))
     .concat(entriesFromObjectMap(communityCoordinates, 'community'))
+    .concat(entriesFromConfiguredBlockCenters())
     .concat(entriesFromListings(listings))
 }
 
@@ -146,6 +211,36 @@ function entryMatches(entry, query) {
   })
 }
 
+function isBlockCenterEntry(entry = {}) {
+  return /^block-center:/i.test(String(entry.source || ''))
+}
+
+function sameCoordinate(left = {}, right = {}) {
+  return numberFrom(left.latitude).toFixed(6) === numberFrom(right.latitude).toFixed(6) &&
+    numberFrom(left.longitude).toFixed(6) === numberFrom(right.longitude).toFixed(6)
+}
+
+function dropDuplicateBlockCenterEntries(entries = []) {
+  return entries.filter((entry) => {
+    if (!isBlockCenterEntry(entry)) return true
+    return !entries.some((other) => other !== entry && !isBlockCenterEntry(other) && sameCoordinate(entry, other))
+  })
+}
+
+function normalizeEntryArea(value) {
+  return String(value || '').trim().replace(/区$/, '')
+}
+
+function dropShadowedListingEntries(entries = []) {
+  return entries.filter((entry) => {
+    if (entry.derivedFromListing !== true) return true
+    const name = normalizePlaceName(entry.name)
+    const area = normalizeEntryArea(entry.area)
+    return !entries.some((other) => other !== entry && other.derivedFromListing !== true &&
+      normalizePlaceName(other.name) === name && normalizeEntryArea(other.area) === area)
+  })
+}
+
 function resolvePlace(db = {}, query = '', listings = []) {
   const text = normalizePlaceName(query)
   if (!text) {
@@ -158,7 +253,9 @@ function resolvePlace(db = {}, query = '', listings = []) {
 
   const matched = placeEntries(db, listings).filter((entry) => entryMatches(entry, text))
   const exact = matched.filter((entry) => entryNames(entry).some((name) => normalizePlaceName(name) === text))
-  const candidates = exact.length ? exact : matched
+  const candidates = dropShadowedListingEntries(
+    dropDuplicateBlockCenterEntries(exact.length ? exact : matched)
+  )
   const deduped = []
   const seen = new Set()
   candidates.forEach((entry) => {

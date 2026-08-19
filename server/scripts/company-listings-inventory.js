@@ -1,33 +1,12 @@
 const fs = require('fs')
 const path = require('path')
 const config = require('../src/config')
+const domain = require('../src/domain')
 
 const COMPANY_SOURCE = '公司房源'
 const OUTPUT_FILE = path.resolve(config.rootDir, '..', 'docs', 'company-listings-inventory.md')
 
-function truthyFlag(value) {
-  return value === true ||
-    value === 1 ||
-    ['true', '1', 'yes', 'y', '是', COMPANY_SOURCE].indexOf(String(value || '').trim().toLowerCase()) !== -1
-}
-
-function isCompanyListing(listing = {}) {
-  const sourceText = [
-    listing.source,
-    listing.sourceType,
-    listing.listingType,
-    listing.inventoryType,
-    listing.sourceLabel,
-    listing.ownerType
-  ].map((item) => String(item || '')).join(' ')
-  return Boolean(
-    listing.companyListing ||
-    listing.isCompanyListing ||
-    truthyFlag(listing.companyOwned) ||
-    sourceText.indexOf(COMPANY_SOURCE) !== -1 ||
-    /company/i.test(sourceText)
-  )
-}
+const isCompanyListing = domain.isCompanyListing
 
 function readDb() {
   if (!fs.existsSync(config.dataFile)) {
@@ -170,4 +149,9 @@ function main() {
   console.log(`company listings: ${companyListings.length}/${listings.length}`)
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = {
+  isCompanyListing,
+  buildMarkdown
+}

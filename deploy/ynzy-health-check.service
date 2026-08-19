@@ -1,0 +1,11 @@
+[Unit]
+Description=Ynzy Miniapp 健康巡检 (稳定层#5)
+After=network.target ynzy-miniapp.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ynzy-miniapp/server
+# 可选：复用备份环境文件里的 BACKUP_STAGE_DIR / HEALTH_ALERT_CMD 等（不存在则忽略）
+EnvironmentFile=-/etc/default/ynzy-backup
+Environment=PORT=3101
+ExecStart=/usr/bin/env node scripts/health-check.js

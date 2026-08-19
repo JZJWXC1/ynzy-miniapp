@@ -1,5 +1,11 @@
 const assert = require('assert')
+process.env.COMPANY_CONTACT_PHONES = process.env.COMPANY_CONTACT_PHONES || '19900000001,19900000002,19900000003'
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 显式演练暂停功能的可恢复历史成交链。
+
 const domain = require('../src/domain')
+const feishuSync = require('../src/feishu-sync')
+const locationMap = require('../src/location-map')
+const backfillDistricts = require('./backfill-listing-districts')
 const {
   NO_FEATURE,
   LISTING_FEATURE_OPTIONS,
@@ -92,13 +98,6 @@ function assertNoPublicSensitiveFields(row, context) {
   assert.ok(text.indexOf('13900000001') === -1, `${context} 不能返回上传人电话`)
 }
 
-function assertCompanySheetPublicFields(row, context) {
-  assert.ok(Object.prototype.hasOwnProperty.call(row, 'roomNumber'), `${context} 应返回公司房号字段`)
-  assert.ok(Object.prototype.hasOwnProperty.call(row, 'roomAddress'), `${context} 应返回公司房号地址字段`)
-  assert.ok(Object.prototype.hasOwnProperty.call(row, 'viewingPassword'), `${context} 应返回看房密码字段`)
-  assert.ok(Object.prototype.hasOwnProperty.call(row, 'remark'), `${context} 应返回备注字段`)
-}
-
 function run() {
   const db = createDb()
 
@@ -127,12 +126,42 @@ function run() {
   const companyNoVideoDetail = domain.listingDetail(db, companyNoVideo.id)
   assert.ok(companyNoVideoDetail, '公司房源无视频也应可打开前台详情')
   assert.strictEqual(companyNoVideoDetail.noCommission, true, '公司房源详情必须展示无分佣')
+  assert.ok(!Object.prototype.hasOwnProperty.call(companyNoVideoDetail, 'commissionText'), '详情必须移除旧佣金黄条字段')
+  assert.deepStrictEqual(companyNoVideoDetail.commissionBreakdown, {
+    landlordPercentOfRent: 50,
+    viewingAgentPercentOfRent: 50,
+    maintainerPercentOfRent: 0,
+    platformPercentOfRent: 0,
+    split: { viewingAgentRate: 100, maintainerRate: 0, platformRate: 0 }
+  }, '公司房源详情必须展示带看人取得全部房东佣金的服务端拆分')
   assert.strictEqual(companyNoVideoDetail.videoUrl, '', '公司房源无视频时详情不能伪造视频')
+  assert.strictEqual(companyNoVideoDetail.sensitiveLocked, false, '公司房源详情地址电话必须直接公开')
+  assert.deepStrictEqual(
+    companyNoVideoDetail.companyContactPhones,
+    ['19900000001', '19900000002', '19900000003'],
+    '公司房源详情必须保留三个合法服务端配置电话'
+  )
+  assert.strictEqual(companyNoVideoDetail.companyContactPhoneText, '19900000001', '旧客户端兼容文本只使用首个统一号码')
+  assert.strictEqual(companyNoVideoDetail.landlordPhone, '19900000001', '旧客户端兼容拨号字段必须使用首个统一号码')
+  const companyNoVideoRaw = db.listings.find((item) => item.id === companyNoVideo.id)
+  companyNoVideoRaw.missingVideoMaterial = true
+  companyNoVideoRaw.videoMaterialStatus = '缺视频素材'
+  companyNoVideoRaw.mapLatitude = 30.281
+  companyNoVideoRaw.mapLongitude = 120.217
+  companyNoVideoRaw.coordinateSource = 'admin-verified-coordinate'
+  companyNoVideoRaw.coordinateVerified = true
+  companyNoVideoRaw.lastVerifiedAt = daysAgo(1)
+  assert.ok(domain.adminListings(db, { missingVideoMaterial: 'missing' }).some((item) => item.id === companyNoVideo.id), '后台必须支持缺视频素材筛选')
+  assert.ok(!domain.adminListings(db, { missingVideoMaterial: 'ready' }).some((item) => item.id === companyNoVideo.id), '缺视频素材房源不能进入已配视频筛选')
+  const companyNoVideoPin = domain.mapPins(db).find((item) => (item.activeListingIds || []).indexOf(companyNoVideo.id) !== -1)
+  assert.ok(companyNoVideoPin, '地图必须纳入无视频公司房源')
+  assert.strictEqual(companyNoVideoPin.listingCount, 1, '无视频公司房源必须计入地图套数')
+  assert.strictEqual(companyNoVideoPin.listings[0].hasVideo, false, '无视频公司房源地图侧边卡不应显示视频标签')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const createdRaw = db.listings.find((item) => item.id === created.id)
   assert.strictEqual(createdRaw.uploaderId, 'U1', '房源上传人必须来自服务端当前用户')
-  assert.strictEqual(createdRaw.commissionRate, 15, '客户端 commissionRate 不能覆盖二房东固定 15%')
+  assert.strictEqual(createdRaw.commissionRate, 20, '客户端 commissionRate 不能覆盖服务端二房东上传比例（现 20%）')
   assert.strictEqual(createdRaw.videoKey, 'house-videos/backend-contract/test.mp4', '只有 videoKey 也应视为有真实视频')
   assert.strictEqual(createdRaw.coordinateSource, 'pending-map-coordinate', '无可靠小区坐标时不能写入默认地图坐标')
   assert.ok(LISTING_FEATURE_OPTIONS.indexOf('带露台（阁楼）') !== -1, '上传特点必须允许选择带露台（阁楼）')
@@ -175,6 +204,10 @@ function run() {
     videoKey: ''
   }), { admin: true })
   markSyncedCompanyListing(dongxinyuanListing)
+  // 领域测试 ID 由毫秒时间与短随机数组成；两个筛选夹具若极低概率同毫秒同随机数，
+  // 会让“按 id 判断两室是否混入三室以上”的断言随机误报。跨一个时钟刻度固定夹具身份。
+  const fixtureCreatedAt = Date.now()
+  while (Date.now() === fixtureCreatedAt) {}
   const fourRoomListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     district: '拱墅区',
     area: '拱墅区',
@@ -201,6 +234,52 @@ function run() {
   }).some((item) => item.id === dongxinyuanListing.id), '前台列表应支持拱墅区+东新园+两室+3000-5000 组合筛选')
   assert.ok(domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === fourRoomListing.id), '三室以上应包含四室及更多户型')
   assert.ok(!domain.filterListings(db, { layout: '三室以上' }).some((item) => item.id === dongxinyuanListing.id), '三室以上不应包含两室')
+  ;['小洋坝家园一区', '小洋坝家园二区', '小洋坝家园三区', '大华海派风景', '风雅乐府', '瑷颐湾'].forEach((community) => {
+    assert.strictEqual(locationMap.districtForLocation({
+      community,
+      block: '祥符'
+    }), '余杭区', `${community} 小区级行政区覆盖必须优先于板块映射`)
+    assert.strictEqual(locationMap.blockForLocation({
+      community,
+      block: '祥符'
+    }), '城北万象城', `${community} 小区级板块覆盖必须固定为城北万象城`)
+  })
+  assert.strictEqual(locationMap.districtForLocation({
+    community: '普通万达小区',
+    block: '万达'
+  }), '拱墅区', '未配置小区覆盖时应继续按板块映射')
+  const yuhangSyncedRow = feishuSync.normalizeRecord({
+    fields: {
+      小区: '风雅乐府',
+      板块: '祥符',
+      房号: '1-1-101',
+      户型描述: '两室一厅一卫',
+      租金: '4200'
+    }
+  }, 0)
+  assert.strictEqual(yuhangSyncedRow.area, '余杭区', '飞书同步应按小区覆盖写入余杭区')
+  assert.strictEqual(yuhangSyncedRow.block, '城北万象城', '飞书同步应按小区覆盖写入城北万象城板块')
+  const backfillDb = {
+    listings: [
+      { id: 'YH1', community: '小洋坝家园一区', block: '祥符', district: '拱墅区', area: '拱墅区', companyListing: true },
+      { id: 'GS1', community: '普通万达小区', block: '万达', district: '', area: '', companyListing: true },
+      { id: 'SC1', community: '闸弄口小区', block: '闸弄口', district: '', area: '', companyListing: true }
+    ]
+  }
+  const backfillResult = backfillDistricts.backfill(backfillDb)
+  assert.strictEqual(backfillDb.listings[0].district, '余杭区', '回填应把小区覆盖房源改为余杭区')
+  assert.strictEqual(backfillDb.listings[0].area, '余杭区', '回填应同步更新 area')
+  assert.strictEqual(backfillDb.listings[0].block, '城北万象城', '回填应把小区覆盖房源改为城北万象城板块')
+  assert.deepStrictEqual(backfillResult.distribution, { '余杭区': 1, '拱墅区': 1, '上城区': 1 }, '回填分布应覆盖三区')
+  assert.strictEqual(backfillDistricts.inferDistrict({
+    community: '未收录测试小区',
+    block: '未收录测试板块',
+    district: '',
+    area: '',
+    source: '业主房源',
+    companyListing: 'false',
+    isCompanyListing: '0'
+  }), '待分区', '区域回填不得把公司字符串假值当真并套用公司区域兜底')
 
   const adminSecondLandlordListing = domain.addNormalListing(db, 'ADMIN', listingPayload({
     communityName: '半山家苑',
@@ -218,7 +297,7 @@ function run() {
   assert.strictEqual(adminSecondLandlordRaw.uploaderId, 'ADMIN', '管理员上传二房东房源时上传人必须来自服务端当前管理员')
   assert.strictEqual(adminSecondLandlordRaw.ownerType, '二房东房源', '管理员必须允许上传二房东房源')
   assert.strictEqual(adminSecondLandlordRaw.companyListing, false, '管理员上传二房东房源不能被强制标记为公司房源')
-  assert.strictEqual(adminSecondLandlordRaw.commissionRate, 15, '管理员上传二房东房源仍按二房东类型记录上传人到手比例')
+  assert.strictEqual(adminSecondLandlordRaw.commissionRate, 20, '管理员上传二房东房源仍按二房东类型记录上传人到手比例（现 20%）')
 
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
   assert.ok(domain.filterListings(db, { rentMode: '整租' }).some((item) => item.id === created.id), '前台列表应支持整租筛选')
@@ -239,13 +318,28 @@ function run() {
     address: '杭州上城区京漾东韵府1幢1单元101室',
     videoKey: 'house-videos/backend-contract/map-real.mp4'
   }))
-  const mapPins = domain.mapPins(db)
+  const mapPins = domain.mapPins(db, { sourceType: '二房东房源' })
   const realPin = mapPins.find((item) => item.community === '京漾东韵府')
   assert.ok(realPin, '地图必须展示可靠小区坐标')
-  assert.strictEqual(realPin.coordinateVerified, true, '地图点必须是已确认坐标')
+  assert.strictEqual(realPin.coordinateVerified, false, '合作房源公共地图只能标记小区近似位置')
+  assert.strictEqual(realPin.coordinateLevel, 'approximate', '合作房源公共地图不能把内部可靠坐标作为逐套精确点下发')
   assert.ok(realPin.listingCount >= 1, '地图点应按小区聚合房源')
   assertNoPublicSensitiveFields(realPin, '地图小区点')
   ;(realPin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '地图房源摘要'))
+  domain.updateListingCoordinate(db, 'U1', reliableMapListing.id, { latitude: 31.111, longitude: 121.222 })
+  const correctedRaw = db.listings.find((item) => item.id === reliableMapListing.id)
+  assert.strictEqual(correctedRaw.mapLatitude, 31.111, '后台人工修正纬度必须优先写入内部房源记录')
+  assert.strictEqual(correctedRaw.mapLongitude, 121.222, '后台人工修正经度必须优先写入内部房源记录')
+  assert.strictEqual(correctedRaw.coordinateSource, 'admin-verified-coordinate', '后台人工修正坐标必须保留内部可信来源')
+  const correctedAdminRow = domain.adminListings(db).find((item) => item.id === reliableMapListing.id)
+  assert.strictEqual(correctedAdminRow.mapLatitude, 31.111, '后台管理读路径必须看到人工修正纬度')
+  assert.strictEqual(correctedAdminRow.mapLongitude, 121.222, '后台管理读路径必须看到人工修正经度')
+  const correctedPin = domain.mapPins(db, { sourceType: '二房东房源' }).find((item) => item.community === '京漾东韵府')
+  assert.notStrictEqual(correctedPin.latitude, 31.111, '合作房源公共地图不得下发逐套人工修正纬度')
+  assert.notStrictEqual(correctedPin.longitude, 121.222, '合作房源公共地图不得下发逐套人工修正经度')
+  assert.strictEqual(correctedPin.coordinateVerified, false, '合作房源公共地图不得把人工修正坐标标为逐套精确')
+  assert.strictEqual(correctedPin.coordinateLevel, 'approximate', '合作房源人工坐标对外必须降为小区近似位置')
+  assert.notStrictEqual(correctedPin.coordinateSource, 'admin-verified-coordinate', '合作房源公共地图不得泄露内部人工修正来源')
 
   db.companySheetSnapshot = {
     rows: [
@@ -258,26 +352,11 @@ function run() {
   }
   const sheetCompanyRows = domain.filterListings(db, { category: '公司房源' })
     .filter((item) => String(item.id || '').indexOf('CS') === 0)
-  const sheetKnownCoordinate = sheetCompanyRows.find((item) => item.community === '京漾东韵府')
-  assert.ok(sheetKnownCoordinate, '飞书快照公司房源无视频也应进入公司房源列表')
-  assert.ok(sheetCompanyRows.some((item) => item.community === '无坐标测试小区'), '无坐标飞书公司房源可进入普通公司列表')
-  sheetCompanyRows.forEach((item) => assertCompanySheetPublicFields(item, '飞书公司房源列表'))
-  assert.strictEqual(sheetKnownCoordinate.roomNumber, '4-2-601D', '飞书公司房源列表应返回房号')
-  assert.strictEqual(sheetKnownCoordinate.viewingPassword, '336699#', '飞书公司房源列表应返回看房密码')
-  assert.strictEqual(sheetKnownCoordinate.remark, '水30/月', '飞书公司房源列表应返回备注')
+  assert.strictEqual(sheetCompanyRows.length, 0, '公司房源列表必须只读取同步后的房源库，不能混入飞书快照虚拟房源')
   const upperBlockRows = domain.filterListings(db, { district: '上城区', block: '闸弄口' })
-  assert.ok(upperBlockRows.some((item) => item.id === sheetKnownCoordinate.id), '前台列表应支持 district+block 组合筛选')
   assert.ok(upperBlockRows.every((item) => item.district === '上城区' && String(item.block || '').indexOf('闸弄口') !== -1), '上城区+闸弄口筛选不能混入其他行政区或板块')
-  const sheetDetail = domain.listingDetail(db, sheetKnownCoordinate.id)
-  assert.ok(sheetDetail, '飞书快照公司房源应可打开前台详情')
-  assert.strictEqual(sheetDetail.noCommission, true, '飞书快照公司房源详情必须展示无分佣')
-  assert.strictEqual(sheetDetail.videoUrl, '', '飞书快照公司房源无视频时详情不能伪造视频')
-  assertCompanySheetPublicFields(sheetDetail, '飞书公司房源详情')
-  assert.strictEqual(sheetDetail.roomNumber, '4-2-601D', '飞书公司房源详情应返回房号')
-  assert.strictEqual(sheetDetail.viewingPassword, '336699#', '飞书公司房源详情应返回看房密码')
   const sheetMapPins = domain.mapPins(db, { sourceType: '公司房源' })
-  assert.ok(sheetMapPins.some((item) => item.community === '京漾东韵府'), '飞书快照公司房源命中真实小区坐标时应进入地图')
-  assert.ok(!sheetMapPins.some((item) => item.community === '无坐标测试小区'), '飞书快照公司房源无真实坐标时不能进入地图')
+  assert.ok(!sheetMapPins.some((item) => String(item.id || '').indexOf('CS') === 0), '地图也不能混入飞书快照虚拟房源')
   sheetMapPins.forEach((pin) => {
     assertNoPublicSensitiveFields(pin, '飞书公司房源地图点')
     ;(pin.listings || []).forEach((item) => assertNoPublicSensitiveFields(item, '飞书公司房源地图摘要'))
@@ -386,6 +465,30 @@ function run() {
   assert.ok(stale5 && stale5.needsVerify && stale5.staleDays >= 5, '第 5 天必须进入再次提醒')
 
   db.listings.unshift({
+    id: 'STALE_3',
+    title: '三天提醒房源',
+    shortTitle: '三天提醒房源',
+    uploaderId: 'U1',
+    rent: 3000,
+    layout: '整租一室',
+    area: '滨江区',
+    community: '滨江金色黎明',
+    address: '三天提醒地址',
+    landlordPhone: '13911113333',
+    commissionRate: 20,
+    videoUrl: 'https://example.com/stale-3.mp4',
+    status: '在租',
+    lifecycleStatus: 'active',
+    lastVerifiedAt: daysAgo(3),
+    createdAt: daysAgo(3)
+  })
+  const stale3 = domain.adminListings(db).find((item) => item.id === 'STALE_3')
+  assert.ok(stale3, '第 3 天提醒房源必须存在于后台清单')
+  assert.strictEqual(stale3.verifyStatus, '提醒核验', '第 3 天档必须进入提醒核验（区别于第 5 天的重点核验）')
+  assert.strictEqual(stale3.needsVerify, true, '第 3 天档必须标记需核验')
+  assert.ok(stale3.staleDays >= 3 && stale3.staleDays < 5, '第 3 天档 staleDays 应落在 [3,5)')
+
+  db.listings.unshift({
     id: 'STALE_7',
     title: '七天失效房源',
     shortTitle: '七天失效房源',
@@ -409,6 +512,12 @@ function run() {
   assert.strictEqual(stale7.lifecycleStatus, 'expired', '自动失效必须进入失效生命周期')
   assert.ok(stale7.expiredPool, '自动失效必须保留后台资产池标记')
   assert.ok(!domain.filterListings(db).some((item) => item.id === 'STALE_7'), '失效房源不能进入前台列表')
+  // 3/5 天档只提醒不下架：enforce 后仍为 active 且留在前台列表，防止档位阈值被误改成下架
+  const stale3AfterEnforce = db.listings.find((item) => item.id === 'STALE_3')
+  const stale5AfterEnforce = db.listings.find((item) => item.id === 'STALE_5')
+  assert.strictEqual(stale3AfterEnforce.lifecycleStatus, 'active', '第 3 天档只提醒不下架')
+  assert.strictEqual(stale5AfterEnforce.lifecycleStatus, 'active', '第 5 天档只提醒不下架')
+  assert.ok(domain.filterListings(db).some((item) => item.id === 'STALE_3'), '第 3 天档仍应出现在前台列表')
 
   assertRejects(
     () => domain.createClientReport(db, 'U2', created.id, { customerName: '王先生' }),
@@ -444,18 +553,19 @@ function run() {
   assert.strictEqual(deal.brokerId, 'U2', '签单 brokerId 必须来自报备记录')
   assert.strictEqual(deal.uploaderId, 'U1', '签单 uploaderId 必须来自房源归属')
   assert.strictEqual(deal.dealMonthlyRentFen, 350000, '成交月租必须按分存储')
-  assert.strictEqual(deal.landlordCommissionFen, 500000, '房东实际支付佣金必须按分存储')
+  assert.strictEqual(deal.landlordCommissionPercent, 50, '签单必须冻结房源佣金占月租比例')
+  assert.strictEqual(deal.landlordCommissionFen, 175000, '房东实付佣金必须由成交月租 3500 × 50% 自动计算')
   assert.ok(!Object.prototype.hasOwnProperty.call(deal, 'commissionRate'), '签单不能保存客户端 commissionRate')
   assert.strictEqual(db.commissionRecords.length, 0, '管理员确认前不能生成正式分佣记录')
 
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(db.commissionRecords.length, 1, '管理员确认后必须生成正式分佣记录')
-  assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东房源成交总比例必须固定 20%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 15, '二房东房源上传人到手比例必须固定 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformRate, 5, '二房东房源平台留存比例必须固定 5%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 75000, '二房东房源上传人分佣必须等于房东实际支付佣金的 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 25000, '二房东房源平台留存必须等于房东实际支付佣金的 5%')
-  assert.strictEqual(confirmResult.commissionRecord.landlordCommissionFen, 500000, '正式分佣记录必须保留房东实付佣金分值')
+  assert.strictEqual(confirmResult.commissionRecord.rate, 30, '二房东房源成交总分出必须固定 30%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 20, '二房东房源上传人到手比例必须固定 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformRate, 10, '二房东房源平台留存比例必须固定 10%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 35000, '二房东房源上传人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 17500, '二房东房源平台留存必须等于自动计算总佣金的 10%')
+  assert.strictEqual(confirmResult.commissionRecord.landlordCommissionFen, 175000, '正式分佣记录必须保留服务端自动计算的房东佣金')
   assert.strictEqual(db.listings.find((item) => item.id === created.id).lifecycleStatus, 'sold', '确认签单后房源应退出前台有效池')
   assert.ok(!domain.filterListings(db).some((item) => item.id === created.id), '已成交房源不能继续在前台展示')
 
@@ -487,11 +597,11 @@ function run() {
   const ownerDeal = db.dealRecords.find((item) => item.id === ownerDealResult.deal.id)
   assert.ok(!Object.prototype.hasOwnProperty.call(ownerDeal, 'commissionRate'), '业主签单不能保存客户端 commissionRate')
   const ownerConfirm = domain.confirmDeal(db, 'ADMIN', ownerDeal.id)
-  assert.strictEqual(ownerConfirm.commissionRecord.rate, 20, '业主房源成交总比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.rate, 30, '业主房源成交总分出必须固定 30%（上传20+平台10）')
   assert.strictEqual(ownerConfirm.commissionRecord.uploaderRate, 20, '业主房源上传人到手比例必须固定 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 0, '业主房源平台留存比例必须固定 0%')
-  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于房东实际支付佣金的 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 0, '业主房源平台留存必须为 0')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 10, '业主房源平台留存比例必须固定 10%')
+  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 35000, '业主房源上传人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 17500, '业主房源平台留存必须等于自动计算总佣金的 10%')
 
   const beforeCompanyCommissionCount = db.commissionRecords.length
   const companyReportResult = domain.createClientReport(db, 'U2', companyNoVideo.id, {
@@ -508,7 +618,68 @@ function run() {
   assert.deepStrictEqual(companyDeal.commissionRule, { rate: 0, uploaderRate: 0, platformRate: 0 }, '公司房源签单快照必须记录不分佣')
   const companyConfirm = domain.confirmDeal(db, 'ADMIN', companyDeal.id)
   assert.strictEqual(companyConfirm.commissionRecord, null, '公司房源确认签单不能生成分佣记录')
+  assert.strictEqual(companyConfirm.noCommission, true, '公司房源确认签单必须标记不抽佣')
+  assert.strictEqual(db.dealRecords.find((item) => item.id === companyDeal.id).commissionRecordId, '', '公司房源签单不能挂载 commissionRecordId')
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
+
+  const convertedCompany = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNo: '778',
+    roomNumber: '778',
+    address: '杭州滨江区半山家苑1幢1单元778室',
+    videoKey: 'house-videos/backend-contract/company-to-partner.mp4'
+  }))
+  const convertedCompanyRaw = db.listings.find((item) => item.id === convertedCompany.id)
+  Object.assign(convertedCompanyRaw, {
+    source: '公司房源',
+    ownerType: '公司房源',
+    houseSourceType: '公司房源',
+    companyListing: true,
+    isCompanyListing: true,
+    noCommission: true,
+    commissionRate: 0,
+    features: ['不分佣', '押一付一', '电梯房']
+  })
+  assert.strictEqual(domain.isNoCommissionListing(convertedCompanyRaw), true, '测试前公司房源应命中免佣 OR 链')
+  domain.updateNormalListing(db, 'ADMIN', convertedCompany.id, {
+    area: convertedCompanyRaw.area,
+    block: convertedCompanyRaw.block,
+    community: convertedCompanyRaw.community,
+    building: convertedCompanyRaw.building,
+    unit: convertedCompanyRaw.unit,
+    roomNumber: convertedCompanyRaw.roomNumber,
+    rentMode: convertedCompanyRaw.rentMode,
+    room: convertedCompanyRaw.room,
+    hall: convertedCompanyRaw.hall,
+    bath: convertedCompanyRaw.bath,
+    rent: convertedCompanyRaw.rent,
+    contact: convertedCompanyRaw.landlordPhone,
+    ownerType: '二房东房源',
+    companyListing: false,
+    features: [NO_FEATURE]
+  }, { admin: true })
+  assert.strictEqual(convertedCompanyRaw.companyListing, false, '公司房源改为二房东后 companyListing 必须清除')
+  assert.strictEqual(convertedCompanyRaw.isCompanyListing, false, '公司房源改为二房东后 isCompanyListing 必须清除')
+  assert.strictEqual(domain.isCompanyListing(convertedCompanyRaw), false, '公司房源改为二房东后来源文本也不能继续命中公司房源')
+  assert.strictEqual(convertedCompanyRaw.noCommission, false, '公司房源改为二房东后不得沿用免佣状态')
+  assert.strictEqual(convertedCompanyRaw.commissionRate, 20, '公司房源改为二房东后必须重算上传人 20% 分佣')
+  assert.strictEqual(convertedCompanyRaw.features.indexOf('不分佣'), -1, '公司房源改为二房东后必须清理不分佣特点')
+  assert.strictEqual(domain.isNoCommissionListing(convertedCompanyRaw), false, '公司房源改为二房东后免佣 OR 链必须整体为 false')
+  const convertedReportResult = domain.createClientReport(db, 'U2', convertedCompany.id, {
+    needId: 'N1',
+    customerPhone: '13800005555'
+  })
+  const convertedReport = db.clientReports.find((item) => item.id === convertedReportResult.report.id)
+  const convertedDealResult = domain.createDealFromReport(db, 'U2', convertedReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const convertedDeal = db.dealRecords.find((item) => item.id === convertedDealResult.deal.id)
+  const convertedConfirm = domain.confirmDeal(db, 'ADMIN', convertedDeal.id)
+  assert.strictEqual(convertedConfirm.commissionRecord.rate, 30, '转为二房东后的房源成交总分出必须恢复 30%')
+  assert.strictEqual(convertedConfirm.commissionRecord.uploaderRate, 20, '转为二房东后的房源上传人必须拿 20%')
+  assert.strictEqual(convertedConfirm.commissionRecord.uploaderCommissionFen, 35000, '转为二房东后的房源上传人分佣必须按自动计算总佣金的 20% 计算')
 
   const beforeAdminUploadCommissionCount = db.commissionRecords.length
   const adminUploadReportResult = domain.createClientReport(db, 'U2', adminSecondLandlordListing.id, {
@@ -527,11 +698,113 @@ function run() {
   assert.ok(!Object.prototype.hasOwnProperty.call(adminUploadDeal, 'commissionRate'), '管理员上传二房东签单不能保存客户端 commissionRate')
   const adminUploadConfirm = domain.confirmDeal(db, 'ADMIN', adminUploadDeal.id)
   assert.strictEqual(db.commissionRecords.length, beforeAdminUploadCommissionCount + 1, '管理员上传的二房东房源成交后必须生成平台留存记录')
-  assert.strictEqual(adminUploadConfirm.commissionRecord.rate, 20, '管理员上传二房东房源成交总比例必须固定 20%')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.rate, 10, '管理员上传二房东房源分出比例=平台10%（上传人0）')
   assert.strictEqual(adminUploadConfirm.commissionRecord.uploaderRate, 0, '管理员上传二房东房源不生成个人分佣比例')
-  assert.strictEqual(adminUploadConfirm.commissionRecord.platformRate, 20, '管理员上传二房东房源平台留存比例必须固定 20%')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.platformRate, 10, '管理员上传二房东房源平台留存比例必须固定 10%')
   assert.strictEqual(adminUploadConfirm.commissionRecord.uploaderCommissionFen, 0, '管理员上传二房东房源上传人分佣必须为 0')
-  assert.strictEqual(adminUploadConfirm.commissionRecord.platformCommissionFen, 100000, '管理员上传二房东房源平台留存必须等于房东实付佣金的 20%')
+  assert.strictEqual(adminUploadConfirm.commissionRecord.platformCommissionFen, 17500, '管理员上传二房东房源平台留存必须等于自动计算总佣金的 10%')
+
+  assert.strictEqual(domain.commissionConfig(db).secondLandlordRate, 20, '默认二房东上传人比例为 20%')
+  const savedCommissionConfig = domain.setCommissionConfig(db, 'ADMIN', {
+    secondLandlordRate: 12,
+    ownerRate: 18
+  })
+  assert.strictEqual(savedCommissionConfig.secondLandlordRate, 12, '分佣配置应允许调整二房东上传人比例')
+  assert.strictEqual(savedCommissionConfig.ownerRate, 18, '分佣配置应允许调整业主上传人比例')
+  assert.ok(db.footprints.some((item) => item.actionType === 'commission_config_updated'), '分佣配置变更必须写六字段足迹')
+  assert.strictEqual(db.commissionRecords.find((item) => item.id === confirmResult.commissionRecord.id).uploaderRate, 20, '旧分佣记录不受后续配置调整影响')
+
+  const configurableListing = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNo: '780',
+    roomNumber: '780',
+    address: '杭州滨江区半山家苑1幢1单元780室',
+    videoKey: 'house-videos/backend-contract/configurable-second.mp4'
+  }))
+  const configurableRaw = db.listings.find((item) => item.id === configurableListing.id)
+  assert.strictEqual(configurableRaw.commissionRate, 12, '配置改为 12 后新二房东房源应写入 12% 上传人比例')
+  const configurableDetail = domain.listingDetail(db, configurableListing.id, 'U2')
+  assert.deepStrictEqual(configurableDetail.commissionBreakdown, {
+    landlordPercentOfRent: 50,
+    viewingAgentPercentOfRent: 39,
+    maintainerPercentOfRent: 6,
+    platformPercentOfRent: 5,
+    split: { viewingAgentRate: 78, maintainerRate: 12, platformRate: 10 }
+  }, '二房东详情按当前上传12%+平台10%配置动态换算月租占比')
+  const configurableReportResult = domain.createClientReport(db, 'U2', configurableListing.id, {
+    needId: 'N1',
+    customerPhone: '13800006666'
+  })
+  const configurableReport = db.clientReports.find((item) => item.id === configurableReportResult.report.id)
+  const configurableDealResult = domain.createDealFromReport(db, 'U2', configurableReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const configurableDeal = db.dealRecords.find((item) => item.id === configurableDealResult.deal.id)
+  assert.deepStrictEqual(configurableDeal.commissionRule, { rate: 22, uploaderRate: 12, platformRate: 10 }, '签单应冻结当前二房东 上传12%+平台10% 分佣配置')
+  const configurableConfirm = domain.confirmDeal(db, 'ADMIN', configurableDeal.id)
+  assert.strictEqual(configurableConfirm.commissionRecord.uploaderRate, 12, '配置改为 12 后新成交按 12% 结算')
+  assert.strictEqual(configurableConfirm.commissionRecord.platformRate, 10, '平台留存默认 10%')
+  assert.strictEqual(configurableConfirm.commissionRecord.uploaderCommissionFen, 21000, '自动计算总佣金 1750 元时 12% 为 210 元')
+  assert.strictEqual(configurableConfirm.commissionRecord.platformCommissionFen, 17500, '自动计算总佣金 1750 元时 10% 为 175 元')
+
+  const configurableOwner = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '京漾东韵府',
+    community: '京漾东韵府',
+    roomNo: '902',
+    roomNumber: '902',
+    address: '杭州上城区京漾东韵府1幢1单元902室',
+    ownerType: '业主房源',
+    houseSourceType: '业主房源',
+    source: '业主房源',
+    videoKey: 'house-videos/backend-contract/configurable-owner.mp4'
+  }))
+  domain.reviewOwnerListing(db, 'ADMIN', configurableOwner.id, { action: 'approve' })
+  const configurableOwnerDetail = domain.listingDetail(db, configurableOwner.id, 'U2')
+  assert.deepStrictEqual(configurableOwnerDetail.commissionBreakdown, {
+    landlordPercentOfRent: 50,
+    viewingAgentPercentOfRent: 36,
+    maintainerPercentOfRent: 9,
+    platformPercentOfRent: 5,
+    split: { viewingAgentRate: 72, maintainerRate: 18, platformRate: 10 }
+  }, '业主详情按当前上传18%+平台10%配置动态换算月租占比')
+  const configurableOwnerReportResult = domain.createClientReport(db, 'U2', configurableOwner.id, {
+    needId: 'N1',
+    customerPhone: '13800007777'
+  })
+  const configurableOwnerReport = db.clientReports.find((item) => item.id === configurableOwnerReportResult.report.id)
+  const configurableOwnerDealResult = domain.createDealFromReport(db, 'U2', configurableOwnerReport.id, {
+    monthlyRent: 3500,
+    landlordCommission: 5000
+  })
+  const configurableOwnerDeal = db.dealRecords.find((item) => item.id === configurableOwnerDealResult.deal.id)
+  assert.deepStrictEqual(configurableOwnerDeal.commissionRule, { rate: 28, uploaderRate: 18, platformRate: 10 }, '签单应冻结当前业主 上传18%+平台10% 分佣配置')
+  const configurableOwnerConfirm = domain.confirmDeal(db, 'ADMIN', configurableOwnerDeal.id)
+  assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderRate, 18, '配置改为 18 后新业主成交按 18% 结算')
+  assert.strictEqual(configurableOwnerConfirm.commissionRecord.uploaderCommissionFen, 31500, '自动计算总佣金 1750 元时 18% 为 315 元')
+
+  // 阻断1 回归（Codex 13:05）：上传人比例配到 40%（>默认总分出30）后，非公司房源新增/编辑
+  // 不得被 validateListingFields 的旧 30% 上限 400 卡死；应按单档上限（100）放行并记录 40%。
+  domain.setCommissionConfig(db, 'ADMIN', { secondLandlordRate: 40, secondLandlordPlatformRate: 10 })
+  const highRateListing = domain.addNormalListing(db, 'U1', listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNumber: '781',
+    address: '杭州滨江区半山家苑1幢1单元781室',
+    videoKey: 'house-videos/backend-contract/high-rate.mp4'
+  }))
+  const highRateRaw = db.listings.find((item) => item.id === highRateListing.id)
+  assert.strictEqual(highRateRaw.commissionRate, 40, '上传人比例配 40 后新增二房东房源必须通过且记录 40%（不被默认总分出30卡死）')
+  const highRateEdited = domain.updateNormalListing(db, 'U1', highRateListing.id, listingPayload({
+    communityName: '半山家苑',
+    community: '半山家苑',
+    roomNumber: '781',
+    address: '杭州滨江区半山家苑1幢1单元781室',
+    rent: 3600,
+    videoKey: 'house-videos/backend-contract/high-rate.mp4'
+  }))
+  assert.strictEqual(highRateEdited.commissionRate, 40, '编辑同房源也不得被默认总分出30卡死')
 
   // 回归用例（2026-07-02 P1 修复）：库外小区裸提交（不带任何匹配/审核字段）
   // 必须由服务端小区库判定为 未匹配 + 待审核，且不得进入首页/前台列表/地图

@@ -40,3 +40,48 @@ curl -fsS http://127.0.0.1:3101/healthz
 ```
 
 恢复前会把当前 `server/data` 复制到 `/tmp/ynzy-miniapp-before-db-restore-*`，便于回滚。
+
+---
+
+## 异地加密备份 + 恢复演练 + 失败告警（P0-1）
+
+上面的 systemd 备份是**本地明文**快照（防误删、快速回滚）。在此之上另加一层**异地加密备份**，用于机器损毁、勒索、整机丢失时的异地恢复。两层互补，都保留。
+
+### 组成
+
+- 核心库 `server/src/backup.js`：AES-256-GCM 加密 + gzip 压缩 + 往返一致性校验 + 保留策略 + 新鲜度巡检 + 告警钩子，零外部依赖。
+- 备份 CLI `server/scripts/backup-db.js`：读源 → 加密压缩 → 带时间戳落盘（`db-backup-<UTC>.ygbak`）→ 即时自检 → 异地上传钩子 → 保留清理。
+- 恢复演练 CLI `server/scripts/restore-drill.js`：解密到临时目录（不写回生产）→ 校验 JSON → 六项数量往返校验 → 新鲜度巡检。
+- 锁定测试 `server/scripts/backup-restore-v1-test.js`。
+
+### 关键约束
+
+- 加密密钥 `BACKUP_ENCRYPTION_KEY`、异地目标 `BACKUP_REMOTE_CMD`、通知命令 `BACKUP_ALERT_CMD` **只从环境变量读取**，仓库不写真实值。
+- **异地目标生产必填**：默认未配置 `BACKUP_REMOTE_CMD` 即判失败（`BACKUP_REMOTE_REQUIRED` 告警、非零退出），因为 P0-1 目标是「异地备份」，只做本机备份不算达成；本地演练/临时需显式 `BACKUP_ALLOW_LOCAL_ONLY=1` 才允许仅本地成功（生产禁止开启）。
+- 恢复演练**只读**：只把数据解密到系统临时目录做计数校验，绝不覆盖生产 `db.json`。
+- 保留最近 `BACKUP_RETENTION_DAYS`（默认 30）天，过期自动清理。
+- 本地暂存目录 `server/backups/` 已加入 `.gitignore`（加密备份仍含生产数据，禁止入库）。
+
+### 环境变量、手动操作、cron 配置、告警条件
+
+以 `server/README.md`「异地加密备份（P0-1）」一节为准，不在此重复。要点：
+
+```bash
+cd server
+BACKUP_ENCRYPTION_KEY=*** BACKUP_REMOTE_CMD='...' node scripts/backup-db.js        # 生产手动备份（必带异地目标）
+BACKUP_ENCRYPTION_KEY=*** BACKUP_ALLOW_LOCAL_ONLY=1 node scripts/backup-db.js       # 本地演练（无异地目标）
+BACKUP_ENCRYPTION_KEY=*** node scripts/restore-drill.js                            # 手动恢复演练
+```
+
+告警种类：`BACKUP_FAILED` / `BACKUP_VERIFY_FAILED` / `BACKUP_EMPTY_SOURCE` / `BACKUP_REMOTE_REQUIRED` / `REMOTE_UPLOAD_FAILED` / `RESTORE_MISMATCH` / `RESTORE_FAILED` / `BACKUP_STALE`，均输出明确错误并以非零码退出，供 cron 捕获。
+
+### 飞书云盘异地备份（P0-1 追加）
+
+把异地目标接到飞书云盘：`BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'`。`backup-db.js` 落盘 `.ygbak` 后经 `BACKUP_FILE` 传给该脚本，脚本用 multipart/form-data 上传到指定云盘文件夹。凭据 `FEISHU_BACKUP_APP_ID/APP_SECRET/FOLDER_TOKEN`（可选 `FEISHU_BACKUP_UPLOAD_NAME_PREFIX`）只放 `/etc/default/ynzy-backup`（chmod 600，不入库）。详见 `server/README.md`「飞书云盘异地备份」。
+
+红线：
+
+- 飞书云盘**只放 `.ygbak` 加密备份**，严禁上传 `BACKUP_ENCRYPTION_KEY`、`.env`、明文 `db.json`。
+- `BACKUP_ENCRYPTION_KEY` 绝不放飞书，只放服务器 `/etc/default/ynzy-backup`，并**另存到本机密码管理器 + 手抄一份离线纸质备份**（密钥与备份分离存放；密钥丢失=所有备份都解不开）。
+- 完整闭环已实现：`server/scripts/restore-drill-from-feishu.js` 自动从飞书下载最新 `.ygbak` → 解密 → 往返校验；`ynzy-feishu-drill.timer` 每周日 04:10 自动跑一次。手动：`systemctl start ynzy-feishu-drill.service` 或 `node scripts/restore-drill-from-feishu.js`。下载的是加密文件，解密只到临时目录、用完即清、不写回生产。
+- 仍可用本机文件手动演练：`restore-drill.js --file backups/db-backup-<UTC>.ygbak`。

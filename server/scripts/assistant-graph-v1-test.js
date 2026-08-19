@@ -166,7 +166,8 @@ async function main() {
     text: '地图为什么不能展示具体楼栋、单元、房号和房东电话？'
   }, { userId: 'U001' })
   assert.strictEqual(result.intent, 'business_faq', '地图说明应进入业务 FAQ')
-  assert(result.reply.indexOf('小区坐标') !== -1, '地图 FAQ 文案不符合预期')
+  assert(result.reply.indexOf('小区级') !== -1, '地图 FAQ 文案不符合预期')
+  assert(result.reply.indexOf('分级') !== -1, '地图 FAQ 应说明坐标分级标注规则')
   assert.strictEqual((result.listings || []).length, 0, 'FAQ 不应返回房源')
   assert(!result.traceSummary, '默认小程序响应不应返回 trace 摘要')
   assertNoSensitiveText(result)

@@ -2,6 +2,7 @@ const assert = require('assert')
 const fs = require('fs')
 const path = require('path')
 
+process.env.REPORT_DEAL_WRITES_ENABLED = '1' // 旧成交金额回归在恢复模式验证；默认暂停由 M3 专项测试锁定。
 const domain = require('../src/domain')
 const { NO_FEATURE } = require('../src/listing-features')
 const matchService = require('../src/match-service')
@@ -246,11 +247,13 @@ check('找房助手生产网络失败不返回本地模拟房源', () => {
   assertIncludes(llmService, 'emptyNetworkMatchResult', '生产网络失败必须构造空房源结果')
   assertIncludes(matchChat, 'matchResult && matchResult.networkFailed ? [] : buildListingSections', '小程序网络失败时不能渲染推荐卡片')
   assertIncludes(matchChat, '网络连接失败，请点下方按钮重试。', '小程序网络失败时必须提示重试')
+  assertIncludes(matchChat, 'degradedNotice', '小程序必须展示供应商降级提示但继续渲染真实匹配结果')
+  assertIncludes(matchChat, '智能解读稍后重试', '供应商降级提示文案必须写入页面数据')
   assert.ok(!matchChat.includes('先给你本地匹配结果'), '生产网络失败文案不能暗示本地推荐可用')
   assertIncludes(networkFallbackTestSource, '生产失败时不能返回本地推荐房源', '客户端网络失败测试必须阻止 mock 房源回退')
 })
 
-check('地图只展示确认小区坐标并显示筛选后套数', () => {
+check('地图只展示服务端可信公开坐标并显示筛选后套数', () => {
   const mapJs = readFile('pages/map/map.js')
   assertIncludes(mapJs, 'ynzy_pending_map_filters', '地图页必须读取找房助手筛选条件')
   assertIncludes(mapJs, 'wx.removeStorageSync(PENDING_MAP_FILTERS_KEY)', '地图页读取后必须清理待处理筛选条件')
@@ -271,12 +274,13 @@ check('地图只展示确认小区坐标并显示筛选后套数', () => {
   assert.ok(mapRows.some((item) => item.activeListingIds.includes(reliableListing.id)), '可靠小区坐标必须进入地图')
   assert.ok(!mapRows.some((item) => item.activeListingIds.includes(noCoordinateListing.id)), '无可靠坐标房源不能进入地图')
   const realPin = mapRows.find((item) => item.activeListingIds.includes(reliableListing.id))
-  assert.strictEqual(realPin.coordinateVerified, true)
+  assert.strictEqual(realPin.coordinateVerified, false, '合作房源地图点只能公开小区近似位置')
+  assert.strictEqual(realPin.coordinateLevel, 'approximate', '合作房源地图点不得下发逐套精确坐标等级')
   assert.ok(realPin.listingCount >= 1, '地图小区点必须包含筛选后套数')
   assertNoPublicSensitiveFields(realPin, '地图小区点')
 })
 
-check('报备、签单、管理员确认和总比例拆分分佣契约正确', () => {
+check('显式恢复模式下历史成交快照与分佣契约正确', () => {
   const db = createDb()
   assertRejects(
     () => domain.addNormalListing(db, 'U1', listingPayload({
@@ -305,14 +309,14 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
     videoUrl: ''
   }), { admin: true })
   assert.ok(domain.filterListings(db, { category: '公司房源' }).some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入公司房源列表')
-  assert.ok(domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '有真实小区坐标的公司房源无视频必须进入地图')
+  assert.ok(domain.mapCommunities(db, { sourceType: '公司房源' }).some((item) => item.activeListingIds.includes(companyNoVideo.id)), '地图必须纳入无视频公司房源')
   assert.ok(domain.matchListings(db, { area: '京漾东韵府' }).listings.some((item) => item.id === companyNoVideo.id), '公司房源无视频必须进入匹配候选')
   assert.ok(domain.listingDetail(db, companyNoVideo.id), '公司房源无视频必须可打开详情')
 
   const created = domain.addNormalListing(db, 'U1', listingPayload())
   const rawListing = db.listings.find((item) => item.id === created.id)
   assert.strictEqual(rawListing.uploaderId, 'U1', '上传人必须来自服务端当前用户')
-  assert.strictEqual(rawListing.commissionRate, 15, '二房东房源分佣比例必须由后端固定为 15%')
+  assert.strictEqual(rawListing.commissionRate, 20, '二房东房源分佣比例必须由后端固定为 20%')
 
   const listRow = domain.filterListings(db).find((item) => item.id === created.id)
   const detailRow = domain.listingDetail(db, created.id)
@@ -356,16 +360,17 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   })
   const deal = db.dealRecords.find((item) => item.id === dealResult.deal.id)
   assert.strictEqual(deal.dealMonthlyRentFen, 350000, '成交月租必须按分存储')
-  assert.strictEqual(deal.landlordCommissionFen, 500000, '房东实际支付佣金必须按分存储')
+  assert.strictEqual(deal.landlordCommissionPercent, 50, '签单必须冻结房源佣金占月租比例')
+  assert.strictEqual(deal.landlordCommissionFen, 175000, '房东佣金必须由成交月租 3500 × 房源比例 50% 自动计算')
   assert.strictEqual(db.commissionRecords.length, 0, '管理员确认前不能生成正式分佣记录')
 
   const confirmResult = domain.confirmDeal(db, 'ADMIN', deal.id)
   assert.strictEqual(db.commissionRecords.length, 1, '管理员确认后必须生成正式分佣记录')
-  assert.strictEqual(confirmResult.commissionRecord.rate, 20, '二房东房源成交总比例必须固定 20%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 15, '二房东房源上传人到手比例必须固定 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformRate, 5, '二房东房源平台留存比例必须固定 5%')
-  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 75000, '二房东房源上传人分佣必须等于房东实付佣金的 15%')
-  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 25000, '二房东房源平台留存必须等于房东实付佣金的 5%')
+  assert.strictEqual(confirmResult.commissionRecord.rate, 30, '二房东房源成交总分出必须固定 30%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderRate, 20, '二房东房源上传人到手比例必须固定 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformRate, 10, '二房东房源平台留存比例必须固定 10%')
+  assert.strictEqual(confirmResult.commissionRecord.uploaderCommissionFen, 35000, '二房东房源维护人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(confirmResult.commissionRecord.platformCommissionFen, 17500, '二房东房源平台留存必须等于自动计算总佣金的 10%')
 
   const ownerListing = domain.addNormalListing(db, 'U1', listingPayload({
     communityName: '京漾东韵府',
@@ -395,11 +400,11 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   const ownerDeal = db.dealRecords.find((item) => item.id === ownerDealResult.deal.id)
   assert.ok(!Object.prototype.hasOwnProperty.call(ownerDeal, 'commissionRate'), '业主签单不能保存客户端 commissionRate')
   const ownerConfirm = domain.confirmDeal(db, 'ADMIN', ownerDeal.id)
-  assert.strictEqual(ownerConfirm.commissionRecord.rate, 20, '业主房源成交总比例必须固定 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.rate, 30, '业主房源成交总分出必须固定 30%')
   assert.strictEqual(ownerConfirm.commissionRecord.uploaderRate, 20, '业主房源上传人到手比例必须固定 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 0, '业主房源平台留存比例必须固定 0%')
-  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 100000, '业主房源上传人分佣必须等于房东实付佣金的 20%')
-  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 0, '业主房源平台留存必须为 0')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformRate, 10, '业主房源平台留存比例必须固定 10%')
+  assert.strictEqual(ownerConfirm.commissionRecord.uploaderCommissionFen, 35000, '业主房源维护人分佣必须等于自动计算总佣金的 20%')
+  assert.strictEqual(ownerConfirm.commissionRecord.platformCommissionFen, 17500, '业主房源平台留存必须等于自动计算总佣金的 10%')
 
   const beforeCompanyCommissionCount = db.commissionRecords.length
   const companyReportResult = domain.createClientReport(db, 'U2', companyNoVideo.id, {
@@ -419,18 +424,32 @@ check('报备、签单、管理员确认和总比例拆分分佣契约正确', (
   assert.strictEqual(db.commissionRecords.length, beforeCompanyCommissionCount, '公司房源确认签单不能增加分佣记录')
 })
 
-check('接口路径覆盖第一版验收闭环', () => {
+check('首页公司房源表按房源行展示套数', () => {
+  const indexWxml = readFile('pages/index/index.wxml')
+  assertIncludes(indexWxml, 'sheetPreview.listingCount', '首页房源表计数必须使用房源行 listingCount')
+  assertIncludes(indexWxml, '套房源', '首页房源表计数文案必须使用套房源口径')
+  assert.ok(!indexWxml.includes('companySheetSnapshot.rowCount || 0}} 行内容'), '首页不能用原始快照行数展示公司房源数量')
+})
+
+check('活动接口与报备暂停兼容边界完整', () => {
   const apiService = readFile('utils/api-service.js')
   const serverIndex = readFile('server/src/index.js')
+  const app = JSON.parse(readFile('app.json'))
+  const detailSurface = `${readFile('pages/listing-detail/listing-detail.js')}\n${readFile('pages/listing-detail/listing-detail.wxml')}`
+  const profileSurface = `${readFile('pages/profile/profile.js')}\n${readFile('pages/profile/profile.wxml')}`
   assertIncludes(apiService, '/mini/uploads/video-policy', '前端必须调用视频上传策略接口')
   assertIncludes(apiService, '/mini/map/communities', '前端必须调用地图小区聚合接口')
-  assertIncludes(apiService, '/mini/listings/${listingId}/reports', '前端必须从房源创建报备')
-  assertIncludes(apiService, '/mini/reports/${reportId}/deals', '前端必须从报备创建签单')
   assertIncludes(serverIndex, "pathname === '/mini/uploads/video-policy'", '后端必须提供视频上传策略接口')
   assertIncludes(serverIndex, "pathname === '/mini/map/communities'", '后端必须提供地图小区聚合接口')
-  assertIncludes(serverIndex, 'domain.createClientReport', '后端必须创建报备')
-  assertIncludes(serverIndex, 'domain.createDealFromReport', '后端必须从报备创建签单')
-  assertIncludes(serverIndex, 'domain.confirmDeal', '后端必须支持管理员确认签单')
+  assertIncludes(serverIndex, "pathname === '/mini/reports'", '历史报备查询必须继续可读')
+  assertIncludes(serverIndex, "pathname === '/mini/deals'", '历史签单查询必须继续可读')
+  ;['reportMatch', 'reportDealMatch', 'dealMatch', 'adminDealConfirmMatch'].forEach((routeName) => {
+    const start = serverIndex.indexOf(`if (method === 'POST' && ${routeName})`)
+    assert.ok(start >= 0 && serverIndex.slice(start, start + 700).includes('assertReportDealWritesEnabled()'), `${routeName} 必须保留兼容路由并默认暂停`)
+  })
+  assert.ok(!app.pages.includes('pages/client-reports/client-reports') && !app.pages.includes('pages/deal-records/deal-records'), '报备/签单历史页不得注册到活动小程序')
+  assert.ok(!/startReportDeal|submitClientReport|submitDealFromReport|客户报备|提交签单/.test(detailSurface), '详情页不得保留报备/签单入口')
+  assert.ok(!/client-reports|deal-records|我的报备|我的签单/.test(profileSurface), '我的页不得保留报备/签单入口')
 })
 
 check('敏感信息脱敏和提示词约束存在', () => {
@@ -626,7 +645,7 @@ check('assistant trace audit contract', () => {
   assertIncludes(assistantServiceSource, 'createAssistantTraceLog', 'assistant service must record trace logs after chat')
   assertIncludes(assistantServiceSource, 'traceRows', 'assistant service must expose trace log rows')
   assertIncludes(assistantServiceSource, 'traceSummaryForFeedback', 'feedback must fall back to persisted trace logs')
-  assertIncludes(serverIndexSource, 'updateDbAsync', 'assistant chat endpoint must persist async trace logs')
+  assertIncludes(serverIndexSource, 'persistTrace', 'assistant chat endpoint must persist trace logs via a synchronous write outside the LLM await window')
   assertIncludes(serverIndexSource, '/admin/assistant/traces', 'admin must expose assistant trace logs')
   assertIncludes(adminWebSource, 'data-panel="assistantTraces"', 'admin web must expose assistant trace panel')
   assertIncludes(adminWebSource, '/admin/assistant/traces', 'admin web must load assistant trace logs')
@@ -743,7 +762,7 @@ check('assistant no-result eval contract', () => {
   assertIncludes(assistantEvalRunnerSource, '无合适房源时不能返回接近房源乱推', 'no-result eval must prevent unsafe relaxed recommendation')
 })
 
-check('游客模式仅开放公司房源脱敏浏览', () => {
+check('游客模式开放三类有效房源并严格锁住跳单敏感信息', () => {
   const appSource = readFile('app.js')
   const dbSource = readFile('server/src/db.js')
   const domainSource = readFile('server/src/domain.js')
@@ -763,21 +782,23 @@ check('游客模式仅开放公司房源脱敏浏览', () => {
   assertIncludes(serverIndex, 'function miniUserIdFromRequest', '服务端必须从 Authorization Bearer token 解析小程序用户')
   assertIncludes(serverIndex, 'bearerTokenFromRequest(req)', '小程序鉴权必须读取 Authorization Bearer token')
   assertIncludes(domainSource, 'function isCompanyOnlyFilter', '领域层必须支持公司房源专用过滤')
-  assertIncludes(domainSource, 'companyOnly && !isCompanyListing', '匿名过滤必须排除非公司房源')
+  assertIncludes(domainSource, 'companyOnly && !isCompanyListing', '领域层必须继续支持显式公司来源筛选')
   assertIncludes(serverIndex, 'function assertMiniLogin', '受保护接口必须有统一登录拦截')
   assertIncludes(serverIndex, 'function assertGuestRateLimit', '匿名 GET/助手接口必须限频')
-  assertIncludes(serverIndex, 'function guestListingFilter', '匿名列表和地图必须强制公司房源过滤')
-  assertIncludes(serverIndex, 'function guestCompanySheetSnapshot', '匿名飞书快照必须返回脱敏版本')
-  assertIncludes(serverIndex, 'assistantService.chat(companyOnlyDb(nextDb)', '匿名找房助手候选必须只来自公司房源')
-  assertIncludes(serverIndex, 'assertGuestListingAllowed(detail)', '匿名详情必须拦截合作房源')
-  assertIncludes(detailPageSource, "promptLoginGuide('登录后查看合作房源'", '前端触碰合作房源详情必须弹登录引导')
+  assertIncludes(serverIndex, 'function guestListingFilter', '匿名读取必须统一附加服务端公共投影标记')
+  assertIncludes(serverIndex, 'publicGuest: true', '游客公共投影必须由服务端强制，不能信客户端权限字段')
+  assert.ok(!serverIndex.includes('function guestCompanySheetSnapshot'), '已废弃的匿名快照裁剪函数不得残留；当前规则是游客与登录用户读取同一份完整公司快照')
+  assertIncludes(serverIndex, 'const resultDb = snapshot', '匿名找房助手必须使用完整前台有效池的私有快照')
+  assertIncludes(serverIndex, 'assistantService.chat(resultDb, resultBody, context)', '匿名找房助手必须用公共候选快照执行')
+  assert.ok(!serverIndex.includes('function assertGuestListingAllowed'), '不得残留“游客合作房源一律拒绝”的旧拦截器')
+  assertIncludes(detailPageSource, 'const canShareVideo = Boolean(listing && listing.videoUrl)', '游客拿到公开视频地址即可转发或保存')
   assertIncludes(guestModeTestSource, '匿名列表接口应返回 200', '游客模式测试必须覆盖匿名列表')
-  assertIncludes(guestModeTestSource, '匿名飞书快照不能返回看房密码', '游客模式测试必须覆盖飞书快照脱敏')
-  assertIncludes(guestModeTestSource, '匿名请求合作房源详情必须返回 401', '游客模式测试必须覆盖合作房源详情 401')
+  assertIncludes(guestModeTestSource, '匿名飞书快照应返回看房密码', '游客模式测试必须覆盖公司房源快照对游客完整开放（公司房源完整字段公开，含看房密码/电话）')
+  assertIncludes(guestModeTestSource, '匿名请求合作房源详情必须返回脱敏详情', '游客模式测试必须覆盖合作房源详情 200 与脱敏')
   assertIncludes(guestModeTestSource, '匿名不可调用敏感查看', '游客模式测试必须覆盖匿名敏感查看 401')
   assertIncludes(guestModeTestSource, '登录必须返回小程序 token', '游客模式测试必须改为 token 登录后访问合作房源')
   assertIncludes(authTokenTestSource, '伪造 X-User-Id 访问需登录接口必须返回 401', '鉴权测试必须覆盖伪造 X-User-Id 失效')
-  assertIncludes(authTokenTestSource, '无 token 请求合作房源详情必须返回 401', '鉴权测试必须覆盖合作房源详情匿名 401')
+  assertIncludes(authTokenTestSource, '无 token 请求有效合作房源必须返回公开脱敏详情', '鉴权测试必须覆盖合作房源公开读取不等于登录授权')
   assertIncludes(authTokenTestSource, '有效 token 可访问需登录接口', '鉴权测试必须覆盖有效 token 正常访问')
   assertIncludes(authTokenTestSource, '过期 token 必须返回 401', '鉴权测试必须覆盖过期 token 401')
   assertIncludes(finalAuditSource, 'server/scripts/guest-mode-v1-test.js', '终审脚本必须运行游客模式真实路由测试')

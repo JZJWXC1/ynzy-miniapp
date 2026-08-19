@@ -1,0 +1,140 @@
+.listing-filter-panel {
+  margin-top: 22rpx;
+  padding: 22rpx;
+  background: #ffffff;
+  border: 1rpx solid #DED8CC;
+  border-radius: 24rpx;
+  box-shadow: 0 12rpx 26rpx rgba(36, 62, 56, 0.06);
+}
+
+.filter-section {
+  margin-bottom: 18rpx;
+}
+
+.filter-label {
+  color: #182E2A;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.filter-scroll-row {
+  width: 100%;
+  margin-top: 10rpx;
+  white-space: nowrap;
+}
+
+.filter-row {
+  display: inline-flex;
+  gap: 10rpx;
+  min-width: 100%;
+}
+
+.filter-row.nowrap {
+  flex-wrap: nowrap;
+}
+
+.filter-chip {
+  flex: 0 0 auto;
+  min-width: 112rpx;
+  min-height: 56rpx;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18rpx;
+  color: #2E514A;
+  font-size: 23rpx;
+  font-weight: 900;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
+  border-radius: 16rpx;
+}
+
+.filter-chip.active {
+  color: #ffffff;
+  background: #2E514A;
+  border-color: #2E514A;
+}
+
+.community-combobox {
+  position: relative;
+  margin-top: 10rpx;
+}
+
+.filter-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 70rpx;
+  padding: 0 18rpx;
+  color: #182E2A;
+  font-size: 24rpx;
+  font-weight: 800;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
+  border-radius: 18rpx;
+}
+
+.community-options {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 78rpx;
+  z-index: 8;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1rpx solid #DED8CC;
+  border-radius: 18rpx;
+  box-shadow: 0 16rpx 32rpx rgba(36, 62, 56, 0.12);
+}
+
+.community-option {
+  min-height: 62rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 18rpx;
+  color: #182E2A;
+  font-size: 24rpx;
+  font-weight: 800;
+  border-bottom: 1rpx solid #edf4f1;
+}
+
+.community-option:last-child {
+  border-bottom: 0;
+}
+
+.price-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.price-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.price-divider {
+  flex: 0 0 18rpx;
+  height: 2rpx;
+  background: #B7C5BE;
+  border-radius: 999rpx;
+}
+
+.filter-action {
+  flex: 0 0 96rpx;
+  height: 70rpx;
+  color: #2E514A;
+  font-size: 24rpx;
+  font-weight: 900;
+  background: #EDF3EF;
+  border-radius: 18rpx;
+}
+
+.filter-action.primary {
+  color: #ffffff;
+  background: #2E514A;
+}
+
+.filter-action.ghost {
+  color: #2E514A;
+  background: #EDF3EF;
+}

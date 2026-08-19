@@ -1,34 +1,67 @@
 // footprint.js
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 Page({
   data: {
     stats: [],
-    filters: ['全部', '我查看的', '我的房源被查看', '电话查看', '地址查看', '管理员同步'],
-    activeFilter: '全部',
+    filters: ['我的房源被查看', '电话查看'],
+    activeFilter: '我的房源被查看',
     records: [],
     allRecords: [],
+    loading: false,
+    loadFailed: false,
     tasks: [
-      '敏感信息查看前必须实名确认留痕',
+      '已登录账号查看敏感信息会由服务端留痕',
       '上传人可以查看自己房源的地址和电话访问记录',
       '管理员后台可查看全公司敏感信息访问记录'
     ]
   },
 
   onShow() {
-    if (typeof this.getTabBar === 'function' && this.getTabBar()) {
-      this.getTabBar().setData({ selected: 1 });
-    }
+    this._pageActive = true
+    this.syncAuthSession()
     this.refreshRecords();
   },
 
+  onUnload() {
+    this._pageActive = false
+    this._recordsRequestSeq = Number(this._recordsRequestSeq || 0) + 1
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._recordsRequestSeq = Number(this._recordsRequestSeq || 0) + 1
+      this.setData({ allRecords: [], records: [], stats: [], loading: false, loadFailed: false })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
   refreshRecords() {
+    const requestSessionKey = this.syncAuthSession().key
+    this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
+    const requestSeq = this._recordsRequestSeq
+    this.setData({ loading: true, loadFailed: false })
     apiService.getFootprintRecords().then((records) => {
-      const phoneCount = records.filter((item) => item.status.indexOf('电话') !== -1).length;
-      const addressCount = records.filter((item) => item.status.indexOf('地址') !== -1).length;
+      if (requestSeq !== this._recordsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
+      const phoneCount = records.filter((item) => String(item.status || '').indexOf('电话') !== -1).length;
+      const addressCount = records.filter((item) => String(item.status || '').indexOf('地址') !== -1).length;
       const myViewCount = records.filter((item) => item.direction === '我查看的').length;
       const viewMineCount = records.filter((item) => item.direction === '我的房源被查看').length;
       this.setData({
+        loading: false,
+        loadFailed: false,
         allRecords: records,
         stats: [
           { label: '我查看', value: String(myViewCount) },
@@ -39,18 +72,24 @@ Page({
       });
       this.applyFilter(this.data.activeFilter);
     }).catch(() => {
+      if (requestSeq !== this._recordsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
+      this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '足迹加载失败', icon: 'none' })
     });
   },
 
+  retryRecords() {
+    this.refreshRecords()
+  },
+
   applyFilter(name) {
     const records = this.data.allRecords.filter((item) => {
-      if (name === '全部') return true;
-      if (name === '我查看的' || name === '我的房源被查看') return item.direction === name;
-      if (name === '电话查看') return item.status.indexOf('电话') !== -1;
-      if (name === '地址查看') return item.status.indexOf('地址') !== -1;
-      if (name === '管理员同步') return item.meta.indexOf('管理员') !== -1;
-      return true;
+      if (name === '电话查看') return String(item.status || '').indexOf('电话') !== -1;
+      return item.direction === '我的房源被查看';
     });
     this.setData({ records });
   },

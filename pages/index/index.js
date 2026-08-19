@@ -1,16 +1,46 @@
 // index.js
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const voiceInput = require('../../utils/voice-input')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
+const companySheetSnapshotContract = require('../../utils/company-sheet-snapshot-contract')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
 const listingTabUrl = '/pages/listings/listings'
 const snapshotCanvasPadding = 24
+const MIN_VOICE_PRESS_DURATION_MS = 600
+// 兼容微信不同设备的 Canvas 实现：按 2 倍像素生成时，任一物理边不超过 4096px。
+// 固定十列表格每页最多安全容纳 37 条原始数据行，超出后按原顺序继续生成下一页。
+const companySheetCanvasMaxEdgePixels = 4096
+const companySheetCanvasMaxPixelRatio = 2
+const companySheetCanvasLogicalMaxEdge = Math.floor(companySheetCanvasMaxEdgePixels / companySheetCanvasMaxPixelRatio)
+const companySheetMaxRowsPerPage = 37
+const companySheetSourceMode = 'feishu-mini-mirror-v1'
+const companySheetSchemaVersion = 1
+const companySheetColumns = [
+  { title: '行政区', role: 'district', aliases: ['行政区', '区域', '区', 'district', 'area'], minWidth: 132, maxWidth: 180, maxLines: 1 },
+  { title: '板块/商圈', role: 'block', aliases: ['板块/商圈', '板块', '商圈', 'block'], minWidth: 150, maxWidth: 220, maxLines: 1 },
+  { title: '小区', role: 'community', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'], minWidth: 180, maxWidth: 260, maxLines: 1 },
+  { title: '小区+房号', role: 'roomLabel', aliases: ['小区+房号', '房号', '房间号', '门牌号', '室号', '房源房号', 'roomLabel'], minWidth: 260, maxWidth: 420, maxLines: 2 },
+  { title: '户型描述', role: 'layoutDescription', aliases: ['户型描述', '描述', '房源描述', '户型信息', 'layoutDescription'], minWidth: 300, maxWidth: 520, maxLines: 2 },
+  { title: '户型分类', role: 'layoutCategory', aliases: ['户型分类', '户型', '格局', '分类', 'layoutCategory'], minWidth: 150, maxWidth: 220, maxLines: 1 },
+  { title: '月租金', role: 'monthlyRent', aliases: ['月租金', '月租', '租金', '价格', 'rent', 'price'], minWidth: 140, maxWidth: 180, maxLines: 1 },
+  { title: '看房方式', role: 'viewingMethod', aliases: ['看房方式', 'viewingMethod'], minWidth: 160, maxWidth: 240, maxLines: 1 },
+  { title: '备注', role: 'remark', aliases: ['备注', '说明', '备注说明', 'note', 'remark'], minWidth: 240, maxWidth: 360, maxLines: 2 },
+  { title: '房源状态', role: 'listingStatus', aliases: ['房源状态', '状态', 'listingStatus'], minWidth: 150, maxWidth: 210, maxLines: 1 }
+]
+const companySheetHeaders = companySheetColumns.map((column) => column.title)
 const tabBarPages = [
   '/pages/index/index',
   listingTabUrl,
   '/pages/map/map',
   '/pages/profile/profile'
 ]
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 function textWeight(value) {
   return String(value || '').split('').reduce((sum, char) => {
@@ -43,11 +73,15 @@ function hasCellText(row) {
 
 function isAreaHeader(value) {
   const text = String(value || '').trim()
-  return /^(区域|区|片区|商圈)$/.test(text) || /区域/.test(text)
+  return /^(行政区|区域|区|片区)$/.test(text)
+}
+
+function isBlockHeader(value) {
+  return /^(板块\/商圈|板块|商圈)$/.test(String(value || '').trim())
 }
 
 function isCommunityHeader(value) {
-  return /小区|楼盘|社区/.test(String(value || '').trim())
+  return /^(小区|小区名称|楼盘|社区)$/.test(String(value || '').trim())
 }
 
 function isBuildingHeader(value) {
@@ -110,8 +144,10 @@ function formatRoomNumber(building, unit, room) {
 }
 
 function findHeaderIndex(rows) {
-  const index = rows.findIndex((row) => row.some(isAreaHeader) && row.some(isCommunityHeader))
-  return index
+  return rows.findIndex((row) => {
+    if (!Array.isArray(row) || row.length !== companySheetHeaders.length) return false
+    return companySheetHeaders.every((header, index) => String(row[index] || '').trim() === header)
+  })
 }
 
 function buildSheetColumnIndexes(header, dataRows, snapshot) {
@@ -161,16 +197,7 @@ function applyRoomMergeToRow(row, merge, headerRow) {
   return next
 }
 
-const sheetDisplayColumns = [
-  { title: '区域', aliases: ['区域', '区', '片区', '商圈', 'district', 'area'], minWidth: 132, maxWidth: 180 },
-  { title: '小区', aliases: ['小区', '小区名称', '楼盘', '社区', 'community', 'sourceCommunity'], minWidth: 180, maxWidth: 260 },
-  { title: '房号', aliases: ['房号', '房间号', '门牌号', '室号', '房源房号', 'roomNumber', 'roomNo', 'houseNo', 'doorNo'], minWidth: 150, maxWidth: 210 },
-  { title: '户型描述', aliases: ['户型描述', '描述', '房源描述', '户型信息', '房源信息', '房源详情', 'layoutDescription', 'description'], minWidth: 420, maxWidth: 620 },
-  { title: '户型分类', aliases: ['户型分类', '户型', '格局', '分类', 'category', 'layoutCategory'], minWidth: 170, maxWidth: 230 },
-  { title: '押一付一', aliases: ['押一付一', '押一', '月租', '租金', '价格', 'rent', 'price'], minWidth: 140, maxWidth: 180 },
-  { title: '押二付一', aliases: ['押二付一', '押二', '押二付一价格', '押二价格'], minWidth: 140, maxWidth: 180 },
-  { title: '备注', aliases: ['备注', '说明', '备注说明', '水电', 'note', 'remark'], minWidth: 240, maxWidth: 360 }
-]
+const sheetDisplayColumns = companySheetColumns
 
 function normalizeFieldKey(value) {
   return String(value || '')
@@ -205,7 +232,8 @@ function longestText(values) {
 function projectSheetRow(cells, header) {
   const building = firstCellByAliases(cells, header, ['楼栋', '几栋', '栋', '幢', '楼号', '幢号', 'building', 'buildingNo'])
   const unit = firstCellByAliases(cells, header, ['单元', '几单元', 'unit', 'unitNo'])
-  const room = firstCellByAliases(cells, header, sheetDisplayColumns[2].aliases)
+  const roomColumn = sheetDisplayColumns.find((column) => column.role === 'roomLabel')
+  const room = firstCellByAliases(cells, header, roomColumn ? roomColumn.aliases : [])
   return sheetDisplayColumns.map((column) => {
     if (column.title === '房号') return formatRoomNumber(building, unit, room)
     if (column.title === '户型描述') {
@@ -267,37 +295,79 @@ function makeSpan(rows, colIndex, keyBuilder) {
   return spans
 }
 
-function buildSheetModel(snapshot) {
-  const rawRows = getSheetRows(snapshot).filter(hasCellText)
-  if (!rawRows.length) {
-    return {
-      noteRows: [],
-      header: ['区域', '小区', '房源信息'],
-      dataRows: [],
-      listingCount: 0,
-      groupColumns: [],
-      spans: []
-    }
+function emptySheetModel(options = {}) {
+  return {
+    noteRows: [],
+    header: companySheetHeaders.slice(),
+    dataRows: [],
+    listingCount: 0,
+    groupColumns: [0, 1, 2],
+    districtCol: 0,
+    blockCol: 1,
+    communityCol: 2,
+    areaCol: 0,
+    maxLines: companySheetColumns.map((column) => column.maxLines || 1),
+    spans: [],
+    invalidSchema: options.invalidSchema === true,
+    unavailable: options.unavailable === true
   }
+}
+
+function buildSheetSpans(dataRows, areaCol, blockCol, communityCol) {
+  const spans = []
+  if (areaCol >= 0) {
+    spans.push(...makeSpan(dataRows, areaCol, (row) => row.district))
+  }
+  if (blockCol >= 0) {
+    spans.push(...makeSpan(dataRows, blockCol, (row) => `${row.district}|${row.block}`))
+  }
+  if (communityCol >= 0) {
+    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.district}|${row.block}|${row.community}`))
+  }
+  return spans
+}
+
+function buildSheetModel(snapshot) {
+  const isV2Snapshot = snapshot && (
+    snapshot.contract === companySheetSnapshotContract.CONTRACT ||
+    snapshot.sourceMode === companySheetSnapshotContract.SOURCE_MODE ||
+    Number(snapshot.schemaVersion) === companySheetSnapshotContract.SCHEMA_VERSION ||
+    Number(snapshot.minReaderVersion) === companySheetSnapshotContract.MIN_READER_VERSION
+  )
+  if (isV2Snapshot) {
+    // v2 的 rows 从第一行起就是固定十列业务数据；表头只来自本地契约。
+    // 校验失败直接返回 invalidSchema，绝不回到 v1 的找表头/合并单元格填充逻辑。
+    return companySheetSnapshotContract.toHomepageCompanySheetModel(snapshot)
+  }
+  const sourceRows = snapshot && snapshot.rows
+  const contractMatches = snapshot &&
+    snapshot.sourceMode === companySheetSourceMode &&
+    Number(snapshot.schemaVersion) === companySheetSchemaVersion
+  if (snapshot && snapshot.unavailable === true) return emptySheetModel({ unavailable: true })
+  if (!contractMatches ||
+      !Array.isArray(sourceRows) ||
+      !sourceRows.length ||
+      sourceRows.some((row) => !Array.isArray(row) || row.length !== companySheetHeaders.length)) {
+    return emptySheetModel({ invalidSchema: true })
+  }
+  const rawRows = getSheetRows(snapshot).filter(hasCellText)
+  if (!rawRows.length) return emptySheetModel({ invalidSchema: true })
 
   const headerIndex = findHeaderIndex(rawRows)
-  const hasHeader = headerIndex >= 0
-  const sourceHeader = hasHeader ? rawRows[headerIndex] : sheetDisplayColumns.map((column) => column.title)
-  const sourceDataRows = (hasHeader ? rawRows.slice(headerIndex + 1) : rawRows).filter(hasCellText)
-  const columnIndexes = buildSheetColumnIndexes(sourceHeader, sourceDataRows, snapshot)
-  const baseHeader = columnIndexes.map((sourceIndex, index) => {
-    const text = String(sourceHeader[sourceIndex] || '').trim()
-    return text || `字段${index + 1}`
-  })
-  const header = baseHeader
+  if (headerIndex < 0) return emptySheetModel({ invalidSchema: true })
+  const header = companySheetHeaders.slice()
+  const sourceDataRows = rawRows.slice(headerIndex + 1).filter(hasCellText)
+  const columnIndexes = companySheetHeaders.map((_, index) => index)
   const areaCol = header.findIndex(isAreaHeader)
+  const blockCol = header.findIndex(isBlockHeader)
   const communityCol = header.findIndex(isCommunityHeader)
   let lastArea = ''
+  let lastBlock = ''
   let lastCommunity = ''
   const dataRows = sourceDataRows.map((sourceRow) => {
     const cells = columnIndexes.map((sourceIndex) => String(sourceRow[sourceIndex] || '').trim())
     const hasListingValue = cells.some((cell, index) => {
-      if (index === areaCol || index === communityCol) return false
+      if (index === areaCol || index === blockCol || index === communityCol) return false
       return Boolean(String(cell || '').trim())
     })
     const sectionText = !hasListingValue ? longestText(cells) : ''
@@ -313,9 +383,18 @@ function buildSheetModel(snapshot) {
     if (areaCol >= 0) {
       if (cells[areaCol]) {
         lastArea = cells[areaCol]
+        lastBlock = ''
         lastCommunity = ''
       } else {
         cells[areaCol] = lastArea
+      }
+    }
+    if (blockCol >= 0) {
+      if (cells[blockCol]) {
+        if (cells[blockCol] !== lastBlock) lastCommunity = ''
+        lastBlock = cells[blockCol]
+      } else {
+        cells[blockCol] = lastBlock
       }
     }
     if (communityCol >= 0) {
@@ -327,36 +406,50 @@ function buildSheetModel(snapshot) {
     }
     return {
       area: areaCol >= 0 ? cells[areaCol] : '',
+      district: areaCol >= 0 ? cells[areaCol] : '',
+      block: blockCol >= 0 ? cells[blockCol] : '',
       community: communityCol >= 0 ? cells[communityCol] : '',
       cells
     }
   }).filter((row) => row.isSection || row.cells.some((cell) => String(cell || '').trim()))
 
-  const groupColumns = [areaCol, communityCol].filter((index) => index >= 0)
-  const spans = []
-  if (areaCol >= 0) {
-    spans.push(...makeSpan(dataRows, areaCol, (row) => row.area))
-  }
-  if (communityCol >= 0) {
-    spans.push(...makeSpan(dataRows, communityCol, (row) => `${row.area}|${row.community}`))
-  }
+  const groupColumns = [areaCol, blockCol, communityCol].filter((index) => index >= 0)
+  const spans = buildSheetSpans(dataRows, areaCol, blockCol, communityCol)
 
   return {
-    noteRows: hasHeader ? rawRows.slice(0, headerIndex).filter(hasCellText) : [],
+    noteRows: [],
     header,
     dataRows,
     listingCount: dataRows.filter((row) => !row.isSection).length,
     groupColumns,
+    districtCol: areaCol,
+    blockCol,
     areaCol,
     communityCol,
-    spans
+    maxLines: companySheetColumns.map((column) => column.maxLines || 1),
+    spans,
+    invalidSchema: false,
+    unavailable: false
   }
 }
 
-function buildSnapshotMetrics(snapshot) {
-  const model = buildSheetModel(snapshot)
-  const widths = buildColumnWidths(model)
-  const maxImageWidth = 5200
+function buildPagedSheetModel(model, dataRows) {
+  const rows = (dataRows || []).map((row) => Object.assign({}, row, {
+    cells: Array.isArray(row && row.cells) ? row.cells.slice() : []
+  }))
+  return Object.assign({}, model, {
+    dataRows: rows,
+    listingCount: rows.filter((row) => !row.isSection).length,
+    spans: buildSheetSpans(rows, model.areaCol, model.blockCol, model.communityCol)
+  })
+}
+
+function buildSnapshotMetrics(snapshot, modelOverride, widthSource) {
+  const model = modelOverride || buildSheetModel(snapshot)
+  const widths = Array.isArray(widthSource) && widthSource.length === model.header.length
+    ? widthSource.slice()
+    : buildColumnWidths(model)
+  const maxImageWidth = companySheetCanvasLogicalMaxEdge
   const baseWidth = widths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2
   const scale = baseWidth > maxImageWidth ? (maxImageWidth - snapshotCanvasPadding * 2) / (baseWidth - snapshotCanvasPadding * 2) : 1
   const columnWidths = widths.map((item) => Math.max(112, Math.floor(item * scale)))
@@ -372,6 +465,45 @@ function buildSnapshotMetrics(snapshot) {
     width: Math.max(640, columnWidths.reduce((sum, item) => sum + item, 0) + snapshotCanvasPadding * 2),
     height: 116 + noteHeight + headerHeight + Math.max(1, model.dataRows.length) * dataRowHeight + 54
   }
+}
+
+function snapshotMetricsFitCanvas(metrics, pixelRatio = companySheetCanvasMaxPixelRatio) {
+  if (!metrics || !Number.isFinite(metrics.width) || !Number.isFinite(metrics.height)) return false
+  const ratio = Math.max(1, Math.min(Number(pixelRatio) || companySheetCanvasMaxPixelRatio, companySheetCanvasMaxPixelRatio))
+  return metrics.width > 0 &&
+    metrics.height > 0 &&
+    Math.ceil(metrics.width * ratio) <= companySheetCanvasMaxEdgePixels &&
+    Math.ceil(metrics.height * ratio) <= companySheetCanvasMaxEdgePixels
+}
+
+function buildSnapshotPages(snapshot, modelOverride) {
+  const model = modelOverride || buildSheetModel(snapshot)
+  if (model.invalidSchema || model.unavailable || !model.listingCount) return []
+  const pages = []
+  const sharedColumnWidths = buildColumnWidths(model)
+  let listingOffset = 0
+  for (let offset = 0; offset < model.dataRows.length; offset += companySheetMaxRowsPerPage) {
+    const pageRows = model.dataRows.slice(offset, offset + companySheetMaxRowsPerPage)
+    const pageModel = buildPagedSheetModel(model, pageRows)
+    const metrics = buildSnapshotMetrics(snapshot, pageModel, sharedColumnWidths)
+    if (!snapshotMetricsFitCanvas(metrics, companySheetCanvasMaxPixelRatio)) return []
+    const listingStart = listingOffset + 1
+    listingOffset += pageModel.listingCount
+    pages.push({
+      id: `sheet-page-${pages.length + 1}`,
+      pageIndex: pages.length,
+      pageNumber: pages.length + 1,
+      rowStart: offset,
+      rowEnd: offset + pageRows.length,
+      listingStart,
+      listingEnd: listingOffset,
+      listingCount: pageModel.listingCount,
+      model: pageModel,
+      metrics
+    })
+  }
+  const totalPages = pages.length
+  return pages.map((page) => Object.assign({}, page, { totalPages }))
 }
 
 function buildSheetPreview(snapshot) {
@@ -396,7 +528,7 @@ function buildSheetPreview(snapshot) {
         id: `r${rowIndex}c${cellIndex}`,
         text,
         width: widths[cellIndex] || 150,
-        strong: cellIndex < 2
+        strong: cellIndex < 3
       }))
     }
   })
@@ -406,6 +538,60 @@ function buildSheetPreview(snapshot) {
     tableWidth: widths.reduce((sum, item) => sum + item, 0),
     listingCount: model.listingCount,
     hiddenCount: Math.max(0, model.dataRows.length - rows.length)
+  }
+}
+
+function snapshotViewState(snapshot) {
+  const model = buildSheetModel(snapshot)
+  const preview = buildSheetPreview(snapshot)
+  if (model.unavailable) {
+    return {
+      model,
+      preview,
+      pages: [],
+      metrics: null,
+      shouldRender: false,
+      status: '房源表暂未同步'
+    }
+  }
+  if (model.invalidSchema) {
+    return {
+      model,
+      preview,
+      pages: [],
+      metrics: null,
+      shouldRender: false,
+      status: '房源表数据格式待更新'
+    }
+  }
+  if (!model.listingCount) {
+    return {
+      model,
+      preview,
+      pages: [],
+      metrics: null,
+      shouldRender: false,
+      status: '当前暂无待租房源'
+    }
+  }
+  const pages = buildSnapshotPages(snapshot, model)
+  if (!pages.length) {
+    return {
+      model,
+      preview,
+      pages: [],
+      metrics: null,
+      shouldRender: false,
+      status: '房源表内容较多，暂不生成图片'
+    }
+  }
+  return {
+    model,
+    preview,
+    pages,
+    metrics: pages[0].metrics,
+    shouldRender: true,
+    status: '正在生成图片'
   }
 }
 
@@ -468,11 +654,11 @@ function drawCenteredText(ctx, text, left, top, width, height, maxWeight) {
   ctx.textBaseline = 'alphabetic'
 }
 
-function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
+function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio, pageInfo) {
   const ctx = canvas.getContext('2d')
   const model = metrics.model
-  canvas.width = metrics.width * pixelRatio
-  canvas.height = metrics.height * pixelRatio
+  canvas.width = Math.ceil(metrics.width * pixelRatio)
+  canvas.height = Math.ceil(metrics.height * pixelRatio)
   ctx.scale(pixelRatio, pixelRatio)
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, metrics.width, metrics.height)
@@ -544,7 +730,10 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
       ctx.strokeRect(rowLeft, rowTop, width, metrics.dataRowHeight)
       ctx.fillStyle = '#222222'
       ctx.font = '400 15px sans-serif'
-      drawCellText(ctx, cell, rowLeft, rowTop, width, metrics.dataRowHeight, { maxLines: colIndex === 3 ? 2 : 1, lineHeight: 18 })
+      drawCellText(ctx, cell, rowLeft, rowTop, width, metrics.dataRowHeight, {
+        maxLines: model.maxLines[colIndex] || 1,
+        lineHeight: 18
+      })
       rowLeft += width
     })
   })
@@ -567,13 +756,19 @@ function drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio) {
 
   ctx.fillStyle = '#78918a'
   ctx.font = '400 18px sans-serif'
-  ctx.fillText(`已按区域/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列`, snapshotCanvasPadding, metrics.height - 20)
+  const pageText = pageInfo && pageInfo.totalPages > 1
+    ? ` · 第 ${pageInfo.pageNumber}/${pageInfo.totalPages} 页`
+    : ''
+  ctx.fillText(`已按行政区/板块/小区划分：${model.listingCount || 0} 条房源 · ${metrics.columnWidths.length} 列${pageText}`, snapshotCanvasPadding, metrics.height - 20)
 }
 
 Page({
   data: {
     assistantText: '',
+    voiceMode: true,
     isVoiceListening: false,
+    voiceCancelActive: false,
+    voicePhase: '',
     voiceText: '',
     voiceTip: '说出预算、区域、户型和特点',
     categories: [
@@ -585,7 +780,7 @@ Page({
     quickActions: [
       {
         title: '地图找房',
-        desc: '查看已确认小区坐标的真实可租房源',
+        desc: '查看分级标注的小区级真实可租房源',
         icon: '图',
         url: '/pages/map/map'
       },
@@ -597,10 +792,17 @@ Page({
       }
     ],
     listings: [],
+    listingsLoading: false,
+    listingsLoadFailed: false,
     companySheetSnapshot: null,
     sheetPreview: null,
     sheetSnapshotImagePath: '',
-    sheetSnapshotStatus: '正在同步飞书表格',
+    sheetSnapshotImagePaths: [],
+    sheetSnapshotCurrentPage: 0,
+    sheetSnapshotPageCount: 0,
+    sheetSnapshotDownloading: false,
+    sheetSnapshotDownloadProgress: '',
+    sheetSnapshotStatus: '正在加载房源表',
     snapshotCanvasWidth: 640,
     snapshotCanvasHeight: 480,
     todayTasks: [],
@@ -621,150 +823,508 @@ Page({
     taskLoading: false,
     workbench: [
       { title: '实名查看留痕', value: '地址和电话查看同步上传人和管理员' },
-      { title: '分佣规则', value: '签单后按平台规则计算' },
+      { title: '历史分佣', value: '当前报备与签单暂停，既有记录只读' },
       { title: '视频房源', value: '普通房源上传只允许视频' },
       { title: '房态维护', value: '第3天提醒，第5天再次提醒，第7天未更新失效' }
     ]
   },
 
   onLoad() {
+    this._pageActive = true
+    this.showNativeShareMenu()
+    this.authSessionSnapshot = currentAuthSessionKey()
+    this.bindAuthInvalidationListener()
     this.initVoiceInput();
   },
 
+  showNativeShareMenu() {
+    if (!wx.showShareMenu) return
+    try {
+      wx.showShareMenu({
+        menus: ['shareAppMessage', 'shareTimeline']
+      })
+    } catch (error) {
+      // 分享菜单能力不应阻断首页既有加载流程。
+    }
+  },
+
+  onShareAppMessage() {
+    return {
+      title: '寓你住一起',
+      path: '/pages/index/index'
+    }
+  },
+
+  onShareTimeline() {
+    return {
+      title: '寓你住一起'
+    }
+  },
+
   onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 0 });
     }
-    // 节流：任务与飞书快照 60 秒内切回首页不重复拉取（快照还伴随 canvas 重绘，开销大）
+    // 工作台任务保留 60 秒节流；房源表图片使用独立成功时间，失败后下次进入立即重试。
     const now = Date.now();
     if (!this._heavyLoadedAt || now - this._heavyLoadedAt > 60000) {
       this._heavyLoadedAt = now;
       this.loadTodayTasks();
-      this.loadCompanySheetSnapshot();
     }
+    if (!this._sheetSnapshotLoading &&
+        (!this._sheetSnapshotLoadedAt || now - this._sheetSnapshotLoadedAt > 60000)) {
+      this.loadCompanySheetSnapshot()
+    }
+    this.loadHomeListings();
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
+      this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+      this._heavyLoadedAt = 0
+      this.setData({
+        listings: [],
+        listingsLoading: false,
+        listingsLoadFailed: false,
+        todayTasks: [],
+        visibleTodayTasks: [],
+        collapsedTaskCount: 0,
+        taskFoldText: '展开其他任务',
+        taskFoldMeta: '',
+        maintenanceWorkbench: { count: 0, unit: '套', foldedText: '0 项已折叠' },
+        taskSummary: { pendingCount: 0, updatedAt: '' },
+        taskLoading: false
+      })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadHomeListings()
+    })
+  },
+
+  loadHomeListings() {
+    const requestSessionKey = this.syncAuthSession().key
+    this._homeListingsRequestSeq = (this._homeListingsRequestSeq || 0) + 1
+    const requestSeq = this._homeListingsRequestSeq
+    this.setData({ listingsLoading: true, listingsLoadFailed: false })
     apiService.getHomeListings().then((listings) => {
-      this.setData({ listings })
+      if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadHomeListings()
+        return
+      }
+      this.setData({
+        listings: listings || [],
+        listingsLoading: false,
+        listingsLoadFailed: false
+      })
     }).catch(() => {
+      if (this._pageActive === false || requestSeq !== this._homeListingsRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadHomeListings()
+        return
+      }
+      this.setData({ listingsLoading: false, listingsLoadFailed: true })
       wx.showToast({ title: '首页房源加载失败', icon: 'none' })
-    });
+    })
+  },
+
+  retryHomeListings() {
+    this.loadHomeListings()
+  },
+
+  onHide() {
+    this.cleanupVoiceInput();
   },
 
   onUnload() {
-    if (this.voiceController && this.data.isVoiceListening) {
-      this.voiceController.stop();
+    this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
+    this._homeListingsRequestSeq = Number(this._homeListingsRequestSeq || 0) + 1
+    this._todayTasksRequestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+    this._sheetSnapshotRequestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
+    this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+    this._sheetSnapshotDownloading = false
+    this._sheetSnapshotLoading = false
+    this._sheetSnapshotPages = []
+    this.cleanupVoiceInput();
+  },
+
+  cleanupVoiceInput() {
+    this.voicePressing = false;
+    this.voicePressStartedAt = 0;
+    this.voiceAutoFindEligible = false;
+    const controller = this.voiceController;
+    if (!controller) return;
+    const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening;
+    if (busy && typeof controller.cancel === 'function') {
+      controller.cancel();
+    } else if (busy && typeof controller.stop === 'function') {
+      controller.stop();
+    } else if (typeof controller.release === 'function') {
+      controller.release();
+    }
+    if (this._pageActive !== false && this.data.isVoiceListening) {
+      this.setData({ isVoiceListening: false });
     }
   },
 
+  ensureVoiceInput() {
+    if (!this.voiceController || (typeof this.voiceController.isErrored === 'function' && this.voiceController.isErrored())) {
+      this.initVoiceInput();
+    }
+    return this.voiceController;
+  },
+
   initVoiceInput() {
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
+    const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
+    this._voiceControllerGeneration = voiceControllerGeneration
+    const isCurrentVoiceController = () => (
+      this._pageActive !== false && this._voiceControllerGeneration === voiceControllerGeneration
+    )
+    if (this.voiceController && typeof this.voiceController.release === 'function') {
+      this.voiceController.release();
+    }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        if (!isCurrentVoiceController()) return
+        this.voiceAutoFindEligible = false
+        this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: true,
+          voicePhase: 'recording',
+          voiceCancelActive: false,
+          voiceText: '',
           voiceTip: '正在听，请说出租客需求'
         });
+        // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
+        if (this.voicePressing === false && this.voiceController) {
+          try { this.voiceController.cancel(); } catch (error) {}
+        }
       },
       onRecognize: (text) => {
-        this.applyVoiceText(text, false);
+        if (!isCurrentVoiceController()) return
+        const recognizedText = String(text || '').trim();
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText;
+        // 录音中实时字幕只更新浮层；仅有效长按的最终识别结果可以自动进入找房页。
+        this.setData({ voiceText: text });
+      },
+      onTranscribing: () => {
+        if (!isCurrentVoiceController()) return
+        if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' });
       },
       onStop: (text) => {
-        this.setData({ isVoiceListening: false });
-        if (!text) {
+        if (!isCurrentVoiceController()) return
+        const shouldAutoFind = this.voiceAutoFindEligible === true
+        this.voiceAutoFindEligible = false
+        this.voicePressStartedAt = 0
+        const content = String(text || this.lastVoiceRecognizedText || '').trim();
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+        if (!shouldAutoFind) {
+          this.lastVoiceRecognizedText = '';
+          return;
+        }
+        if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' });
           return;
         }
-        this.applyVoiceText(text, true);
+        this.lastVoiceRecognizedText = '';
+        this.applyVoiceText(content, () => {
+          if (isCurrentVoiceController()) this.runTextMatch();
+        });
       },
-      onError: () => {
+      onCancel: () => {
+        if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
+        this.lastVoiceRecognizedText = '';
         this.setData({
           isVoiceListening: false,
+          voicePhase: '',
+          voiceCancelActive: false,
+          voiceText: '',
+          voiceTip: '说出预算、区域、户型和特点'
+        });
+      },
+      onError: (error) => {
+        if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
+        this.setData({
+          isVoiceListening: false,
+          voicePhase: '',
+          voiceCancelActive: false,
+          voiceText: '',
           voiceTip: '语音识别失败，请重试或手动输入'
         });
-        wx.showToast({ title: '语音识别失败', icon: 'none' });
+        wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' });
       }
     });
   },
 
   loadCompanySheetSnapshot() {
-    this.setData({ sheetSnapshotStatus: '正在同步飞书表格' });
-    apiService.getCompanySheetSnapshot().then((snapshot) => {
-      const metrics = buildSnapshotMetrics(snapshot);
-      const sheetPreview = buildSheetPreview(snapshot);
+    const requestSeq = Number(this._sheetSnapshotRequestSeq || 0) + 1
+    this._sheetSnapshotRequestSeq = requestSeq
+    this._sheetSnapshotLoading = true
+    this.setData({ sheetSnapshotStatus: '正在加载房源表' });
+    return apiService.getCompanySheetSnapshot().then((snapshot) => {
+      if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
+      const viewState = snapshotViewState(snapshot)
+      const pages = viewState.pages || []
+      const metrics = pages.length ? pages[0].metrics : null
+      this._sheetSnapshotPages = pages
+      this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+      this._sheetSnapshotDownloading = false
       this.setData({
         companySheetSnapshot: snapshot,
-        sheetPreview,
+        sheetPreview: viewState.preview,
         sheetSnapshotImagePath: '',
-        sheetSnapshotStatus: snapshot && snapshot.rows && snapshot.rows.length ? '正在生成截图' : '飞书表格暂无内容',
-        snapshotCanvasWidth: metrics.width,
-        snapshotCanvasHeight: metrics.height
-      }, () => this.renderCompanySheetSnapshot(metrics));
+        sheetSnapshotImagePaths: [],
+        sheetSnapshotCurrentPage: 0,
+        sheetSnapshotPageCount: pages.length,
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '',
+        sheetSnapshotStatus: viewState.status,
+        snapshotCanvasWidth: metrics ? metrics.width : 640,
+        snapshotCanvasHeight: metrics ? metrics.height : 480
+      }, () => {
+        if (!viewState.shouldRender) {
+          this._sheetSnapshotLoading = false
+          this._sheetSnapshotLoadedAt = Date.now()
+          return
+        }
+        this.renderCompanySheetSnapshot(pages, requestSeq)
+      });
     }).catch(() => {
+      if (this._pageActive === false || this._sheetSnapshotRequestSeq !== requestSeq) return
+      this._sheetSnapshotLoading = false
+      this._sheetSnapshotLoadedAt = 0
+      this._sheetSnapshotPages = []
+      this._sheetSnapshotDownloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+      this._sheetSnapshotDownloading = false
       this.setData({
         companySheetSnapshot: null,
         sheetPreview: null,
         sheetSnapshotImagePath: '',
-        sheetSnapshotStatus: '飞书表格截图加载失败'
+        sheetSnapshotImagePaths: [],
+        sheetSnapshotCurrentPage: 0,
+        sheetSnapshotPageCount: 0,
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '',
+        sheetSnapshotStatus: '房源表图片加载失败'
       });
-      wx.showToast({ title: '飞书表格加载失败', icon: 'none' });
+      wx.showToast({ title: '房源表加载失败', icon: 'none' });
     });
   },
 
-  renderCompanySheetSnapshot(metrics) {
-    const snapshot = this.data.companySheetSnapshot;
-    if (!snapshot || !snapshot.rows || !snapshot.rows.length) return;
-    wx.createSelectorQuery()
-      .in(this)
-      .select('#companySheetCanvas')
-      .fields({ node: true, size: true })
-      .exec((result) => {
-        const canvas = result && result[0] && result[0].node;
-        if (!canvas) {
-          this.setData({ sheetSnapshotStatus: '当前环境暂不支持生成截图' });
-          return;
+  renderCompanySheetSnapshot(pages, requestSeq) {
+    const isCurrentRequest = () => (
+      this._pageActive !== false &&
+      (requestSeq === undefined || this._sheetSnapshotRequestSeq === requestSeq)
+    )
+    const renderPages = Array.isArray(pages) ? pages.slice() : []
+    const renderTask = () => {
+      if (!isCurrentRequest()) return
+      const snapshot = this.data.companySheetSnapshot
+      if (!snapshot || !snapshot.rows || !snapshot.rows.length || !renderPages.length) {
+        if (isCurrentRequest()) {
+          this._sheetSnapshotLoading = false
+          this._sheetSnapshotLoadedAt = 0
         }
-        const pixelRatio = Math.min(getSystemPixelRatio(), 2);
-        drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio);
-        wx.canvasToTempFilePath({
-          canvas,
-          fileType: 'png',
-          width: metrics.width,
-          height: metrics.height,
-          destWidth: metrics.width * pixelRatio,
-          destHeight: metrics.height * pixelRatio,
-          success: (res) => {
+        return
+      }
+      return new Promise((resolve, reject) => {
+        try {
+          wx.createSelectorQuery()
+            .in(this)
+            .select('#companySheetCanvas')
+            .fields({ node: true, size: true })
+            .exec((result) => {
+              if (!isCurrentRequest()) {
+                resolve(null)
+                return
+              }
+              const canvas = result && result[0] && result[0].node
+              if (!canvas) {
+                const error = new Error('company sheet canvas unavailable')
+                error.sheetStatus = '当前环境暂不支持生成图片'
+                reject(error)
+                return
+              }
+              resolve(canvas)
+            })
+        } catch (error) {
+          reject(error)
+        }
+      }).then((canvas) => {
+        if (!canvas || !isCurrentRequest()) return []
+        const pixelRatio = Math.min(getSystemPixelRatio(), companySheetCanvasMaxPixelRatio)
+        const imagePaths = []
+        return renderPages.reduce((promise, page) => {
+          return promise.then(() => {
+            if (!isCurrentRequest()) return
+            const metrics = page && page.metrics
+            if (!snapshotMetricsFitCanvas(metrics, pixelRatio)) {
+              const error = new Error('company sheet page exceeds canvas limit')
+              error.sheetStatus = '房源表内容较多，暂不生成图片'
+              throw error
+            }
             this.setData({
-              sheetSnapshotImagePath: res.tempFilePath,
-              sheetSnapshotStatus: ''
-            });
-          },
-          fail: () => {
-            this.setData({ sheetSnapshotStatus: '截图生成失败，请下拉刷新重试' });
+              sheetSnapshotStatus: renderPages.length > 1
+                ? `正在生成第 ${page.pageNumber}/${page.totalPages} 页`
+                : '正在生成图片',
+              snapshotCanvasWidth: metrics.width,
+              snapshotCanvasHeight: metrics.height
+            })
+            drawSheetSnapshot(canvas, snapshot, metrics, pixelRatio, page)
+            return new Promise((resolve, reject) => {
+              try {
+                wx.canvasToTempFilePath({
+                  canvas,
+                  fileType: 'png',
+                  width: metrics.width,
+                  height: metrics.height,
+                  destWidth: Math.ceil(metrics.width * pixelRatio),
+                  destHeight: Math.ceil(metrics.height * pixelRatio),
+                  success: (res) => {
+                    if (!isCurrentRequest()) {
+                      resolve()
+                      return
+                    }
+                    const filePath = String(res && res.tempFilePath || '')
+                    if (!filePath) {
+                      reject(new Error('company sheet image path missing'))
+                      return
+                    }
+                    imagePaths.push(filePath)
+                    resolve()
+                  },
+                  fail: reject
+                }, this)
+              } catch (error) {
+                reject(error)
+              }
+            })
+          })
+        }, Promise.resolve()).then(() => {
+          if (!isCurrentRequest()) return []
+          if (imagePaths.length !== renderPages.length) {
+            throw new Error('company sheet page set incomplete')
           }
-        }, this);
-      });
+          return imagePaths
+        })
+      }).then((imagePaths) => {
+        if (!isCurrentRequest() || !imagePaths || !imagePaths.length) return
+        this._sheetSnapshotLoading = false
+        this._sheetSnapshotLoadedAt = Date.now()
+        this.setData({
+          sheetSnapshotImagePath: imagePaths[0],
+          sheetSnapshotImagePaths: imagePaths,
+          sheetSnapshotCurrentPage: 0,
+          sheetSnapshotPageCount: imagePaths.length,
+          sheetSnapshotStatus: ''
+        })
+      }).catch((error) => {
+        if (!isCurrentRequest()) return
+        this._sheetSnapshotLoading = false
+        this._sheetSnapshotLoadedAt = 0
+        this.setData({
+          sheetSnapshotImagePath: '',
+          sheetSnapshotImagePaths: [],
+          sheetSnapshotCurrentPage: 0,
+          sheetSnapshotStatus: error && error.sheetStatus
+            ? error.sheetStatus
+            : '图片生成失败，请重试'
+        })
+      })
+    }
+    const previous = this._sheetSnapshotRenderQueue || Promise.resolve()
+    const queued = previous.catch(() => {}).then(renderTask)
+    this._sheetSnapshotRenderQueue = queued.catch(() => {})
+    return queued
   },
 
-  ensureSheetSnapshotImage() {
-    if (this.data.sheetSnapshotImagePath) return true;
+  ensureSheetSnapshotImages() {
+    const imagePaths = Array.isArray(this.data.sheetSnapshotImagePaths)
+      ? this.data.sheetSnapshotImagePaths.filter(Boolean)
+      : []
+    if (imagePaths.length &&
+        imagePaths.length === Number(this.data.sheetSnapshotPageCount || imagePaths.length)) {
+      return imagePaths
+    }
     wx.showToast({ title: this.data.sheetSnapshotStatus || '截图正在生成', icon: 'none' });
-    return false;
+    return null
+  },
+
+  changeCompanySheetPage(event) {
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {}
+    const step = Number(dataset.step || 0)
+    const requestedIndex = dataset.index === undefined
+      ? Number(this.data.sheetSnapshotCurrentPage || 0) + step
+      : Number(dataset.index)
+    const nextIndex = Math.max(0, Math.min(imagePaths.length - 1, requestedIndex))
+    this.setData({
+      sheetSnapshotCurrentPage: nextIndex,
+      sheetSnapshotImagePath: imagePaths[nextIndex]
+    })
   },
 
   previewCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const currentIndex = Math.max(0, Math.min(
+      imagePaths.length - 1,
+      Number(this.data.sheetSnapshotCurrentPage || 0)
+    ))
     wx.previewImage({
-      current: this.data.sheetSnapshotImagePath,
-      urls: [this.data.sheetSnapshotImagePath]
+      current: imagePaths[currentIndex],
+      urls: imagePaths
     });
   },
 
   shareCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const currentIndex = Math.max(0, Math.min(
+      imagePaths.length - 1,
+      Number(this.data.sheetSnapshotCurrentPage || 0)
+    ))
     if (!wx.showShareImageMenu) {
       wx.showToast({ title: '当前微信版本暂不支持转发图片', icon: 'none' });
       return;
     }
     wx.showShareImageMenu({
-      path: this.data.sheetSnapshotImagePath,
+      path: imagePaths[currentIndex],
       fail: () => {
         wx.showToast({ title: '图片转发未完成', icon: 'none' });
       }
@@ -772,33 +1332,97 @@ Page({
   },
 
   saveCompanySheetSnapshot() {
-    if (!this.ensureSheetSnapshotImage()) return;
-    wx.saveImageToPhotosAlbum({
-      filePath: this.data.sheetSnapshotImagePath,
-      success: () => {
-        wx.showToast({ title: '已保存到相册', icon: 'success' });
-      },
-      fail: (error) => {
-        const message = error && error.errMsg ? error.errMsg : '';
-        if (/auth|authorize|permission/i.test(message)) {
-          wx.showModal({
-            title: '需要相册权限',
-            content: '请允许保存图片到相册后再下载。',
-            confirmText: '去设置',
-            success: (res) => {
-              if (res.confirm && wx.openSetting) wx.openSetting({});
-            }
-          });
-          return;
+    if (this._sheetSnapshotDownloading) {
+      wx.showToast({ title: '正在下载，请稍候', icon: 'none' })
+      return
+    }
+    const imagePaths = this.ensureSheetSnapshotImages()
+    if (!imagePaths) return
+    const downloadSeq = Number(this._sheetSnapshotDownloadSeq || 0) + 1
+    this._sheetSnapshotDownloadSeq = downloadSeq
+    this._sheetSnapshotDownloading = true
+    const isCurrentDownload = () => (
+      this._pageActive !== false &&
+      this._sheetSnapshotDownloadSeq === downloadSeq
+    )
+    const results = []
+    this.setData({
+      sheetSnapshotDownloading: true,
+      sheetSnapshotDownloadProgress: `正在保存 1/${imagePaths.length}`
+    })
+
+    const saveNext = (index) => {
+      if (!isCurrentDownload() || index >= imagePaths.length) return Promise.resolve()
+      this.setData({ sheetSnapshotDownloadProgress: `正在保存 ${index + 1}/${imagePaths.length}` })
+      return new Promise((resolve) => {
+        try {
+          wx.saveImageToPhotosAlbum({
+            filePath: imagePaths[index],
+            success: () => resolve({ ok: true }),
+            fail: (error) => resolve({ ok: false, error })
+          })
+        } catch (error) {
+          resolve({ ok: false, error })
         }
-        wx.showToast({ title: '图片保存失败', icon: 'none' });
+      }).then((result) => {
+        if (!isCurrentDownload()) return
+        results.push(result)
+        return saveNext(index + 1)
+      })
+    }
+
+    return saveNext(0).then(() => {
+      if (!isCurrentDownload()) return
+      const successCount = results.filter((item) => item && item.ok).length
+      const failureCount = imagePaths.length - successCount
+      const summary = failureCount
+        ? `已保存 ${successCount}/${imagePaths.length} 张，${failureCount} 张失败`
+        : `已保存 ${successCount} 张图片`
+      this._sheetSnapshotDownloading = false
+      this.setData({
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: summary
+      })
+      wx.showToast({
+        title: summary,
+        icon: failureCount ? 'none' : 'success'
+      })
+      const permissionDenied = results.some((item) => {
+        const message = item && item.error && item.error.errMsg
+        return !item.ok && /auth|authorize|permission/i.test(String(message || ''))
+      })
+      if (permissionDenied) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存图片到相册后再下载失败的页面。',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
       }
-    });
+    }).catch(() => {
+      if (!isCurrentDownload()) return
+      this._sheetSnapshotDownloading = false
+      this.setData({
+        sheetSnapshotDownloading: false,
+        sheetSnapshotDownloadProgress: '图片保存失败'
+      })
+      wx.showToast({ title: '图片保存失败', icon: 'none' })
+    })
   },
 
   loadTodayTasks() {
+    const requestSessionKey = this.syncAuthSession().key
+    const requestSeq = Number(this._todayTasksRequestSeq || 0) + 1
+    this._todayTasksRequestSeq = requestSeq
     this.setData({ taskLoading: true });
     apiService.getTodayTasks().then((result) => {
+      if (this._pageActive === false || this._todayTasksRequestSeq !== requestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       const todayTasks = (result && result.tasks) || [];
       this.setData({
         taskLoading: false,
@@ -807,6 +1431,11 @@ Page({
         ...this.buildTaskView(todayTasks, this.data.taskExpanded)
       });
     }).catch(() => {
+      if (this._pageActive === false || this._todayTasksRequestSeq !== requestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        this.syncAuthSession()
+        return
+      }
       this.setData({ taskLoading: false });
       wx.showToast({ title: '今日任务加载失败', icon: 'none' });
     });
@@ -842,32 +1471,106 @@ Page({
     });
   },
 
-  toggleVoiceInput() {
-    if (!this.voiceController) {
-      wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' });
+  // 语音/键盘切换（仿微信）：录音/识别中不切换。
+  toggleVoiceMode() {
+    if (this.data.voicePhase) return;
+    const nextVoice = !this.data.voiceMode;
+    if (nextVoice && wx.hideKeyboard) {
+      try { wx.hideKeyboard(); } catch (error) {}
+    }
+    this.setData({ voiceMode: nextVoice });
+  },
+
+  // 按住说话：按下开始录音
+  onVoiceTouchStart(event) {
+    const controller = this.ensureVoiceInput();
+    if (!controller) {
+      const message = (voiceInput.getSupportStatus && voiceInput.getSupportStatus().message) || '当前环境暂不支持语音输入';
+      wx.showToast({ title: message, icon: 'none' });
       return;
     }
+    // 上一句仍在录音/识别收尾（FINAL_WAIT 窗口）时忽略新的按下，避免震动+清屏假象与串句自动提交。
+    if (this.data.voicePhase || (typeof controller.isBusy === 'function' && controller.isBusy())) return;
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
+    this.voiceStartY = Number(touch.clientY || touch.pageY || 0);
+    this.voicePressing = true;
+    this.voicePressStartedAt = Date.now();
+    this.voiceAutoFindEligible = false;
+    this.lastVoiceRecognizedText = '';
+    this.setData({ voiceCancelActive: false, voiceText: '' });
+    if (wx.vibrateShort) {
+      try { wx.vibrateShort({ type: 'light' }); } catch (error) {}
+    }
     try {
-      if (this.data.isVoiceListening) {
-        this.voiceController.stop();
-        return;
-      }
-      this.voiceController.start();
+      controller.start();
     } catch (error) {
-      this.setData({ isVoiceListening: false });
-      wx.showToast({ title: '语音输入启动失败', icon: 'none' });
+      this.voicePressing = false;
+      this.voicePressStartedAt = 0;
+      this.voiceAutoFindEligible = false;
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+      wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' });
     }
   },
 
-  applyVoiceText(text, shouldMatch) {
+  // 按住说话：上滑超过阈值进入「取消发送」态
+  onVoiceTouchMove(event) {
+    if (this.data.voicePhase !== 'recording') return;
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {};
+    const y = Number(touch.clientY || touch.pageY || 0);
+    const slideUp = (this.voiceStartY - y) > 80;
+    if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp });
+  },
+
+  // 按住说话：松开——取消/短按态丢弃，有效长按停止录音并在识别完成后自动找房
+  onVoiceTouchEnd() {
+    this.voicePressing = false;
+    const pressStartedAt = Number(this.voicePressStartedAt || 0);
+    const pressDuration = pressStartedAt > 0 ? Date.now() - pressStartedAt : 0;
+    this.voicePressStartedAt = 0;
+    const controller = this.voiceController;
+    if (!controller) {
+      this.voiceAutoFindEligible = false;
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+      return;
+    }
+    if (this.data.voiceCancelActive || pressDuration < MIN_VOICE_PRESS_DURATION_MS) {
+      this.voiceAutoFindEligible = false;
+      controller.cancel();
+      return;
+    }
+    // 达到最短长按时长且仍在录音，才允许最终识别结果自动进入找房页。
+    if (this.data.voicePhase === 'recording') {
+      this.voiceAutoFindEligible = true;
+      try {
+        controller.stop();
+      } catch (error) {
+        this.voiceAutoFindEligible = false;
+        controller.cancel();
+      }
+    }
+  },
+
+  onVoiceTouchCancel() {
+    this.voicePressing = false;
+    this.voicePressStartedAt = 0;
+    this.voiceAutoFindEligible = false;
+    const controller = this.voiceController;
+    if (controller) {
+      controller.cancel();
+    } else {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false });
+    }
+  },
+
+  noop() {},
+
+  applyVoiceText(text, callback) {
     const nextData = {
       assistantText: text,
       voiceText: text,
       voiceTip: '已识别，可继续修改'
     };
-    this.setData(nextData, () => {
-      if (shouldMatch) this.runTextMatch();
-    });
+    this.setData(nextData, callback);
   },
 
   handleAssistantInput(event) {
@@ -901,7 +1604,7 @@ Page({
     }
     wx.showModal({
       title: name,
-      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕，签单后按平台规则计算。',
+      content: '该标签用于提示内部协作规则：查看地址和电话会实名留痕；当前报备与签单已暂停，既有分佣记录只读。',
       showCancel: false
     });
   },
@@ -946,7 +1649,7 @@ Page({
       }
     };
     try {
-      wx.setStorageSync(pendingListingFiltersKey, filters);
+      wx.setStorageSync(pendingListingFiltersKey, createPendingFilterEnvelope(filters));
     } catch (error) {
       wx.showToast({ title: '筛选条件保存失败', icon: 'none' });
       return;
@@ -968,5 +1671,13 @@ Page({
     wx.navigateTo({
       url: `/pages/listing-detail/listing-detail?id=${id}`
     });
+  },
+
+  // 视频首帧封面加载失败（如 OSS 未开通媒体处理/编码不支持）时清掉该项 coverUrl，退回占位图，避免裂图。
+  onCoverError(event) {
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {};
+    const index = findFailedCoverIndex(this.data.listings, dataset.id, dataset.cover);
+    if (index < 0) return;
+    this.setData({ [`listings[${index}].coverUrl`]: '' });
   }
 })

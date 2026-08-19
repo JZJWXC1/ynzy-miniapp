@@ -96,6 +96,7 @@ function makeDb() {
       listing('WD01', { area: '拱墅', block: '万达', community: '拱墅万达公寓', rent: 1950, layout: '合租单间', rentMode: '合租', room: '单间', latitude: 30.333, longitude: 120.128, features: ['独卫'] }),
       listing('WD02', { area: '拱墅', block: '万达', community: '万融城', rent: 2100, layout: '合租单间', rentMode: '合租', room: '单间', latitude: 30.333846, longitude: 120.127299, features: ['电梯'] }),
       listing('WD03', { area: '拱墅', block: '万达', community: '吉如家园', rent: 2500, layout: '合租单间', rentMode: '合租', room: '单间', latitude: 30.31814, longitude: 120.129706, features: ['独卫'] }),
+      listing('DXY01', { area: '拱墅', block: '东新园', community: '东新园', rent: 3800, layout: '整租两室一厅一卫', rentMode: '整租', room: '两室', latitude: 30.303, longitude: 120.168, features: ['燃气', '电梯'] }),
       listing('LF01', { area: '拱墅', block: '祥符', community: '乐富智慧园公寓', rent: 1450, layout: '整租一室一厅一卫', rentMode: '整租', room: '一室', latitude: 30.335, longitude: 120.121, features: ['电梯'] }),
       listing('LF02', { area: '拱墅', block: '祥符', community: '小洋坝家园二区', rent: 1550, layout: '整租一室一厅一卫', rentMode: '整租', room: '一室', latitude: 30.342, longitude: 120.116, features: ['近地铁'] }),
       listing('LF03', { area: '拱墅', block: '祥符', community: '昌运里三区', rent: 1800, layout: '整租一室一厅一卫', rentMode: '整租', room: '一室', latitude: 30.36, longitude: 120.16, features: ['燃气'] })
@@ -130,7 +131,10 @@ async function main() {
   assert.strictEqual(result.need.searchMode, 'radius_around_place')
   assert.strictEqual(result.need.anchorName, '新天地')
   assert.strictEqual(result.need.radiusKm, 3)
-  assert(ids(result).includes('XTD01'), '应返回新天地内两室整租')
+  assert(
+    ids(result).includes('XTD01'),
+    `应返回新天地内两室整租；实际房源=${JSON.stringify(ids(result))}，地点=${JSON.stringify(result.placeResolution || {})}`
+  )
   assert(ids(result).includes('XTD02'), '应返回新天地周边两室整租')
   assert(ids(result).includes('XTD03'), '应返回3公里内两室整租')
   assert(!ids(result).includes('XTD04'), '不应返回一室整租')
@@ -148,6 +152,16 @@ async function main() {
   assert(!ids(result).includes('LF01'), '单间问题不应混入一室整租')
   assert(!ids(result).includes('LF02'), '单间问题不应混入一室整租')
   assertSafe(result)
+
+  result = await ask(db, '东新园附近两室4000以内')
+  assert(
+    !result.need.searchMode,
+    `已知板块附近问法不应进入坐标半径分支；实际需求=${JSON.stringify(result.need)}，地点=${JSON.stringify(result.placeResolution || {})}`
+  )
+  assert.strictEqual(result.need.community, '东新园', '已知板块应直接落入小区/板块筛选槽位')
+  assert.strictEqual(result.nextQuestion || '', '', '东新园是已知板块，不应追问坐标或地址')
+  assert(ids(result).includes('DXY01'), '应返回东新园板块两室房源')
+  assert(!/没确认坐标|附近的地点|具体地址/.test(result.reply || ''), '已知板块命中后不得出现坐标未确认话术')
 
   result = await ask(db, '想住新天地，三千七以内，两室')
   assert.strictEqual(result.need.community, '新天地')
@@ -171,8 +185,8 @@ async function main() {
   assert.strictEqual(result.need.anchorRole, 'workplace')
   assert.strictEqual(result.need.radiusKm, 2)
   assert(ids(result).includes('LF01'), '应返回乐富智慧园附近一室整租')
-  assert(ids(result).includes('LF02'), '应返回两公里内略超预算的一室整租')
-  assert(!ids(result).includes('LF03'), '不应返回两公里外房源')
+  assert(ids(result).includes('LF03'), '应按公开小区坐标返回两公里内略超预算的一室整租')
+  assert(!ids(result).includes('LF02'), '公开小区坐标在两公里外的房源不应凭逐套精确坐标混入')
   assertSafe(result)
 
   result = await ask(db, '陌生产业园2公里内有什么一室整租')
@@ -185,6 +199,17 @@ async function main() {
   assert(result.nextQuestion, '未知小区无坐标时应追问')
   assert.strictEqual((result.listings || []).length, 0, '未知小区无坐标时不应返回全局推荐')
   assert.strictEqual(result.placeResolution.status, 'missing', '未知小区应返回 missing 解析状态')
+
+  // MODEL-2 固化（第③刀）：库外小区（坐标库无）但板块已知(新天地)且无精确坐标的房源，
+  // 应经『板块中心近似坐标』兜底被半径检索找到（此前会被静默过滤=漏推）；
+  // 而无板块、坐标库也无的房源不得凭空编造坐标进入半径结果（守精确优先「不编造坐标」）。
+  const bcDb = makeDb()
+  bcDb.listings.push(listing('BC01', { area: '拱墅', block: '新天地', community: '新天地某未收录苑', rent: 3800, layout: '整租两室一厅一卫', rentMode: '整租', room: '两室', latitude: '', longitude: '', features: ['电梯'] }))
+  bcDb.listings.push(listing('BC02', { area: '余杭', block: '', community: '彻底陌生小区无已知板块', rent: 3800, layout: '整租两室一厅一卫', rentMode: '整租', room: '两室', latitude: '', longitude: '', features: ['电梯'] }))
+  result = await ask(bcDb, '新天地3公里内有哪些整租的两室')
+  assert(ids(result).includes('BC01'), 'MODEL-2：库外小区但板块已知(新天地)的房源应经板块中心兜底被半径找到（不漏推）')
+  assert(!ids(result).includes('BC02'), 'MODEL-2：无已知板块、坐标库也无的房源不得凭空编造坐标进入半径结果')
+  assertSafe(result)
 
   console.log('assistant-radius-search-test passed')
 }

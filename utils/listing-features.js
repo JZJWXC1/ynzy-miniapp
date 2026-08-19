@@ -1,6 +1,7 @@
 const NO_FEATURE = '无'
 const NO_COMMISSION_FEATURE = '不分佣'
 const DEPOSIT_FREE_FEATURE = '免押金'
+const ELEVATOR_FEATURE = '电梯'
 
 const LISTING_FEATURE_OPTIONS = [
   '近地铁',
@@ -8,6 +9,8 @@ const LISTING_FEATURE_OPTIONS = [
   '燃气',
   '独卫',
   '朝南',
+  'Loft',
+  '落地窗',
   '带阳台',
   '带露台（阁楼）',
   '可短租',
@@ -67,6 +70,7 @@ module.exports = {
   NO_FEATURE,
   NO_COMMISSION_FEATURE,
   DEPOSIT_FREE_FEATURE,
+  ELEVATOR_FEATURE,
   LISTING_FEATURE_OPTIONS,
   parseFeatureInput,
   normalizeListingFeatures,

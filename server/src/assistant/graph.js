@@ -170,7 +170,9 @@ async function intentRouterNode(state) {
   const routed = routeIntent(state.payload || {}, [
     state.normalizedText || state.sanitizedText,
     state.normalizedVoiceText || state.sanitizedVoiceText
-  ].filter(Boolean).join('，'))
+  ].filter(Boolean).join('，'), {
+    previousNeed: state.previousNeed || {}
+  })
   return {
     intent: routed.intent,
     intentTopic: routed.topic

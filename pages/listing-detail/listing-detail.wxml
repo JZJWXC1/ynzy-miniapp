@@ -1,33 +1,100 @@
 <navigation-bar title="房源详情" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell detail-page">
+    <block wx:if="{{listingLoading}}">
+      <view class="unavailable-card soft-card">
+        <view class="unavailable-status">正在加载</view>
+        <view class="unavailable-title">正在读取房源详情</view>
+        <view class="unavailable-desc">请稍候，地址、电话和登录权限会以本次服务端结果为准。</view>
+      </view>
+    </block>
+    <block wx:elif="{{listingLoadFailed}}">
+      <view class="unavailable-card soft-card">
+        <view class="unavailable-status">加载失败</view>
+        <view class="unavailable-title">暂时无法读取房源</view>
+        <view class="unavailable-desc">{{listingLoadErrorText || '请检查网络后重试，房源不一定已下架。'}}</view>
+        <view class="unavailable-actions">
+          <button class="ghost-button" bindtap="goBackFromUnavailable">返回上一页</button>
+          <button class="primary-button" bindtap="retryListing">重新加载</button>
+        </view>
+      </view>
+    </block>
+    <block wx:elif="{{unavailableListing.unavailable}}">
+      <view class="unavailable-card soft-card">
+        <view class="unavailable-status">房源已更新</view>
+        <view class="unavailable-title">{{unavailableListing.reasonText || '这套房源暂时不能查看'}}</view>
+        <view class="unavailable-desc">可能已经下架、过期或正在重新同步。返回上一页继续看原需求，或重新发起找房。</view>
+        <view class="unavailable-actions">
+          <button class="ghost-button" bindtap="goBackFromUnavailable">返回上一页</button>
+          <button class="primary-button" bindtap="goFindHouseFromUnavailable">重新找房</button>
+        </view>
+      </view>
+    </block>
+    <block wx:elif="{{listing.id}}">
     <block wx:if="{{listing.videoUrl}}">
       <view class="video-card">
         <video
           class="listing-video"
           src="{{listing.videoUrl}}"
+          poster="{{listing.coverUrl}}"
+          binderror="onVideoPlaybackError"
           controls
           show-center-play-btn
           object-fit="cover"
         ></video>
       </view>
 
-      <view class="video-share-card">
+      <view wx:if="{{canShareVideo}}" class="video-share-card">
         <view class="video-share-copy">
           <view class="video-share-title">转发房间视频给租客</view>
           <view class="video-share-sub">{{shareStateText}}</view>
         </view>
-        <button
-          class="video-share-button"
-          open-type="share"
-          data-share-type="tenant-video"
-          bindtap="prepareVideoShare"
-          disabled="{{!canShareVideo}}"
-        >
-          一键转发
-        </button>
+        <view class="video-share-actions">
+          <button
+            class="video-share-button secondary"
+            loading="{{saveVideoBusy}}"
+            bindtap="saveListingVideo"
+            disabled="{{!canShareVideo || saveVideoBusy || shareVideoBusy}}"
+          >保存视频</button>
+          <button
+            class="video-share-button"
+            loading="{{shareVideoBusy}}"
+            bindtap="prepareVideoShare"
+            disabled="{{!canShareVideo || shareVideoBusy || saveVideoBusy}}"
+          >一键转发</button>
+        </view>
       </view>
     </block>
+    <block wx:else>
+      <view wx:if="{{!listing.imageUrl}}" class="video-card video-empty-card">
+        <view class="video-placeholder">
+          <view class="video-empty-icon">—</view>
+          <view class="video-title">暂无房源视频</view>
+          <view class="video-sub">可先查看房源基本信息，视频素材补齐后会自动显示。</view>
+        </view>
+      </view>
+      <view wx:else class="video-card">
+        <image
+          class="listing-media-image"
+          src="{{listing.imageUrl}}"
+          mode="aspectFill"
+          bindtap="previewCurrentImage"
+          binderror="onImageLoadError"
+        ></image>
+      </view>
+    </block>
+
+    <scroll-view wx:if="{{listing.mediaAssets.length > 1}}" class="media-switcher" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="media-switcher-row">
+        <button
+          wx:for="{{listing.mediaAssets}}"
+          wx:key="assetId"
+          class="media-switch-button {{selectedMediaAssetId === item.assetId ? 'active' : ''}}"
+          data-asset-id="{{item.assetId}}"
+          bindtap="selectMediaAsset"
+        >{{item.label}}</button>
+      </view>
+    </scroll-view>
 
     <view class="detail-card soft-card">
       <view class="detail-head">
@@ -35,7 +102,7 @@
           <view class="listing-title">{{listing.title}}</view>
           <view class="listing-area">{{listing.areaText || listing.area}} · {{listing.status}}</view>
         </view>
-        <view class="commission">{{listing.commissionText || '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手'}}</view>
+        <favorite-toggle listing-id="{{listing.id}}"></favorite-toggle>
       </view>
       <view class="source-badges">
         <text wx:if="{{listing.companyListing}}" class="company-badge">公司房源</text>
@@ -47,40 +114,81 @@
       <view class="facts">
         <view class="fact"><text>¥{{listing.rent}}/月</text><text>租金</text></view>
         <view class="fact"><text>{{listing.layout}}</text><text>户型</text></view>
-        <view class="fact"><text>{{listing.uploader}}</text><text>上传人</text></view>
       </view>
-      <view class="location-grid">
-        <view class="location-item"><text>城市</text><text>{{listing.city || '杭州'}}</text></view>
-        <view class="location-item"><text>区域</text><text>{{listing.district || listing.area}}</text></view>
-        <view class="location-item wide"><text>小区名称</text><text>{{listing.community}}</text></view>
-        <view class="location-item"><text>几栋</text><text>{{listing.building || '-'}}</text></view>
-        <view class="location-item"><text>几单元</text><text>{{listing.unit || '-'}}</text></view>
-        <view class="location-item"><text>房间号</text><text>{{listing.roomNumber || '-'}}</text></view>
+      <view class="location-compact-grid">
+        <view class="location-compact-item"><text>城市</text><text>{{listing.city || '杭州'}}</text></view>
+        <view class="location-compact-item"><text>区域</text><text>{{listing.district || listing.area}}</text></view>
+        <view class="location-compact-item"><text>板块</text><text>{{listing.block || '-'}}</text></view>
+        <view class="location-compact-item community"><text>小区</text><text>{{listing.community}}</text></view>
+        <view wx:if="{{sensitiveVisible}}" class="location-compact-item"><text>楼栋</text><text>{{listing.building || '-'}}</text></view>
+        <view wx:if="{{sensitiveVisible}}" class="location-compact-item"><text>单元</text><text>{{listing.unit || '-'}}</text></view>
+        <view wx:if="{{sensitiveVisible}}" class="location-compact-item"><text>房间</text><text>{{listing.roomNumber || '-'}}</text></view>
+      </view>
+      <view wx:if="{{listing.remark && (listing.companyListing || sensitiveVisible)}}" class="listing-remark">
+        <view class="listing-remark-label">房源备注</view>
+        <view class="listing-remark-value">{{listing.remark}}</view>
+      </view>
+      <view wx:if="{{listing.commissionBreakdown}}" class="commission-detail">
+        <view class="commission-detail-head">
+          <text>佣金明细</text>
+          <text>均为占月租比例</text>
+        </view>
+        <view class="commission-detail-row total"><text>房东总佣金</text><text>{{listing.commissionBreakdown.landlordPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>带看人</text><text>{{listing.commissionBreakdown.viewingAgentPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>房源维护人</text><text>{{listing.commissionBreakdown.maintainerPercentOfRent}}%</text></view>
+        <view class="commission-detail-row"><text>平台服务费</text><text>{{listing.commissionBreakdown.platformPercentOfRent}}%</text></view>
       </view>
     </view>
 
     <view class="sensitive-card soft-card">
       <view class="sensitive-head">
         <view>
-          <view class="sensitive-title">地址和房东联系方式</view>
-          <view class="sensitive-desc">查看即留痕，同步给上传人和管理员。</view>
+          <view class="sensitive-title">详细地址、看房方式和房东联系方式</view>
+          <view wx:if="{{!listing.companyListing && isOwnListing}}" class="sensitive-desc own">{{ownSensitiveLoading ? '正在读取自己上传房源的完整信息。' : (ownSensitiveLoadFailed ? '完整信息读取失败，请点击下方按钮重试。' : '自己上传的房源，详细地址、看房方式和房东电话已直接展示，不留足迹、不耗额度。')}}</view>
+          <view wx:elif="{{!listing.companyListing}}" class="sensitive-desc">查看即留痕，同步给上传人和管理员。</view>
         </view>
         <view class="verify-tag">{{sensitiveAuthLabel}}</view>
       </view>
       <view class="hidden-row">
         <view class="hidden-label">详细地址</view>
-        <view class="hidden-value">{{sensitiveVisible ? listing.address : '完成确认后可查看'}}</view>
+        <view class="hidden-value">{{sensitiveVisible ? listing.address : sensitivePlaceholder}}</view>
       </view>
       <view class="hidden-row">
-        <view class="hidden-label">房东电话</view>
-        <view class="hidden-value">{{sensitiveVisible ? listing.landlordPhone : '完成确认后可查看'}}</view>
+        <view class="hidden-label">看房方式</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.viewingMethodText || '待补充') : sensitivePlaceholder}}</view>
       </view>
-      <view class="need-bind-row {{needId ? 'bound' : ''}}">
-        <view class="need-bind-title">{{needId ? '已绑定需求单' : '未绑定需求单'}}</view>
-        <view class="need-bind-desc">{{needId ? needId : '从找房助手进入会自动带入，也可用当前房源创建最小需求。'}}</view>
+      <view wx:if="{{listing.viewingMethod === '钥匙'}}" class="hidden-row">
+        <view class="hidden-label">钥匙在哪</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.viewingKeyLocation || '待补充') : sensitivePlaceholder}}</view>
       </view>
-      <button class="primary-button" bindtap="revealSensitive">{{sensitiveVisible ? '已记录足迹' : '查看地址和电话'}}</button>
-      <view class="showing-action-card {{showingSubmitting ? 'is-loading' : ''}}" bindtap="recordShowing">
+      <view wx:if="{{listing.viewingMethod === '密码'}}" class="hidden-row">
+        <view class="hidden-label">看房密码</view>
+        <view class="hidden-value">{{sensitiveVisible ? (listing.viewingPassword || '待补充') : sensitivePlaceholder}}</view>
+      </view>
+      <view class="hidden-row">
+        <view class="hidden-label">{{listing.companyListing ? '公司看房电话' : '房东电话'}}</view>
+        <view wx:if="{{listing.companyListing}}" class="hidden-value company-phone-list">
+          <text wx:for="{{listing.companyContactPhones}}" wx:key="*this" class="company-phone-item">{{item}}</text>
+          <text wx:if="{{!listing.companyContactPhones || !listing.companyContactPhones.length}}">待补充</text>
+        </view>
+        <view wx:else class="hidden-value">{{sensitiveVisible ? (listing.landlordPhone || '待补充') : sensitivePlaceholder}}</view>
+      </view>
+      <button
+        wx:if="{{!listing.companyListing && sensitiveVisible && listing.landlordPhone}}"
+        class="phone-call-button"
+        loading="{{phoneCallBusy}}"
+        disabled="{{phoneCallBusy}}"
+        bindtap="callLandlord"
+      >联系房东</button>
+      <button
+        wx:if="{{!listing.companyListing && isOwnListing}}"
+        class="primary-button own"
+        loading="{{ownSensitiveLoading}}"
+        disabled="{{ownSensitiveLoading || sensitiveVisible}}"
+        bindtap="retryOwnSensitive"
+      >{{ownSensitiveLoading ? '正在读取完整信息' : (ownSensitiveLoadFailed ? '重新读取完整信息' : '自己上传·免留痕直接展示')}}</button>
+      <button wx:elif="{{!listing.companyListing}}" class="primary-button" bindtap="revealSensitive">{{sensitiveVisible ? '已记录足迹' : '查看详细地址和联系方式'}}</button>
+      <view wx:if="{{!listing.companyListing}}" class="showing-action-card {{showingSubmitting ? 'is-loading' : ''}}" bindtap="recordShowing">
         <view class="showing-action-copy">
           <text class="showing-action-title">{{showingSubmitting ? '提交审核中' : '拍水印照片记录带看'}}</text>
           <text class="showing-action-sub">现场水印照，审核通过当天生效</text>
@@ -90,7 +198,61 @@
           <text>查看额度</text>
         </view>
       </view>
-      <image wx:if="{{showingPhotoPath}}" class="showing-proof-preview" src="{{showingPhotoPath}}" mode="aspectFill"></image>
+      <image wx:if="{{!listing.companyListing && showingPhotoPath}}" class="showing-proof-preview" src="{{showingPhotoPath}}" mode="aspectFill"></image>
+    </view>
+
+    <view wx:if="{{nearbyListings.length}}" class="nearby-section soft-card">
+      <view class="nearby-section-head">
+        <view>
+          <view class="nearby-section-title">3 公里内的其他房源</view>
+          <view class="nearby-section-sub">仅按服务端已确认坐标计算，距离由近到远</view>
+        </view>
+        <button wx:if="{{nearbyHasMore}}" class="nearby-all-button" bindtap="goNearbyListings">查看全部 {{nearbyTotal}} 套</button>
+      </view>
+      <view
+        wx:for="{{nearbyListings}}"
+        wx:key="id"
+        class="nearby-card"
+        data-id="{{item.id}}"
+        bindtap="openNearbyListing"
+      >
+        <image
+          wx:if="{{item.coverUrl}}"
+          class="nearby-cover"
+          src="{{item.coverUrl}}"
+          mode="aspectFill"
+          lazy-load
+          data-id="{{item.id}}"
+          data-cover="{{item.coverUrl}}"
+          binderror="onNearbyCoverError"
+        ></image>
+        <view wx:elif="{{item.hasVideo}}" class="nearby-cover nearby-media-empty nearby-media-pending">
+          <text class="nearby-media-empty-mark">影</text>
+          <text class="nearby-media-empty-label">点开播放</text>
+        </view>
+        <view wx:else class="nearby-cover nearby-media-empty">
+          <text class="nearby-media-empty-mark">—</text>
+          <text class="nearby-media-empty-label">暂无视频</text>
+        </view>
+        <view class="nearby-card-body">
+          <view class="nearby-card-head">
+            <view class="nearby-card-copy">
+              <view class="nearby-card-title">{{item.title}}</view>
+              <view class="nearby-distance">距当前房源 {{item.distanceText}}</view>
+            </view>
+            <favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle>
+          </view>
+          <view class="nearby-facts">
+            <text>{{item.sourceLabel}}</text>
+            <text>{{item.rentMode || item.type}}</text>
+            <text>{{item.layout}}</text>
+            <text>{{item.price}}</text>
+          </view>
+          <view wx:if="{{item.features && item.features.length}}" class="nearby-features">
+            <text wx:for="{{item.features}}" wx:key="*this" class="nearby-feature">{{item}}</text>
+          </view>
+        </view>
+      </view>
     </view>
 
     <view class="section-title">
@@ -104,72 +266,16 @@
       </view>
     </view>
 
-    <button class="deal-button" bindtap="startReportDeal">先报备客户，再从报备发起签单</button>
+    </block>
   </view>
 </scroll-view>
-<view wx:if="{{reportModalVisible}}" class="v1-modal-mask" catchtap="closeReportModal" catchtouchmove="noop">
+<view wx:if="{{sensitiveConfirmVisible}}" class="v1-modal-mask" catchtap="closeSensitiveConfirm" catchtouchmove="noop">
   <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">客户报备</view>
-    <view class="v1-field">
-      <text>客户称呼</text>
-      <input value="{{reportForm.customerName}}" data-field="customerName" bindinput="updateReportField" placeholder="可选" />
-    </view>
-    <view class="v1-field">
-      <text>客户手机号</text>
-      <input value="{{reportForm.customerPhone}}" data-field="customerPhone" bindinput="updateReportField" type="number" maxlength="11" placeholder="必填" />
-    </view>
+    <view class="v1-modal-title">确认查看详细地址和联系方式</view>
+    <view class="modal-sub">确认后将记录本次查看足迹，并同步给房源维护人和管理员。</view>
     <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeReportModal">取消</button>
-      <button class="primary-button" loading="{{reportSubmitting}}" bindtap="submitClientReport">提交报备</button>
-    </view>
-  </view>
-</view>
-
-<view wx:if="{{sensitivePurposeModalVisible}}" class="v1-modal-mask" catchtap="closeSensitivePurposeModal" catchtouchmove="noop">
-  <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">查看用途</view>
-    <view class="modal-sub">查看地址和房东电话前，请选择本次用途并绑定需求单。</view>
-    <view class="purpose-options">
-      <button
-        wx:for="{{sensitivePurposeOptions}}"
-        wx:key="*this"
-        class="purpose-option {{sensitivePurpose === item ? 'active' : ''}}"
-        data-purpose="{{item}}"
-        bindtap="chooseSensitivePurpose"
-      >
-        {{item}}
-      </button>
-    </view>
-    <view class="v1-field">
-      <text>补充用途</text>
-      <input value="{{sensitivePurposeCustom}}" bindinput="updateSensitivePurposeCustom" placeholder="可选，填写后优先使用" />
-    </view>
-    <view class="need-modal-note">{{needTemporary ? '当前为临时需求单，可继续验证。' : '需求单会随足迹、报备和签单一起提交。'}}</view>
-    <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeSensitivePurposeModal">取消</button>
-      <button class="primary-button" loading="{{sensitiveSubmitting}}" bindtap="confirmRevealSensitive">确认查看</button>
-    </view>
-  </view>
-</view>
-
-<view wx:if="{{dealModalVisible}}" class="v1-modal-mask" catchtap="closeDealModal" catchtouchmove="noop">
-  <view class="v1-modal" catchtap="noop">
-    <view class="v1-modal-title">提交签单</view>
-    <view class="v1-field">
-      <text>成交月租</text>
-      <input value="{{dealForm.monthlyRent}}" data-field="monthlyRent" bindinput="updateDealField" type="digit" placeholder="必填" />
-    </view>
-    <view class="v1-field">
-      <text>房东实付佣金</text>
-      <input value="{{dealForm.landlordCommission}}" data-field="landlordCommission" bindinput="updateDealField" type="digit" placeholder="必填" />
-    </view>
-    <view class="v1-field">
-      <text>备注</text>
-      <textarea value="{{dealForm.remark}}" data-field="remark" bindinput="updateDealField" maxlength="120" placeholder="可选" />
-    </view>
-    <view class="v1-modal-actions">
-      <button class="ghost-button" bindtap="closeDealModal">取消</button>
-      <button class="primary-button" loading="{{dealSubmitting}}" bindtap="submitDealFromReport">提交签单</button>
+      <button class="ghost-button" disabled="{{sensitiveSubmitting}}" bindtap="closeSensitiveConfirm">取消</button>
+      <button class="primary-button" loading="{{sensitiveSubmitting}}" disabled="{{sensitiveSubmitting}}" bindtap="confirmRevealSensitive">确认查看</button>
     </view>
   </view>
 </view>

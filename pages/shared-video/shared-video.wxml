@@ -2,10 +2,21 @@
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell shared-video-page">
     <view class="share-hero">
+      <view wx:if="{{loading}}" class="share-placeholder">
+        <view class="placeholder-title">正在加载房源视频</view>
+      </view>
+      <view wx:elif="{{loadFailed}}" class="share-placeholder">
+        <view class="placeholder-title">视频暂时加载失败</view>
+        <button class="brand-button" bindtap="retryLoad">重新加载</button>
+      </view>
+      <view wx:elif="{{unavailable}}" class="share-placeholder">
+        <view class="placeholder-title">房源不存在或已下架</view>
+      </view>
       <video
-        wx:if="{{listing.videoUrl}}"
+        wx:elif="{{listing.videoUrl}}"
         class="share-video"
         src="{{listing.videoUrl}}"
+        binderror="onVideoPlaybackError"
         controls
         show-center-play-btn
         object-fit="cover"

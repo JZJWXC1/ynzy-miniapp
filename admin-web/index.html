@@ -31,6 +31,65 @@
       background: var(--paper);
     }
 
+    .admin-toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 10000;
+      max-width: min(360px, calc(100vw - 48px));
+      padding: 14px 18px;
+      color: #fff;
+      font-weight: 800;
+      line-height: 1.5;
+      background: var(--deep);
+      border-radius: 12px;
+      box-shadow: 0 16px 42px rgba(21, 63, 54, .24);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(12px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .admin-toast.active {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .admin-data-failure {
+      display: none;
+      position: sticky;
+      top: 12px;
+      z-index: 120;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      color: #7b2418;
+      background: #fff1ed;
+      border: 1px solid #f2b4a6;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(122, 36, 24, .12);
+    }
+
+    .admin-data-failure.active {
+      display: flex;
+    }
+
+    .admin-data-failure span {
+      flex: 1;
+      line-height: 1.5;
+    }
+
+    .admin-data-failure button {
+      flex: 0 0 auto;
+    }
+
+    .app.data-unavailable .panel {
+      opacity: .28;
+      pointer-events: none;
+      user-select: none;
+    }
+
     .login-screen {
       min-height: 100vh;
       display: grid;
@@ -346,7 +405,7 @@
 
     .filter-bar {
       display: grid;
-      grid-template-columns: 160px 160px minmax(220px, 1fr) 92px;
+      grid-template-columns: 140px 140px 140px 140px minmax(200px, 1fr) 92px;
       gap: 12px;
       align-items: end;
       margin-bottom: 14px;
@@ -355,6 +414,12 @@
       border: 1px solid var(--line);
       border-radius: 12px;
       box-shadow: var(--shadow);
+    }
+
+    /* 足迹筛选栏专属列宽：5 个筛选项定宽 + 两个按钮，避免结束日期落到共享 grid 的 1fr 列被拉宽。
+       同为单类选择器且置于基础 .filter-bar 之后、窄屏媒体查询之前，桌面走此列宽、窄屏仍被媒体查询 1fr 覆盖。 */
+    .footprint-filter-bar {
+      grid-template-columns: 160px 160px 150px 150px 150px auto auto;
     }
 
     .filter-item span {
@@ -444,6 +509,26 @@
       font-size: 12px;
       font-weight: 700;
     }
+
+    .conversation-turn {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border, #eee);
+    }
+
+    .conversation-line {
+      margin: 3px 0;
+      line-height: 1.5;
+    }
+
+    .conversation-role {
+      display: inline-block;
+      min-width: 40px;
+      margin-right: 8px;
+      font-weight: 700;
+    }
+
+    .conversation-role.user { color: #2563eb; }
+    .conversation-role.assistant { color: #059669; }
 
     .row-actions {
       display: flex;
@@ -573,12 +658,46 @@
     }
 
     .review-video-link {
-      display: block;
-      padding: 12px 14px;
+      display: inline-flex;
+      align-items: center;
       color: var(--pine);
       font-weight: 900;
       text-decoration: none;
       word-break: break-all;
+    }
+
+    .review-video-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 14px;
+    }
+
+    .review-video-compat-button {
+      min-height: 36px;
+      padding: 8px 12px;
+      border: 1px solid var(--pine);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--pine);
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .review-video-compat-button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    .review-video-status {
+      min-height: 20px;
+      margin: 0;
+      padding: 0 14px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
     }
 
     .review-detail-grid {
@@ -679,6 +798,71 @@
       background: #fff0ec;
     }
 
+    /* 地理编码失败/无可靠坐标：高亮提醒管理员去坐标修正 */
+    .table-action.coord-warn {
+      color: #b45309;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      font-weight: 600;
+    }
+    .coord-warn-pill {
+      display: inline-block;
+      margin: 2px 0;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 18px;
+      color: #b45309;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      white-space: nowrap;
+    }
+
+    .coordinate-card { max-width: 720px; width: min(720px, 94vw); }
+    .coordinate-map {
+      width: 100%;
+      height: 360px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #eef1f5;
+      border: 1px solid #e2e8f0;
+      position: relative;
+      margin: 6px 0 10px;
+    }
+    .coordinate-map-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-size: 13px;
+      text-align: center;
+      padding: 16px;
+    }
+    .coordinate-picker-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .coordinate-readout {
+      font-size: 13px;
+      color: #0f172a;
+      font-weight: 600;
+      background: #f1f5f9;
+      border-radius: 8px;
+      padding: 4px 10px;
+    }
+    .coordinate-manual {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    .coordinate-manual .form-item { flex: 1; }
+
     .empty {
       padding: 26px;
       color: var(--muted);
@@ -741,6 +925,89 @@
 
     .maintenance-card {
       margin-bottom: 14px;
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 32px 20px;
+      background: rgba(21, 63, 54, .45);
+      overflow-y: auto;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(780px, 100%);
+      padding: 24px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .modal-card h3 {
+      margin: 0 0 6px;
+      color: var(--deep);
+      font-size: 18px;
+    }
+
+    .modal-sub {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .modal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .modal-grid .form-item.full {
+      grid-column: 1 / -1;
+    }
+
+    .feature-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .feature-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 0 12px;
+      color: var(--pine);
+      background: var(--mint);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .feature-option input {
+      width: auto;
+      min-height: 0;
+      margin: 0;
+      accent-color: var(--pine);
+    }
+
+    .modal-error {
+      margin-top: 12px;
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 700;
+      min-height: 18px;
     }
 
     .switch-row {
@@ -899,15 +1166,15 @@
 <body>
   <section class="login-screen" id="loginScreen">
     <div class="brand-side">
-      <img class="logo" src="../assets/logo.png" alt="寓你住一起">
+      <img class="logo" src="/admin-web/logo.svg" alt="寓你住一起">
       <h1>内部房源协作管理后台</h1>
-      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、报备记录、签单审核和分佣记录。</p>
+      <p>仅管理员账号可登录。后台用于查看全公司房源、敏感信息查看足迹、历史报备与签单只读记录和分佣记录。</p>
     </div>
     <div class="login-panel">
       <h2 class="panel-title">管理员登录</h2>
       <p class="panel-sub">管理员账号由后端校验。请使用已配置的正式管理员账号。</p>
       <label for="account">账号</label>
-      <input id="account" value="19941091943" autocomplete="username">
+      <input id="account" value="admin" autocomplete="username">
       <label for="password">密码</label>
       <input id="password" value="" type="password" autocomplete="current-password">
       <button class="login-button" id="loginButton">进入后台</button>
@@ -919,7 +1186,7 @@
   <section class="app" id="app">
     <aside class="sidebar">
       <div class="side-brand">
-        <img src="../assets/logo.png" alt="">
+        <img src="/admin-web/logo.svg" alt="">
         <div>
           <strong>寓你住一起</strong>
           <span>管理员后台</span>
@@ -931,26 +1198,32 @@
       <button class="nav-button" data-panel="listingReviews">房源审核</button>
       <button class="nav-button" data-panel="expiredListings">废房源池</button>
       <div class="menu-title">成交闭环</div>
-      <button class="nav-button" data-panel="reports">报备记录</button>
-      <button class="nav-button" data-panel="deals">签单审核</button>
+      <button class="nav-button" data-panel="reports">历史报备（只读）</button>
+      <button class="nav-button" data-panel="deals">历史签单（只读）</button>
       <button class="nav-button" data-panel="commissions">分佣记录</button>
       <div class="menu-title">风控记录</div>
       <button class="nav-button" data-panel="logs">敏感查看足迹</button>
       <button class="nav-button" data-panel="showingUploads">带看审核</button>
-      <div class="menu-title">系统配置</div>
-      <button class="nav-button" data-panel="feishuSync">飞书同步</button>
-      <button class="nav-button" data-panel="llmConfig">LLM配置</button>
-      <button class="nav-button" data-panel="assistantFeedback">客服反馈</button>
-      <button class="nav-button" data-panel="assistantTraces">客服Trace</button>
-      <button class="nav-button" data-panel="launchCheck">上线检查</button>
-      <button class="nav-button" data-panel="admins">账号管理</button>
-      <button class="nav-button" data-panel="dataBackup">数据备份</button>
+      <div class="menu-title" data-super="1">系统配置</div>
+      <button class="nav-button" data-panel="feishuSync" data-super="1">飞书同步</button>
+      <button class="nav-button" data-panel="llmConfig" data-super="1">LLM配置</button>
+      <button class="nav-button" data-panel="assistantFeedback" data-super="1">客服反馈</button>
+      <button class="nav-button" data-panel="assistantTraces" data-super="1">客服Trace</button>
+      <button class="nav-button" data-panel="launchCheck" data-super="1">上线检查</button>
+      <button class="nav-button" data-panel="admins" data-super="1">账号管理</button>
+      <button class="nav-button" data-panel="dataBackup" data-super="1">数据备份</button>
     </aside>
 
     <main class="main">
       <div class="topbar">
         <h2 id="panelTitle">数据总览</h2>
         <div class="admin-tag">管理员：admin</div>
+      </div>
+
+      <div class="admin-data-failure" id="adminDataFailure" role="alert" aria-live="assertive" hidden>
+        <strong>后台数据加载失败</strong>
+        <span id="adminDataFailureText">当前内容不可作为真实数据使用，请重新加载。</span>
+        <button type="button" class="ghost-button" id="retryAdminData">重新加载</button>
       </div>
 
       <section class="panel active" id="dashboard">
@@ -979,7 +1252,32 @@
           </label>
           <div class="status-box" id="maintenanceRuleStatus">正在读取规则状态...</div>
           <div class="inline-actions">
-            <button id="saveMaintenanceRule">保存规则开关</button>
+            <button id="saveMaintenanceRule" data-super="1">保存规则开关</button>
+          </div>
+        </div>
+        <div class="config-card commission-config-card" data-super="1">
+          <h3>分佣配置</h3>
+          <div class="filter-bar">
+            <label class="filter-item">
+              <span>二房东上传人比例</span>
+              <input id="commissionSecondRate" type="number" min="0" max="100" step="0.5" placeholder="20">
+            </label>
+            <label class="filter-item">
+              <span>二房东平台比例</span>
+              <input id="commissionSecondPlatformRate" type="number" min="0" max="100" step="0.5" placeholder="10">
+            </label>
+            <label class="filter-item">
+              <span>业主上传人比例</span>
+              <input id="commissionOwnerRate" type="number" min="0" max="100" step="0.5" placeholder="20">
+            </label>
+            <label class="filter-item">
+              <span>业主平台比例</span>
+              <input id="commissionOwnerPlatformRate" type="number" min="0" max="100" step="0.5" placeholder="10">
+            </label>
+          </div>
+          <div class="status-box" id="commissionConfigStatus">正在读取分佣配置...</div>
+          <div class="inline-actions">
+            <button id="saveCommissionConfig">保存分佣配置</button>
           </div>
         </div>
         <div class="filter-bar">
@@ -987,20 +1285,40 @@
             <span>区域</span>
             <select id="areaFilter">
               <option value="">全部区域</option>
-              <option value="滨江">滨江</option>
-              <option value="萧山">萧山</option>
-              <option value="上城">上城</option>
             </select>
           </label>
           <label class="filter-item">
             <span>板块</span>
             <select id="blockFilter">
               <option value="">全部板块</option>
-              <option value="西兴">西兴</option>
-              <option value="长河">长河</option>
-              <option value="浦沿">浦沿</option>
-              <option value="建设路">建设路</option>
-              <option value="钱江新城">钱江新城</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>来源</span>
+            <select id="sourceFilter">
+              <option value="">全部来源</option>
+              <option value="公司">公司房源</option>
+              <option value="业主">业主房源</option>
+              <option value="二房东">二房东房源</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>状态</span>
+            <select id="statusFilter">
+              <option value="">全部状态</option>
+              <option value="在租">在租</option>
+              <option value="待确认">待确认</option>
+              <option value="待审核">待审核</option>
+              <option value="已驳回">已驳回</option>
+              <option value="成交">已签单/成交</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>视频素材</span>
+            <select id="missingVideoFilter">
+              <option value="">全部视频状态</option>
+              <option value="missing">缺视频素材</option>
+              <option value="ready">已配视频</option>
             </select>
           </label>
           <label class="filter-item">
@@ -1042,6 +1360,56 @@
 
       <section class="panel" id="expiredListings">
         <div class="status-box audit-note">后台资产池保留完整房源信息、视频和标签；重新上架前请核对视频、房态、地址和房东联系方式。</div>
+        <div class="filter-bar">
+          <label class="filter-item">
+            <span>区域</span>
+            <select id="expiredDistrictFilter"><option value="">全部区域</option></select>
+          </label>
+          <label class="filter-item">
+            <span>板块</span>
+            <select id="expiredBlockFilter"><option value="">全部板块</option></select>
+          </label>
+          <label class="filter-item">
+            <span>小区</span>
+            <input id="expiredCommunityFilter" placeholder="输入小区名称筛选">
+          </label>
+          <label class="filter-item">
+            <span>房源类型</span>
+            <select id="expiredSourceFilter">
+              <option value="">全部类型</option>
+              <option value="公司房源">公司房源</option>
+              <option value="业主房源">业主房源</option>
+              <option value="二房东房源">二房东房源</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>最低租金</span>
+            <input id="expiredRentMinFilter" type="number" min="0" step="100" placeholder="不限">
+          </label>
+          <label class="filter-item">
+            <span>最高租金</span>
+            <input id="expiredRentMaxFilter" type="number" min="0" step="100" placeholder="不限">
+          </label>
+          <label class="filter-item">
+            <span>户型</span>
+            <select id="expiredLayoutFilter">
+              <option value="">不限户型</option>
+              <option value="一室">一室</option>
+              <option value="两室">两室</option>
+              <option value="三室">三室</option>
+              <option value="三室以上">三室以上</option>
+            </select>
+          </label>
+          <label class="filter-item">
+            <span>租赁方式</span>
+            <select id="expiredRentModeFilter">
+              <option value="">整租/合租不限</option>
+              <option value="整租">整租</option>
+              <option value="合租">合租</option>
+            </select>
+          </label>
+          <button class="ghost-button" id="resetExpiredListingFilters">重置废房源筛选</button>
+        </div>
         <div id="expiredListingList">
           <div class="table-wrap">
             <table>
@@ -1059,16 +1427,48 @@
       </section>
 
       <section class="panel" id="logs">
+        <div class="config-card">
+          <div class="filter-bar footprint-filter-bar">
+            <label class="filter-item">
+              <span>查看人</span>
+              <select id="footprintViewer"><option value="">全部</option></select>
+            </label>
+            <label class="filter-item">
+              <span>房源/小区</span>
+              <select id="footprintKeyword"><option value="">全部</option></select>
+            </label>
+            <label class="filter-item">
+              <span>查看内容</span>
+              <select id="footprintAction"><option value="">全部</option></select>
+            </label>
+            <label class="filter-item">
+              <span>开始日期</span>
+              <input id="footprintStart" type="date">
+            </label>
+            <label class="filter-item">
+              <span>结束日期</span>
+              <input id="footprintEnd" type="date">
+            </label>
+            <button id="footprintSearch">查询</button>
+            <button class="ghost-button" id="footprintReset">重置</button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>查看人</th><th>房源</th><th>查看内容</th><th>需求/用途</th><th>上传人</th><th>同步状态</th><th>时间</th></tr></thead>
             <tbody id="adminLogRows"></tbody>
           </table>
+          <div class="empty" id="adminLogEmpty" hidden>没有符合条件的足迹</div>
+        </div>
+        <div class="inline-actions" id="footprintPager" hidden>
+          <button class="ghost-button" id="footprintPrev">上一页</button>
+          <span id="footprintPageInfo" class="sub-cell"></span>
+          <button class="ghost-button" id="footprintNext">下一页</button>
         </div>
       </section>
 
       <section class="panel" id="reports">
-        <div class="status-box audit-note">报备客户称呼可选，客户手机号必填；后台只展示脱敏手机号，签单必须从报备记录发起。</div>
+        <div class="status-box audit-note">报备与签单功能暂停，历史数据只读。此处仅供查询既有报备记录，客户手机号继续脱敏展示，不提供新增、编辑或签单操作。</div>
         <div class="table-wrap">
           <table>
 	            <thead><tr><th>报备房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>报备状态</th><th>签单记录</th><th>时间</th></tr></thead>
@@ -1080,13 +1480,13 @@
 
       <section class="panel" id="deals">
         <div class="deal-summary" id="dealSummary"></div>
-        <div class="status-box audit-note">管理员只确认签单；成交月租、房东实付佣金由报备发起人提交。成交总比例由后端固定按房东实付佣金的 20% 计算，上传人与平台留存按房源类型和上传人身份拆分。</div>
+        <div class="status-box audit-note">报备与签单功能暂停，历史数据只读。此处仅展示既有签单及冻结快照，不提供确认签单、状态变更或重新结算操作。</div>
         <div class="table-wrap">
           <table>
-	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>操作</th></tr></thead>
+	            <thead><tr><th>成交房源</th><th>needId / snapshot</th><th>报备中介</th><th>客户</th><th>成交金额</th><th>上传人分佣</th><th>状态</th><th>备注/时间</th><th>只读说明</th></tr></thead>
             <tbody id="dealRows"></tbody>
           </table>
-          <div class="empty" id="dealEmpty" hidden>暂无签单审核记录</div>
+          <div class="empty" id="dealEmpty" hidden>暂无历史签单记录</div>
         </div>
       </section>
 
@@ -1118,7 +1518,7 @@
               <button id="runFeishuSync">立即同步</button>
               <button class="ghost-button" id="dryRunFeishuSync">预演同步</button>
             </div>
-            <div class="hint">同步规则：房源表为最终状态源；素材库按房号匹配视频。飞书下架或房源表删除会进入废房源池，缺素材会在后台标记“缺视频素材”。</div>
+            <div class="hint">同步请求会立即入队并在后台运行；每次先完整预演，再按同一字段、房源和素材摘要正式写入。出现“状态未知”或“已阻断”时自动同步会停止，必须先人工对账。</div>
           </div>
           <div class="config-card">
             <h3>最近结果</h3>
@@ -1226,6 +1626,11 @@
           </table>
           <div class="empty" id="assistantFeedbackEmpty" hidden>暂无客服反馈</div>
         </div>
+        <div class="config-card" id="assistantConversationCard" hidden>
+          <h3>完整对话上下文</h3>
+          <div class="status-box" id="assistantConversationMeta">点击某条反馈的「查看对话」按钮，展示该反馈对应会话的完整多轮对话（已脱敏，不含手机号等隐私）。</div>
+          <div id="assistantConversationBox"></div>
+        </div>
         <div class="config-card">
           <h3>评估样本</h3>
           <div class="status-box">从反馈沉淀出的 eval case，会保留输入、期望需求、期望房源和必须经过的关键节点。</div>
@@ -1282,10 +1687,18 @@
           <h3>新增后台账号</h3>
           <div class="form-grid">
             <label class="form-item">
+              <span>类型</span>
+              <select id="adminTypeInput">
+                <option value="admin">管理账号</option>
+                <option value="broker">中介账号</option>
+                <option value="staff">员工账号</option>
+              </select>
+            </label>
+            <label class="form-item" id="adminUserField">
               <span>员工</span>
               <select id="adminUserId"></select>
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminAccountField">
               <span>账号</span>
               <input id="adminAccountInput" placeholder="3-24 位字母数字">
             </label>
@@ -1293,11 +1706,15 @@
               <span>姓名</span>
               <input id="adminNameInput" placeholder="默认取员工姓名">
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminPhoneField" style="display:none">
+              <span>手机号</span>
+              <input id="adminPhoneInput" placeholder="11 位手机号，中介/员工手机号登录">
+            </label>
+            <label class="form-item" id="adminPasswordField">
               <span>初始密码</span>
               <input id="adminPasswordInput" type="password" placeholder="至少 8 位">
             </label>
-            <label class="form-item">
+            <label class="form-item" id="adminPermissionField">
               <span>权限</span>
               <select id="adminPermissionInput">
                 <option value="全部后台权限">全部后台权限</option>
@@ -1316,6 +1733,20 @@
             <tbody id="adminRows"></tbody>
           </table>
         </div>
+        <div class="config-card">
+          <h3>注册审核</h3>
+          <div class="status-box">小程序注册申请先进入待审核列表，管理员审核通过后才开通账号；通过时选择开通为中介或员工，驳回可留原因。</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>姓名</th><th>手机号</th><th>申请时间</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="registrationRows"></tbody>
+            </table>
+            <div id="registrationEmpty" class="sub-cell" hidden>暂无注册申请。</div>
+          </div>
+          <div class="inline-actions">
+            <button class="ghost-button" id="refreshRegistrations">刷新申请</button>
+          </div>
+        </div>
       </section>
 
       <section class="panel" id="dataBackup">
@@ -1326,9 +1757,157 @@
             <button id="exportDataBackup">导出 JSON 备份</button>
           </div>
         </div>
+        <div class="config-card">
+          <h3>异地备份 / 同步状态</h3>
+          <div class="status-box">展示服务端加密异地备份的新鲜度、飞书云盘最近备份与恢复演练结果。仅显示时间、文件名、成功与否等非敏感元数据，不含任何密钥。</div>
+          <div id="backupSyncStatus"><div class="sub-cell">加载中…</div></div>
+          <div class="inline-actions">
+            <button class="ghost-button" id="refreshBackupStatus">刷新状态</button>
+          </div>
+        </div>
       </section>
     </main>
   </section>
+
+  <div class="modal-overlay" id="listingEditorOverlay">
+    <div class="modal-card">
+      <h3 id="listingEditorTitle">编辑房源</h3>
+      <p class="modal-sub" id="listingEditorSub">修改后立即生效；把状态改为“已下架”会移入后台资产池，可在资产池重新上架。审核与成交状态请走对应流程。</p>
+      <div class="modal-grid">
+        <label class="form-item">
+          <span>区域</span>
+          <input id="editArea" placeholder="如：滨江">
+        </label>
+        <label class="form-item">
+          <span>板块</span>
+          <input id="editBlock" placeholder="如：西兴">
+        </label>
+        <label class="form-item">
+          <span>小区名称</span>
+          <input id="editCommunity" placeholder="小区名称">
+        </label>
+        <label class="form-item">
+          <span>栋</span>
+          <input id="editBuilding" placeholder="如：3栋">
+        </label>
+        <label class="form-item">
+          <span>单元</span>
+          <input id="editUnit" placeholder="如：2单元">
+        </label>
+        <label class="form-item">
+          <span>房号</span>
+          <input id="editRoomNumber" placeholder="如：501室">
+        </label>
+        <label class="form-item">
+          <span>租赁方式</span>
+          <select id="editRentMode">
+            <option value="整租">整租</option>
+            <option value="合租">合租</option>
+          </select>
+        </label>
+        <div class="form-item">
+          <span>户型（室/厅/卫）</span>
+          <div style="display:flex;gap:6px;">
+            <input id="editRoom" placeholder="2室">
+            <input id="editHall" placeholder="1厅">
+            <input id="editBath" placeholder="1卫">
+          </div>
+        </div>
+        <label class="form-item">
+          <span>租金（元/月）</span>
+          <input id="editRent" type="number" min="1" placeholder="如：3500">
+        </label>
+        <label class="form-item">
+          <span>看房方式</span>
+          <select id="editViewingMethod">
+            <option value="">按已有信息（有密码按密码，否则联系房东）</option>
+            <option value="钥匙">钥匙</option>
+            <option value="密码">密码</option>
+            <option value="联系房东">联系房东</option>
+          </select>
+        </label>
+        <label class="form-item">
+          <span>房东电话</span>
+          <input id="editContact" placeholder="合作房源必填；公司房源可留空">
+        </label>
+        <label class="form-item">
+          <span>房东佣金占月租比例（%）</span>
+          <input id="editLandlordCommissionPercent" type="number" min="0" max="100" step="1" placeholder="0-100 的整数，默认 50">
+        </label>
+        <label class="form-item">
+          <span>看房密码</span>
+          <input id="editViewingPassword" placeholder="看房方式为密码时必填，清空表示无密码">
+        </label>
+        <label class="form-item">
+          <span>钥匙位置</span>
+          <input id="editViewingKeyLocation" placeholder="看房方式为钥匙时必填，如 前台领取">
+        </label>
+        <label class="form-item">
+          <span>状态</span>
+          <select id="editStatus">
+            <option value="">保持不变</option>
+            <option value="在租">在租</option>
+            <option value="待确认">待确认</option>
+            <option value="已下架">已下架（移入资产池）</option>
+          </select>
+        </label>
+        <label class="form-item">
+          <span>房源来源</span>
+          <select id="editOwnerType">
+            <option value="二房东房源">二房东房源</option>
+            <option value="业主房源">业主房源</option>
+          </select>
+        </label>
+        <div class="form-item" style="align-self:end;">
+          <span>公司房源</span>
+          <label class="switch-row" style="min-height:44px;">
+            <input type="checkbox" id="editCompanyListing">
+            <span>标记为公司房源（不分佣）</span>
+          </label>
+        </div>
+        <label class="form-item full">
+          <span>视频链接</span>
+          <input id="editVideoUrl" placeholder="视频 URL（留空保持不变）">
+        </label>
+        <label class="form-item full">
+          <span>房源备注（选填，最多 200 字，不得包含电话或微信号）</span>
+          <textarea id="editRemark" maxlength="200" placeholder="水电、采光等补充说明"></textarea>
+        </label>
+        <div class="form-item full">
+          <span>房源特点（至少选一项，无特点请选“无”）</span>
+          <div class="feature-options" id="editFeatureOptions"></div>
+        </div>
+      </div>
+      <div class="modal-error" id="listingEditorError"></div>
+      <div class="inline-actions">
+        <button id="saveListingEditor">保存修改</button>
+        <button class="ghost-button" id="cancelListingEditor">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="coordinateOverlay">
+    <div class="modal-card coordinate-card">
+      <h3 id="coordinateTitle">坐标修正</h3>
+      <p class="modal-sub" id="coordinateSub">在地图上点击或拖动标记，定位到房源真实位置；确认后记为「已确认坐标(verified)」并上图。地图默认中心为拱墅区5号线东新园地铁口。</p>
+      <div id="coordinateMap" class="coordinate-map"><div class="coordinate-map-hint" id="coordinateMapHint">地图加载中…</div></div>
+      <div class="coordinate-picker-row">
+        <span class="coordinate-readout" id="coordinateReadout">未选择坐标</span>
+        <button type="button" class="ghost-button" id="coordinateRecenter">回到默认中心（东新园地铁口）</button>
+      </div>
+      <div class="coordinate-manual" id="coordinateManual">
+        <label class="form-item"><span>纬度 latitude</span><input id="coordinateLat" inputmode="decimal" placeholder="如 30.3066"></label>
+        <label class="form-item"><span>经度 longitude</span><input id="coordinateLng" inputmode="decimal" placeholder="如 120.1734"></label>
+      </div>
+      <div class="modal-error" id="coordinateError"></div>
+      <div class="inline-actions">
+        <button id="saveCoordinate">确认坐标</button>
+        <button class="ghost-button" id="cancelCoordinate">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="admin-toast" id="adminToast" role="status" aria-live="polite"></div>
 
   <script src="../utils/mock-data.js"></script>
   <script>
@@ -1341,8 +1920,8 @@
       listings: '房源管理',
       listingReviews: '房源审核',
       expiredListings: '废房源池',
-      reports: '报备记录',
-      deals: '签单审核',
+      reports: '历史报备（只读）',
+      deals: '历史签单（只读）',
       logs: '敏感查看足迹',
       commissions: '分佣记录',
       showingUploads: '带看审核',
@@ -1386,6 +1965,17 @@
     const areaFilter = document.getElementById('areaFilter');
     const blockFilter = document.getElementById('blockFilter');
     const communityFilter = document.getElementById('communityFilter');
+    const sourceFilter = document.getElementById('sourceFilter');
+    const statusFilter = document.getElementById('statusFilter');
+    const missingVideoFilter = document.getElementById('missingVideoFilter');
+    const expiredDistrictFilter = document.getElementById('expiredDistrictFilter');
+    const expiredBlockFilter = document.getElementById('expiredBlockFilter');
+    const expiredCommunityFilter = document.getElementById('expiredCommunityFilter');
+    const expiredSourceFilter = document.getElementById('expiredSourceFilter');
+    const expiredRentMinFilter = document.getElementById('expiredRentMinFilter');
+    const expiredRentMaxFilter = document.getElementById('expiredRentMaxFilter');
+    const expiredLayoutFilter = document.getElementById('expiredLayoutFilter');
+    const expiredRentModeFilter = document.getElementById('expiredRentModeFilter');
     const listingRows = document.getElementById('listingRows');
     const listingEmpty = document.getElementById('listingEmpty');
     const listingReviewList = document.getElementById('listingReviewList');
@@ -1398,11 +1988,26 @@
     const expiredListingEmpty = document.getElementById('expiredListingEmpty');
     const maintenanceRuleEnabled = document.getElementById('maintenanceRuleEnabled');
     const maintenanceRuleStatus = document.getElementById('maintenanceRuleStatus');
+    const commissionSecondRate = document.getElementById('commissionSecondRate');
+    const commissionSecondPlatformRate = document.getElementById('commissionSecondPlatformRate');
+    const commissionOwnerRate = document.getElementById('commissionOwnerRate');
+    const commissionOwnerPlatformRate = document.getElementById('commissionOwnerPlatformRate');
+    const commissionConfigStatus = document.getElementById('commissionConfigStatus');
+    const defaultCommissionConfig = {
+      secondLandlordRate: 20,
+      ownerRate: 20,
+      companyRate: 0,
+      secondLandlordPlatformRate: 10,
+      ownerPlatformRate: 10
+    };
     let adminToken = sessionStorage.getItem('ynzy_admin_token') || '';
+    let currentAdminId = '';
+    let currentAdminIsSuper = true;
     let llmConfigInitialized = false;
     let listingReviewItems = [];
     let expiredListingItems = [];
-    const localConfirmedDeals = {};
+    let adminListingItems = [];
+    let adminToastTimer = null;
 
     function pillClass(value) {
       if (value === '需关注' || value === '待确认' || value === '待审核' || value === '待联系核对' || value === '提醒核验' || value === '重点核验' || value === '需核验' || value === '需处理') return 'pill warn';
@@ -1432,6 +2037,45 @@
 
     function safeAttr(value) {
       return safeText(value, '');
+    }
+
+    function safeTextWithBreaks(value, fallback = '') {
+      return safeText(value, fallback).replace(/&lt;br&gt;/g, '<br>');
+    }
+
+    function superOnlyActions(markup) {
+      return currentAdminIsSuper ? markup : '<span class="sub-cell">只读权限</span>';
+    }
+
+    function showAdminToast(message) {
+      const toast = document.getElementById('adminToast');
+      if (!toast) return;
+      toast.textContent = message || '操作已完成';
+      toast.classList.add('active');
+      clearTimeout(adminToastTimer);
+      adminToastTimer = setTimeout(() => {
+        toast.classList.remove('active');
+      }, 2200);
+    }
+
+    function showAdminDataFailure(failureCount) {
+      const container = document.getElementById('adminDataFailure');
+      const message = document.getElementById('adminDataFailureText');
+      if (!container || !message) return;
+      const count = Math.max(1, Number(failureCount) || 1);
+      message.textContent = `${count} 项后台数据读取失败。为避免把预览数据或空表误当成真实数据，当前操作区已停用；请检查网络或服务状态后重新加载。`;
+      container.hidden = false;
+      container.classList.add('active');
+      app.classList.add('data-unavailable');
+    }
+
+    function clearAdminDataFailure() {
+      const container = document.getElementById('adminDataFailure');
+      if (container) {
+        container.hidden = true;
+        container.classList.remove('active');
+      }
+      app.classList.remove('data-unavailable');
     }
 
     function maskPhone(value) {
@@ -1484,9 +2128,11 @@
     }
 
 	    function expectedUploaderCommissionFen(item) {
+	      if (item.commissionIntegrity && item.commissionIntegrity.valid === false) return null;
 	      const saved = Number(item.expectedUploaderCommissionFen || item.uploaderCommissionFen || 0);
 	      if (saved > 0) return saved;
-	      return Math.round(Number(item.landlordCommissionFen || 0) * Number(item.uploaderRate === undefined ? 20 : item.uploaderRate) / 100);
+	      const fallbackRate = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig).secondLandlordRate;
+	      return Math.round(Number(item.landlordCommissionFen || 0) * Number(item.uploaderRate === undefined ? fallbackRate : item.uploaderRate) / 100);
 	    }
 
 	    function needIdText(item) {
@@ -1503,6 +2149,7 @@
 	    }
 
 	    function snapshotSummaryText(item, roleFallback) {
+	      if (item.commissionIntegrity && item.commissionIntegrity.valid === false) return '分佣规则待复核';
 	      if (item.snapshotSummary) return item.snapshotSummary;
 	      if (item.listingSnapshotSummary) return item.listingSnapshotSummary;
 	      const snapshot = snapshotObject(item);
@@ -1548,8 +2195,9 @@
       if (!canUseAdminApi()) return fallback();
       try {
         return await adminRequest(path);
-      } catch (error) {
-        return fallback();
+      } catch (requestError) {
+        showAdminDataFailure(1);
+        throw requestError;
       }
     }
 
@@ -1618,25 +2266,25 @@
 	      const summary = await getDashboardData() || {};
 	      const tasks = await buildTodayTaskMetrics(summary);
 	      const areaStats = arrayValue(summary.areaStats);
-	      const areaText = areaStats.length ? areaStats.map((item) => `${item.area} ${item.count}`).join(' · ') : '暂无分区数据';
+	      const areaText = areaStats.length ? areaStats.map((item) => `${safeText(item.area)} ${safeText(item.count)}`).join(' · ') : '暂无分区数据';
 	      document.getElementById('dashboardStats').innerHTML = [
 	        { value: tasks.pendingMaintenanceListings, label: `待维护房源<br>${areaText}` },
 	        { value: `${tasks.expiringSoonListings}/${tasks.expiredListingCount}`, label: '即将失效 / 废房源池<br>第7天自动进入资产池' },
-	        { value: tasks.pendingReportCount, label: '待跟进报备<br>未发起签单或待补充' },
-	        { value: tasks.pendingDealCount, label: '待确认签单<br>管理员确认后生成分佣' },
+	        { value: tasks.pendingReportCount, label: '历史未完成报备（只读）<br>功能暂停，不再跟进' },
+	        { value: tasks.pendingDealCount, label: '历史待确认状态（只读）<br>功能暂停，不可确认' },
 	        { value: tasks.todaySensitiveViews, label: `今日敏感查看<br>需复盘 ${tasks.todaySensitiveViews} 次` },
-	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '待确认预计上传人分佣<br>后端按规则拆分' }
-	      ].map((item) => `<div class="stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+	        { value: moneyText('', tasks.pendingUploaderCommissionFen, true), label: '历史预计分佣（只读）<br>不触发结算' }
+	      ].map((item) => `<div class="stat"><strong>${safeText(item.value)}</strong><span>${safeTextWithBreaks(item.label)}</span></div>`).join('');
 
 	      document.getElementById('riskRows').innerHTML = [
 	        { title: '房态第3天提醒，第5天再次提醒，第7天自动失效', object: '待维护房源', status: tasks.pendingMaintenanceListings > 0 ? '需核验' : '正常', time: '今日任务' },
 	        { title: '即将失效房源与废房源池复盘', object: '资产池', status: (tasks.expiringSoonListings + tasks.expiredListingCount) > 0 ? '需关注' : '正常', time: '今日任务' },
-	        { title: '报备记录待跟进', object: '报备记录', status: tasks.pendingReportCount > 0 ? '待联系核对' : '正常', time: '今日任务' },
-	        { title: '签单审核待管理员确认', object: '签单审核', status: tasks.pendingDealCount > 0 ? '待确认' : '正常', time: '今日任务' },
+	        { title: '报备功能暂停，历史记录只读', object: '历史报备', status: '只读', time: '历史数据' },
+	        { title: '签单功能暂停，历史记录只读', object: '历史签单', status: '只读', time: '历史数据' },
 	        { title: '敏感信息查看记录新增', object: '房源足迹', status: tasks.todaySensitiveViews > 0 ? '需关注' : '正常', time: '今天' },
-	        { title: '待确认预计上传人分佣', object: '分佣记录', status: tasks.pendingUploaderCommissionFen > 0 ? '待确认' : '正常', time: '总比例20%，后端拆分' }
+	        { title: '历史预计上传人分佣（不触发结算）', object: '分佣记录', status: '只读', time: '按历史冻结快照展示' }
 	      ].map((item) => `
-	        <tr><td>${item.title}</td><td>${item.object}</td><td><span class="${pillClass(item.status)}">${item.status}</span></td><td>${item.time}</td></tr>
+	        <tr><td>${safeText(item.title)}</td><td>${safeText(item.object)}</td><td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td><td>${safeText(item.time)}</td></tr>
 	      `).join('');
 	    }
 
@@ -1646,51 +2294,198 @@
 	      const max = Math.max(1, Math.max.apply(null, areaData.map((item) => item.count)));
 	      document.getElementById('areaStats').innerHTML = areaData.map((item) => `
         <div class="area-row">
-          <strong>${item.area}</strong>
+          <strong>${safeText(item.area)}</strong>
           <div class="bar"><i style="width: ${Math.max(18, Math.round(item.count / max * 100))}%"></i></div>
-          <span>${item.count} 套</span>
+          <span>${safeText(item.count)} 套</span>
         </div>
       `).join('');
     }
 
-    async function renderListings() {
-      const area = areaFilter.value;
+    let listingFilterMetadata = { regionOptions: [] };
+    let expiredListingFilterMetadata = { regionOptions: [] };
+    let activeListingRequestSeq = 0;
+    let expiredListingRequestSeq = 0;
+
+    function uniqueSortedText(values) {
+      return Array.from(new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean)))
+        .sort((left, right) => left.localeCompare(right, 'zh'));
+    }
+
+    function filterOptionsFromRows(rows) {
+      const blocksByDistrict = new Map();
+      (rows || []).forEach((item) => {
+        const district = String(item.district || item.area || '').trim();
+        const block = String(item.block || '').trim();
+        if (!district) return;
+        if (!blocksByDistrict.has(district)) blocksByDistrict.set(district, new Set());
+        if (block) blocksByDistrict.get(district).add(block);
+      });
+      return {
+        regionOptions: Array.from(blocksByDistrict.keys())
+          .sort((left, right) => left.localeCompare(right, 'zh'))
+          .map((name) => ({
+            name,
+            blocks: Array.from(blocksByDistrict.get(name)).sort((left, right) => left.localeCompare(right, 'zh'))
+          }))
+      };
+    }
+
+    function normalizeFilterMetadata(value) {
+      const source = value && typeof value === 'object' ? value : {};
+      const seenDistricts = new Set();
+      const regionOptions = (Array.isArray(source.regionOptions) ? source.regionOptions : [])
+        .map((region) => ({
+          name: String(region && region.name || '').trim(),
+          blocks: uniqueSortedText(region && region.blocks)
+        }))
+        .filter((region) => {
+          if (!region.name || seenDistricts.has(region.name)) return false;
+          seenDistricts.add(region.name);
+          return true;
+        })
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh'));
+      return { regionOptions };
+    }
+
+    function fillTextSelect(select, placeholder, values) {
+      if (!select) return;
+      const previous = String(select.value || '');
+      while (select.options.length) select.remove(0);
+      const emptyOption = document.createElement('option');
+      emptyOption.value = '';
+      emptyOption.textContent = placeholder;
+      select.appendChild(emptyOption);
+      uniqueSortedText(values).forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      if (previous && values.indexOf(previous) !== -1) select.value = previous;
+    }
+
+    function blocksForFilterDistrict(metadata, district) {
+      const source = metadata && Array.isArray(metadata.regionOptions) ? metadata.regionOptions : [];
+      const selected = String(district || '').trim();
+      if (!selected) {
+        return uniqueSortedText(source.flatMap((region) => region.blocks || []));
+      }
+      const region = source.find((item) => item.name === selected);
+      return region ? uniqueSortedText(region.blocks) : [];
+    }
+
+    function refreshActiveBlockOptions() {
+      fillTextSelect(blockFilter, '全部板块', blocksForFilterDistrict(listingFilterMetadata, areaFilter.value));
+    }
+
+    function handleActiveDistrictChange() {
+      refreshActiveBlockOptions();
+      refreshListingViews();
+    }
+
+    function refreshExpiredBlockOptions() {
+      fillTextSelect(expiredBlockFilter, '全部板块', blocksForFilterDistrict(expiredListingFilterMetadata, expiredDistrictFilter.value));
+    }
+
+    async function loadListingFilterMetadata() {
+      let metadata;
+      try {
+        metadata = await getAdminData('/admin/listing-filter-options', () => (
+          filterOptionsFromRows(dataCenter.getAdminListings ? dataCenter.getAdminListings() : [])
+        ));
+      } catch (error) {
+        metadata = filterOptionsFromRows(dataCenter.getAdminListings ? dataCenter.getAdminListings() : []);
+      }
+      listingFilterMetadata = normalizeFilterMetadata(metadata);
+      let expiredMetadata;
+      try {
+        expiredMetadata = await getAdminData('/admin/expired-listing-filter-options', () => (
+          filterOptionsFromRows(dataCenter.getExpiredListings ? dataCenter.getExpiredListings({}) : [])
+        ));
+      } catch (error) {
+        expiredMetadata = filterOptionsFromRows(dataCenter.getExpiredListings ? dataCenter.getExpiredListings({}) : []);
+      }
+      expiredListingFilterMetadata = normalizeFilterMetadata(expiredMetadata);
+      fillTextSelect(areaFilter, '全部区域', listingFilterMetadata.regionOptions.map((region) => region.name));
+      fillTextSelect(
+        expiredDistrictFilter,
+        '全部区域',
+        expiredListingFilterMetadata.regionOptions.map((region) => region.name)
+      );
+      refreshActiveBlockOptions();
+      refreshExpiredBlockOptions();
+    }
+
+    function normalizedLocationText(value) {
+      return String(value || '').normalize('NFKC').trim().replace(/区$/, '');
+    }
+
+	    async function renderListings(sourceListingData) {
+      activeListingRequestSeq += 1;
+      const requestSeq = activeListingRequestSeq;
+      const district = areaFilter.value;
       const block = blockFilter.value;
       const community = communityFilter.value.trim();
-      const listingData = await getAdminData(`/admin/listings${buildQuery({ area, block, community })}`, () => dataCenter.getAdminListings());
-      const rows = listingData.filter((item) => {
-        const matchArea = !area || item.area === area;
+      const source = sourceFilter.value;
+      const status = statusFilter.value;
+      const missingVideoMaterial = missingVideoFilter.value;
+      const listingData = sourceListingData || await getAdminData(`/admin/listings${buildQuery({ district, block, community, source, status, missingVideoMaterial })}`, () => dataCenter.getAdminListings());
+      if (requestSeq !== activeListingRequestSeq) return;
+      const rows = arrayValue(listingData).filter((item) => {
+        const matchArea = !district ||
+          normalizedLocationText(item.district || item.area) === normalizedLocationText(district);
         const matchBlock = !block || item.block === block;
         const matchCommunity = !community || item.community.includes(community);
-        return matchArea && matchBlock && matchCommunity;
+        const company = Boolean(item.companyListing || item.isCompanyListing);
+        const sourceText = `${item.sourceLabel || ''}${item.ownerType || ''}${item.source || ''}`;
+        const matchSource = !source || (source === '公司'
+          ? company
+          : (!company && sourceText.includes(source)));
+        const matchStatus = !status || (status === '成交'
+          ? /成交|签单/.test(String(item.status || ''))
+          : item.status === status);
+        const missingVideo = Boolean(item.missingVideoMaterial) || item.videoMaterialStatus === '缺视频素材' || item.video === '缺视频素材';
+        const hasVideo = hasAdminListingVideo(item);
+        const matchVideo = !missingVideoMaterial || (missingVideoMaterial === 'missing' ? missingVideo : (hasVideo && !missingVideo));
+        return matchArea && matchBlock && matchCommunity && matchSource && matchStatus && matchVideo;
       });
+      adminListingItems = rows;
 
       listingRows.innerHTML = rows.map((item) => {
         const sourceText = item.sourceLabel || item.ownerType || item.source || '';
         const reviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? ` · ${item.reviewStatus}` : '';
         const manualReviewText = item.manualReviewReason ? ` · ${item.manualReviewReason}` : '';
         const statusReviewText = item.reviewStatus && item.reviewStatus !== '无需审核' ? item.reviewStatus : '';
+        const coordinateText = item.coordinateStatus || item.coordinateLevel || item.coordinateSource || '坐标待补充';
+        // 地理编码失败/无可靠坐标：verified(已确认)、approximate(地理编码成功) 之外(block-center 兜底/待补充/缺失)高亮待修正。
+        const coordLevelText = String(item.coordinateLevel || item.coordinateAccuracy || '').toLowerCase();
+        const coordSrcText = String(item.coordinateSource || '').toLowerCase();
+        const coordinateReliable = item.coordinateVerified === true || coordLevelText === 'verified' || coordLevelText === 'approximate' || /tencent-geocode|qq-map-geocode|geocoder/.test(coordSrcText);
+        const needsCoordinateFix = !coordinateReliable;
+        const videoSubText = item.videoMaterialFailureReason || item.sourceMaterialName || item.videoMaterialStatus || '';
         const canReview = item.reviewStatus === '待审核' || item.status === '待审核';
         return `
         <tr>
-          <td>${item.title}<span class="sub-cell">${sourceText}${item.noCommission ? ' · 不分佣' : ''}${reviewText}${manualReviewText}</span></td>
-          <td>${item.area}</td>
-          <td>${item.block}</td>
-          <td>${item.community}</td>
-          <td>${item.uploader}</td>
-          <td>${item.rent}</td>
-          <td>${item.layout}</td>
-          <td>${item.commission}</td>
-          <td><span class="pill">${item.video}</span></td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${statusReviewText}</span></td>
-          <td><span class="${pillClass(item.verifyStatus)}">${item.verifyStatus || '正常'}</span><span class="sub-cell">${item.verifyTip || item.lastVerifiedAt || ''}</span></td>
-          <td>
+          <td>${safeText(item.title)}<span class="sub-cell">${safeText(sourceText, '')}${item.noCommission ? ' · 不分佣' : ''}${safeText(reviewText, '')}${safeText(manualReviewText, '')}</span></td>
+          <td>${safeText(item.area)}</td>
+          <td>${safeText(item.block)}</td>
+          <td>${safeText(item.community)}</td>
+          <td>${safeText(item.uploader)}</td>
+          <td>${safeText(item.rent)}</td>
+          <td>${safeText(item.layout)}</td>
+          <td>${safeText(item.commission)}</td>
+          <td><span class="pill">${safeText(item.video)}</span><span class="sub-cell">${safeText(videoSubText, '')}</span></td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(statusReviewText, '')}</span></td>
+          <td><span class="${pillClass(item.verifyStatus)}">${safeText(item.verifyStatus || '正常')}</span><span class="sub-cell">${safeText(item.verifyTip || item.lastVerifiedAt || '', '')}</span>${needsCoordinateFix ? `<span class="coord-warn-pill">⚠ 坐标待修正</span>` : ''}<span class="sub-cell">${safeText(coordinateText)}</span></td>
+          <td>${superOnlyActions(`
             <div class="row-actions">
-              <button class="table-action verify-listing-button" data-id="${item.id}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
-              <button class="table-action review-owner-listing-button" data-id="${item.id}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
-              <button class="table-action reject review-owner-listing-button" data-id="${item.id}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
+              <button class="table-action edit-listing-button" data-id="${safeAttr(item.id)}">编辑</button>
+              <button class="table-action verify-listing-button" data-id="${safeAttr(item.id)}" ${!item.needsVerify ? 'disabled' : ''}>电话核验</button>
+              <button class="table-action coordinate-listing-button${needsCoordinateFix ? ' coord-warn' : ''}" data-id="${safeAttr(item.id)}" data-title="${safeAttr(item.title || item.community || item.id)}" data-latitude="${safeAttr(item.mapLatitude || '')}" data-longitude="${safeAttr(item.mapLongitude || '')}">${needsCoordinateFix ? '坐标修正 ⚠' : '坐标修正'}</button>
+              <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve" ${canReview ? '' : 'disabled'}>审核通过</button>
+              <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject" ${canReview ? '' : 'disabled'}>驳回</button>
             </div>
-          </td>
+          `)}</td>
         </tr>
       `}).join('');
       listingEmpty.hidden = rows.length > 0;
@@ -1749,20 +2544,51 @@
       return shown.join('');
     }
 
+    function hasAdminListingVideo(item) {
+      const source = item && typeof item === 'object' ? item : {};
+      const manifestHasVideo = Array.isArray(source.mediaAssets) && source.mediaAssets.some((asset) => (
+        asset && typeof asset === 'object' && String(asset.kind || '').toLowerCase() === 'video'
+      ));
+      return Boolean(source.videoPreviewUrl || source.videoUrl || source.videoKey || source.hasVideo || manifestHasVideo);
+    }
+
     function videoStatusText(item) {
-      if (item.videoPreviewUrl || item.videoUrl || item.videoKey || item.hasVideo) return '有视频';
-      return pickText(item.video, '缺视频');
+      if (hasAdminListingVideo(item)) return '有视频';
+      return pickText(item.videoMaterialStatus, item.video, '缺视频');
+    }
+
+    function safeReviewVideoUrl(value) {
+      const url = String(value || '').trim();
+      if (/^https:\/\/[^\s]+$/i.test(url)) return url;
+      if (/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(url)) return url;
+      return '';
     }
 
     function renderReviewVideo(item) {
-      const videoUrl = pickText(item.videoPreviewUrl, item.videoUrl);
-      const sourceUrl = pickText(item.videoUrl, videoUrl);
+      const videoUrl = safeReviewVideoUrl(pickText(item.videoPreviewUrl, item.videoUrl));
+      // 私有桶原始 videoUrl 通常是未签名地址；新窗口入口也必须优先使用本次 API 返回的签名地址。
+      const sourceUrl = videoUrl;
       const videoKey = pickText(item.videoKey);
       if (videoUrl) {
         return `
           <div class="review-video">
-            <video controls preload="metadata" playsinline src="${safeAttr(videoUrl)}"></video>
-            <a class="review-video-link" href="${safeAttr(sourceUrl)}" target="_blank" rel="noopener">播放失败时打开原视频</a>
+            <video
+              controls
+              preload="metadata"
+              playsinline
+              data-review-video
+              data-listing-id="${safeAttr(item.id)}"
+              data-review-video-source="${safeAttr(videoUrl)}"
+            ></video>
+            <div class="review-video-actions">
+              <a class="review-video-link" href="${safeAttr(sourceUrl)}" target="_blank" rel="noopener">在新窗口打开原视频</a>
+              <button
+                type="button"
+                class="review-video-compat-button"
+                title="生成浏览器兼容的 H.264 审核预览"
+              >&#9654; 兼容播放</button>
+            </div>
+            <p class="review-video-status" data-review-video-status hidden aria-live="polite"></p>
           </div>
         `;
       }
@@ -1773,6 +2599,262 @@
           </div>
         </div>
       `;
+    }
+
+    function releaseReviewVideoObjectUrls(container) {
+      if (!container || !container.querySelectorAll) return;
+      container.querySelectorAll('video[data-review-video]').forEach((video) => {
+        const previousState = String(video.dataset.compatibilityState || '');
+        const previousRequestId = Number(video.dataset.compatibilityRequestId || 0);
+        video.dataset.compatibilityRequestId = String(
+          Number.isSafeInteger(previousRequestId) && previousRequestId >= 0 ? previousRequestId + 1 : 1
+        );
+        if (typeof video.pause === 'function') video.pause();
+        if (video.compatibilityAbortController) {
+          video.compatibilityAbortController.abort();
+          video.compatibilityAbortController = null;
+        }
+        const objectUrl = video.dataset.compatibilityObjectUrl;
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+          if (String(video.src || '') === objectUrl) {
+            if (typeof video.removeAttribute === 'function') video.removeAttribute('src');
+            if (typeof video.load === 'function') video.load();
+          }
+        }
+        video.dataset.compatibilityState = 'idle';
+        if (objectUrl || previousState === 'loading' || previousState === 'ready') {
+          const wrapper = typeof video.closest === 'function' ? video.closest('.review-video') : null;
+          const status = wrapper && wrapper.querySelector('[data-review-video-status]');
+          const retryButton = wrapper && wrapper.querySelector('.review-video-compat-button');
+          if (status) {
+            status.hidden = false;
+            status.textContent = '兼容预览已释放，请重新生成。';
+          }
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+        }
+      });
+    }
+
+    function releaseAllReviewVideoResources() {
+      releaseReviewVideoObjectUrls(listingReviewDetail);
+      releaseReviewVideoObjectUrls(expiredListingDetail);
+    }
+
+    function reviewVideoAbortError() {
+      const abortError = new Error('兼容预览请求已取消');
+      abortError.name = 'AbortError';
+      return abortError;
+    }
+
+    function waitForReviewVideoPlayable(video, signal, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        function cleanup() {
+          if (timer) clearTimeout(timer);
+          video.removeEventListener('loadedmetadata', onPlayable);
+          video.removeEventListener('canplay', onPlayable);
+          video.removeEventListener('error', onError);
+          if (signal) signal.removeEventListener('abort', onAbort);
+        }
+
+        function finish(callback, value) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback(value);
+        }
+
+        function onPlayable() {
+          finish(resolve);
+        }
+
+        function onError() {
+          finish(reject, new Error('浏览器仍无法解码兼容预览，请重新上传通用 MP4'));
+        }
+
+        function onAbort() {
+          finish(reject, reviewVideoAbortError());
+        }
+
+        video.addEventListener('loadedmetadata', onPlayable);
+        video.addEventListener('canplay', onPlayable);
+        video.addEventListener('error', onError);
+        if (signal) {
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+        timer = setTimeout(() => {
+          finish(reject, new Error('兼容预览加载超时，请稍后重试'));
+        }, timeoutMs);
+      });
+    }
+
+    function isReviewVideoResponse(response) {
+      const contentType = String(response && response.headers && response.headers.get
+        ? response.headers.get('content-type')
+        : '').split(';')[0].trim().toLowerCase();
+      return contentType === 'video/mp4';
+    }
+
+    async function loadCompatibleReviewVideo(video) {
+      if (!video || !video.dataset) return;
+      if (video.dataset.compatibilityState === 'loading') return;
+
+      const wrapper = video.closest('.review-video');
+      const status = wrapper && wrapper.querySelector('[data-review-video-status]');
+      const retryButton = wrapper && wrapper.querySelector('.review-video-compat-button');
+      const listingId = String(video.dataset.listingId || '').trim();
+      if (!listingId || !canUseAdminApi() || !adminToken) {
+        throw new Error('管理员登录已失效，请重新登录后生成兼容预览');
+      }
+
+      video.dataset.compatibilityState = 'loading';
+      if (retryButton) retryButton.disabled = true;
+      if (status) {
+        status.hidden = false;
+        status.textContent = '正在生成浏览器兼容预览，请稍候…';
+      }
+
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const sessionToken = adminToken;
+      const previousRequestId = Number(video.dataset.compatibilityRequestId || 0);
+      const requestId = String(
+        Number.isSafeInteger(previousRequestId) && previousRequestId >= 0 ? previousRequestId + 1 : 1
+      );
+      video.dataset.compatibilityRequestId = requestId;
+      let createdObjectUrl = '';
+      video.compatibilityAbortController = controller;
+      try {
+        const response = await fetch(`/admin/listings/${encodeURIComponent(listingId)}/video-compatible-preview`, {
+          headers: {
+            Accept: 'video/mp4',
+            Authorization: `Bearer ${adminToken}`
+          },
+          signal: controller ? controller.signal : undefined
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          if (response.status === 401 && typeof clearAdminSession === 'function') {
+            clearAdminSession(body.message || '管理员登录已失效，请重新登录。');
+          }
+          throw new Error(body.message || '兼容预览生成失败，请稍后重试');
+        }
+        if (!isReviewVideoResponse(response)) {
+          throw new Error('服务器未返回有效的 MP4 兼容预览');
+        }
+        const blob = await response.blob();
+        if (!blob || !blob.size) throw new Error('兼容预览为空，请重新上传通用 MP4');
+        const blobType = String(blob.type || '').split(';')[0].trim().toLowerCase();
+        if (blobType && blobType !== 'video/mp4') {
+          throw new Error('兼容预览文件类型无效，请稍后重试');
+        }
+        if (sessionToken !== adminToken
+          || video.compatibilityAbortController !== controller
+          || video.dataset.compatibilityRequestId !== requestId) {
+          throw reviewVideoAbortError();
+        }
+
+        const previousObjectUrl = video.dataset.compatibilityObjectUrl;
+        if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
+        const objectUrl = URL.createObjectURL(blob);
+        createdObjectUrl = objectUrl;
+        video.dataset.compatibilityObjectUrl = objectUrl;
+        const playable = waitForReviewVideoPlayable(video, controller ? controller.signal : null);
+        video.src = objectUrl;
+        video.load();
+        await playable;
+        if (sessionToken !== adminToken
+          || video.compatibilityAbortController !== controller
+          || video.dataset.compatibilityRequestId !== requestId) {
+          throw reviewVideoAbortError();
+        }
+        video.dataset.compatibilityState = 'ready';
+        if (status) {
+          status.hidden = false;
+          status.textContent = '兼容预览已生成，可以播放审核。';
+        }
+        if (retryButton) retryButton.hidden = true;
+        video.addEventListener('error', () => {
+          if (video.dataset.compatibilityState !== 'ready') return;
+          if (video.dataset.compatibilityObjectUrl !== objectUrl) return;
+          URL.revokeObjectURL(objectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+          video.dataset.compatibilityState = 'failed';
+          if (status) {
+            status.hidden = false;
+            status.textContent = '兼容预览播放失败，请重试或重新上传通用 MP4。';
+          }
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+        }, { once: true });
+      } catch (error) {
+        if (createdObjectUrl && video.dataset.compatibilityObjectUrl === createdObjectUrl) {
+          URL.revokeObjectURL(createdObjectUrl);
+          delete video.dataset.compatibilityObjectUrl;
+        }
+        if (video.dataset.compatibilityRequestId !== requestId) {
+          return;
+        }
+        if (sessionToken !== adminToken) {
+          if (video.dataset.compatibilityState === 'loading') video.dataset.compatibilityState = 'idle';
+          if (retryButton) {
+            retryButton.hidden = false;
+            retryButton.disabled = false;
+          }
+          return;
+        }
+        if (error && error.name === 'AbortError') {
+          if (video.dataset.compatibilityState === 'loading') video.dataset.compatibilityState = 'idle';
+          return;
+        }
+        video.dataset.compatibilityState = 'failed';
+        const rawMessage = String(error && error.message ? error.message : '');
+        const friendlyMessage = /failed to fetch|networkerror|load failed/i.test(rawMessage)
+          ? '兼容预览生成中断，请稍后重试。'
+          : (rawMessage || '兼容预览生成失败，请稍后重试。');
+        if (status) {
+          status.hidden = false;
+          status.textContent = friendlyMessage;
+        }
+        if (retryButton) {
+          retryButton.hidden = false;
+          retryButton.disabled = false;
+        }
+        throw new Error(friendlyMessage);
+      } finally {
+        if (video.compatibilityAbortController === controller
+          && video.dataset.compatibilityRequestId === requestId) {
+          video.compatibilityAbortController = null;
+        }
+        if (retryButton && video.dataset.compatibilityState !== 'loading') retryButton.disabled = false;
+      }
+    }
+
+    function activateReviewVideos(container) {
+      if (!container || !container.querySelectorAll) return;
+      container.querySelectorAll('video[data-review-video]').forEach((video) => {
+        const sourceUrl = String(video.dataset.reviewVideoSource || '').trim();
+        if (!sourceUrl) return;
+        // 先监听错误再赋 src，避免私有桶响应很快时漏掉 HEVC/损坏媒体错误。
+        video.addEventListener('error', () => {
+          if (video.dataset.compatibilityState) return;
+          loadCompatibleReviewVideo(video).catch(() => {});
+        }, { once: true });
+        video.src = sourceUrl;
+        video.load();
+      });
     }
 
     function roomPositionText(item) {
@@ -1817,9 +2899,13 @@
         ['楼栋/单元/房号', roomPositionText(item)],
         ['完整地址', item.address, true],
         ['房东电话', pickText(item.landlordPhone, item.contact)],
+        ['房源备注', item.remark, true],
+        ['房东总佣金', `${item.landlordCommissionPercent === undefined || item.landlordCommissionPercent === null ? 50 : item.landlordCommissionPercent}% 月租`],
         ['上传人', item.uploader],
         ['上传人电话', item.uploaderPhone],
-        ['视频状态', item.hasVideo || item.videoUrl ? '已上传视频' : pickText(item.video, '未传视频')],
+        ['视频状态', hasAdminListingVideo(item) ? '已上传视频' : pickText(item.videoMaterialStatus, item.video, '未传视频')],
+        ['素材文件', pickText(item.sourceMaterialName, item.sourceMaterialPath), true],
+        ['素材失败原因', item.videoMaterialFailureReason, true],
         ['视频Key', item.videoKey, true],
         ['分佣规则', pickText(item.commissionText, item.commission, item.commissionRate ? `${item.commissionRate}%` : '')],
         ['最后核验', pickText(item.lastVerifiedAt, '未核验')],
@@ -1869,14 +2955,14 @@
     }
 
     function listingReviewActions(item) {
-      return `
+      return superOnlyActions(`
         <button class="table-action review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="approve">审核通过</button>
         <button class="table-action reject review-owner-listing-button" data-id="${safeAttr(item.id)}" data-action="reject">驳回</button>
-      `;
+      `);
     }
 
     function expiredListingActions(item) {
-      return `<button class="table-action restore-expired-listing-button" data-id="${safeAttr(item.id)}">重新上架</button>`;
+      return superOnlyActions(`<button class="table-action restore-expired-listing-button" data-id="${safeAttr(item.id)}">重新上架</button>`);
     }
 
     function renderDetailPage(item, type) {
@@ -1896,12 +2982,14 @@
     }
 
     function showListingReviewList() {
+      releaseReviewVideoObjectUrls(listingReviewDetail);
       listingReviewList.hidden = false;
       listingReviewDetail.hidden = true;
       listingReviewDetail.innerHTML = '';
     }
 
     function showExpiredListingList() {
+      releaseReviewVideoObjectUrls(expiredListingDetail);
       expiredListingList.hidden = false;
       expiredListingDetail.hidden = true;
       expiredListingDetail.innerHTML = '';
@@ -1919,9 +3007,11 @@
         alert('未找到这套待审核房源，请刷新列表后重试。');
         return;
       }
+      releaseReviewVideoObjectUrls(listingReviewDetail);
       listingReviewDetail.innerHTML = renderDetailPage(item, 'review');
       listingReviewList.hidden = true;
       listingReviewDetail.hidden = false;
+      activateReviewVideos(listingReviewDetail);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -1931,9 +3021,11 @@
         alert('未找到这套废房源，请刷新列表后重试。');
         return;
       }
+      releaseReviewVideoObjectUrls(expiredListingDetail);
       expiredListingDetail.innerHTML = renderDetailPage(item, 'expired');
       expiredListingList.hidden = true;
       expiredListingDetail.hidden = false;
+      activateReviewVideos(expiredListingDetail);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -1991,8 +3083,8 @@
       `;
     }
 
-    async function renderListingReviews() {
-      const listingData = await getAdminData('/admin/listings', () => dataCenter.getAdminListings());
+    async function renderListingReviews(sourceListingData) {
+      const listingData = sourceListingData || await getAdminData('/admin/listings', () => dataCenter.getAdminListings());
       const rows = arrayValue(listingData).filter(isPendingListingReview);
       listingReviewItems = rows;
       listingReviewRows.innerHTML = rows.map(renderReviewListRow).join('');
@@ -2053,22 +3145,138 @@
       await renderAdminLogs();
     }
 
-    async function renderExpiredListings() {
-      const area = areaFilter.value;
-      const block = blockFilter.value;
-      const community = communityFilter.value.trim();
-      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery({ area, block, community })}`, () => (
-        dataCenter.getExpiredListings ? dataCenter.getExpiredListings({ area, block, community }) : []
+    function normalizeCommissionConfig(config) {
+      const source = config || {};
+      const upRates = source.uploaderRates || {};
+      const platRates = source.platformRates || {};
+      return {
+        secondLandlordRate: numberValue(source.secondLandlordRate, upRates['二房东房源'], defaultCommissionConfig.secondLandlordRate),
+        ownerRate: numberValue(source.ownerRate, upRates['业主房源'], defaultCommissionConfig.ownerRate),
+        secondLandlordPlatformRate: numberValue(source.secondLandlordPlatformRate, platRates['二房东房源'], defaultCommissionConfig.secondLandlordPlatformRate),
+        ownerPlatformRate: numberValue(source.ownerPlatformRate, platRates['业主房源'], defaultCommissionConfig.ownerPlatformRate),
+        companyRate: 0,
+        updatedAt: source.updatedAt || '',
+        updatedBy: source.updatedBy || ''
+      };
+    }
+
+    function commissionConfigDisplayText(config) {
+      const rule = normalizeCommissionConfig(config);
+      const subTotal = rule.secondLandlordRate + rule.secondLandlordPlatformRate;
+      const ownerTotal = rule.ownerRate + rule.ownerPlatformRate;
+      return `二房东：上传人 ${rule.secondLandlordRate}% + 平台 ${rule.secondLandlordPlatformRate}%（分出 ${subTotal}%，带看成交中介留 ${Math.max(0, 100 - subTotal)}%）；业主：上传人 ${rule.ownerRate}% + 平台 ${rule.ownerPlatformRate}%（分出 ${ownerTotal}%，带看留 ${Math.max(0, 100 - ownerTotal)}%）；公司房源不抽佣（带看全佣）；自传自带全免。`;
+    }
+
+    async function renderCommissionConfig() {
+      const config = normalizeCommissionConfig(await getAdminData('/admin/commission-config', () => (
+        dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig
       )));
+      commissionSecondRate.value = config.secondLandlordRate;
+      commissionSecondPlatformRate.value = config.secondLandlordPlatformRate;
+      commissionOwnerRate.value = config.ownerRate;
+      commissionOwnerPlatformRate.value = config.ownerPlatformRate;
+      commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
+    }
+
+    async function saveCommissionConfig() {
+      const payload = {
+        secondLandlordRate: Number(commissionSecondRate.value),
+        ownerRate: Number(commissionOwnerRate.value),
+        secondLandlordPlatformRate: Number(commissionSecondPlatformRate.value),
+        ownerPlatformRate: Number(commissionOwnerPlatformRate.value)
+      };
+      // money 守恒前置校验（后端也强制）：同一房源类型 上传人比例 + 平台比例 不得超过 100%。
+      if (payload.secondLandlordRate + payload.secondLandlordPlatformRate > 100) {
+        commissionConfigStatus.textContent = '保存失败：二房东 上传人比例 + 平台比例不得超过 100%';
+        return;
+      }
+      if (payload.ownerRate + payload.ownerPlatformRate > 100) {
+        commissionConfigStatus.textContent = '保存失败：业主 上传人比例 + 平台比例不得超过 100%';
+        return;
+      }
+      commissionConfigStatus.textContent = '正在保存...';
+      try {
+        const saved = canUseAdminApi()
+          ? await adminRequest('/admin/commission-config', {
+              method: 'PUT',
+              body: JSON.stringify(payload)
+            })
+          : (dataCenter.updateCommissionConfig ? dataCenter.updateCommissionConfig(payload) : Object.assign({}, defaultCommissionConfig, payload));
+        const config = normalizeCommissionConfig(saved);
+        commissionSecondRate.value = config.secondLandlordRate;
+        commissionSecondPlatformRate.value = config.secondLandlordPlatformRate;
+        commissionOwnerRate.value = config.ownerRate;
+        commissionOwnerPlatformRate.value = config.ownerPlatformRate;
+        commissionConfigStatus.textContent = commissionConfigDisplayText(config) + (config.updatedAt ? ` 最近保存：${config.updatedAt}` : '');
+        showAdminToast('分佣配置已保存');
+        await renderListings();
+        await renderExpiredListings();
+        await renderDeals();
+        await renderCommissions();
+      } catch (error) {
+        commissionConfigStatus.textContent = '保存失败：' + (error.message || '请稍后重试');
+      }
+    }
+
+    async function renderExpiredListings() {
+      expiredListingRequestSeq += 1;
+      const requestSeq = expiredListingRequestSeq;
+      const district = expiredDistrictFilter.value;
+      const block = expiredBlockFilter.value;
+      const community = expiredCommunityFilter.value.trim();
+      const sourceType = expiredSourceFilter.value;
+      const rentMin = expiredRentMinFilter.value;
+      const rentMax = expiredRentMaxFilter.value;
+      const layout = expiredLayoutFilter.value;
+      const rentMode = expiredRentModeFilter.value;
+      const filters = { district, block, community, sourceType, rentMin, rentMax, layout, rentMode };
+      const rows = arrayValue(await getAdminData(`/admin/expired-listings${buildQuery(filters)}`, () => (
+        dataCenter.getExpiredListings ? dataCenter.getExpiredListings(filters) : []
+      )));
+      if (requestSeq !== expiredListingRequestSeq) return;
       expiredListingItems = rows;
       expiredListingRows.innerHTML = expiredListingItems.map(renderExpiredListRow).join('');
       expiredListingEmpty.hidden = rows.length > 0;
       showExpiredListingList();
     }
 
-	    async function renderAdminLogs() {
-	      const rows = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
-	      document.getElementById('adminLogRows').innerHTML = rows.map((item) => `
+	    let footprintPage = 1;
+	    // 查看人/房源(小区) 下拉候选缓存：仅在无筛选(拿到全量数组)时重建，筛选后为分页数据不完整，沿用缓存。
+	    let footprintFilterOptions = { viewers: [], listings: [] };
+
+	    function readFootprintFilters() {
+	      const val = (id) => {
+	        const el = document.getElementById(id);
+	        return el ? String(el.value || '').trim() : '';
+	      };
+	      return {
+	        viewer: val('footprintViewer'),
+	        keyword: val('footprintKeyword'),
+	        action: val('footprintAction'),
+	        startDate: val('footprintStart'),
+	        endDate: val('footprintEnd')
+	      };
+	    }
+
+	    function fillFootprintActionOptions(actions) {
+	      const select = document.getElementById('footprintAction');
+	      if (!select || !Array.isArray(actions)) return;
+	      const current = select.value;
+	      // 用 DOM API 构造选项（不走 innerHTML）：action 值来自足迹数据，textContent 天然防注入。
+	      while (select.options.length > 1) select.remove(1);
+	      actions.forEach((action) => {
+	        const option = document.createElement('option');
+	        option.value = action;
+	        option.textContent = action;
+	        select.appendChild(option);
+	      });
+	      if (current && actions.indexOf(current) !== -1) select.value = current;
+	    }
+
+	    function renderFootprintRows(rows) {
+	      const body = document.getElementById('adminLogRows');
+	      const empty = document.getElementById('adminLogEmpty');
+	      body.innerHTML = (rows || []).map((item) => `
 	        <tr>
 	          <td>${safeText(item.viewer || item.user)}</td>
 	          <td>${safeText(item.listing || item.title)}<span class="sub-cell">${safeText(item.listingId, '')}</span></td>
@@ -2079,6 +3287,70 @@
 	          <td>${safeText(item.time)}</td>
 	        </tr>
 	      `).join('');
+	      if (empty) empty.hidden = (rows || []).length > 0;
+	    }
+
+	    function fillFootprintOptionSelect(id, values) {
+	      const select = document.getElementById(id);
+	      if (!select || !Array.isArray(values)) return;
+	      const current = select.value;
+	      while (select.options.length > 1) select.remove(1);
+	      values.forEach((value) => {
+	        const option = document.createElement('option');
+	        option.value = value;
+	        option.textContent = value;
+	        select.appendChild(option);
+	      });
+	      if (current && values.indexOf(current) !== -1) select.value = current;
+	    }
+
+	    // 构建查看人/房源(小区) 下拉候选并填充。fullRows 有值(本地/无分页返回的全量数组)则直接用；
+	    // 否则(真实分页 API)在缓存为空时额外请求一次不带 page/pageSize 的 /admin/footprints
+	    // (无 query → 后端返回全量数组)作为候选源，构建后沿用缓存，避免下拉只剩当前页/为空。
+	    async function ensureFootprintFilterOptions(fullRows) {
+	      const uniqSorted = (arr) => Array.from(new Set(arr.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'zh'));
+	      const buildFrom = (list) => {
+	        footprintFilterOptions.viewers = uniqSorted((list || []).map((r) => r.viewer || r.user));
+	        footprintFilterOptions.listings = uniqSorted((list || []).map((r) => r.listing || r.title));
+	      };
+	      if (Array.isArray(fullRows)) {
+	        buildFrom(fullRows);
+	      } else if (!footprintFilterOptions.viewers.length && !footprintFilterOptions.listings.length) {
+	        const all = await getAdminData('/admin/footprints', () => dataCenter.getAdminLogs());
+	        buildFrom(Array.isArray(all) ? all : (all && Array.isArray(all.rows) ? all.rows : []));
+	      }
+	      fillFootprintOptionSelect('footprintViewer', footprintFilterOptions.viewers);
+	      fillFootprintOptionSelect('footprintKeyword', footprintFilterOptions.listings);
+	    }
+
+	    async function renderAdminLogs() {
+	      const filters = readFootprintFilters();
+	      const query = buildQuery(Object.assign({ page: footprintPage, pageSize: 50 }, filters));
+	      const payload = await getAdminData(`/admin/footprints${query}`, () => dataCenter.getAdminLogs());
+	      // 兼容两种返回：旧数组（无参/本地预览 fallback）或 { rows,total,page,pageSize,totalPages,actions } 分页对象。
+	      const isPaged = payload && !Array.isArray(payload) && Array.isArray(payload.rows);
+	      const rows = isPaged ? payload.rows : (Array.isArray(payload) ? payload : []);
+	      fillFootprintActionOptions(isPaged
+	        ? payload.actions
+	        : Array.from(new Set(rows.map((r) => r.action).filter(Boolean))));
+	      // 查看人/房源(小区) 下拉候选：真实 API 首屏也带 page/pageSize→后端 FOOTPRINT_QUERY_KEYS 含
+	      // page/pageSize，会按 query 分页返回，拿不到全量。故用一次不带分页参数的请求取全量作候选源
+	      // （仅用于下拉、不替代表格分页），空缓存时才拉、随后沿用；本地/无分页 fallback 直接用其数组。
+	      await ensureFootprintFilterOptions(isPaged ? null : rows);
+	      renderFootprintRows(rows);
+	      const pager = document.getElementById('footprintPager');
+	      const info = document.getElementById('footprintPageInfo');
+	      const prev = document.getElementById('footprintPrev');
+	      const next = document.getElementById('footprintNext');
+	      if (isPaged) {
+	        footprintPage = payload.page || 1;
+	        if (pager) pager.hidden = (payload.totalPages || 1) <= 1;
+	        if (info) info.textContent = `第 ${payload.page} / ${payload.totalPages} 页 · 共 ${payload.total} 条`;
+	        if (prev) prev.disabled = payload.page <= 1;
+	        if (next) next.disabled = payload.page >= payload.totalPages;
+	      } else if (pager) {
+	        pager.hidden = true;
+	      }
 	    }
 
     function getLocalReportRows() {
@@ -2094,8 +3366,8 @@
 
     function getLocalDealRows() {
       if (!dataCenter.getDealRecords) return [];
+      const config = normalizeCommissionConfig(dataCenter.getCommissionConfig ? dataCenter.getCommissionConfig() : defaultCommissionConfig);
       return dataCenter.getDealRecords().map((item) => {
-        const confirmed = Boolean(localConfirmedDeals[item.id]);
         const expectedFen = expectedUploaderCommissionFen(item);
         return Object.assign({
           broker: '当前中介',
@@ -2103,16 +3375,11 @@
           customerName: '',
           customerPhoneMasked: '',
           expectedUploaderCommissionFen: expectedFen,
-          expectedUploaderCommission: (expectedFen / 100).toFixed(2),
-          uploaderCommissionRate: 20,
-          uploaderRate: 20,
-          platformRate: 0
-        }, item, confirmed ? {
-          status: '已确认',
-          uploaderCommissionFen: expectedFen,
-          uploaderCommission: (expectedFen / 100).toFixed(2),
-          confirmedAt: localConfirmedDeals[item.id]
-        } : {});
+          expectedUploaderCommission: expectedFen === null ? '待核对' : (expectedFen / 100).toFixed(2),
+          uploaderCommissionRate: config.secondLandlordRate + config.secondLandlordPlatformRate,
+          uploaderRate: config.secondLandlordRate,
+          platformRate: config.secondLandlordPlatformRate
+        }, item);
       });
     }
 
@@ -2143,11 +3410,11 @@
       const confirmed = rows.filter((item) => item.status === '已确认').length;
       const pendingCommissionFen = rows
         .filter((item) => item.status !== '已确认')
-        .reduce((sum, item) => sum + expectedUploaderCommissionFen(item), 0);
+        .reduce((sum, item) => sum + Number(expectedUploaderCommissionFen(item) || 0), 0);
       document.getElementById('dealSummary').innerHTML = [
-        { value: pending, label: '待管理员确认' },
-        { value: confirmed, label: '已确认签单' },
-        { value: moneyText('', pendingCommissionFen, true), label: '待确认预计上传人分佣' }
+        { value: pending, label: '历史待确认状态（只读）' },
+        { value: confirmed, label: '历史已确认签单' },
+        { value: moneyText('', pendingCommissionFen, true), label: '历史预计分佣（只读）' }
       ].map((item) => `<div class="status-box"><strong>${safeText(item.value)}</strong>${safeText(item.label)}</div>`).join('');
     }
 
@@ -2158,10 +3425,16 @@
       renderDealSummary(rows);
       body.innerHTML = rows.map((item) => {
         const confirmed = item.status === '已确认';
-        const commissionFen = confirmed ? Number(item.uploaderCommissionFen || 0) : expectedUploaderCommissionFen(item);
-        const commissionText = confirmed
+        const commissionInvalid = item.commissionIntegrity && item.commissionIntegrity.valid === false;
+        const commissionFen = commissionInvalid ? null : (confirmed ? Number(item.uploaderCommissionFen || 0) : expectedUploaderCommissionFen(item));
+        const commissionText = commissionInvalid
+          ? '分佣数据待复核'
+          : confirmed
           ? moneyText(item.uploaderCommission, commissionFen)
           : moneyText(item.expectedUploaderCommission, commissionFen);
+	        const commissionRuleText = commissionInvalid
+	          ? '冻结分佣快照异常，请核对原始记录'
+	          : `成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%`;
 	        return `
 	          <tr>
 	            <td>${safeText(item.listingTitle || item.listing)}<span class="sub-cell">报备 ${safeText(item.reportId, '-')}</span></td>
@@ -2174,11 +3447,11 @@
             </td>
             <td>
               <span class="money-strong">${safeText(commissionText)}</span>
-              <span class="sub-cell">成交总比例 ${safeText(item.uploaderCommissionRate || item.rate || 20)}% · 上传人 ${safeText(item.uploader)} 到手 ${safeText(item.uploaderRate === undefined ? 20 : item.uploaderRate)}%</span>
+              <span class="sub-cell">${safeText(commissionRuleText)}</span>
             </td>
-            <td><span class="${pillClass(item.status)}">${safeText(item.status || '待管理员确认')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '历史状态未知')}</span><span class="sub-cell">${safeText(item.confirmedAt, '')}</span></td>
             <td>${safeText(item.remark || '无备注')}<span class="sub-cell">${safeText(item.time || item.createdAt)}</span></td>
-            <td><button class="table-action confirm-deal-button" data-id="${safeAttr(item.id)}" ${confirmed ? 'disabled' : ''}>确认签单</button></td>
+            <td><span class="sub-cell">历史数据只读，签单功能暂停</span></td>
           </tr>
         `;
       }).join('');
@@ -2189,16 +3462,16 @@
       const rows = await getAdminData('/admin/commissions', () => dataCenter.getCommissionRows());
       document.getElementById('commissionRows').innerHTML = rows.map((item) => `
         <tr>
-          <td>${item.listing}</td>
-          <td>${item.uploader}</td>
-          <td>${item.dealer}</td>
-          <td>${item.rate}</td>
+          <td>${safeText(item.listing)}</td>
+          <td>${safeText(item.uploader)}</td>
+          <td>${safeText(item.dealer)}</td>
+          <td>${safeText(item.rate)}</td>
           <td>${safeText(item.uploaderRate === undefined ? '-' : item.uploaderRate + '%')}</td>
-          <td>${moneyText(item.landlordCommission, item.landlordCommissionFen)}</td>
-          <td>${moneyText(item.uploaderCommission, item.uploaderCommissionFen)}</td>
-          <td>${moneyText(item.platformCommission, item.platformCommissionFen, true)}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span></td>
-          <td>${item.time}</td>
+          <td>${safeText(moneyText(item.landlordCommission, item.landlordCommissionFen))}</td>
+          <td>${safeText(moneyText(item.uploaderCommission, item.uploaderCommissionFen))}</td>
+          <td>${safeText(moneyText(item.platformCommission, item.platformCommissionFen, true))}</td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td>
+          <td>${safeText(item.time)}</td>
         </tr>
       `).join('');
     }
@@ -2264,16 +3537,43 @@
           <td><span class="${pillClass(item.status === 'open' ? '需要处理' : '通过')}">${safeText(assistantFeedbackStatusText(item.status))}</span><span class="sub-cell">${safeText(item.operatorNote || '')}</span></td>
           <td>
             <div class="cell-actions">
-              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="triaged">分诊</button>
-              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="resolved">解决</button>
-              <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-status="ignored">忽略</button>
-              <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}">加入评估</button>
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="triaged">分诊</button>
+              <button class="table-action assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="resolved">解决</button>
+              <button class="table-action reject assistant-feedback-review-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}" data-status="ignored">忽略</button>
+              <button class="table-action assistant-feedback-eval-button" data-id="${safeAttr(item.id)}" data-version="${safeAttr(item.feedbackVersion || '')}">加入评估</button>
+              <button class="table-action assistant-conversation-button" data-id="${safeAttr(item.id)}">查看对话</button>
             </div>
           </td>
         </tr>
       `).join('');
       empty.hidden = rows.length > 0;
       await renderAssistantEvalCases();
+    }
+
+    async function renderFeedbackConversation(feedbackId) {
+      if (!feedbackId) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再查看完整对话：/admin-web/');
+        return;
+      }
+      const card = document.getElementById('assistantConversationCard');
+      const box = document.getElementById('assistantConversationBox');
+      const meta = document.getElementById('assistantConversationMeta');
+      const data = await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(feedbackId)}/conversation`);
+      const turns = (data && data.turns) || [];
+      meta.textContent = `会话 ${data && data.threadId ? data.threadId : '(无)'} · 共 ${data && data.turnCount || 0} 轮`
+        + (data && data.truncated ? '（对话记录已滚动清理，仅存最近若干轮）' : '');
+      box.innerHTML = turns.length ? turns.map((turn) => `
+        <div class="conversation-turn">
+          <div class="conversation-line"><span class="conversation-role user">用户</span>${safeText(turn.userInput)}</div>
+          <div class="conversation-line"><span class="conversation-role assistant">助手</span>${safeText(turn.assistantReply)}</div>
+          ${turn.nextQuestion ? `<div class="conversation-line sub-cell">追问：${safeText(turn.nextQuestion)}</div>` : ''}
+          ${(turn.listings || []).length ? `<div class="conversation-line sub-cell">推荐：${safeText((turn.listings || []).map((l) => l.title || l.community || l.id).join('、'))}</div>` : ''}
+          <div class="conversation-line sub-cell">${safeText(turn.intent || '', '')} · ${safeText(turn.time || '', '')}</div>
+        </div>
+      `).join('') : '<div class="sub-cell">没有可展示的对话（会话可能已过期清理）。</div>';
+      card.hidden = false;
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function assistantTraceToolText(item = {}) {
@@ -2310,12 +3610,12 @@
       empty.hidden = rows.length > 0;
     }
 
-    async function reviewAssistantFeedback(id, status) {
+    async function reviewAssistantFeedback(id, status, feedbackVersion) {
       if (!canUseAdminApi()) {
         alert('请通过后端地址打开后台后再标注客服反馈：/admin-web/');
         return;
       }
-      const operatorNote = window.prompt('填写处理备注，可留空', '') || '';
+      const operatorNote = feedbackVersion === 'match-result-v1' ? '' : (window.prompt('填写处理备注，可留空', '') || '');
       await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/review`, {
         method: 'POST',
         body: JSON.stringify({ status, operatorNote })
@@ -2323,15 +3623,22 @@
       await renderAssistantFeedbacks();
     }
 
-    async function promoteAssistantFeedbackToEval(id) {
+    async function promoteAssistantFeedbackToEval(id, feedbackVersion) {
       if (!canUseAdminApi()) {
         alert('请通过后端地址打开后台后再加入评估集：/admin-web/');
+        return;
+      }
+      const evalText = feedbackVersion === 'match-result-v1'
+        ? String(window.prompt('填写已脱敏的评估问题（必填）', '') || '').trim()
+        : '';
+      if (feedbackVersion === 'match-result-v1' && !evalText) {
+        alert('请填写已脱敏的评估问题');
         return;
       }
       const operatorNote = window.prompt('这条评估样本的备注，可留空', '') || '';
       await adminRequest(`/admin/assistant/feedbacks/${encodeURIComponent(id)}/promote-eval`, {
         method: 'POST',
-        body: JSON.stringify({ behavior: 'recommend', operatorNote })
+        body: JSON.stringify({ behavior: 'recommend', operatorNote, text: evalText })
       });
       await renderAssistantFeedbacks();
     }
@@ -2340,8 +3647,9 @@
       if (!canUseAdminApi()) return dataCenter.getShowingUploadRows();
       try {
         return await adminRequest('/admin/showings');
-      } catch (error) {
-        return dataCenter.getShowingUploadRows();
+      } catch (requestError) {
+        showAdminDataFailure(1);
+        throw requestError;
       }
     }
 
@@ -2351,20 +3659,20 @@
       const empty = document.getElementById('showingEmpty');
       body.innerHTML = rows.map((item) => `
         <tr>
-          <td>${item.user}<span class="sub-cell">${item.userPhone || '无电话'} · ${item.time || ''}</span></td>
-          <td>${item.community || item.listing}<span class="sub-cell">${item.room || '-'} · 上传人 ${item.uploader || '-'}</span></td>
+          <td>${safeText(item.user)}<span class="sub-cell">${safeText(item.userPhone || '无电话')} · ${safeText(item.time || '', '')}</span></td>
+          <td>${safeText(item.community || item.listing)}<span class="sub-cell">${safeText(item.room || '-')} · 上传人 ${safeText(item.uploader || '-')}</span></td>
           <td>
-            ${item.photoUrl ? `<a class="audit-shot" href="${item.photoUrl}" target="_blank"><img src="${item.photoUrl}" alt="带看水印照片"></a>` : '<span class="audit-shot">待补图</span>'}
+            ${item.photoUrl ? `<a class="audit-shot" href="${safeAttr(item.photoUrl)}" target="_blank" rel="noopener"><img src="${safeAttr(item.photoUrl)}" alt="带看水印照片"></a>` : '<span class="audit-shot">待补图</span>'}
           </td>
-          <td>${item.locationText || '-'}<span class="sub-cell">${item.watermarkText || '待查看水印信息'}</span></td>
-          <td>${item.reward}</td>
-          <td><span class="${pillClass(item.status)}">${item.status}</span><span class="sub-cell">${item.reviewNote || '管理员核验水印照片真实性'}</span></td>
-          <td>
+          <td>${safeText(item.locationText || '-')}<span class="sub-cell">${safeText(item.watermarkText || '待查看水印信息')}</span></td>
+          <td>${safeText(item.reward)}</td>
+          <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span><span class="sub-cell">${safeText(item.reviewNote || '管理员核验水印照片真实性')}</span></td>
+          <td>${superOnlyActions(`
             <div class="row-actions">
-              <button class="table-action showing-review-button" data-id="${item.id}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
-              <button class="table-action reject showing-review-button" data-id="${item.id}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
+              <button class="table-action showing-review-button" data-id="${safeAttr(item.id)}" data-action="approve" ${item.status === '已通过' ? 'disabled' : ''}>通过</button>
+              <button class="table-action reject showing-review-button" data-id="${safeAttr(item.id)}" data-action="reject" ${item.status !== '待审核' ? 'disabled' : ''}>驳回</button>
             </div>
-          </td>
+          `)}</td>
         </tr>
       `).join('');
       empty.hidden = Boolean(rows.length);
@@ -2375,14 +3683,15 @@
       if (!select) return;
       const current = select.value;
       select.innerHTML = '<option value="">不绑定员工</option>' + (users || []).map((item) => (
-        `<option value="${item.id}">${item.name || item.id} · ${item.phone || ''}</option>`
+        `<option value="${safeAttr(item.id)}">${safeText(item.name || item.id)} · ${safeText(item.phone || '', '')}</option>`
       )).join('');
       if (current) select.value = current;
     }
 
     async function renderAdmins() {
-      const payload = await getAdminData('/admin/users', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
-      const users = Array.isArray(payload) ? payload : payload.users || [];
+      const payload = await getAdminData('/admin/accounts', () => ({ users: dataCenter.getUsers(), admins: adminAccounts }));
+      // 软删账号（deleted=true）从列表与员工下拉隐藏；名下数据仍在后端保留。
+      const users = (Array.isArray(payload) ? payload : payload.users || []).filter((item) => !item.deleted);
       const admins = Array.isArray(payload) ? adminAccounts : payload.admins || adminAccounts;
       fillAdminUserSelect(users);
       const staffRows = users.filter((item) => !item.isAdmin).map((item) => ({
@@ -2392,7 +3701,9 @@
         permission: item.role || '无后台权限',
         todayViews: `业主 ${item.todayOwnerViews || 0}/${item.ownerViewLimit || 3} · 普通 ${item.todayNormalViews || 0}/${item.normalViewLimit || 15}`,
         status: item.brokerStatus || item.authed || '禁止登录',
-        canEdit: false
+        hasPassword: Boolean(item.hasPassword),
+        canEdit: false,
+        canDelete: true
       }));
       const rows = admins.map((item) => ({
         id: item.id || item.account,
@@ -2407,17 +3718,23 @@
       document.getElementById('adminRows').innerHTML = rows.map((item) => {
         return `
           <tr>
-            <td>${item.account}</td>
-            <td>${item.name}</td>
-            <td>${item.permission}</td>
-            <td>${item.todayViews}</td>
-            <td><span class="${pillClass(item.status)}">${item.status}</span></td>
+            <td>${safeText(item.account)}</td>
+            <td>${safeText(item.name)}</td>
+            <td>${safeText(item.permission)}</td>
+            <td>${safeText(item.todayViews)}</td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status)}</span></td>
             <td>${item.canEdit ? `
               <div class="row-actions">
-                <button class="table-action password-button" data-id="${item.id}" data-account="${item.account}">修改密码</button>
-                <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${item.id}" data-account="${item.account}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
+                <button class="table-action password-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">修改密码</button>
+                <button class="table-action status-button ${item.status === '禁用' ? '' : 'reject'}" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}" data-action="${item.status === '禁用' ? 'enable' : 'disable'}">${item.status === '禁用' ? '启用' : '禁用'}</button>
+                ${item.id === currentAdminId ? '' : `<button class="table-action reject delete-admin-button" data-id="${safeAttr(item.id)}" data-account="${safeAttr(item.account)}">删除</button>`}
               </div>
-            ` : '-'}</td>
+            ` : (item.canDelete ? `
+              <div class="row-actions">
+                <button class="table-action set-user-password-button" data-id="${safeAttr(item.id)}" data-name="${safeAttr(item.name)}">${item.hasPassword ? '重置密码' : '设置密码'}</button>
+                <button class="table-action reject delete-user-button" data-id="${safeAttr(item.id)}" data-name="${safeAttr(item.name)}">删除</button>
+              </div>
+            ` : '-')}</td>
           </tr>
         `;
       }).join('');
@@ -2449,16 +3766,16 @@
         { value: summary.pass || 0, label: '已通过' },
         { value: summary.todo || 0, label: '需处理' },
         { value: summary.pending || 0, label: '待人工确认' }
-      ].map((item) => `<div class="launch-stat"><strong>${item.value}</strong><span>${item.label}</span></div>`).join('');
+      ].map((item) => `<div class="launch-stat"><strong>${safeText(item.value)}</strong><span>${safeText(item.label)}</span></div>`).join('');
 
       document.getElementById('launchRows').innerHTML = (data.items || []).map((item) => `
         <div class="launch-card">
           <div class="launch-card-head">
-            <div class="launch-title">${item.title}</div>
-            <span class="${pillClass(item.status)}">${item.status}</span>
+            <div class="launch-title">${safeText(item.title)}</div>
+            <span class="${pillClass(item.status)}">${safeText(item.status)}</span>
           </div>
-          <div class="launch-detail">${item.detail || ''}</div>
-          <div class="launch-action">${item.action || ''}</div>
+          <div class="launch-detail">${safeText(item.detail || '', '')}</div>
+          <div class="launch-action">${safeText(item.action || '', '')}</div>
         </div>
       `).join('');
 
@@ -2480,7 +3797,12 @@
       const response = await fetch(path, Object.assign({}, options, { headers }));
       const body = await response.json();
       if (!response.ok || (body.code && body.code !== 0)) {
-        throw new Error(body.message || '后台接口请求失败');
+        if (response.status === 401) {
+          clearAdminSession(body.message || '管理员登录已失效，请重新登录。');
+        }
+        const requestError = new Error(body.message || '后台接口请求失败');
+        requestError.statusCode = response.status;
+        throw requestError;
       }
       return body.data;
     }
@@ -2506,6 +3828,42 @@
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+    }
+
+    async function renderBackupStatus() {
+      const box = document.getElementById('backupSyncStatus');
+      if (!box) return;
+      if (!canUseAdminApi()) {
+        box.innerHTML = '<div class="sub-cell">请通过后端地址打开后台后查看真实备份状态：/admin-web/</div>';
+        return;
+      }
+      let data;
+      try {
+        data = await adminRequest('/admin/backup/status');
+      } catch (statusError) {
+        box.innerHTML = `<div class="sub-cell">${safeText(statusError.message || '备份状态获取失败')}</div>`;
+        return;
+      }
+      const offsite = (data && data.offsite) || {};
+      const feishu = (data && data.feishu) || {};
+      const localDrill = data && data.localDrill;
+      const feishuUpload = feishu.lastUpload;
+      const feishuDrill = feishu.lastDrill;
+      const boolText = (v) => (v ? '已配置' : '未配置');
+      // 演练结论文本：ok/失败 + 时间 + 文件名，动态部分全部 safeText，静态部分为字面量，拼接后可直接入 innerHTML。
+      const drillText = (d) => (d
+        ? `${d.ok ? '成功' : '失败'}${d.at ? ' · ' + safeText(d.at) : ''}${d.fileName ? ' · ' + safeText(d.fileName) : ''}${d.countsMatch === false ? ' · 计数不符' : ''}`
+        : '暂无记录');
+      box.innerHTML = `
+        <div class="status-box">
+          <div>最近异地备份：${safeText(offsite.latestFile || '（无）')}　<span class="sub-cell">${safeText(offsite.latestAt || '', '')} ${offsite.ageHours != null ? '· ' + safeText(String(offsite.ageHours), '') + ' 小时前' : ''}</span></div>
+          <div>新鲜度：<span class="${pillClass(offsite.fresh ? '通过' : '需要处理')}">${offsite.fresh ? '新鲜' : '已超期/缺失'}</span>　<span class="sub-cell">阈值 ${safeText(String(offsite.maxAgeHours || ''), '')} 小时 · 共 ${safeText(String(offsite.backupCount || 0), '')} 份 · 保留 ${safeText(String(offsite.retentionDays || ''), '')} 天${offsite.reason ? ' · ' + safeText(offsite.reason) : ''}</span></div>
+          <div class="sub-cell">加密：${boolText(offsite.encryptionConfigured)} · 异地命令：${boolText(offsite.remoteConfigured)} · 飞书上传：${boolText(feishu.configured)}</div>
+          <div>飞书云盘最近备份：${safeText((feishuDrill && feishuDrill.fileName) || (feishuUpload && feishuUpload.fileName) || '（无记录）')}　<span class="sub-cell">${safeText((feishuUpload && feishuUpload.at) || (feishuDrill && feishuDrill.at) || '', '')}</span></div>
+          <div>本地恢复演练：${drillText(localDrill)}</div>
+          <div>飞书恢复演练：${drillText(feishuDrill)}</div>
+        </div>
+      `;
     }
 
     async function reviewShowingUpload(id, action) {
@@ -2549,23 +3907,25 @@
           await renderListingReviews();
           await renderDashboardStats();
           await renderAreaStats();
+          showAdminToast(approved ? '审核通过，列表状态已刷新。' : '已驳回，列表状态已刷新。');
           return;
         }
         alert('请通过后端地址打开后台后再审核房源：/admin-web/');
         return;
       }
 
-      await adminRequest(`/admin/listings/${id}/review`, {
+      const updatedListings = await adminRequest(`/admin/listings/${id}/review`, {
         method: 'POST',
         body: JSON.stringify({
           action,
           note: approved ? '管理员审核通过，房源已上架' : '管理员审核驳回，房源暂不上架'
         })
       });
-      await renderListings();
-      await renderListingReviews();
+      await renderListings(updatedListings);
+      await renderListingReviews(updatedListings);
       await renderDashboardStats();
       await renderAreaStats();
+      showAdminToast(approved ? '审核通过，列表状态已刷新。' : '已驳回，列表状态已刷新。');
     }
 
     async function changeAdminPassword(id, account) {
@@ -2587,20 +3947,24 @@
         return;
       }
 
-      await adminRequest(`/admin/accounts/${id}/password`, {
+      const result = await adminRequest(`/admin/accounts/${id}/password`, {
         method: 'POST',
         body: JSON.stringify({ password: nextPassword })
       });
       await renderAdmins();
       await renderLaunchCheck();
-      alert('密码已更新，请妥善保存。');
+      alert(result && result.miniLoginSynced
+        ? '后台密码与小程序登录密码已同步更新，旧小程序会话已失效。'
+        : '后台密码已更新；该管理账号未绑定小程序用户，小程序登录密码未同步。');
     }
 
     function readAdminAccountForm() {
       return {
+        type: document.getElementById('adminTypeInput').value,
         userId: document.getElementById('adminUserId').value,
         account: document.getElementById('adminAccountInput').value.trim(),
         name: document.getElementById('adminNameInput').value.trim(),
+        phone: document.getElementById('adminPhoneInput').value.trim(),
         password: document.getElementById('adminPasswordInput').value.trim(),
         permission: document.getElementById('adminPermissionInput').value
       };
@@ -2609,11 +3973,50 @@
     function resetAdminAccountForm() {
       document.getElementById('adminAccountInput').value = '';
       document.getElementById('adminNameInput').value = '';
+      document.getElementById('adminPhoneInput').value = '';
       document.getElementById('adminPasswordInput').value = '';
+    }
+
+    // 按类型切换新增表单可见字段：管理账号=账号/密码/权限/员工绑定；中介/员工=手机号（手机号登录）。
+    function applyAdminTypeVisibility() {
+      const type = document.getElementById('adminTypeInput').value;
+      const isAdmin = type === 'admin';
+      document.getElementById('adminUserField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminAccountField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPasswordField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPermissionField').style.display = isAdmin ? '' : 'none';
+      document.getElementById('adminPhoneField').style.display = isAdmin ? 'none' : '';
+      const btn = document.getElementById('createAdminAccount');
+      if (btn) btn.textContent = isAdmin ? '创建管理员账号' : (type === 'broker' ? '创建中介账号' : '创建员工账号');
     }
 
     async function createAdminAccount() {
       const form = readAdminAccountForm();
+      // 中介/员工账号：建 db.users（手机号登录），只需姓名+手机号，走 /admin/users。
+      if (form.type === 'broker' || form.type === 'staff') {
+        if (!form.name) {
+          alert('请填写姓名。');
+          return;
+        }
+        if (!/^1\d{10}$/.test(form.phone)) {
+          alert('请填写 11 位手机号。');
+          return;
+        }
+        if (!canUseAdminApi()) {
+          alert('请通过后端地址打开后台后再创建中介/员工账号：/admin-web/');
+          return;
+        }
+        await adminRequest('/admin/users', {
+          method: 'POST',
+          body: JSON.stringify({ type: form.type, name: form.name, phone: form.phone })
+        });
+        resetAdminAccountForm();
+        await renderAdmins();
+        alert(form.type === 'broker' ? '中介账号已创建。' : '员工账号已创建。');
+        return;
+      }
+
+      // 管理账号：建 adminAccounts（后台登录），保持原有校验与流程。
       if (!form.account || form.password.length < 8) {
         alert('请填写账号，并设置至少 8 位密码。');
         return;
@@ -2637,14 +4040,16 @@
         return;
       }
 
-      await adminRequest('/admin/accounts', {
+      const result = await adminRequest('/admin/accounts', {
         method: 'POST',
         body: JSON.stringify(form)
       });
       resetAdminAccountForm();
       await renderAdmins();
       await renderLaunchCheck();
-      alert('管理员账号已创建。');
+      alert(result && result.miniLoginSynced
+        ? '管理员账号已创建，小程序登录密码已同步。'
+        : '管理员账号已创建；未绑定小程序用户。');
     }
 
     async function changeAdminStatus(id, account, action) {
@@ -2662,6 +4067,282 @@
       });
       await renderAdmins();
       await renderLaunchCheck();
+    }
+
+    async function deleteAdminAccount(id, account) {
+      if (!id) return;
+      if (!window.confirm(`确认删除后台账号 ${account}？删除后该账号将无法登录（软删归档、保留操作留痕）。`)) return;
+      if (!canUseAdminApi()) {
+        const index = adminAccounts.findIndex((admin) => (admin.id || admin.account) === id);
+        if (index !== -1) adminAccounts.splice(index, 1);
+        await renderAdmins();
+        return;
+      }
+      await adminRequest(`/admin/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await renderAdmins();
+      await renderLaunchCheck();
+      alert('账号已删除。');
+    }
+
+    // 设置/重置中介/员工（db.users）登录密码：存量或新建但未设密码的账号由管理员在此发初始密码。
+    async function changeManagedUserPassword(id, name) {
+      if (!id) return;
+      const nextPassword = window.prompt(`请输入 ${name || id} 的登录密码，至少 8 位（设置后请转告本人，本人登录后可自行修改）`);
+      if (!nextPassword) return;
+      if (nextPassword.trim().length < 8) {
+        alert('登录密码至少 8 位');
+        return;
+      }
+      if (/\s/.test(nextPassword)) {
+        alert('登录密码不能包含空格');
+        return;
+      }
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再设置密码：/admin-web/');
+        return;
+      }
+      await adminRequest(`/admin/users/${encodeURIComponent(id)}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password: nextPassword })
+      });
+      await renderAdmins();
+      alert('登录密码已设置，请妥善转告本人。');
+    }
+
+    // 删除中介/员工账号（db.users）：软删，禁止登录 + 列表隐藏，名下房源/成交/分佣历史数据保留。
+    async function deleteManagedUserAccount(id, name) {
+      if (!id) return;
+      if (!window.confirm(`确认删除账号 ${name || id}？删除后该账号将无法登录（软删归档，其名下房源/成交/分佣历史数据保留）。`)) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再删除账号：/admin-web/');
+        return;
+      }
+      await adminRequest(`/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await renderAdmins();
+      alert('账号已删除。');
+    }
+
+    async function renderRegistrations() {
+      const body = document.getElementById('registrationRows');
+      const empty = document.getElementById('registrationEmpty');
+      if (!body) return;
+      if (!canUseAdminApi()) {
+        body.innerHTML = '';
+        if (empty) { empty.hidden = false; empty.textContent = '请通过后端地址打开后台后查看注册申请：/admin-web/'; }
+        return;
+      }
+      let requests = [];
+      try {
+        const data = await adminRequest('/admin/registrations');
+        requests = (data && data.requests) || [];
+      } catch (error) {
+        body.innerHTML = `<tr><td colspan="5" class="sub-cell">${safeText(error.message || '注册申请获取失败')}</td></tr>`;
+        if (empty) empty.hidden = true;
+        return;
+      }
+      body.innerHTML = requests.map((item) => {
+        const pending = item.status === '待审核';
+        return `
+          <tr>
+            <td>${safeText(item.name || '-')}</td>
+            <td>${safeText(item.phone || '-')}</td>
+            <td>${safeText(item.createdAt || '', '')}</td>
+            <td><span class="${pillClass(item.status)}">${safeText(item.status || '待审核')}</span>${item.rejectReason ? `<span class="sub-cell">${safeText(item.rejectReason)}</span>` : ''}</td>
+            <td>${pending ? `
+              <div class="row-actions">
+                <button class="table-action registration-approve-button" data-id="${safeAttr(item.id)}" data-type="broker">通过为中介</button>
+                <button class="table-action registration-approve-button" data-id="${safeAttr(item.id)}" data-type="staff">通过为员工</button>
+                <button class="table-action reject registration-reject-button" data-id="${safeAttr(item.id)}">驳回</button>
+              </div>
+            ` : '-'}</td>
+          </tr>
+        `;
+      }).join('');
+      if (empty) {
+        empty.hidden = Boolean(requests.length);
+        empty.textContent = '暂无注册申请。';
+      }
+    }
+
+    async function reviewRegistrationRequest(id, action, type) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再审核注册申请：/admin-web/');
+        return;
+      }
+      let reason = '';
+      if (action === 'approve') {
+        if (!window.confirm(`确认通过该注册申请，开通为${type === 'broker' ? '中介' : '员工'}账号？`)) return;
+      } else {
+        const input = window.prompt('请输入驳回原因（可留空）：', '');
+        if (input === null) return;
+        reason = input;
+      }
+      await adminRequest(`/admin/registrations/${encodeURIComponent(id)}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ action, type, reason })
+      });
+      await renderRegistrations();
+      await renderAdmins();
+      alert(action === 'approve' ? '已通过并开通账号。' : '已驳回。');
+    }
+
+    // 与 server/src/listing-features.js 的 LISTING_FEATURE_OPTIONS 保持一致，改动需两处同步
+    const LISTING_EDIT_FEATURE_OPTIONS = ['近地铁', '电梯', '燃气', '独卫', '朝南', 'Loft', '落地窗', '带阳台', '带露台（阁楼）', '可短租', '可月付', '干湿分离', '采光好', '首次出租', '民水民电', '无'];
+    let editingListingItem = null;
+    let editingListingInitialViewingMethod = '';
+
+    function listingRemarkContainsContact(value) {
+      const text = String(value || '').trim().normalize('NFKC');
+      if (!text) return false;
+      const compact = text.replace(/[\s\-—_()（）+.,，:：]/g, '');
+      if (/1[3-9]\d{9}/.test(compact)) return true;
+      return /微信|微\s*信|wei\s*xin|we\s*chat|二维码|https?:\/\/|www\.|(?:^|[^a-z0-9])(?:wx|vx|v信|微号)(?:\s*[:：号]?)/i.test(text);
+    }
+
+    function renderEditFeatureOptions(selected) {
+      const tags = uniqueTextList(selected);
+      // 存量房源可能带旧标签（免押金/急租等），一并渲染避免保存时被静默丢弃
+      const extra = tags.filter((tag) => LISTING_EDIT_FEATURE_OPTIONS.indexOf(tag) === -1);
+      document.getElementById('editFeatureOptions').innerHTML = LISTING_EDIT_FEATURE_OPTIONS.concat(extra).map((tag) => `
+        <label class="feature-option"><input type="checkbox" value="${safeAttr(tag)}" ${tags.indexOf(tag) !== -1 ? 'checked' : ''}>${safeText(tag)}</label>
+      `).join('');
+    }
+
+    function openListingEditor(item) {
+      editingListingItem = item;
+      document.getElementById('listingEditorTitle').textContent = `编辑房源 · ${item.title || item.community || item.id}`;
+      document.getElementById('editArea').value = item.area || '';
+      document.getElementById('editBlock').value = item.block || '';
+      document.getElementById('editCommunity').value = item.community || '';
+      document.getElementById('editBuilding').value = item.building || '';
+      document.getElementById('editUnit').value = item.unit || '';
+      document.getElementById('editRoomNumber').value = item.roomNumber || '';
+      document.getElementById('editRentMode').value = /合租/.test(String(item.rentMode || item.type || '')) ? '合租' : '整租';
+      document.getElementById('editRoom').value = item.room || '';
+      document.getElementById('editHall').value = item.hall || '';
+      document.getElementById('editBath').value = item.bath || '';
+      document.getElementById('editRent').value = item.rentValue || '';
+      document.getElementById('editContact').value = item.landlordPhone || item.contact || '';
+      document.getElementById('editRemark').value = item.remark || '';
+      document.getElementById('editLandlordCommissionPercent').value = item.landlordCommissionPercent === undefined || item.landlordCommissionPercent === null ? 50 : item.landlordCommissionPercent;
+      document.getElementById('editViewingPassword').value = item.viewingPassword || '';
+      // item.viewingMethod 是展示推导值（存量可能库里并无显式方式）；记录初值，保存时未改动就不下发，
+      // 避免把推导值物化成显式方式（否则飞书表清空密码列后该行同步会被条件必填卡死）
+      document.getElementById('editViewingMethod').value = item.viewingMethod || '';
+      editingListingInitialViewingMethod = item.viewingMethod || '';
+      document.getElementById('editViewingKeyLocation').value = item.viewingKeyLocation || '';
+      document.getElementById('editStatus').value = '';
+      document.getElementById('editOwnerType').value = item.ownerType === '业主房源' ? '业主房源' : '二房东房源';
+      document.getElementById('editCompanyListing').checked = Boolean(item.companyListing || item.isCompanyListing);
+      document.getElementById('editVideoUrl').value = item.videoUrl || '';
+      // 展示字段会把租赁方式(整租/合租)掺进特点，回填时过滤，租赁方式走独立下拉
+      renderEditFeatureOptions((Array.isArray(item.features) ? item.features : textList(item.features))
+        .filter((tag) => tag !== '整租' && tag !== '合租'));
+      document.getElementById('listingEditorSub').textContent = `当前状态：${item.status || '未知'} · 修改后立即生效；改为“已下架”会移入后台资产池，可在资产池重新上架。审核与成交状态请走对应流程。`;
+      document.getElementById('listingEditorError').textContent = '';
+      document.getElementById('listingEditorOverlay').classList.add('active');
+    }
+
+    function closeListingEditor() {
+      editingListingItem = null;
+      document.getElementById('listingEditorOverlay').classList.remove('active');
+    }
+
+    async function submitListingEditor() {
+      if (!editingListingItem) return;
+      const errorBox = document.getElementById('listingEditorError');
+      errorBox.textContent = '';
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再编辑房源：/admin-web/');
+        return;
+      }
+      const features = Array.prototype.slice.call(document.querySelectorAll('#editFeatureOptions input:checked')).map((input) => input.value);
+      const rent = Number(document.getElementById('editRent').value);
+      if (!Number.isFinite(rent) || rent <= 0) {
+        errorBox.textContent = '租金必须是大于 0 的数字';
+        return;
+      }
+      if (!features.length) {
+        errorBox.textContent = '请至少选择一个房源特点，无特点请选“无”';
+        return;
+      }
+      const companyListing = document.getElementById('editCompanyListing').checked;
+      const contact = document.getElementById('editContact').value.trim();
+      if ((!companyListing && !contact) || (contact && !/^1[3-9]\d{9}$/.test(contact))) {
+        errorBox.textContent = companyListing
+          ? '公司房源房东手机号可留空；填写时必须是合法 11 位手机号'
+          : '业主、二房东房源在所有看房方式下都必须填写合法 11 位手机号';
+        return;
+      }
+      const remark = document.getElementById('editRemark').value.trim();
+      if (Array.from(remark).length > 200) {
+        errorBox.textContent = '房源备注最多 200 字';
+        return;
+      }
+      if (listingRemarkContainsContact(remark)) {
+        errorBox.textContent = '房源备注不能包含手机号、微信号等联系方式';
+        return;
+      }
+      const landlordCommissionPercent = Number(document.getElementById('editLandlordCommissionPercent').value);
+      if (!Number.isInteger(landlordCommissionPercent) || landlordCommissionPercent < 0 || landlordCommissionPercent > 100) {
+        errorBox.textContent = '房东佣金占月租比例必须是 0 至 100 的整数';
+        return;
+      }
+      const payload = {
+        area: document.getElementById('editArea').value.trim(),
+        block: document.getElementById('editBlock').value.trim(),
+        community: document.getElementById('editCommunity').value.trim(),
+        building: document.getElementById('editBuilding').value.trim(),
+        unit: document.getElementById('editUnit').value.trim(),
+        roomNumber: document.getElementById('editRoomNumber').value.trim(),
+        rentMode: document.getElementById('editRentMode').value,
+        room: document.getElementById('editRoom').value.trim(),
+        hall: document.getElementById('editHall').value.trim(),
+        bath: document.getElementById('editBath').value.trim(),
+        rent,
+        contact,
+        remark,
+        landlordCommissionPercent,
+        viewingPassword: document.getElementById('editViewingPassword').value.trim(),
+        viewingKeyLocation: document.getElementById('editViewingKeyLocation').value.trim(),
+        ownerType: document.getElementById('editOwnerType').value,
+        companyListing,
+        features
+      };
+      const videoUrl = document.getElementById('editVideoUrl').value.trim();
+      if (videoUrl) payload.videoUrl = videoUrl;
+      // 看房方式与打开弹窗时一致就不下发（推导值不物化落库）；管理员改动后才显式下发，
+      // 并与小程序端同口径：切到某方式时清空非该方式的旧敏感值
+      const viewingMethod = document.getElementById('editViewingMethod').value;
+      if (viewingMethod !== editingListingInitialViewingMethod) {
+        payload.viewingMethod = viewingMethod;
+        if (viewingMethod && viewingMethod !== '密码') payload.viewingPassword = '';
+        if (viewingMethod && viewingMethod !== '钥匙') payload.viewingKeyLocation = '';
+      }
+      const status = document.getElementById('editStatus').value;
+      if (status) payload.status = status;
+
+      const saveButton = document.getElementById('saveListingEditor');
+      saveButton.disabled = true;
+      try {
+        await adminRequest(`/admin/listings/${encodeURIComponent(editingListingItem.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        errorBox.textContent = error.message || '保存失败，请重试';
+        saveButton.disabled = false;
+        return;
+      }
+      saveButton.disabled = false;
+      closeListingEditor();
+      await renderListings();
+      await renderExpiredListings();
+      await renderDashboardStats();
+      await renderAreaStats();
+      await renderAdminLogs();
+      alert('房源信息已保存');
     }
 
     async function verifyAdminListing(id) {
@@ -2686,6 +4367,162 @@
       await renderDashboardStats();
       await renderExpiredListings();
       await renderAdminLogs();
+    }
+
+    // ==== 管理后台坐标点选地图 ====
+    const coordinatePicker = {
+      map: null, marker: null, listingId: null, lat: null, lng: null, wired: false,
+      defaultCenter: { latitude: 30.306628, longitude: 120.173407, label: '拱墅区5号线东新园地铁口' }
+    };
+    let mapConfigCache = null;
+    let qqMapSdkPromise = null;
+
+    async function getAdminMapConfig() {
+      if (mapConfigCache) return mapConfigCache;
+      try { mapConfigCache = await adminRequest('/admin/map-config'); }
+      catch (e) { mapConfigCache = { jsApiKey: '', defaultCenter: coordinatePicker.defaultCenter }; }
+      if (mapConfigCache && mapConfigCache.defaultCenter) coordinatePicker.defaultCenter = mapConfigCache.defaultCenter;
+      return mapConfigCache;
+    }
+
+    function loadQQMapSdk(key) {
+      if (window.TMap) return Promise.resolve();
+      if (qqMapSdkPromise) return qqMapSdkPromise;
+      qqMapSdkPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://map.qq.com/api/gljs?v=1.exp&key=' + encodeURIComponent(key);
+        s.onload = () => (window.TMap ? resolve() : reject(new Error('地图 SDK 未就绪')));
+        s.onerror = () => reject(new Error('地图 SDK 加载失败（检查 key 是否开通 JS API 及域名白名单）'));
+        document.head.appendChild(s);
+        setTimeout(() => { if (!window.TMap) reject(new Error('地图 SDK 加载超时')); }, 12000);
+      });
+      return qqMapSdkPromise;
+    }
+
+    function setCoordinateReadout(lat, lng, syncInputs) {
+      const has = Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+      coordinatePicker.lat = has ? Number(lat) : null;
+      coordinatePicker.lng = has ? Number(lng) : null;
+      const readout = document.getElementById('coordinateReadout');
+      if (readout) readout.textContent = has ? ('已选：' + Number(lat).toFixed(6) + ', ' + Number(lng).toFixed(6)) : '未选择坐标';
+      if (syncInputs) {
+        const latEl = document.getElementById('coordinateLat');
+        const lngEl = document.getElementById('coordinateLng');
+        if (latEl && has) latEl.value = Number(lat).toFixed(6);
+        if (lngEl && has) lngEl.value = Number(lng).toFixed(6);
+      }
+    }
+
+    function placeCoordinateMarker(lat, lng, panTo) {
+      if (coordinatePicker.map && coordinatePicker.marker && window.TMap) {
+        const pos = new TMap.LatLng(Number(lat), Number(lng));
+        coordinatePicker.marker.updateGeometries([{ id: 'pick', styleId: 'pick', position: pos }]);
+        if (panTo) coordinatePicker.map.setCenter(pos);
+      }
+      setCoordinateReadout(lat, lng, true);
+    }
+
+    function destroyCoordinateMap() {
+      try { if (coordinatePicker.map && coordinatePicker.map.destroy) coordinatePicker.map.destroy(); } catch (e) {}
+      coordinatePicker.map = null;
+      coordinatePicker.marker = null;
+    }
+
+    function closeCoordinateModal() {
+      document.getElementById('coordinateOverlay').classList.remove('active');
+      destroyCoordinateMap();
+    }
+
+    function wireCoordinatePicker() {
+      if (coordinatePicker.wired) return;
+      coordinatePicker.wired = true;
+      document.getElementById('cancelCoordinate').addEventListener('click', closeCoordinateModal);
+      document.getElementById('coordinateOverlay').addEventListener('click', (e) => {
+        if (e.target === document.getElementById('coordinateOverlay')) closeCoordinateModal();
+      });
+      document.getElementById('coordinateRecenter').addEventListener('click', () => {
+        const c = coordinatePicker.defaultCenter;
+        placeCoordinateMarker(c.latitude, c.longitude, true);
+      });
+      ['coordinateLat', 'coordinateLng'].forEach((fid) => {
+        document.getElementById(fid).addEventListener('change', () => {
+          const lat = Number(document.getElementById('coordinateLat').value);
+          const lng = Number(document.getElementById('coordinateLng').value);
+          if (Number.isFinite(lat) && Number.isFinite(lng)) placeCoordinateMarker(lat, lng, true);
+        });
+      });
+      document.getElementById('saveCoordinate').addEventListener('click', async () => {
+        const errEl = document.getElementById('coordinateError');
+        const lat = coordinatePicker.lat != null ? coordinatePicker.lat : Number(document.getElementById('coordinateLat').value);
+        const lng = coordinatePicker.lng != null ? coordinatePicker.lng : Number(document.getElementById('coordinateLng').value);
+        if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+          errEl.textContent = '请在地图上点选，或手动输入有效经纬度';
+          return;
+        }
+        try {
+          await adminRequest('/admin/listings/' + coordinatePicker.listingId + '/coordinate', {
+            method: 'POST',
+            body: JSON.stringify({ latitude: Number(lat), longitude: Number(lng) })
+          });
+          closeCoordinateModal();
+          await renderListings();
+          await renderAdminLogs();
+          await renderDashboardStats();
+          showAdminToast('坐标已修正为已确认坐标');
+        } catch (error) {
+          errEl.textContent = (error && error.message) || '坐标修正失败';
+        }
+      });
+    }
+
+    async function initCoordinateMap() {
+      destroyCoordinateMap();
+      const hint = document.getElementById('coordinateMapHint');
+      const container = document.getElementById('coordinateMap');
+      const cfg = await getAdminMapConfig();
+      const startLat = coordinatePicker.lat != null ? coordinatePicker.lat : coordinatePicker.defaultCenter.latitude;
+      const startLng = coordinatePicker.lng != null ? coordinatePicker.lng : coordinatePicker.defaultCenter.longitude;
+      if (!cfg.jsApiKey) {
+        if (hint) { hint.style.display = 'flex'; hint.textContent = '未配置地图 JS-API key（后端 QQ_MAP_JS_API_KEY），可在下方手动输入经纬度后确认。'; }
+        return;
+      }
+      try {
+        await loadQQMapSdk(cfg.jsApiKey);
+        if (hint) hint.style.display = 'none';
+        coordinatePicker.map = new TMap.Map(container, { center: new TMap.LatLng(startLat, startLng), zoom: 16 });
+        coordinatePicker.marker = new TMap.MultiMarker({
+          map: coordinatePicker.map,
+          styles: { pick: new TMap.MarkerStyle({ width: 24, height: 34, anchor: { x: 12, y: 34 } }) },
+          geometries: [{ id: 'pick', styleId: 'pick', position: new TMap.LatLng(startLat, startLng) }]
+        });
+        coordinatePicker.map.on('click', (e) => { if (e && e.latLng) placeCoordinateMarker(e.latLng.lat, e.latLng.lng, false); });
+      } catch (err) {
+        if (hint) { hint.style.display = 'flex'; hint.textContent = ((err && err.message) || '地图加载失败') + '，可在下方手动输入经纬度。'; }
+      }
+    }
+
+    async function updateListingCoordinate(id, title, currentLatitude, currentLongitude) {
+      if (!id) return;
+      if (!canUseAdminApi()) {
+        alert('请通过后端地址打开后台后再修正坐标：admin-web/');
+        return;
+      }
+      wireCoordinatePicker();
+      coordinatePicker.listingId = id;
+      const curLat = Number(currentLatitude);
+      const curLng = Number(currentLongitude);
+      const hasCur = Number.isFinite(curLat) && Number.isFinite(curLng);
+      coordinatePicker.lat = hasCur ? curLat : null;
+      coordinatePicker.lng = hasCur ? curLng : null;
+      document.getElementById('coordinateTitle').textContent = '坐标修正 · ' + (title || id);
+      document.getElementById('coordinateError').textContent = '';
+      const latEl = document.getElementById('coordinateLat');
+      const lngEl = document.getElementById('coordinateLng');
+      if (latEl) latEl.value = hasCur ? curLat : '';
+      if (lngEl) lngEl.value = hasCur ? curLng : '';
+      setCoordinateReadout(coordinatePicker.lat, coordinatePicker.lng, false);
+      document.getElementById('coordinateOverlay').classList.add('active');
+      await initCoordinateMap();
     }
 
     async function restoreExpiredListing(id) {
@@ -2713,29 +4550,6 @@
       await renderAdminLogs();
     }
 
-    async function confirmAdminDeal(id) {
-      if (!id) return;
-      if (!window.confirm('确认该签单真实有效，并由后端按总比例 20% 计算、按房源类型拆分上传人与平台留存？')) return;
-
-      if (!canUseAdminApi()) {
-        localConfirmedDeals[id] = new Date().toLocaleString('zh-CN', { hour12: false });
-        await renderDeals();
-        alert('本地预览已标记为已确认；正式环境会调用后端生成分佣记录。');
-        return;
-      }
-
-      const result = await adminRequest(`/admin/deals/${encodeURIComponent(id)}/confirm`, {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      await renderReports();
-      await renderDeals();
-      await renderCommissions();
-      await renderListings();
-      await renderDashboardStats();
-      alert((result && result.message) || '签单已确认，正式分佣记录已生成。');
-    }
-
     function fallbackFeishuSyncStatus() {
       return {
         ready: false,
@@ -2744,45 +4558,88 @@
         materialsReady: false,
         uploadToOss: true,
         feishuListingCount: 0,
-        lastLog: null
+        lastLog: null,
+        controller: {
+          mode: 'manual-only',
+          automaticEnabled: false,
+          schemaApproved: false,
+          resourceApproved: false,
+          scheduler: {},
+          counts: {},
+          runs: []
+        }
       };
+    }
+
+    function formatFeishuSyncTime(value) {
+      if (!value) return '暂无';
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return new Date(numeric).toLocaleString('zh-CN', { hour12: false });
+      return String(value);
+    }
+
+    function feishuSyncRunSummary(run) {
+      if (!run || typeof run !== 'object') return '';
+      const labels = {
+        queued: '同步任务已排队，后台即将开始。',
+        'dry-running': '正在读取源表并做完整预演，尚未写入。',
+        'dry-succeeded': '预演完整通过，尚未写入；请核对字段和摘要。',
+        'ready-to-apply': '预演已通过，正在准备正式写入。',
+        applying: '正在按已确认摘要同步飞书、素材和小程序库存。',
+        committing: '远端阶段已完成，正在原子提交小程序库存和首页快照。',
+        succeeded: '飞书、素材、小程序库存和首页快照已完整同步成功。',
+        'failed-before-write': '同步在任何正式写入前安全停止，可修正后重新运行。',
+        unknown: '同步结果未知：可能已有外部写入，自动同步已停止，请先人工对账。',
+        blocked: '同步已阻断：字段、计划或历史未知任务需要人工确认。'
+      };
+      return labels[String(run.state || '')] || '';
     }
 
     function renderFeishuSyncPayload(payload) {
       const status = payload.status || payload || fallbackFeishuSyncStatus();
-      const lastLog = status.lastLog || payload.result || null;
-      document.getElementById('feishuSyncStatus').textContent = status.ready
-        ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；素材${status.materialsReady ? '已配置' : '未配置'}；房源表${status.recordsReady ? '已配置' : '未配置'}。`
-        : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`;
+      const controller = payload.controller || status.controller || fallbackFeishuSyncStatus().controller;
+      const latestRun = payload.run || (Array.isArray(controller.runs) ? controller.runs[0] : null);
+      const lastLog = status.lastLog || null;
+      const runSummary = feishuSyncRunSummary(latestRun);
+      document.getElementById('feishuSyncStatus').textContent = runSummary || (status.ready
+        ? `已准备：${status.mode}；公司房源 ${status.feishuListingCount || 0} 套；后台控制器 ${controller.mode || 'manual-only'}。`
+        : `未准备：需要补齐飞书房源表和素材库配置。当前模式：${status.mode || '未配置'}。`);
+      const unresolvedCount = Number((controller.counts && controller.counts.unknown) || 0) +
+        Number((controller.counts && controller.counts.blocked) || 0);
       document.getElementById('feishuSyncRows').innerHTML = [
-        { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: status.bitableAppToken || '支持飞书多维表或本地导入文件' },
-        { name: '飞书表格', value: status.sheetReady ? '已配置' : '未配置', note: status.sheetToken ? `${status.sheetToken} · ${status.sheetRange || '默认范围'}` : '支持普通飞书表格 Sheets' },
-        { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: status.folderToken || '素材库 Folder Token / 本地素材文件' },
+        { name: '房源表配置', value: status.recordsReady ? '已配置' : '未配置', note: '员工源只读；小程序专用 Base 为唯一展示写出口' },
+        { name: '素材库配置', value: status.materialsReady ? '已配置' : '未配置', note: '房源笔记素材按本轮内容摘要搬运并回读校验' },
+        { name: '房源笔记素材', value: status.noteMaterialsReady ? '已准备' : '未启用/未准备', note: '必须显式启用独立目标目录，并完成 dry-run 后才能正式写入' },
         { name: 'OSS 搬运', value: status.uploadToOss ? '开启' : '关闭', note: '开启后飞书视频会由服务端保存到 OSS' },
-        { name: '自动同步', value: status.syncIntervalMinutes ? `${status.syncIntervalMinutes} 分钟/次` : '未开启', note: '可通过 FEISHU_SYNC_INTERVAL_MINUTES 配置' },
+        { name: '自动同步', value: controller.automaticEnabled ? '北京时间每日 08:00、14:00、20:00' : '关闭', note: controller.schemaApproved && controller.resourceApproved ? '已绑定获批字段与飞书资源身份摘要' : '尚未同时批准字段与资源身份，自动写入保持关闭' },
+        { name: '同步控制器', value: controller.mode || 'manual-only', note: '所有手工与定时任务共用持久化单飞锁' },
+        { name: '未知/阻断任务', value: unresolvedCount, note: unresolvedCount ? '必须先人工对账，不能自动重放' : '当前没有待处置的未知写入' },
         { name: '当前公司房源', value: status.feishuListingCount || 0, note: '小程序中仍处于上架状态的飞书同步房源' },
         { name: '缺视频素材', value: status.missingVideoMaterialCount || 0, note: '后台标记缺视频素材，不再因素材缺失自动下架' },
-        { name: '最近执行', value: lastLog && lastLog.finishedAt ? lastLog.finishedAt : '暂无', note: lastLog ? `新增 ${lastLog.created || 0} / 更新 ${lastLog.updated || 0} / 下架 ${lastLog.down || 0}` : '点击立即同步后返回本次结果' }
+        { name: '最近任务', value: latestRun ? String(latestRun.state || '未知') : '暂无', note: latestRun ? formatFeishuSyncTime(latestRun.finishedAt || latestRun.updatedAt || latestRun.createdAt) : '点击后立即入队，页面可随时回来查看' }
       ].map((item) => `
-        <tr><td>${item.name}</td><td>${item.value}</td><td>${item.note || ''}</td></tr>
+        <tr><td>${safeText(item.name)}</td><td>${safeText(item.value)}</td><td>${safeText(item.note || '', '')}</td></tr>
       `).join('');
-      document.getElementById('feishuSyncResult').textContent = lastLog
+      document.getElementById('feishuSyncResult').textContent = latestRun
         ? JSON.stringify({
-          dryRun: Boolean(lastLog.dryRun),
-          startedAt: lastLog.startedAt,
-          finishedAt: lastLog.finishedAt,
-          sourceRecordCount: lastLog.sourceRecordCount,
-          materialCount: lastLog.materialCount,
-          created: lastLog.created,
-          updated: lastLog.updated,
-          down: lastLog.down,
-          skippedNoMaterial: lastLog.skippedNoMaterial,
-          missingVideoMaterial: lastLog.missingVideoMaterial,
-          skippedInvalid: lastLog.skippedInvalid,
-          failed: lastLog.failed,
-          messages: lastLog.messages || []
+          runId: latestRun.runId,
+          state: latestRun.state,
+          dryRun: Boolean(latestRun.dryRun),
+          createdAt: formatFeishuSyncTime(latestRun.createdAt),
+          startedAt: formatFeishuSyncTime(latestRun.startedAt),
+          finishedAt: formatFeishuSyncTime(latestRun.finishedAt),
+          externalWritesMayHaveOccurred: Boolean(latestRun.externalWritesMayHaveOccurred),
+          errorCode: latestRun.errorCode || '',
+          message: latestRun.message || '',
+          schemaSha256: latestRun.schemaSha256 || '',
+          resourceIdentitySha256: latestRun.resourceIdentitySha256 || '',
+          mirrorPlanSha256: latestRun.mirrorPlanSha256 || '',
+          contentPlanSha256: latestRun.contentPlanSha256 || '',
+          contentPlanAssetCount: latestRun.contentPlanAssetCount,
+          schemaBindings: latestRun.schemaBindings || [],
+          result: latestRun.result || null
         }, null, 2)
-        : '暂无同步记录';
+        : (lastLog ? JSON.stringify({ status: lastLog.status, finishedAt: lastLog.finishedAt }, null, 2) : '暂无同步记录');
     }
 
     async function renderFeishuSync() {
@@ -2796,18 +4653,33 @@
         return;
       }
       if (!dryRun && !window.confirm('确认按飞书房源表和素材库同步小程序公司房源？已下架或表中删除的公司房源会进入废房源池，缺素材房源会在后台标记。')) return;
-      document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在预演飞书同步...' : '正在执行飞书同步...';
+      document.getElementById('feishuSyncStatus').textContent = dryRun ? '正在提交预演任务...' : '正在提交后台同步任务...';
       const result = await adminRequest('/admin/feishu-sync/run', {
         method: 'POST',
         body: JSON.stringify({ dryRun: Boolean(dryRun) })
       });
       renderFeishuSyncPayload(result);
-      await renderDashboardStats();
-      await renderAreaStats();
-      await renderListings();
-      await renderListingReviews();
-      await renderExpiredListings();
-      await renderLaunchCheck();
+      const runId = result && result.run && result.run.runId;
+      const terminalStates = new Set(['dry-succeeded', 'succeeded', 'failed-before-write', 'unknown', 'blocked']);
+      for (let attempt = 0; runId && attempt < 30; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await getAdminData('/admin/feishu-sync/status', fallbackFeishuSyncStatus);
+        renderFeishuSyncPayload(status);
+        const run = status.controller && Array.isArray(status.controller.runs)
+          ? status.controller.runs.find((item) => item.runId === runId)
+          : null;
+        if (!run || !terminalStates.has(run.state)) continue;
+        if (run.state === 'succeeded') {
+          await renderDashboardStats();
+          await renderAreaStats();
+          await renderListings();
+          await renderListingReviews();
+          await renderExpiredListings();
+          await renderLaunchCheck();
+        }
+        return;
+      }
+      document.getElementById('feishuSyncStatus').textContent = '任务仍在后台执行；可以关闭页面，稍后回来查看，不会中断同步。';
     }
 
     function looksBrokenPrompt(value) {
@@ -2843,13 +4715,8 @@
 
     async function loadSavedLlmConfig() {
       if (!canUseAdminApi()) return getSavedLlmConfig();
-      try {
-        const config = await adminRequest('/admin/llm-config');
-        return normalizeLlmConfig(config || {});
-      } catch (error) {
-        showLlmStatus('后端配置读取失败，当前展示浏览器本地配置。');
-        return getSavedLlmConfig();
-      }
+      const config = await adminRequest('/admin/llm-config');
+      return normalizeLlmConfig(config || {});
     }
 
     function readLlmConfigForm() {
@@ -2919,18 +4786,19 @@
 
     async function saveLlmConfig() {
       const config = readLlmConfigForm();
-      localStorage.setItem('ynzy_llm_config', JSON.stringify(config));
       try {
         if (canUseAdminApi()) {
           const saved = await adminRequest('/admin/llm-config', {
             method: 'PUT',
             body: JSON.stringify(config)
           });
+          localStorage.setItem('ynzy_llm_config', JSON.stringify(saved));
           fillLlmConfigForm(saved);
           showLlmStatus('LLM 配置已保存到后端。小程序会通过 /mini/assistant/chat 使用该配置。');
-          renderLaunchCheck();
+          await renderLaunchCheck();
           return;
         }
+        localStorage.setItem('ynzy_llm_config', JSON.stringify(config));
         renderLlmConfigPreview(config);
         showLlmStatus('LLM 配置已保存到浏览器本地。通过后端地址打开后台后，可保存到服务端。');
       } catch (error) {
@@ -2981,43 +4849,116 @@
 
     async function initLlmConfigPanel() {
       if (llmConfigInitialized) return;
-      llmConfigInitialized = true;
-      fillLlmConfigForm(getSavedLlmConfig());
-      fillLlmConfigForm(await loadSavedLlmConfig());
+      const saved = await loadSavedLlmConfig();
+      fillLlmConfigForm(saved);
       document.getElementById('llmProvider').addEventListener('change', applyProviderDefault);
       document.getElementById('saveLlmConfig').addEventListener('click', saveLlmConfig);
       document.getElementById('testLlmConfig').addEventListener('click', testLlmConfig);
       document.getElementById('resetLlmConfig').addEventListener('click', resetLlmConfig);
-      ['llmProtocol', 'llmApiBaseUrl', 'llmModel', 'llmSecretName', 'llmSystemPrompt'].forEach((id) => {
+      ['llmProtocol', 'llmApiBaseUrl', 'llmModel', 'llmNeedParserModel', 'llmComplexNeedParserModel', 'llmReplyModel', 'llmSecretName', 'llmSystemPrompt'].forEach((id) => {
         document.getElementById(id).addEventListener('input', () => renderLlmConfigPreview(readLlmConfigForm()));
+      });
+      llmConfigInitialized = true;
+    }
+
+    async function renderAll() {
+      clearAdminDataFailure();
+      await loadListingFilterMetadata();
+      const tasks = [
+        renderDashboardStats(),
+        renderAreaStats(),
+        renderMaintenanceRule(),
+        renderListings(),
+        renderListingReviews(),
+        renderExpiredListings(),
+        renderAdminLogs(),
+        renderReports(),
+        renderDeals(),
+        renderCommissions(),
+        renderShowingUploads()
+      ];
+      if (currentAdminIsSuper) {
+        tasks.push(
+          renderCommissionConfig(),
+          renderAssistantFeedbacks(),
+          renderAssistantTraces(),
+          renderAdmins(),
+          renderRegistrations(),
+          renderFeishuSync(),
+          renderLaunchCheck(),
+          renderBackupStatus(),
+          initLlmConfigPanel()
+        );
+      }
+      const results = await Promise.allSettled(tasks);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) {
+        showAdminDataFailure(failures.length);
+        return false;
+      }
+      clearAdminDataFailure();
+      return true;
+    }
+
+    function refreshListingViews() {
+      return Promise.allSettled([renderListings(), renderExpiredListings()]);
+    }
+
+    function applyAdminRole(admin) {
+      admin = admin || {};
+      currentAdminId = admin.id || currentAdminId || '';
+      // 角色来源优先用后端 /admin/auth/me 的 isSuperAdmin；登录返回的 admin 无该字段时用 permission 兜底
+      // （与后端 isSuperAdmin 同源：仅「全部后台权限」或无显式受限权限视为超管）。file:// 预览默认超管。
+      if (typeof admin.isSuperAdmin === 'boolean') {
+        currentAdminIsSuper = admin.isSuperAdmin;
+      } else if (!canUseAdminApi()) {
+        currentAdminIsSuper = true;
+      } else if (admin.permission !== undefined) {
+        const permission = String(admin.permission || '').trim();
+        currentAdminIsSuper = !permission || permission === '全部后台权限';
+      }
+      document.querySelectorAll('[data-super="1"]').forEach((el) => {
+        el.style.display = currentAdminIsSuper ? '' : 'none';
       });
     }
 
-    function renderAll() {
-      renderDashboardStats();
-      renderAreaStats();
-      renderMaintenanceRule();
-      renderListings();
-      renderListingReviews();
-      renderExpiredListings();
-      renderAdminLogs();
-      renderReports();
-      renderDeals();
-      renderCommissions();
-      renderShowingUploads();
-      renderAssistantFeedbacks();
-      renderAssistantTraces();
-      renderAdmins();
-      renderFeishuSync();
-      renderLaunchCheck();
-      initLlmConfigPanel();
-    }
-
-    async function openAdminApp(admin) {
+    async function openAdminApp(admin, roleVerified = false) {
+      let currentAdmin = admin || {};
+      if (canUseAdminApi() && !roleVerified) {
+        currentAdmin = await adminRequest('/admin/auth/me');
+      }
+      applyAdminRole(currentAdmin);
       loginScreen.style.display = 'none';
       app.style.display = 'block';
-      document.querySelector('.admin-tag').textContent = `管理员：${admin.account}`;
+      document.querySelector('.admin-tag').textContent = `管理员：${currentAdmin.account || 'admin'}`;
       await renderAll();
+    }
+
+    function clearAdminSession(message) {
+      releaseAllReviewVideoResources();
+      adminToken = '';
+      currentAdminId = '';
+      sessionStorage.removeItem('ynzy_admin_token');
+      clearAdminDataFailure();
+      app.style.display = 'none';
+      loginScreen.style.display = '';
+      error.textContent = message || '管理员登录已失效，请重新登录。';
+    }
+
+    async function restoreAdminSession() {
+      if (!canUseAdminApi() || !adminToken) return false;
+      try {
+        const admin = await adminRequest('/admin/auth/me');
+        await openAdminApp(admin, true);
+        return true;
+      } catch (restoreError) {
+        if (Number(restoreError.statusCode) === 401 || Number(restoreError.statusCode) === 403) {
+          clearAdminSession(restoreError.message || '管理员登录已失效，请重新登录。');
+        } else {
+          error.textContent = '后台服务暂时无法连接，当前会话已保留；服务恢复后刷新页面即可继续。';
+        }
+        return false;
+      }
     }
 
     async function loginByBackend(account, password) {
@@ -3072,10 +5013,42 @@
         return;
       }
 
-      const confirmDealButton = event.target.closest('.confirm-deal-button');
-      if (confirmDealButton && !confirmDealButton.disabled) {
-        confirmAdminDeal(confirmDealButton.dataset.id).catch((error) => {
-          alert(error.message || '确认签单失败');
+      const deleteAdminButton = event.target.closest('.delete-admin-button');
+      if (deleteAdminButton && !deleteAdminButton.disabled) {
+        deleteAdminAccount(deleteAdminButton.dataset.id, deleteAdminButton.dataset.account).catch((error) => {
+          alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
+      const setUserPasswordButton = event.target.closest('.set-user-password-button');
+      if (setUserPasswordButton && !setUserPasswordButton.disabled) {
+        changeManagedUserPassword(setUserPasswordButton.dataset.id, setUserPasswordButton.dataset.name).catch((error) => {
+          alert(error.message || '设置登录密码失败');
+        });
+        return;
+      }
+
+      const deleteUserButton = event.target.closest('.delete-user-button');
+      if (deleteUserButton && !deleteUserButton.disabled) {
+        deleteManagedUserAccount(deleteUserButton.dataset.id, deleteUserButton.dataset.name).catch((error) => {
+          alert(error.message || '删除账号失败');
+        });
+        return;
+      }
+
+      const registrationApproveButton = event.target.closest('.registration-approve-button');
+      if (registrationApproveButton && !registrationApproveButton.disabled) {
+        reviewRegistrationRequest(registrationApproveButton.dataset.id, 'approve', registrationApproveButton.dataset.type).catch((error) => {
+          alert(error.message || '审核通过失败');
+        });
+        return;
+      }
+
+      const registrationRejectButton = event.target.closest('.registration-reject-button');
+      if (registrationRejectButton && !registrationRejectButton.disabled) {
+        reviewRegistrationRequest(registrationRejectButton.dataset.id, 'reject').catch((error) => {
+          alert(error.message || '审核驳回失败');
         });
         return;
       }
@@ -3084,7 +5057,8 @@
       if (assistantFeedbackReviewButton && !assistantFeedbackReviewButton.disabled) {
         reviewAssistantFeedback(
           assistantFeedbackReviewButton.dataset.id,
-          assistantFeedbackReviewButton.dataset.status
+          assistantFeedbackReviewButton.dataset.status,
+          assistantFeedbackReviewButton.dataset.version
         ).catch((error) => {
           alert(error.message || '客服反馈标注失败');
         });
@@ -3093,8 +5067,19 @@
 
       const assistantFeedbackEvalButton = event.target.closest('.assistant-feedback-eval-button');
       if (assistantFeedbackEvalButton && !assistantFeedbackEvalButton.disabled) {
-        promoteAssistantFeedbackToEval(assistantFeedbackEvalButton.dataset.id).catch((error) => {
+        promoteAssistantFeedbackToEval(
+          assistantFeedbackEvalButton.dataset.id,
+          assistantFeedbackEvalButton.dataset.version
+        ).catch((error) => {
           alert(error.message || '加入评估集失败');
+        });
+        return;
+      }
+
+      const assistantConversationButton = event.target.closest('.assistant-conversation-button');
+      if (assistantConversationButton && !assistantConversationButton.disabled) {
+        renderFeedbackConversation(assistantConversationButton.dataset.id).catch((error) => {
+          alert(error.message || '查看完整对话失败');
         });
         return;
       }
@@ -3119,6 +5104,18 @@
         return;
       }
 
+      const compatibleVideoButton = event.target.closest('.review-video-compat-button');
+      if (compatibleVideoButton && !compatibleVideoButton.disabled) {
+        const wrapper = compatibleVideoButton.closest('.review-video');
+        const video = wrapper && wrapper.querySelector('video[data-review-video]');
+        if (video) {
+          loadCompatibleReviewVideo(video).catch((error) => {
+            showAdminToast(error.message || '兼容预览生成失败，请稍后重试。');
+          });
+        }
+        return;
+      }
+
       const backReviewButton = event.target.closest('.back-review-list-button');
       if (backReviewButton) {
         showListingReviewList();
@@ -3139,10 +5136,30 @@
         return;
       }
 
+      const editListingButton = event.target.closest('.edit-listing-button');
+      if (editListingButton && !editListingButton.disabled) {
+        const editItem = adminListingItems.find((row) => String(row.id) === editListingButton.dataset.id);
+        if (editItem) openListingEditor(editItem);
+        return;
+      }
+
       const verifyButton = event.target.closest('.verify-listing-button');
       if (verifyButton && !verifyButton.disabled) {
         verifyAdminListing(verifyButton.dataset.id).catch((error) => {
           alert(error.message || '房态核验失败');
+        });
+        return;
+      }
+
+      const coordinateButton = event.target.closest('.coordinate-listing-button');
+      if (coordinateButton && !coordinateButton.disabled) {
+        updateListingCoordinate(
+          coordinateButton.dataset.id,
+          coordinateButton.dataset.title,
+          coordinateButton.dataset.latitude,
+          coordinateButton.dataset.longitude
+        ).catch((error) => {
+          alert(error.message || '坐标修正失败');
         });
         return;
       }
@@ -3157,6 +5174,7 @@
 
     document.querySelectorAll('.nav-button').forEach((button) => {
       button.addEventListener('click', () => {
+        releaseAllReviewVideoResources();
         document.querySelectorAll('.nav-button').forEach((item) => item.classList.remove('active'));
         document.querySelectorAll('.panel').forEach((item) => item.classList.remove('active'));
         button.classList.add('active');
@@ -3164,31 +5182,77 @@
         title.textContent = panelTitles[button.dataset.panel] || button.textContent;
         if (button.dataset.panel === 'listingReviews') showListingReviewList();
         if (button.dataset.panel === 'expiredListings') showExpiredListingList();
-        if (button.dataset.panel === 'assistantFeedback') renderAssistantFeedbacks();
-        if (button.dataset.panel === 'assistantTraces') renderAssistantTraces();
+        if (button.dataset.panel === 'assistantFeedback') renderAssistantFeedbacks().catch(() => {});
+        if (button.dataset.panel === 'assistantTraces') renderAssistantTraces().catch(() => {});
       });
     });
 
-    [areaFilter, blockFilter, communityFilter].forEach((item) => {
+    window.addEventListener('pagehide', releaseAllReviewVideoResources);
+
+    areaFilter.addEventListener('change', handleActiveDistrictChange);
+    [blockFilter, communityFilter, sourceFilter, statusFilter, missingVideoFilter].forEach((item) => {
       item.addEventListener('input', () => {
-        renderListings();
-        renderExpiredListings();
+        refreshListingViews();
       });
       item.addEventListener('change', () => {
-        renderListings();
-        renderExpiredListings();
+        refreshListingViews();
       });
     });
     document.getElementById('resetListingFilters').addEventListener('click', () => {
       areaFilter.value = '';
       blockFilter.value = '';
       communityFilter.value = '';
-      renderListings();
+      sourceFilter.value = '';
+      statusFilter.value = '';
+      missingVideoFilter.value = '';
+      refreshListingViews();
+    });
+    expiredDistrictFilter.addEventListener('change', () => {
+      refreshExpiredBlockOptions();
       renderExpiredListings();
+    });
+    [
+      expiredBlockFilter,
+      expiredCommunityFilter,
+      expiredSourceFilter,
+      expiredRentMinFilter,
+      expiredRentMaxFilter,
+      expiredLayoutFilter,
+      expiredRentModeFilter
+    ].forEach((item) => {
+      item.addEventListener('input', renderExpiredListings);
+      item.addEventListener('change', renderExpiredListings);
+    });
+    document.getElementById('resetExpiredListingFilters').addEventListener('click', () => {
+      expiredDistrictFilter.value = '';
+      refreshExpiredBlockOptions();
+      expiredBlockFilter.value = '';
+      expiredCommunityFilter.value = '';
+      expiredSourceFilter.value = '';
+      expiredRentMinFilter.value = '';
+      expiredRentMaxFilter.value = '';
+      expiredLayoutFilter.value = '';
+      expiredRentModeFilter.value = '';
+      renderExpiredListings();
+    });
+    document.getElementById('saveListingEditor').addEventListener('click', () => {
+      submitListingEditor().catch((error) => {
+        document.getElementById('listingEditorError').textContent = error.message || '保存失败，请重试';
+        document.getElementById('saveListingEditor').disabled = false;
+      });
+    });
+    document.getElementById('cancelListingEditor').addEventListener('click', closeListingEditor);
+    document.getElementById('listingEditorOverlay').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) closeListingEditor();
     });
     document.getElementById('saveMaintenanceRule').addEventListener('click', () => {
       saveMaintenanceRule().catch((error) => {
         alert(error.message || '规则开关保存失败');
+      });
+    });
+    document.getElementById('saveCommissionConfig').addEventListener('click', () => {
+      saveCommissionConfig().catch((error) => {
+        alert(error.message || '分佣配置保存失败');
       });
     });
     document.getElementById('assistantFeedbackStatus').addEventListener('change', () => {
@@ -3208,6 +5272,13 @@
         alert(error.message || '创建管理员账号失败');
       });
     });
+    document.getElementById('adminTypeInput').addEventListener('change', applyAdminTypeVisibility);
+    applyAdminTypeVisibility();
+    document.getElementById('refreshRegistrations').addEventListener('click', () => {
+      renderRegistrations().catch((error) => {
+        alert(error.message || '注册申请刷新失败');
+      });
+    });
     document.getElementById('dryRunFeishuSync').addEventListener('click', () => {
       runFeishuSync(true).catch((error) => {
         alert(error.message || '飞书同步预演失败');
@@ -3225,6 +5296,35 @@
         alert(error.message || '数据导出失败');
       });
     });
+    document.getElementById('refreshBackupStatus').addEventListener('click', () => {
+      renderBackupStatus().catch((error) => {
+        alert(error.message || '备份状态刷新失败');
+      });
+    });
+    document.getElementById('footprintSearch').addEventListener('click', () => {
+      footprintPage = 1;
+      renderAdminLogs().catch((error) => alert(error.message || '足迹查询失败'));
+    });
+    document.getElementById('footprintReset').addEventListener('click', () => {
+      ['footprintViewer', 'footprintKeyword', 'footprintStart', 'footprintEnd'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      const actionSelect = document.getElementById('footprintAction');
+      if (actionSelect) actionSelect.value = '';
+      footprintPage = 1;
+      renderAdminLogs().catch((error) => alert(error.message || '足迹查询失败'));
+    });
+    document.getElementById('footprintPrev').addEventListener('click', () => {
+      if (footprintPage > 1) {
+        footprintPage -= 1;
+        renderAdminLogs().catch(() => {});
+      }
+    });
+    document.getElementById('footprintNext').addEventListener('click', () => {
+      footprintPage += 1;
+      renderAdminLogs().catch(() => {});
+    });
     document.getElementById('copyEnvTemplate').addEventListener('click', () => {
       const text = document.getElementById('launchEnvTemplate').textContent || '';
       if (navigator.clipboard && text) {
@@ -3233,6 +5333,22 @@
       }
       alert('当前浏览器不支持自动复制，请手动选中文本复制。');
     });
+
+    document.getElementById('retryAdminData').addEventListener('click', async () => {
+      const button = document.getElementById('retryAdminData');
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = '正在加载';
+      try {
+        const ready = await renderAll();
+        if (ready) showAdminToast('后台数据已重新加载');
+      } finally {
+        button.disabled = false;
+        button.textContent = '重新加载';
+      }
+    });
+
+    restoreAdminSession();
 
   </script>
 </body>

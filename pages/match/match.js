@@ -112,21 +112,53 @@ Page({
     })
   },
 
+  onHide() {
+    this.cleanupVoiceInput()
+  },
+
   onUnload() {
-    if (this.voiceController && this.data.isVoiceListening) {
-      this.voiceController.stop()
+    this.cleanupVoiceInput()
+  },
+
+  cleanupVoiceInput() {
+    const controller = this.voiceController
+    if (!controller) return
+    const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening
+    if (busy && typeof controller.cancel === 'function') {
+      controller.cancel()
+    } else if (busy && typeof controller.stop === 'function') {
+      controller.stop()
+    } else if (typeof controller.release === 'function') {
+      controller.release()
+    }
+    if (this.data.isVoiceListening) {
+      this.setData({ isVoiceListening: false })
     }
   },
 
+  ensureVoiceInput() {
+    if (!this.voiceController || (typeof this.voiceController.isErrored === 'function' && this.voiceController.isErrored())) {
+      this.initVoiceInput()
+    }
+    return this.voiceController
+  },
+
   initVoiceInput() {
+    if (this.voiceController && typeof this.voiceController.release === 'function') {
+      this.voiceController.release()
+    }
+    const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
+        this.lastVoiceRecognizedText = ''
         this.setData({
           isVoiceListening: true,
           voiceTip: '正在听，请说出租客需求'
         })
       },
       onRecognize: (text) => {
+        const recognizedText = String(text || '').trim()
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText
         this.applyVoiceNeed(text, false)
       },
       onTranscribing: () => {
@@ -137,36 +169,43 @@ Page({
       },
       onStop: (text) => {
         this.setData({ isVoiceListening: false })
-        if (!text) {
+        const content = String(text || this.lastVoiceRecognizedText || '').trim()
+        if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
         }
-        this.applyVoiceNeed(text, true)
+        this.lastVoiceRecognizedText = ''
+        this.applyVoiceNeed(content, true)
       },
-      onError: () => {
+      onError: (error) => {
         this.setData({
           isVoiceListening: false,
-          voiceTip: '语音识别失败，请重试或手动输入'
+          voiceTip: voiceInput.errorMessage(error, '语音识别失败，请重试或手动输入')
         })
-        wx.showToast({ title: '语音识别失败', icon: 'none' })
+        wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
     })
+    if (!this.voiceController && support && support.message) {
+      this.voiceUnavailableMessage = support.message
+      this.setData({ voiceTip: support.message })
+    }
   },
 
   toggleVoiceInput() {
-    if (!this.voiceController) {
-      wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' })
+    const controller = this.ensureVoiceInput()
+    if (!controller) {
+      wx.showToast({ title: this.voiceUnavailableMessage || '当前环境暂不支持语音输入', icon: 'none' })
       return
     }
     try {
       if (this.data.isVoiceListening) {
-        this.voiceController.stop()
+        controller.stop()
         return
       }
-      this.voiceController.start()
+      controller.start()
     } catch (error) {
       this.setData({ isVoiceListening: false })
-      wx.showToast({ title: '语音输入启动失败', icon: 'none' })
+      wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' })
     }
   },
 

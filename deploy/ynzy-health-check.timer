@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ynzy Miniapp 健康巡检 every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=ynzy-health-check.service
+
+[Install]
+WantedBy=timers.target

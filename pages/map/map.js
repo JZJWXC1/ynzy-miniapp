@@ -1,5 +1,15 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
 const listingDisplay = require('../../utils/listing-display')
+const {
+  createPendingFilterEnvelope,
+  consumePendingFilterEnvelope
+} = require('../../utils/pending-filter-storage')
+const {
+  DEFAULT_LAYOUT_OPTIONS,
+  normalizeListingFilterOptions,
+  blocksForDistrict
+} = require('../../utils/listing-filter-options')
 
 const PENDING_MAP_FILTERS_KEY = 'ynzy_pending_map_filters'
 const PENDING_LISTING_FILTERS_KEY = 'ynzy_pending_listing_filters'
@@ -18,9 +28,13 @@ const RENT_FILTERS = [
   { label: '5千+', key: '5000-', rentMin: 5000, rentMax: '' }
 ]
 
-const LAYOUT_FILTERS = ['全部', '一室', '两室', '三室']
+const LAYOUT_FILTERS = ['全部'].concat(DEFAULT_LAYOUT_OPTIONS.filter((item) => item !== '不限'))
 const RENT_MODE_FILTERS = ['全部', '整租', '合租']
 const SOURCE_TYPE_FILTERS = ['全部', '公司房源', '业主房源', '二房东房源']
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
 
 function toArray(value) {
   if (Array.isArray(value)) return value
@@ -35,18 +49,6 @@ function numberValue(value) {
   if (value === undefined || value === null || value === '') return ''
   const number = Number(value)
   return Number.isFinite(number) ? number : ''
-}
-
-function parsePendingFilters(value) {
-  if (!value) return {}
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value)
-    } catch (error) {
-      return {}
-    }
-  }
-  return value || {}
 }
 
 function parseBudget(value) {
@@ -115,12 +117,17 @@ function normalizeCommunity(item, index) {
   const minRent = Number(item.minRent || (rentValues.length ? Math.min.apply(null, rentValues) : 0))
   const maxRent = Number(item.maxRent || (rentValues.length ? Math.max.apply(null, rentValues) : 0))
   return {
-    id: item.community || item.id || `community-${index}`,
+    id: item.groupId || item.id || item.community || `community-${index}`,
+    district: item.district || item.area || '',
+    block: item.block || '',
     community: item.community || '已确认小区',
     latitude: Number(item.latitude),
     longitude: Number(item.longitude),
     coordinateSource: item.coordinateSource || '',
     coordinateVerified: item.coordinateVerified !== false,
+    coordinateLevel: item.coordinateLevel || (item.coordinateVerified === false ? '' : 'verified'),
+    coordinateStatus: item.coordinateStatus || item.coordinateLabel || '',
+    coordinateCalloutNote: item.coordinateCalloutNote || '',
     listingCount: Number(item.listingCount || activeListingIds.length || fallbackListing.length || 0),
     minRent,
     maxRent,
@@ -133,7 +140,11 @@ function normalizeCommunity(item, index) {
 }
 
 function validCommunity(item) {
-  return Number.isFinite(item.latitude) && Number.isFinite(item.longitude) && item.coordinateVerified && item.listingCount > 0
+  const level = item.coordinateLevel || (item.coordinateVerified ? 'verified' : '')
+  return Number.isFinite(item.latitude) &&
+    Number.isFinite(item.longitude) &&
+    ['verified', 'approximate', 'block-center'].indexOf(level) !== -1 &&
+    item.listingCount > 0
 }
 
 function emptyFilters() {
@@ -145,16 +156,17 @@ function emptyFilters() {
     layout: '',
     rentMode: '',
     sourceType: '',
+    district: '',
+    block: '',
     area: '',
+    community: '',
     listingIds: []
   }
 }
 
 function listingCategoryFromMapFilters(filters) {
   const sourceType = filters && filters.sourceType
-  const rentMode = filters && filters.rentMode
-  if (sourceType === '业主房源') return sourceType
-  if (rentMode === '整租' || rentMode === '合租') return rentMode
+  if (SOURCE_TYPE_FILTERS.indexOf(sourceType) !== -1 && sourceType !== '全部') return sourceType
   return '全部'
 }
 
@@ -168,27 +180,106 @@ Page({
     mapCenter: DEFAULT_CENTER,
     mapScale: 13,
     loading: false,
+    loadFailed: false,
+    loadErrorText: '',
     showSearchCurrentArea: false,
-    emptyText: '当前区域暂无已确认坐标的有效房源，可切换列表找房。',
-    summaryText: '正在加载已确认坐标房源',
+    emptyText: '当前区域暂无可上图的有效房源，可切换列表找房。',
+    summaryText: '正在加载可上图房源',
     filters: emptyFilters(),
     rentFilters: RENT_FILTERS,
     layoutFilters: LAYOUT_FILTERS,
     rentModeFilters: RENT_MODE_FILTERS,
-    sourceTypeFilters: SOURCE_TYPE_FILTERS
+    sourceTypeFilters: SOURCE_TYPE_FILTERS,
+    regionOptions: [],
+    blockOptions: [],
+    assistantReturnAvailable: false
   },
 
   onShow() {
+    this._pageActive = true
+    this._assistantReturnOpening = false
+    this.bindAuthInvalidationListener()
+    const sessionState = this.syncAuthSession()
+    this.loadListingFilterOptions()
     this.setTabBarSelected()
-    const pending = parsePendingFilters(wx.getStorageSync(PENDING_MAP_FILTERS_KEY))
+    let pending = {}
+    try {
+      const storedPending = wx.getStorageSync(PENDING_MAP_FILTERS_KEY)
+      if (storedPending) {
+        try { wx.removeStorageSync(PENDING_MAP_FILTERS_KEY) } catch (error) {}
+      }
+      pending = consumePendingFilterEnvelope(storedPending, sessionState.key) || {}
+    } catch (error) {
+      pending = {}
+    }
     if (Object.keys(pending).length) {
-      wx.removeStorageSync(PENDING_MAP_FILTERS_KEY)
+      this._assistantReturnActive = pending.returnToAssistant === true
       const filters = this.mergePendingFilters(this.data.filters, pending)
-      this.setData({ filters, selectedCommunityId: '', selectedCommunity: null })
+      this.setData({
+        filters,
+        assistantReturnAvailable: this._assistantReturnActive,
+        selectedCommunityId: '',
+        selectedCommunity: null
+      })
       this.loadCommunities({ recenter: true })
       return
     }
+    this.setData({ assistantReturnAvailable: this._assistantReturnActive === true })
     this.loadCommunities({ recenter: false })
+  },
+
+  onHide() {
+    this._assistantReturnActive = false
+  },
+
+  onUnload() {
+    this._pageActive = false
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
+    this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+    this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this._mapRequestSeq = Number(this._mapRequestSeq || 0) + 1
+      this._mapNativeOperationSeq = Number(this._mapNativeOperationSeq || 0) + 1
+      const filters = emptyFilters()
+      this.setData({
+        communities: [],
+        markers: [],
+        markerCommunityMap: {},
+        selectedCommunityId: '',
+        selectedCommunity: null,
+        blockOptions: blocksForDistrict(this.data.regionOptions, ''),
+        mapCenter: DEFAULT_CENTER,
+        mapScale: 13,
+        loading: false,
+        loadFailed: false,
+        loadErrorText: '',
+        filters,
+        summaryText: '正在加载可上图房源'
+      })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
+    })
   },
 
   setTabBarSelected() {
@@ -207,7 +298,10 @@ Page({
     const layout = pending.layout || pending.houseType || ''
     const rentMode = pending.rentMode || pending.mode || pending.type || ''
     const sourceType = pending.sourceType || pending.houseSourceType || pending.category || ''
-    const area = pending.area || pending.region || pending.district || pending.block || pending.community || ''
+    const district = pending.district || ''
+    const block = pending.block || ''
+    const area = pending.area || pending.region || ''
+    const community = pending.community || ''
     const listingIds = toArray(pending.listingIds || pending.ids || pending.listingId)
     const needId = pending.needId || pending.rentalNeedId || pending.clientNeedId || ''
     return {
@@ -219,7 +313,10 @@ Page({
       layout: layout === '全部' ? '' : layout,
       rentMode: rentMode === '全部' ? '' : rentMode,
       sourceType: sourceType === '全部' ? '' : sourceType,
+      district,
+      block,
       area,
+      community,
       listingIds
     }
   },
@@ -236,27 +333,98 @@ Page({
       layout: filters.layout,
       rentMode: filters.rentMode,
       sourceType: filters.sourceType,
+      district: filters.district,
+      block: filters.block,
       area: filters.area,
+      community: filters.community,
       listingIds: filters.listingIds
     }
   },
 
   loadCommunities(options) {
+    if (this._pageActive === false) return
     const loadOptions = options || {}
+    const requestSessionKey = this.syncAuthSession().key
+    this.lastMapLoadOptions = {
+      recenter: Boolean(loadOptions.recenter),
+      bounds: loadOptions.bounds ? Object.assign({}, loadOptions.bounds) : undefined
+    }
     // 请求竞态守卫：快速连续切换筛选时，只采纳最后一次请求的响应
     this._mapRequestSeq = (this._mapRequestSeq || 0) + 1
     const requestSeq = this._mapRequestSeq
-    this.setData({ loading: true })
+    this.setData({
+      loading: true,
+      loadFailed: false,
+      loadErrorText: ''
+    })
     apiService.getMapCommunities(this.buildQuery(loadOptions.bounds)).then((items) => {
-      if (requestSeq !== this._mapRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadCommunities(loadOptions)
+        return
+      }
       const communities = (items || []).map(normalizeCommunity).filter(validCommunity)
       this.applyCommunities(communities, loadOptions.recenter)
-      this.setData({ loading: false })
+      this.setData({
+        loading: false,
+        loadFailed: false,
+        loadErrorText: ''
+      })
     }).catch(() => {
-      if (requestSeq !== this._mapRequestSeq) return
+      if (this._pageActive === false || requestSeq !== this._mapRequestSeq) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadCommunities(loadOptions)
+        return
+      }
       wx.showToast({ title: '地图房源加载失败', icon: 'none' })
-      this.applyCommunities([], false)
-      this.setData({ loading: false })
+      const patch = {
+        loading: false,
+        loadFailed: true,
+        loadErrorText: '地图房源加载失败，请检查网络后重试。'
+      }
+      if (!(this.data.communities || []).length) {
+        patch.summaryText = '地图房源加载失败，请重试'
+      }
+      this.setData(patch)
+    })
+  },
+
+  retryMap() {
+    this.loadCommunities(this.lastMapLoadOptions || { recenter: false })
+  },
+
+  loadListingFilterOptions() {
+    if (typeof apiService.getListingFilterOptions !== 'function') return Promise.resolve()
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    const requestSeq = this._filterOptionsRequestSeq
+    return apiService.getListingFilterOptions().then((payload) => {
+      if (this._pageActive === false || requestSeq !== this._filterOptionsRequestSeq) return
+      const options = normalizeListingFilterOptions(payload)
+      this.setData({
+        regionOptions: options.regionOptions,
+        blockOptions: blocksForDistrict(options.regionOptions, this.data.filters && this.data.filters.district),
+        layoutFilters: ['全部'].concat(options.layoutOptions.filter((item) => item !== '不限'))
+      })
+    }).catch(() => {})
+  },
+
+  returnToAssistant() {
+    if (this._assistantReturnOpening) return
+    this._assistantReturnOpening = true
+    wx.navigateTo({
+      url: '/pages/match-chat/match-chat?returnFromMap=1',
+      fail: () => {
+        wx.showToast({ title: '找房助手打开失败', icon: 'none' })
+      },
+      complete: () => {
+        this._assistantReturnOpening = false
+      }
     })
   },
 
@@ -265,6 +433,11 @@ Page({
     const markers = (communities || []).map((community, index) => {
       const markerId = index + 1
       markerCommunityMap[markerId] = community.id
+      const coordinateNote = community.coordinateCalloutNote || (
+        community.coordinateLevel === 'approximate'
+          ? '近似位置'
+          : (community.coordinateLevel === 'block-center' ? '板块中心近似位置' : '')
+      )
       return {
         id: markerId,
         latitude: community.latitude,
@@ -273,7 +446,7 @@ Page({
         height: 28,
         zIndex: 20,
         callout: {
-          content: `${shortCommunityName(community.community)}\n${community.listingCount}套 | ${rentRangeText(community)}`,
+          content: `${shortCommunityName(community.community)}\n${community.listingCount}套 | ${rentRangeText(community)}${coordinateNote ? `\n${coordinateNote}` : ''}`,
           color: '#153f36',
           fontSize: 12,
           borderRadius: 8,
@@ -304,8 +477,8 @@ Page({
       mapScale: recenter && communities.length ? 14 : this.data.mapScale,
       showSearchCurrentArea: false,
       summaryText: communities.length
-        ? `共 ${communities.length} 个已确认坐标小区，筛选后 ${communities.reduce((sum, item) => sum + item.listingCount, 0)} 套有效房源`
-        : '当前区域暂无已确认坐标的有效房源'
+        ? `共 ${communities.length} 个可上图小区，筛选后 ${communities.reduce((sum, item) => sum + item.listingCount, 0)} 套有效房源`
+        : '当前区域暂无可上图的有效房源'
     })
   },
 
@@ -334,6 +507,32 @@ Page({
     this.loadCommunities({ recenter: false })
   },
 
+  changeLocationFilter(event) {
+    const type = event.currentTarget.dataset.type
+    const value = event.currentTarget.dataset.value || ''
+    if (type !== 'district' && type !== 'block') return
+    const filters = {
+      ...this.data.filters,
+      [type]: value
+    }
+    const patch = {
+      filters,
+      selectedCommunityId: '',
+      selectedCommunity: null
+    }
+    if (type === 'district') {
+      filters.block = ''
+      // 用户主动选择行政区后，清除找房助手遗留的通用范围，避免两个位置轴叠加误筛。
+      filters.area = ''
+      filters.community = ''
+      patch.blockOptions = blocksForDistrict(this.data.regionOptions, value)
+    } else {
+      filters.community = ''
+    }
+    this.setData(patch)
+    this.loadCommunities({ recenter: true })
+  },
+
   updateRentInput(event) {
     const field = event.currentTarget.dataset.field
     const value = numberValue(event.detail.value)
@@ -357,9 +556,11 @@ Page({
   },
 
   searchCurrentRegion() {
+    const operation = this.beginMapNativeOperation()
     const mapContext = wx.createMapContext('houseMap', this)
     mapContext.getRegion({
       success: (region) => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         const northeast = region.northeast || {}
         const southwest = region.southwest || {}
         this.loadCommunities({
@@ -373,6 +574,7 @@ Page({
         })
       },
       fail: () => {
+        if (!this.isMapNativeOperationCurrent(operation)) return
         wx.showToast({ title: '获取当前地图范围失败', icon: 'none' })
       }
     })
@@ -404,32 +606,17 @@ Page({
     })
   },
 
-  locateToMe() {
-    wx.getLocation({
-      type: 'gcj02',
-      success: (res) => {
-        this.setData({
-          selectedCommunityId: '',
-          selectedCommunity: null,
-          mapCenter: {
-            latitude: Number(res.latitude),
-            longitude: Number(res.longitude)
-          },
-          mapScale: 15,
-          showSearchCurrentArea: false
-        })
-      },
-      fail: () => {
-        this.setData({
-          selectedCommunityId: '',
-          selectedCommunity: null,
-          mapCenter: DEFAULT_CENTER,
-          mapScale: 13,
-          showSearchCurrentArea: false
-        })
-        wx.showToast({ title: '未获得定位权限，已停留在默认位置', icon: 'none' })
-      }
-    })
+  beginMapNativeOperation() {
+    const sequence = Number(this._mapNativeOperationSeq || 0) + 1
+    this._mapNativeOperationSeq = sequence
+    return { sequence, sessionKey: currentAuthSessionKey() }
+  },
+
+  isMapNativeOperationCurrent(operation) {
+    return Boolean(operation) &&
+      this._pageActive !== false &&
+      this._mapNativeOperationSeq === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey
   },
 
   openListing(event) {
@@ -449,9 +636,10 @@ Page({
       category: listingCategoryFromMapFilters(filters),
       filters: {
         needId: filters.needId || '',
+        district: selectedCommunity ? (selectedCommunity.district || '') : (filters.district || ''),
         area: selectedCommunity ? '' : (filters.area || ''),
-        block: '',
-        community: selectedCommunity ? selectedCommunity.community : '',
+        block: selectedCommunity ? (selectedCommunity.block || '') : (filters.block || ''),
+        community: selectedCommunity ? selectedCommunity.community : (filters.community || ''),
         layout: filters.layout || '',
         rentMode: filters.rentMode || '',
         rentMin: filters.rentMin || '',
@@ -459,7 +647,10 @@ Page({
       }
     }
     try {
-      wx.setStorageSync(PENDING_LISTING_FILTERS_KEY, listingFilters)
+      wx.setStorageSync(
+        PENDING_LISTING_FILTERS_KEY,
+        createPendingFilterEnvelope(listingFilters, currentAuthSessionKey())
+      )
     } catch (error) {
       wx.showToast({ title: '筛选条件保存失败', icon: 'none' })
       return

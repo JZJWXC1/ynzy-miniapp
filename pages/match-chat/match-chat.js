@@ -1,19 +1,58 @@
 const llmService = require('../../utils/llm-service')
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+const { anonymousPublicRequestData } = require('../../utils/public-request-safety')
 const voiceInput = require('../../utils/voice-input')
 const listingDisplay = require('../../utils/listing-display')
+const { createPendingFilterEnvelope } = require('../../utils/pending-filter-storage')
+const {
+  saveAssistantMapReturnState,
+  restoreAssistantMapReturnState,
+  clearAssistantMapReturnState
+} = require('../../utils/assistant-map-return-state')
 const {
   NO_FEATURE,
   parseFeatureInput
 } = require('../../utils/listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
+const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
+const MIN_VOICE_PRESS_DURATION_MS = 600
+const MATCH_RESULT_FEEDBACK_REASONS = {
+  helpful: [
+    { code: 'price', label: '价格合适' },
+    { code: 'location', label: '位置合适' },
+    { code: 'layout', label: '户型合适' },
+    { code: 'availability', label: '房态准确' },
+    { code: 'result_count', label: '数量合适' }
+  ],
+  bad_recommendation: [
+    { code: 'price', label: '价格不合适' },
+    { code: 'location', label: '位置不合适' },
+    { code: 'layout', label: '户型不合适' },
+    { code: 'availability', label: '房态不准' },
+    { code: 'too_few', label: '结果太少' },
+    { code: 'too_many', label: '结果太多' }
+  ]
+}
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
   { key: 'layout', label: '户型/租法', emptyText: '待补充' },
   { key: 'features', label: '标签/偏好', emptyText: '不限' }
 ]
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
+function initialMessages() {
+  return [{
+    id: 'welcome',
+    role: 'assistant',
+    text: '直接说客户预算、位置和户型，我会按真实房源查；条件不够时只追问一个关键问题。'
+  }]
+}
 
 function decodeOption(value) {
   if (!value) return ''
@@ -271,17 +310,14 @@ function needIdFromResult(result) {
 
 Page({
   data: {
-    messages: [
-      {
-        id: 'welcome',
-        role: 'assistant',
-        text: '直接说客户预算、位置和户型，我会按真实房源查；条件不够时只追问一个关键问题。'
-      }
-    ],
+    messages: initialMessages(),
     inputText: '',
     needHistory: [],
+    voiceMode: true,
     voiceText: '',
     isVoiceListening: false,
+    voiceCancelActive: false,
+    voicePhase: '',
     loading: false,
     scrollTarget: 'bottom-anchor'
   },
@@ -293,7 +329,28 @@ Page({
   },
 
   onLoad(options) {
+    this._pageActive = true
+    this.authSessionSnapshot = currentAuthSessionKey()
+    this.bindAuthInvalidationListener()
     this.initVoiceInput()
+    if (options && options.returnFromMap === '1') {
+      const restored = restoreAssistantMapReturnState(this.authSessionSnapshot)
+      if (restored) {
+        const restoredMessages = Array.isArray(restored.data && restored.data.messages)
+          ? restored.data.messages.map((message) => Object.assign({}, message, { feedbackLoading: false }))
+          : initialMessages()
+        const restoredData = Object.assign({}, restored.data || {}, {
+          messages: restoredMessages,
+          loading: false,
+          isVoiceListening: false,
+          voiceCancelActive: false,
+          voicePhase: ''
+        })
+        this.setData(restoredData)
+        Object.assign(this, restored.context || {})
+        return
+      }
+    }
     const text = decodeOption(options.text)
     const voiceText = decodeOption(options.voiceText)
     const firstNeed = text || voiceText
@@ -306,58 +363,316 @@ Page({
     }
   },
 
+  onShow() {
+    this._pageActive = true
+    this.syncAuthSession()
+  },
+
+  onHide() {
+    this.cleanupVoiceInput()
+  },
+
   onUnload() {
-    if (this.voiceController && this.data.isVoiceListening) {
-      this.voiceController.stop()
+    this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
+    this.activeRequestId = createMessageId('unloaded')
+    this.activeRequestAllowsPublicFallback = false
+    this.confirmedPublicFallbackRequestId = ''
+    this.cleanupVoiceInput()
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    if (changed) this.resetForAuthSession(nextSessionKey)
+    else this.authSessionSnapshot = nextSessionKey
+    return { key: nextSessionKey, changed }
+  },
+
+  resetForAuthSession(nextSessionKey) {
+    clearAssistantMapReturnState()
+    this.authSessionSnapshot = nextSessionKey
+    this.activeRequestId = createMessageId('session-reset')
+    this.activeRequestAllowsPublicFallback = false
+    this.confirmedPublicFallbackRequestId = ''
+    this.cleanupVoiceInput()
+    ;[
+      'currentThreadId',
+      'lastNeedContext',
+      'lastAssistantPayload',
+      'lastRecognizePayload',
+      'activeRecognizePayload',
+      'lastRequestPayload',
+      'lastAssistantResultSource',
+      'pendingNeed',
+      'lastVoiceRecognizedText'
+    ].forEach((key) => { delete this[key] })
+    this.setData({
+      messages: initialMessages(),
+      inputText: '',
+      needHistory: [],
+      voiceText: '',
+      isVoiceListening: false,
+      voiceCancelActive: false,
+      voicePhase: '',
+      loading: false,
+      scrollTarget: 'bottom-anchor'
+    })
+  },
+
+  adoptPublicAuthFallback(requestSessionKey) {
+    const canAdopt = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+      apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+    if (!canAdopt) return false
+    this.authSessionSnapshot = currentAuthSessionKey()
+    ;['currentThreadId', 'lastNeedContext', 'pendingNeed'].forEach((key) => { delete this[key] })
+    ;['lastAssistantPayload', 'lastRecognizePayload', 'activeRecognizePayload', 'lastRequestPayload'].forEach((key) => {
+      if (this[key]) this[key] = anonymousPublicRequestData(this[key])
+    })
+    const lastUserMessage = (this.data.messages || []).slice().reverse().find((message) => message && message.role === 'user')
+    const safeUserMessage = lastUserMessage ? anonymousPublicRequestData(lastUserMessage) : null
+    this.setData({
+      messages: initialMessages().concat(safeUserMessage ? [safeUserMessage] : []),
+      needHistory: safeUserMessage && safeUserMessage.text ? [safeUserMessage.text] : [],
+      inputText: '',
+      voiceText: '',
+      isVoiceListening: false,
+      voiceCancelActive: false,
+      voicePhase: '',
+      loading: true,
+      scrollTarget: 'typing-row'
+    })
+    return true
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      const fromSessionKey = String(event && event.fromSessionKey || '')
+      if (!fromSessionKey || fromSessionKey !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const publicFallbackRequestId = String(event && event.publicFallbackRequestId || '')
+      if (
+        this.data.loading &&
+        this.activeRequestAllowsPublicFallback === true &&
+        publicFallbackRequestId &&
+        publicFallbackRequestId === String(this.activeRequestId || '') &&
+        this.adoptPublicAuthFallback(fromSessionKey)
+      ) {
+        this.confirmedPublicFallbackRequestId = publicFallbackRequestId
+        return
+      }
+      this.resetForAuthSession(nextSessionKey)
+    })
+  },
+
+  isSessionRequestCurrent(requestId, requestSessionKey, allowPublicFallback = false) {
+    if (this._pageActive === false || this.activeRequestId !== requestId) return false
+    if (currentAuthSessionKey() === requestSessionKey) return true
+    if (
+      allowPublicFallback &&
+      this.activeRequestAllowsPublicFallback === true &&
+      this.confirmedPublicFallbackRequestId === requestId &&
+      currentAuthSessionKey() === this.authSessionSnapshot
+    ) return true
+    this.syncAuthSession()
+    return false
+  },
+
+  cleanupVoiceInput() {
+    this.voicePressing = false
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
+    const controller = this.voiceController
+    if (!controller) return
+    const busy = typeof controller.isBusy === 'function' ? controller.isBusy() : this.data.isVoiceListening
+    if (busy && typeof controller.cancel === 'function') {
+      controller.cancel()
+    } else if (busy && typeof controller.stop === 'function') {
+      controller.stop()
+    } else if (typeof controller.release === 'function') {
+      controller.release()
+    }
+    if (this._pageActive !== false && this.data.isVoiceListening) {
+      this.setData({ isVoiceListening: false })
     }
   },
 
+  ensureVoiceInput() {
+    if (!this.voiceController || (typeof this.voiceController.isErrored === 'function' && this.voiceController.isErrored())) {
+      this.initVoiceInput()
+    }
+    return this.voiceController
+  },
+
   initVoiceInput() {
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
+    const voiceControllerGeneration = Number(this._voiceControllerGeneration || 0) + 1
+    this._voiceControllerGeneration = voiceControllerGeneration
+    const isCurrentVoiceController = () => (
+      this._pageActive !== false && this._voiceControllerGeneration === voiceControllerGeneration
+    )
+    if (this.voiceController && typeof this.voiceController.release === 'function') {
+      this.voiceController.release()
+    }
+    const support = voiceInput.getSupportStatus ? voiceInput.getSupportStatus() : { ok: true }
     this.voiceController = voiceInput.createController({
       onStart: () => {
-        this.setData({ isVoiceListening: true })
+        if (!isCurrentVoiceController()) return
+        this.voiceAutoFindEligible = false
+        this.lastVoiceRecognizedText = ''
+        this.setData({ isVoiceListening: true, voicePhase: 'recording', voiceCancelActive: false, voiceText: '' })
+        // 极快点按/慢启动：start 回调晚于 touchend，用户已松手 → 静默丢弃本次（cancel 不走 2.2s 空转与「没有识别到内容」，也避免误触凭杂音帧自动匹配）。
+        if (this.voicePressing === false && this.voiceController) {
+          try { this.voiceController.cancel() } catch (error) {}
+        }
       },
       onRecognize: (text) => {
-        if (text && !this.data.loading) this.setData({ inputText: text })
+        if (!isCurrentVoiceController()) return
+        const recognizedText = String(text || '').trim()
+        if (recognizedText) this.lastVoiceRecognizedText = recognizedText
+        // 录音中实时字幕只进浮层；仅有效长按的最终识别结果可以自动提交找房。
+        this.setData({ voiceText: text })
       },
       onTranscribing: () => {
-        this.setData({ isVoiceListening: false })
+        if (!isCurrentVoiceController()) return
+        if (this.data.voicePhase === 'recording') this.setData({ voicePhase: 'transcribing' })
       },
       onStop: (text) => {
-        this.setData({ isVoiceListening: false })
-        const content = String(text || '').trim()
+        if (!isCurrentVoiceController()) return
+        const shouldAutoFind = this.voiceAutoFindEligible === true
+        this.voiceAutoFindEligible = false
+        this.voicePressStartedAt = 0
+        const content = String(text || this.lastVoiceRecognizedText || '').trim()
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+        if (!shouldAutoFind) {
+          this.lastVoiceRecognizedText = ''
+          return
+        }
         if (!content) {
           wx.showToast({ title: '没有识别到内容', icon: 'none' })
           return
         }
-        this.setData({ voiceText: content, inputText: '' }, () => {
-          this.submitNeed(content, 'voice')
+        this.lastVoiceRecognizedText = ''
+        this.setData({ voiceText: content, inputText: content }, () => {
+          if (isCurrentVoiceController()) this.submitNeed(content, 'voice')
         })
       },
-      onError: () => {
-        this.setData({ isVoiceListening: false })
-        wx.showToast({ title: '语音识别失败', icon: 'none' })
+      onCancel: () => {
+        if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
+        this.lastVoiceRecognizedText = ''
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false, voiceText: '' })
+      },
+      onError: (error) => {
+        if (!isCurrentVoiceController()) return
+        this.voicePressing = false
+        this.voicePressStartedAt = 0
+        this.voiceAutoFindEligible = false
+        this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+        wx.showToast({ title: voiceInput.errorMessage(error, '语音识别失败'), icon: 'none' })
       }
     })
+    if (!this.voiceController && support && support.message) {
+      this.voiceUnavailableMessage = support.message
+    }
   },
 
-  toggleVoiceInput() {
+  toggleVoiceMode() {
+    if (this.data.voicePhase || this.data.loading) return
+    const nextVoice = !this.data.voiceMode
+    if (nextVoice && wx.hideKeyboard) {
+      try { wx.hideKeyboard() } catch (error) {}
+    }
+    this.setData({ voiceMode: nextVoice })
+  },
+
+  onVoiceTouchStart(event) {
     if (this.data.loading) return
-    if (!this.voiceController) {
-      wx.showToast({ title: '当前环境暂不支持语音输入', icon: 'none' })
+    const controller = this.ensureVoiceInput()
+    if (!controller) {
+      wx.showToast({ title: this.voiceUnavailableMessage || '当前环境暂不支持语音输入', icon: 'none' })
       return
     }
+    // 上一句仍在录音/识别收尾（FINAL_WAIT 窗口）时忽略新的按下，避免震动+清屏假象与串句自动提交。
+    if (this.data.voicePhase || (typeof controller.isBusy === 'function' && controller.isBusy())) return
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
+    this.voiceStartY = Number(touch.clientY || touch.pageY || 0)
+    this.voicePressing = true
+    this.voicePressStartedAt = Date.now()
+    this.voiceAutoFindEligible = false
+    this.lastVoiceRecognizedText = ''
+    this.setData({ voiceCancelActive: false, voiceText: '' })
+    if (wx.vibrateShort) {
+      try { wx.vibrateShort({ type: 'light' }) } catch (error) {}
+    }
     try {
-      if (this.data.isVoiceListening) {
-        this.voiceController.stop()
-        return
-      }
-      this.voiceController.start()
+      controller.start()
     } catch (error) {
-      this.setData({ isVoiceListening: false })
-      wx.showToast({ title: '语音输入启动失败', icon: 'none' })
+      this.voicePressing = false
+      this.voicePressStartedAt = 0
+      this.voiceAutoFindEligible = false
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+      wx.showToast({ title: voiceInput.errorMessage(error, '语音输入启动失败'), icon: 'none' })
     }
   },
+
+  onVoiceTouchMove(event) {
+    if (this.data.voicePhase !== 'recording') return
+    const touch = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]) || {}
+    const y = Number(touch.clientY || touch.pageY || 0)
+    const slideUp = (this.voiceStartY - y) > 80
+    if (slideUp !== this.data.voiceCancelActive) this.setData({ voiceCancelActive: slideUp })
+  },
+
+  onVoiceTouchEnd() {
+    this.voicePressing = false
+    const pressStartedAt = Number(this.voicePressStartedAt || 0)
+    const pressDuration = pressStartedAt > 0 ? Date.now() - pressStartedAt : 0
+    this.voicePressStartedAt = 0
+    const controller = this.voiceController
+    if (!controller) {
+      this.voiceAutoFindEligible = false
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+      return
+    }
+    if (this.data.voiceCancelActive || pressDuration < MIN_VOICE_PRESS_DURATION_MS) {
+      this.voiceAutoFindEligible = false
+      controller.cancel()
+      return
+    }
+    if (this.data.voicePhase === 'recording') {
+      this.voiceAutoFindEligible = true
+      try {
+        controller.stop()
+      } catch (error) {
+        this.voiceAutoFindEligible = false
+        controller.cancel()
+      }
+    }
+  },
+
+  onVoiceTouchCancel() {
+    this.voicePressing = false
+    this.voicePressStartedAt = 0
+    this.voiceAutoFindEligible = false
+    const controller = this.voiceController
+    if (controller) {
+      controller.cancel()
+    } else {
+      this.setData({ isVoiceListening: false, voicePhase: '', voiceCancelActive: false })
+    }
+  },
+
+  noop() {},
 
   handleInput(event) {
     this.setData({ inputText: event.detail.value })
@@ -386,7 +701,7 @@ Page({
     const messages = this.data.messages.concat(userMessage)
     const payload = {
       text,
-      voiceText: source === 'voice' ? (this.data.voiceText || text) : '',
+      voiceText: source === 'voice' && this.data.voiceText && this.data.voiceText !== text ? this.data.voiceText : '',
       form: {},
       threadId: this.currentThreadId || ''
     }
@@ -403,15 +718,18 @@ Page({
   },
 
   executeAssistantChat(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('assistant-chat')
     this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
     this.lastAssistantPayload = payload
-    llmService.chatAssistant(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+    llmService.chatAssistant(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'assistant-chat'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -423,14 +741,17 @@ Page({
   },
 
   executeRecognize(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('recognize')
     this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
     this.activeRecognizePayload = payload
-    llmService.recognizeRentalNeed(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+    llmService.recognizeRentalNeed(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.appendRecognitionResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.appendRecognitionResult({
         reply: '网络连接失败，请补充条件后重试。',
         warning: error.message || '网络连接失败',
@@ -442,14 +763,17 @@ Page({
   },
 
   executeMatch(payload) {
+    const requestSessionKey = this.syncAuthSession().key
     const requestId = createMessageId('request')
     this.activeRequestId = requestId
-    llmService.matchRentalNeed(payload).then((result) => {
-      if (this.activeRequestId !== requestId) return
+    this.activeRequestAllowsPublicFallback = true
+    this.confirmedPublicFallbackRequestId = ''
+    llmService.matchRentalNeed(payload, { authFallbackRequestId: requestId }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult(result || {})
     }).catch((error) => {
-      if (this.activeRequestId !== requestId) return
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey, true)) return
       this.lastAssistantResultSource = 'match'
       this.appendAssistantResult({
         reply: '网络连接失败，请点下方按钮重试。',
@@ -497,13 +821,16 @@ Page({
       : (this.lastAssistantPayload || this.lastRequestPayload || {})
     const needId = matchResult.needId || requestPayload.needId || ''
     const needTemporary = Boolean(requestPayload.needTemporary || matchResult.needTemporary)
+    const feedbackMessageId = matchResult.feedbackMessageId || ''
     const assistantMessageId = createMessageId('assistant')
     const assistantMessage = {
       id: assistantMessageId,
       role: 'assistant',
       text: buildAssistantText(matchResult, listings),
       threadId: matchResult.threadId || this.currentThreadId || '',
+      feedbackMessageId,
       sourceText: requestPayload.text || '',
+      degradedNotice: matchResult.degraded ? (matchResult.degradedNotice || '智能解读稍后重试') : '',
       needTags: buildNeedTags(matchResult.need),
       need: matchResult.need || {},
       placeResolution: matchResult.placeResolution || null,
@@ -517,9 +844,13 @@ Page({
       retryAction: matchResult.networkFailed ? 'assistant-chat' : 'match',
       retryText: '重试匹配',
       empty: !listings.length && !(matchResult.nextQuestion || matchResult.followUpQuestion),
-      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId),
+      canFeedback: !matchResult.networkFailed && Boolean(matchResult.threadId || this.currentThreadId) && Boolean(feedbackMessageId) && Boolean(needId) && !needTemporary,
       feedbackLoading: false,
-      feedbackSent: false
+      feedbackSent: false,
+      feedbackType: '',
+      feedbackReasonCode: '',
+      feedbackReasonLabel: '',
+      feedbackReasonOptions: []
     }
     this.appendMessage(assistantMessage, { loading: false, scrollTarget: assistantMessage.id })
   },
@@ -559,35 +890,69 @@ Page({
     this.setData({ messages })
   },
 
-  submitAssistantFeedback(event) {
+  selectAssistantFeedbackType(event) {
     const messageId = event.currentTarget.dataset.messageId
     const feedbackType = event.currentTarget.dataset.type || 'other'
     const message = this.findMessage(messageId) || {}
     if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent) return
+    const feedbackReasonOptions = MATCH_RESULT_FEEDBACK_REASONS[feedbackType] || []
+    if (!feedbackReasonOptions.length) return
+    this.updateMessage(messageId, (item) => {
+      item.feedbackType = feedbackType
+      item.feedbackReasonCode = ''
+      item.feedbackReasonLabel = ''
+      item.feedbackReasonOptions = feedbackReasonOptions
+      return item
+    })
+  },
+
+  submitAssistantFeedback(event) {
+    const messageId = event.currentTarget.dataset.messageId
+    const reasonCode = event.currentTarget.dataset.reasonCode || ''
+    const message = this.findMessage(messageId) || {}
+    const feedbackType = message.feedbackType || ''
+    const reasonOptions = MATCH_RESULT_FEEDBACK_REASONS[feedbackType] || []
+    const reason = reasonOptions.find((item) => item.code === reasonCode)
+    if (!messageId || !message.canFeedback || message.feedbackLoading || message.feedbackSent || !reason) return
+    const requestSessionKey = this.syncAuthSession().key
+    const requestFeedbackMessageId = String(message.feedbackMessageId || '')
+    const isCurrentFeedback = () => {
+      if (this._pageActive === false || currentAuthSessionKey() !== requestSessionKey) return false
+      const currentMessage = this.findMessage(messageId) || {}
+      return String(currentMessage.feedbackMessageId || '') === requestFeedbackMessageId &&
+        !currentMessage.feedbackSent
+    }
     this.updateMessage(messageId, (item) => {
       item.feedbackLoading = true
+      item.feedbackReasonCode = reasonCode
       return item
     })
     llmService.submitAssistantFeedback({
+      feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
+      needId: message.needId,
       threadId: message.threadId || this.currentThreadId || '',
-      messageId,
+      messageId: message.feedbackMessageId,
       feedbackType,
-      reason: feedbackType === 'helpful' ? '中介认为这条推荐有用' : '中介认为这条推荐不准',
-      sourceText: message.sourceText || '',
-      reply: message.text || '',
-      need: message.need || {},
-      listings: message.listings || [],
-      selectedListingIds: (message.listings || []).map((listing) => listing.id).filter(Boolean),
-      placeResolution: message.placeResolution || null
+      reasonCode
     }).then(() => {
+      if (!isCurrentFeedback()) {
+        if (this._pageActive !== false && currentAuthSessionKey() !== requestSessionKey) this.syncAuthSession()
+        return
+      }
       this.updateMessage(messageId, (item) => {
         item.feedbackLoading = false
         item.feedbackSent = true
         item.feedbackType = feedbackType
+        item.feedbackReasonCode = reasonCode
+        item.feedbackReasonLabel = reason.label
         return item
       })
       wx.showToast({ title: '已记录反馈', icon: 'none' })
     }).catch(() => {
+      if (!isCurrentFeedback()) {
+        if (this._pageActive !== false && currentAuthSessionKey() !== requestSessionKey) this.syncAuthSession()
+        return
+      }
       this.updateMessage(messageId, (item) => {
         item.feedbackLoading = false
         return item
@@ -682,10 +1047,19 @@ Page({
       text: '确认这些条件，开始匹配。'
     }
     this.appendMessage(userMessage, { loading: true, scrollTarget: 'typing-row' })
+    if (!apiClient.getAuthToken()) {
+      this.lastRequestPayload = payload
+      this.executeMatch(payload)
+      return
+    }
     this.createNeedAndMatch(payload, message)
   },
 
   createNeedAndMatch(payload, message) {
+    const requestSessionKey = this.syncAuthSession().key
+    const requestId = createMessageId('create-need')
+    this.activeRequestId = requestId
+    this.activeRequestAllowsPublicFallback = false
     const need = confirmFormToNeed(message.confirmForm, message.need)
     apiService.createRentalNeed({
       source: 'match-chat',
@@ -693,12 +1067,14 @@ Page({
       need,
       form: payload.form
     }).then((result) => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       const needId = needIdFromResult(result)
       const needTemporary = Boolean(result && result.temporary)
       const nextPayload = Object.assign({}, payload, {
         needId,
         needTemporary,
-        need
+        need,
+        threadId: this.currentThreadId || message.threadId || ''
       })
       this.lastNeedContext = {
         needId,
@@ -710,6 +1086,7 @@ Page({
       }
       this.executeMatch(nextPayload)
     }).catch(() => {
+      if (!this.isSessionRequestCurrent(requestId, requestSessionKey)) return
       this.lastRequestPayload = payload
       wx.showToast({ title: '需求单保存失败，继续本地匹配', icon: 'none' })
       this.executeMatch(payload)
@@ -717,6 +1094,10 @@ Page({
   },
 
   openMapForListing(event) {
+    if (this.data.loading) {
+      wx.showToast({ title: '请等待找房结果完成', icon: 'none' })
+      return
+    }
     const messageId = event.currentTarget.dataset.messageId
     const message = this.findMessage(messageId) || {}
     const filters = Object.assign({}, message.mapFilters || {})
@@ -726,7 +1107,46 @@ Page({
       const id = event.currentTarget.dataset.id
       if (id) filters.listingIds = [id]
     }
-    wx.setStorageSync('ynzy_pending_map_filters', filters)
+    if (filters.listingIds.length) {
+      // 推荐卡里的房源 ID 已经是最终结果；“新天地附近”等仅是检索锚点，
+      // 不能再作为房源自身 area/community 与 ID 叠加，否则周边房源会被全部误筛掉。
+      delete filters.area
+      delete filters.community
+      delete filters.budget
+      delete filters.layout
+      delete filters.rentMode
+    }
+    filters.returnToAssistant = true
+    const returnMessages = this.data.messages || []
+    const lastMessage = returnMessages[returnMessages.length - 1]
+    const returnScrollTarget = this.data.scrollTarget === 'typing-row'
+      ? ((lastMessage && lastMessage.id) || 'bottom-anchor')
+      : this.data.scrollTarget
+    saveAssistantMapReturnState({
+      sessionKey: currentAuthSessionKey(),
+      data: {
+        messages: this.data.messages,
+        inputText: this.data.inputText,
+        needHistory: this.data.needHistory,
+        voiceMode: this.data.voiceMode,
+        voiceText: this.data.voiceText,
+        scrollTarget: returnScrollTarget
+      },
+      context: {
+        currentThreadId: this.currentThreadId || '',
+        lastNeedContext: this.lastNeedContext || null,
+        lastAssistantPayload: this.lastAssistantPayload || null,
+        lastRecognizePayload: this.lastRecognizePayload || null,
+        lastRequestPayload: this.lastRequestPayload || null,
+        lastAssistantResultSource: this.lastAssistantResultSource || ''
+      }
+    })
+    try {
+      wx.setStorageSync('ynzy_pending_map_filters', createPendingFilterEnvelope(filters, currentAuthSessionKey()))
+    } catch (error) {
+      wx.showToast({ title: '筛选条件保存失败', icon: 'none' })
+      return
+    }
     wx.switchTab({ url: '/pages/map/map' })
   }
 })

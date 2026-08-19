@@ -1,3 +1,4 @@
+const crypto = require('crypto')
 const {
   scrubSensitiveText,
   scrubDeep,
@@ -36,13 +37,35 @@ const MAX_EVAL_ROWS = 300
 const MAX_TRACE_ROWS = 500
 const MAX_TEXT_LENGTH = 500
 const MAX_LISTINGS = 8
+const MATCH_RESULT_FEEDBACK_VERSION = 'match-result-v1'
+const MATCH_RESULT_THREAD_ID_PATTERN = /^(?:AST-[a-z0-9]+-[a-z0-9]{6}|LOCAL-AST-\d{10,16}(?:-\d{1,5})?)$/i
+const MATCH_RESULT_MESSAGE_ID_PATTERN = /^ATL[A-Z0-9]{10,24}$/
+const SYSTEM_ID_MIN_TIMESTAMP_MS = 1000000000000
+const SYSTEM_ID_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
+const MATCH_RESULT_FEEDBACK_REASONS = {
+  helpful: {
+    price: '价格合适',
+    location: '位置合适',
+    layout: '户型合适',
+    availability: '房态准确',
+    result_count: '数量合适'
+  },
+  bad_recommendation: {
+    price: '价格不合适',
+    location: '位置不合适',
+    layout: '户型不合适',
+    availability: '房态不准',
+    too_few: '结果太少',
+    too_many: '结果太多'
+  }
+}
 
 function nowIso() {
   return new Date().toISOString()
 }
 
 function createTraceLogId() {
-  const random = Math.random().toString(36).slice(2, 7).toUpperCase()
+  const random = crypto.randomBytes(6).toString('hex').toUpperCase()
   return `ATL${Date.now().toString(36).toUpperCase()}${random}`
 }
 
@@ -60,6 +83,160 @@ function truncateText(value, maxLength = MAX_TEXT_LENGTH) {
 function normalizeFeedbackType(value) {
   const type = String(value || '').trim()
   return FEEDBACK_TYPES.has(type) ? type : 'other'
+}
+
+function matchResultFeedbackError(message, statusCode = 400) {
+  const error = new Error(message)
+  error.statusCode = statusCode
+  return error
+}
+
+function requiredCorrelationId(value, fieldName, pattern = null) {
+  const text = String(value === undefined || value === null ? '' : value).trim()
+  if (!text) throw matchResultFeedbackError(`${fieldName}必填`)
+  if (text.length > 120 || /[\u0000-\u001f\u007f]/.test(text) || (pattern && !pattern.test(text))) {
+    throw matchResultFeedbackError(`${fieldName}格式无效`)
+  }
+  return text
+}
+
+function ownMapValue(map, key) {
+  return map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined
+}
+
+function threadTimestampFromId(threadId) {
+  const serverMatch = String(threadId || '').match(/^AST-([a-z0-9]+)-[a-z0-9]{6}$/i)
+  if (serverMatch) return parseInt(serverMatch[1], 36)
+  const localMatch = String(threadId || '').match(/^LOCAL-AST-(\d{10,16})(?:-\d{1,5})?$/)
+  return localMatch ? Number(localMatch[1]) : NaN
+}
+
+function assertSystemTimestamp(timestamp, fieldName) {
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < SYSTEM_ID_MIN_TIMESTAMP_MS ||
+    timestamp > Date.now() + SYSTEM_ID_MAX_FUTURE_SKEW_MS
+  ) {
+    throw matchResultFeedbackError(`${fieldName}格式无效`)
+  }
+}
+
+function assertOwnedMatchResultTrace(db, userId, needId, threadId, messageId) {
+  const trace = (Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []).find((item) => (
+    item &&
+    item.id === messageId &&
+    item.threadId === threadId &&
+    item.feedbackNeedId === needId &&
+    String(item.userId || '').trim() === userId
+  ))
+  if (!trace) throw matchResultFeedbackError('messageId无当前用户的服务端结果记录')
+  return trace
+}
+
+function enforceAssistantFeedbackRetention(db) {
+  let legacyRows = 0
+  db.assistantFeedbacks = db.assistantFeedbacks.filter((item) => {
+    if (item && item.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION) return true
+    legacyRows += 1
+    return legacyRows <= MAX_FEEDBACK_ROWS
+  })
+}
+
+function assertMatchResultNeed(db, userId, needId) {
+  if (!userId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
+  const needs = Array.isArray(db.rentalNeeds)
+    ? db.rentalNeeds
+    : (Array.isArray(db.clientNeeds) ? db.clientNeeds : [])
+  const need = needs.find((item) => item && item.id === needId)
+  if (!need) throw matchResultFeedbackError('未找到需求单', 404)
+  if (String(need.brokerId || '') !== userId) {
+    throw matchResultFeedbackError('只能反馈自己的需求单', 403)
+  }
+  return need
+}
+
+function safeTraceIdentifier(value, fallback = '') {
+  const text = String(value || '').trim()
+  return text && text.length <= 120 && /^[A-Za-z0-9._:-]+$/.test(text) ? text : fallback
+}
+
+function safeTraceNode(value) {
+  const text = safeTraceIdentifier(value)
+  if (!text || !/[A-Za-z_]/.test(text) || /1[3-9]\d{9}/.test(text)) return ''
+  return text
+}
+
+function safeTraceTimestamp(value) {
+  const text = String(value || '').trim()
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(text) ? text : ''
+}
+
+function compactMatchResultTraceSummary(traceSummary) {
+  if (!traceSummary || typeof traceSummary !== 'object') return null
+  const nodes = (Array.isArray(traceSummary.nodes) ? traceSummary.nodes : [])
+    .map((node) => safeTraceNode(node))
+    .filter(Boolean)
+    .slice(0, 20)
+  const eventCount = Number(traceSummary.eventCount)
+  return {
+    version: safeTraceIdentifier(traceSummary.version, 'assistant-trace-v1'),
+    eventCount: Number.isSafeInteger(eventCount) && eventCount >= 0 ? eventCount : nodes.length,
+    startedAt: safeTraceTimestamp(traceSummary.startedAt),
+    endedAt: safeTraceTimestamp(traceSummary.endedAt),
+    nodes
+  }
+}
+
+function createMatchResultFeedback(db, userId, payload = {}) {
+  const normalizedUserId = String(userId || '').trim()
+  if (!normalizedUserId) throw matchResultFeedbackError('请先登录后再提交反馈', 401)
+  const needId = requiredCorrelationId(payload.needId, 'needId')
+  assertMatchResultNeed(db, normalizedUserId, needId)
+  const threadId = requiredCorrelationId(payload.threadId, 'threadId', MATCH_RESULT_THREAD_ID_PATTERN)
+  const messageId = requiredCorrelationId(payload.messageId, 'messageId', MATCH_RESULT_MESSAGE_ID_PATTERN)
+  assertSystemTimestamp(threadTimestampFromId(threadId), 'threadId')
+  const feedbackType = String(payload.feedbackType || '').trim()
+  const reasons = ownMapValue(MATCH_RESULT_FEEDBACK_REASONS, feedbackType)
+  if (!reasons) throw matchResultFeedbackError('反馈类型只能是有用或没用')
+  const reasonCode = String(payload.reasonCode || '').trim()
+  const reason = ownMapValue(reasons, reasonCode)
+  if (typeof reason !== 'string' || !reason) throw matchResultFeedbackError('请选择有效的固定反馈原因')
+
+  const existing = db.assistantFeedbacks.find((item) => (
+    item &&
+    item.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION &&
+    item.userId === normalizedUserId &&
+    item.messageId === messageId
+  ))
+  if (existing) {
+    if (
+      existing.needId === needId &&
+      existing.feedbackType === feedbackType &&
+      existing.reasonCode === reasonCode
+    ) return existing
+    throw matchResultFeedbackError('该找房结果已提交过不同反馈', 409)
+  }
+
+  const resultTrace = assertOwnedMatchResultTrace(db, normalizedUserId, needId, threadId, messageId)
+
+  const feedback = {
+    id: createFeedbackId(),
+    createdAt: nowIso(),
+    updatedAt: '',
+    status: 'open',
+    userId: normalizedUserId,
+    needId,
+    messageId,
+    feedbackVersion: MATCH_RESULT_FEEDBACK_VERSION,
+    feedbackType,
+    reasonCode,
+    reason,
+    traceSummary: compactMatchResultTraceSummary(resultTrace.traceSummary)
+  }
+
+  db.assistantFeedbacks.unshift(feedback)
+  enforceAssistantFeedbackRetention(db)
+  return feedback
 }
 
 function normalizeFeedbackStatus(value, fallback = 'open') {
@@ -145,12 +322,14 @@ function sourceTextFromPayload(payload = {}) {
 function createAssistantTraceLog(db, userId, payload = {}, response = {}, context = {}) {
   db.assistantTraceLogs = Array.isArray(db.assistantTraceLogs) ? db.assistantTraceLogs : []
   const traceSummary = compactTraceSummary(context.traceSummary)
+  const feedbackNeedId = String(context.feedbackNeedId || '').trim()
   const audit = (traceSummary && traceSummary.audit) || {}
   const toolOutput = (audit && audit.toolOutput) || {}
   const traceLog = {
     id: createTraceLogId(),
     createdAt: nowIso(),
     userId: String(userId || '').trim(),
+    ...(feedbackNeedId ? { feedbackNeedId } : {}),
     threadId: truncateText(response.threadId || context.threadId || payload.threadId || '', 120),
     intent: truncateText(response.intent || audit.intent || '', 80),
     sourceText: truncateText(sourceTextFromPayload(payload), 1000),
@@ -173,16 +352,26 @@ function createAssistantTraceLog(db, userId, payload = {}, response = {}, contex
 
 function assistantTraceRows(db, options = {}) {
   const threadId = String(options.threadId || '').trim()
+  const userId = String(options.userId || '').trim()
   const intent = String(options.intent || '').trim()
   const limit = Math.min(Math.max(Number(options.limit) || 100, 1), MAX_TRACE_ROWS)
   return (db.assistantTraceLogs || [])
     .filter((item) => !threadId || item.threadId === threadId)
+    .filter((item) => !userId || String(item.userId || '').trim() === userId)
     .filter((item) => !intent || item.intent === intent)
     .slice(0, limit)
 }
 
 function createAssistantFeedback(db, userId, payload = {}, context = {}) {
   db.assistantFeedbacks = Array.isArray(db.assistantFeedbacks) ? db.assistantFeedbacks : []
+
+  const hasFeedbackVersion = Object.prototype.hasOwnProperty.call(payload, 'feedbackVersion')
+  if (hasFeedbackVersion) {
+    if (payload.feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
+      throw matchResultFeedbackError('不支持的反馈版本')
+    }
+    return createMatchResultFeedback(db, userId, payload, context)
+  }
 
   const feedback = {
     id: createFeedbackId(),
@@ -207,9 +396,7 @@ function createAssistantFeedback(db, userId, payload = {}, context = {}) {
   }
 
   db.assistantFeedbacks.unshift(feedback)
-  if (db.assistantFeedbacks.length > MAX_FEEDBACK_ROWS) {
-    db.assistantFeedbacks = db.assistantFeedbacks.slice(0, MAX_FEEDBACK_ROWS)
-  }
+  enforceAssistantFeedbackRetention(db)
 
   return feedback
 }
@@ -228,10 +415,12 @@ function reviewAssistantFeedback(db, feedbackId, userId, payload = {}) {
   const feedback = findFeedback(db, feedbackId)
   const status = normalizeFeedbackStatus(payload.status, feedback.status || 'open')
   feedback.status = status
-  feedback.feedbackType = payload.feedbackType ? normalizeFeedbackType(payload.feedbackType) : feedback.feedbackType
-  feedback.operatorNote = truncateText(payload.operatorNote || feedback.operatorNote || '', 1000)
-  feedback.resolution = truncateText(payload.resolution || feedback.resolution || '', 1000)
-  if (payload.expected) feedback.expected = scrubDeep(payload.expected)
+  if (feedback.feedbackVersion !== MATCH_RESULT_FEEDBACK_VERSION) {
+    feedback.feedbackType = payload.feedbackType ? normalizeFeedbackType(payload.feedbackType) : feedback.feedbackType
+    feedback.operatorNote = truncateText(payload.operatorNote || feedback.operatorNote || '', 1000)
+    feedback.resolution = truncateText(payload.resolution || feedback.resolution || '', 1000)
+    if (payload.expected) feedback.expected = scrubDeep(payload.expected)
+  }
   feedback.updatedAt = nowIso()
   feedback.handledBy = String(userId || '').trim()
   return feedback
@@ -240,7 +429,10 @@ function reviewAssistantFeedback(db, feedbackId, userId, payload = {}) {
 function promoteFeedbackToEvalCase(db, feedbackId, userId, payload = {}) {
   const feedback = findFeedback(db, feedbackId)
   db.assistantEvalCases = Array.isArray(db.assistantEvalCases) ? db.assistantEvalCases : []
-  const text = truncateText(payload.text || payload.sourceText || feedback.sourceText || feedback.reason || '')
+  const explicitText = truncateText(payload.text || payload.sourceText || '')
+  const text = feedback.feedbackVersion === MATCH_RESULT_FEEDBACK_VERSION
+    ? explicitText
+    : (explicitText || truncateText(feedback.sourceText || feedback.reason || ''))
   if (!text) {
     const error = new Error('assistant eval case text required')
     error.statusCode = 400
@@ -306,6 +498,9 @@ module.exports = {
     normalizeFeedbackStatus,
     normalizeEvalBehavior,
     normalizeSelectedListingIds,
-    listingIdsFromFeedback
+    listingIdsFromFeedback,
+    compactMatchResultTraceSummary,
+    MATCH_RESULT_FEEDBACK_VERSION,
+    MATCH_RESULT_FEEDBACK_REASONS
   }
 }

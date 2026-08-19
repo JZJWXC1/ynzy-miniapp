@@ -3,6 +3,7 @@ const matchService = require('./match-service')
 const DEFAULT_QWEN_NEED_PARSER_MODEL = 'qwen3.5-plus'
 const DEFAULT_QWEN_COMPLEX_NEED_PARSER_MODEL = 'qwen3.7-plus'
 const DEFAULT_QWEN_REPLY_MODEL = 'qwen-turbo'
+const LLM_PROVIDER_TIMEOUT_MS = 20000
 
 function scrubSensitiveText(value) {
   return String(value || '')
@@ -14,7 +15,8 @@ function scrubSensitiveText(value) {
     .replace(/\b0\d{2,3}[-\s]?\d{7,8}\b/g, '[电话已隐藏]')
     .replace(/\b400[-\s]?\d{3}[-\s]?\d{4}\b/g, '[电话已隐藏]')
     .replace(/\bwxid_[A-Za-z0-9_-]{5,}\b/ig, '[微信号已隐藏]')
-    .replace(/(?:微信号?|微信|VX|V信|weixin|wechat)[:：\s]*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, '[微信号已隐藏]')
+    .replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/ig, '$1[微信号已隐藏]')
+    .replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/ig, '[微信号已隐藏]')
     .replace(/[A-Za-z0-9\u4e00-\u9fa5]{0,30}(?:\d{1,3}|[一二三四五六七八九十]{1,3})(?:栋|幢|号楼|座)[^，。,.；;\s]{0,30}/g, '[地址已隐藏]')
     .replace(/(?:房号|门牌|房间|室号)[:：\s]*[A-Za-z0-9-]{2,12}/g, '[房号已隐藏]')
     .replace(/(^|[^\d])\d{1,3}[-－]\d{1,3}[-－]\d{2,4}(?!\d)/g, '$1[房号已隐藏]')
@@ -70,6 +72,11 @@ function configForTask(config = {}, task = '') {
     ...config,
     model: taskModel || qwenDefault || config.model
   }
+}
+
+function providerTimeoutMs(config = {}) {
+  const timeout = Number(config.providerTimeoutMs || config.timeoutMs || 0)
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : LLM_PROVIDER_TIMEOUT_MS
 }
 
 function providerTextPart(value) {
@@ -156,15 +163,40 @@ async function callProvider(config, prompt) {
   }
 
   const body = buildProviderRequestBody(config, prompt)
+  const timeoutMs = providerTimeoutMs(config)
+  const controller = new AbortController()
+  let timedOut = false
+  let timeoutTimer = null
+  const timeoutError = () => {
+    const error = new Error(`LLM 供应商调用超过 ${Math.round(timeoutMs / 1000)} 秒，已降级本地匹配`)
+    error.statusCode = 504
+    error.code = 'LLM_PROVIDER_TIMEOUT'
+    return error
+  }
+  const timeoutPromise = new Promise((resolve, reject) => {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      reject(timeoutError())
+    }, timeoutMs)
+  })
 
-  const res = await fetch(config.apiBaseUrl, {
+  const providerRequest = fetch(config.apiBaseUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`
     },
+    signal: controller.signal,
     body: JSON.stringify(body)
+  }).catch((error) => {
+    if (timedOut && error && error.name === 'AbortError') return null
+    throw error
   })
+  const res = await Promise.race([providerRequest, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutTimer)
+  })
+  if (!res) throw timeoutError()
 
   if (!res.ok) {
     throw new Error(`LLM 请求失败：${res.status}`)
@@ -293,7 +325,10 @@ async function matchRentalNeed(db, payload = {}) {
     return {
       ...local,
       mode: 'local-fallback',
-      warning: error.message
+      degraded: true,
+      degradedNotice: '智能解读稍后重试',
+      degradedReason: 'llm_provider_failed',
+      warning: scrubSensitiveText(error.message)
     }
   }
 }
@@ -311,6 +346,8 @@ module.exports = {
     extractProviderText,
     buildProviderRequestBody,
     configForTask,
+    providerTimeoutMs,
+    LLM_PROVIDER_TIMEOUT_MS,
     callProvider
   }
 }

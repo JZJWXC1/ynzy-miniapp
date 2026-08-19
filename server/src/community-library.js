@@ -1,5 +1,7 @@
 // 服务端小区库：与前端 utils/gongshu-communities.js 同源，用于上传/修改房源时服务端复核小区匹配
-// 注意：新增小区请同时更新前端 utils/gongshu-communities.js，保持两端一致
+// 注意：本文件是唯一数据源（已知小区 = 下方名单 ∪ 坐标表键）。新增小区后请运行
+// node server/scripts/sync-client-community-library.js 重新生成前端库，保持两端一致；
+// 一致性由 server/scripts/community-library-parity-test.js 锁定。
 const { communityCoordinates } = require('./community-coordinates')
 
 const GONGSHU_COMMUNITIES = [

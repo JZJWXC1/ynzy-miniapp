@@ -30,6 +30,17 @@ if ($IncludeData) {
 Copy-Item -Path (Join-Path $root "server\scripts") -Destination (Join-Path $tempDir "server\scripts") -Recurse
 Copy-Item -Path (Join-Path $root "server\package.json") -Destination (Join-Path $tempDir "server\package.json")
 Copy-Item -Path (Join-Path $root "server\README.md") -Destination (Join-Path $tempDir "server\README.md")
+
+# Version tracking: generate server/version.json at package time and ship it. Production dir is not a
+# git repo, so runtime cannot git rev-parse; missing this file degrades /healthz and startup log to commit=unknown.
+& node (Join-Path $root "server\scripts\gen-version.js")
+if ($LASTEXITCODE -ne 0) { throw "gen-version.js failed to produce server/version.json" }
+Copy-Item -Path (Join-Path $root "server\version.json") -Destination (Join-Path $tempDir "server\version.json")
+$headCommit = (& git -C $root rev-parse HEAD).Trim()
+$stageVersion = Get-Content -LiteralPath (Join-Path $tempDir "server\version.json") -Raw | ConvertFrom-Json
+if (-not $stageVersion.commit -or $stageVersion.commit -eq "unknown") { throw "server/version.json commit is empty/unknown" }
+if ($stageVersion.commit -ne $headCommit) { throw "server/version.json commit ($($stageVersion.commit)) does not match HEAD ($headCommit)" }
+Write-Host "version.json OK: commit $($stageVersion.commit.Substring(0, 12)) branch $($stageVersion.branch)"
 Copy-Item -Path (Join-Path $root "admin-web\*") -Destination (Join-Path $tempDir "admin-web") -Recurse
 Copy-Item -Path (Join-Path $root "utils\mock-data.js") -Destination (Join-Path $tempDir "utils\mock-data.js")
 Copy-Item -Path (Join-Path $root "deploy\*") -Destination (Join-Path $tempDir "deploy") -Recurse
@@ -90,6 +101,11 @@ for file in "`$REMOTE_DIR"/lark-*.json; do
   fi
 done
 
+# Rollback safety net: back up current code dirs (replaced wholesale below) so a bad release reverts fast.
+if [ -d "`$REMOTE_DIR/server/src" ]; then cp -a "`$REMOTE_DIR/server/src" "`$BACKUP_DIR/server/src"; fi
+if [ -d "`$REMOTE_DIR/server/scripts" ]; then cp -a "`$REMOTE_DIR/server/scripts" "`$BACKUP_DIR/server/scripts"; fi
+if [ -d "`$REMOTE_DIR/deploy" ]; then cp -a "`$REMOTE_DIR/deploy" "`$BACKUP_DIR/deploy"; fi
+
 tar -xzf /tmp/ynzy-miniapp.tar.gz -C "`$STAGE_DIR"
 mkdir -p "`$REMOTE_DIR/server" "`$REMOTE_DIR/utils"
 
@@ -100,6 +116,7 @@ cp -a "`$STAGE_DIR/admin-web" "`$REMOTE_DIR/admin-web"
 cp -a "`$STAGE_DIR/deploy" "`$REMOTE_DIR/deploy"
 cp "`$STAGE_DIR/server/package.json" "`$REMOTE_DIR/server/package.json"
 cp "`$STAGE_DIR/server/README.md" "`$REMOTE_DIR/server/README.md"
+cp "`$STAGE_DIR/server/version.json" "`$REMOTE_DIR/server/version.json"
 cp "`$STAGE_DIR/utils/mock-data.js" "`$REMOTE_DIR/utils/mock-data.js"
 
 if [ -f "`$STAGE_DIR/server/.env" ]; then
@@ -125,14 +142,49 @@ done
 rm -rf "`$STAGE_DIR"
 chmod +x "`$REMOTE_DIR/deploy/install-on-server.sh"
 APP_DIR="`$REMOTE_DIR" "`$REMOTE_DIR/deploy/install-on-server.sh"
-echo "Backup kept at `$BACKUP_DIR"
+
+# Post-deploy verification: healthz + running version commit + a listing detail must not 500.
+# The SEV1 (all detail endpoints 500 from a cross-module deploy mismatch) slipped past a healthz-only check.
+sleep 4
+PORT=3101
+HZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/healthz" || echo 000)
+WANT=`$(node -e 'try{process.stdout.write(String(JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})()).commit||""))}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/version.json" 2>/dev/null)
+RUN=`$(curl -s "http://127.0.0.1:`$PORT/healthz" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String((j.data&&j.data.version&&j.data.version.commit)||""))}catch(e){process.stdout.write("")}})' 2>/dev/null || echo "")
+LID=`$(node -e 'try{const d=JSON.parse((function(){var _r=require("fs").readFileSync(process.argv[1],"utf8");return _r.charCodeAt(0)===65279?_r.slice(1):_r})());const L=(d.listings||[]);const l=L.find(x=>x&&x.id&&x.companyListing)||L.find(x=>x&&x.id);process.stdout.write(l?String(l.id):"")}catch(e){process.stdout.write("")}' "`$REMOTE_DIR/server/data/db.json" 2>/dev/null)
+DZ="skip"
+if [ -n "`$LID" ]; then DZ=`$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:`$PORT/mini/listings/`$LID" || echo 000); fi
+echo "Post-deploy check: healthz=`$HZ version(run=`$RUN want=`$WANT) listing-detail(`$LID)=`$DZ"
+POSTFAIL=0
+if [ "`$HZ" != "200" ]; then echo "!! healthz not 200" >&2; POSTFAIL=1; fi
+if [ -n "`$WANT" ] && [ "`$RUN" != "`$WANT" ]; then echo "!! running version commit mismatch (run=`$RUN want=`$WANT)" >&2; POSTFAIL=1; fi
+if [ "`$DZ" = "500" ] || [ "`$DZ" = "000" ]; then echo "!! listing detail crashed (`$DZ) -- likely cross-module inconsistency" >&2; POSTFAIL=1; fi
+if [ "`$POSTFAIL" != "0" ]; then
+  echo "!! POST-DEPLOY VERIFICATION FAILED. Rollback: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp" >&2
+  exit 1
+fi
+echo "Post-deploy verification OK."
+# Release record: append an auditable line to server/releases.jsonl (full-set deploy). Non-fatal.
+node "`$REMOTE_DIR/server/scripts/record-release.js" --scope=full --verify=ok --by=deploy-ecs 2>/dev/null && echo "release recorded" || echo "(release record skipped)"
+echo "Backup kept at `$BACKUP_DIR (includes server/src, server/scripts, deploy for code rollback)"
+echo "Rollback code: rm -rf `$REMOTE_DIR/server/src && cp -a `$BACKUP_DIR/server/src `$REMOTE_DIR/server/src && systemctl restart ynzy-miniapp"
 "@
 
 $remoteScript = $remoteScript -replace "`r`n", "`n"
-$remoteScript | ssh @sshArgs $sshTarget "bash -s"
+# 不再用 stdin 管道传 bash（`$remoteScript | ssh "bash -s"`）：Windows PowerShell 会按 $OutputEncoding
+# 给管道流加 UTF-8 BOM，bash 把首行读成「﻿set」直接报 command not found，且 set -euo pipefail 因此失效、
+# 后续步骤在无保护状态下继续执行（2026-07-10 实际发生：文件已替换但服务未重启的半成品部署）。
+# 改为写「UTF-8 无 BOM + LF」临时脚本 → scp → bash 执行，编码完全确定。
+$remoteScriptPath = Join-Path $env:TEMP "ynzy-remote-deploy-$stamp.sh"
+[System.IO.File]::WriteAllText($remoteScriptPath, $remoteScript, (New-Object System.Text.UTF8Encoding($false)))
+scp @sshArgs $remoteScriptPath "${sshTarget}:/tmp/ynzy-remote-deploy.sh"
+if ($LASTEXITCODE -ne 0) {
+  throw "Upload remote script failed: scp exited with code $LASTEXITCODE"
+}
+ssh @sshArgs $sshTarget "bash /tmp/ynzy-remote-deploy.sh; rc=`$?; rm -f /tmp/ynzy-remote-deploy.sh; exit `$rc"
 if ($LASTEXITCODE -ne 0) {
   throw "Remote deploy failed: ssh exited with code $LASTEXITCODE"
 }
+Remove-Item -LiteralPath $remoteScriptPath -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath $tempDir -Recurse -Force
 Remove-Item -LiteralPath $archivePath -Force

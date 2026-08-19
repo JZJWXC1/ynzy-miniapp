@@ -4,32 +4,53 @@
     <view class="auth-hero">
       <image class="auth-logo" src="/assets/logo.png" mode="aspectFit"></image>
       <view>
-        <view class="auth-title">手机号登录</view>
-        <view class="auth-desc">中介输入手机号即可登录；新手机号会自动创建中介账号。</view>
+        <view class="auth-title">{{mode === 'register' ? '注册申请' : '账号登录'}}</view>
+        <view class="auth-desc">{{mode === 'register' ? '填写资料提交注册申请，管理员审核开通后即可用手机号和密码登录。' : '已开通账号请输入手机号和登录密码。'}}</view>
       </view>
     </view>
 
     <view class="mode-switch">
       <button class="{{mode === 'login' ? 'active' : ''}}" data-mode="login" bindtap="switchMode">手机号登录</button>
-      <button class="{{mode === 'register' ? 'active' : ''}}" data-mode="register" bindtap="switchMode">员工注册</button>
+      <button class="{{mode === 'register' ? 'active' : ''}}" data-mode="register" bindtap="switchMode">账号注册</button>
     </view>
 
     <view class="auth-card soft-card">
       <view wx:if="{{mode === 'register'}}" class="field">
         <view class="label">真实姓名</view>
-        <input value="{{form.name}}" data-field="name" bindinput="updateField" placeholder="请输入员工姓名" />
+        <input value="{{form.name}}" data-field="name" bindinput="updateField" placeholder="请输入真实姓名" />
       </view>
       <view class="field">
         <view class="label">手机号</view>
         <input value="{{form.phone}}" data-field="phone" bindinput="updateField" type="number" maxlength="11" placeholder="请输入 11 位手机号" />
       </view>
+      <view class="field">
+        <view class="label">登录密码</view>
+        <input value="{{form.password}}" data-field="password" bindinput="updateField" password="{{true}}" maxlength="32" placeholder="{{mode === 'register' ? '设置至少 8 位登录密码' : '请输入登录密码'}}" />
+      </view>
+      <view wx:if="{{mode === 'register'}}" class="field">
+        <view class="label">确认密码</view>
+        <input value="{{form.confirmPassword}}" data-field="confirmPassword" bindinput="updateField" password="{{true}}" maxlength="32" placeholder="请再次输入登录密码" />
+      </view>
+      <view class="consent-panel">
+        <checkbox-group class="consent-checkbox-group" bindchange="onAgreementChange">
+          <label class="consent-checkbox-label">
+            <checkbox value="accepted" checked="{{agreementsAccepted}}" color="#2E514A"></checkbox>
+            <text>我已阅读并同意</text>
+          </label>
+        </checkbox-group>
+        <view class="consent-links">
+          <button class="agreement-link" catchtap="openUserAgreement">《用户服务协议》</button>
+          <text>和</text>
+          <button class="agreement-link" catchtap="openPrivacyPolicy">《隐私政策》</button>
+        </view>
+      </view>
       <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">
-        {{mode === 'register' ? '注册员工账号' : '登录 / 创建中介账号'}}
+        {{mode === 'register' ? '提交注册申请' : '登录'}}
       </button>
     </view>
 
     <view class="auth-note">
-      中介每天可查看 3 套业主房源、15 套普通房源的地址和房东电话，超出后请联系管理员帮忙联系房东。
+      新账号需提交注册申请，管理员审核开通后才能登录。中介每天可查看 3 套业主房源、15 套普通房源的地址和房东电话，超出后请联系管理员帮忙联系房东。
     </view>
   </view>
 </scroll-view>

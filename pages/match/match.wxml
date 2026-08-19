@@ -121,7 +121,7 @@
           <text>{{item.community || item.locationSummary || item.area || '待补充小区'}}</text>
           <text>{{item.area || item.block || '区域待补充'}}</text>
           <text>{{item.layout || '户型待补充'}}</text>
-          <text>{{item.commissionText || '管理员确认签单后按 20% 结算'}}</text>
+          <text>{{item.commissionText || '成交总比例按成交总佣金的 30% 计算'}}</text>
           <text>仅视频房源</text>
         </view>
         <view class="match-sub">{{item.sub}}</view>

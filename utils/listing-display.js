@@ -6,7 +6,8 @@ const {
 } = require('./listing-features')
 
 const COMPANY_SOURCE = '公司房源'
-const V1_COMMISSION_TEXT = '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手'
+const V1_COMMISSION_TEXT = '成交总比例按成交总佣金的 30% 计算'
+const COMPANY_COMMISSION_TEXT = '公司房源成交不抽佣，带看中介全佣'
 const VERIFY_STALE_DAYS = 7
 
 const FEATURE_RULES = [
@@ -59,7 +60,24 @@ function listingText(listing) {
     data.commission,
     data.commissionText,
     data.commissionRate,
-    data.companyListing ? COMPANY_SOURCE : ''
+    truthyFlag(data.companyListing) ? COMPANY_SOURCE : ''
+  ].map((item) => String(item || '')).join(' ')
+}
+
+function compactJoin(values) {
+  return (values || [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function listingSourceText(listing) {
+  const data = listing || {}
+  return [
+    data.source,
+    data.sourceType,
+    data.listingType,
+    data.inventoryType
   ].map((item) => String(item || '')).join(' ')
 }
 
@@ -67,6 +85,12 @@ function truthyFlag(value) {
   if (value === true || value === 1) return true
   if (value === false || value === 0 || value === undefined || value === null) return false
   return /^(true|1|yes|y|是|公司|公司房源)$/i.test(String(value).trim())
+}
+
+function standardTruthyFlag(value) {
+  if (value === true || value === 1) return true
+  if (value === false || value === 0 || value === undefined || value === null) return false
+  return /^(true|1|yes|是)$/i.test(String(value).trim())
 }
 
 function numberFrom(value) {
@@ -79,13 +103,13 @@ function numberFrom(value) {
 
 function isCompanyListing(listing, options) {
   const data = listing || {}
-  const text = listingText(data)
+  const sourceText = listingSourceText(data)
   return Boolean(
     options && options.forceCompany ||
     truthyFlag(data.companyListing) ||
     truthyFlag(data.isCompanyListing) ||
-    truthyFlag(data.companyOwned) ||
-    /公司房源|公司自营|company/i.test(text)
+    standardTruthyFlag(data.companyOwned) ||
+    /公司房源|company/.test(sourceText)
   )
 }
 
@@ -190,22 +214,34 @@ function normalizeListing(listing, options) {
   const tagText = String(data.tag || '')
   const relevanceSource = data.relevancePercent || data.matchScore || data.relevanceScore || (/匹配|相关性/.test(tagText) ? tagText : '')
   const relevance = formatRelevance(relevanceSource)
-  const commissionText = V1_COMMISSION_TEXT
-  return {
+  const commissionText = companyListing ? COMPANY_COMMISSION_TEXT : (data.commissionText || V1_COMMISSION_TEXT)
+  const sourceLabel = companyListing ? COMPANY_SOURCE : (data.sourceLabel || data.source || '')
+  const normalized = {
     ...data,
     features,
     maintenanceText: maintenanceText(data),
     companyListing,
     isCompanyListing: companyListing,
     noCommission,
-    sourceLabel: companyListing ? COMPANY_SOURCE : (data.sourceLabel || data.source || ''),
+    sourceLabel,
+    listingMetaText: compactJoin([data.locationSummary || data.community, data.roomAddress || data.roomNumber]),
+    listingSubText: compactJoin([data.layout, sourceLabel, data.status]),
     commissionText,
-    commission: V1_COMMISSION_TEXT,
+    commission: commissionText,
     displayRelevance: relevance,
     relevancePercent: data.relevancePercent || relevance,
     matchScore: data.matchScore || relevance,
     tag: relevance && /匹配|相关性/.test(String(data.tag || '')) ? `相关性 ${relevance}` : data.tag
   }
+  // 详情接口出现可信 commissionBreakdown 时进入新契约：不在客户端补回旧佣金条或上传人字段。
+  if (data.commissionBreakdown) {
+    delete normalized.uploader
+    delete normalized.commissionRate
+    delete normalized.commissionText
+    delete normalized.commission
+    delete normalized.commissionBadge
+  }
+  return normalized
 }
 
 function normalizeListings(listings, options) {
@@ -225,6 +261,7 @@ function normalizeGroupState(state) {
 module.exports = {
   COMPANY_SOURCE,
   V1_COMMISSION_TEXT,
+  COMPANY_COMMISSION_TEXT,
   normalizeListing,
   normalizeListings,
   normalizeGroupState,

@@ -1,8 +1,10 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+const phoneFootprintOutbox = require('../../utils/footprint-outbox')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
 
 const SHOWING_CANVAS_WIDTH = 900
 const SHOWING_CANVAS_HEIGHT = 1200
-const SENSITIVE_PURPOSE_OPTIONS = ['带客户看房', '报备前核对', '签约前确认']
 
 function pad(value) {
   return String(value).padStart(2, '0')
@@ -17,8 +19,115 @@ function safeText(value) {
   return String(value || '').trim()
 }
 
+function normalizePublicMediaAssets(listing = {}) {
+  if (!Array.isArray(listing.mediaAssets)) return []
+  const assetIds = new Set()
+  let imageNumber = 0
+  let videoNumber = 0
+  return listing.mediaAssets
+    .map((asset) => ({
+      assetId: safeText(asset && asset.assetId),
+      kind: safeText(asset && asset.kind),
+      displayOrder: Number(asset && asset.displayOrder),
+      label: safeText(asset && asset.label),
+      imageUrl: safeText(asset && asset.imageUrl),
+      videoUrl: safeText(asset && asset.videoUrl),
+      coverUrl: safeText(asset && asset.coverUrl)
+    }))
+    .filter((asset) => {
+      const hasMatchingCapability = (
+        (asset.kind === 'image' && asset.imageUrl) ||
+        (asset.kind === 'video' && asset.videoUrl)
+      )
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{5,95}$/.test(asset.assetId) ||
+          !hasMatchingCapability || assetIds.has(asset.assetId)) return false
+      assetIds.add(asset.assetId)
+      return true
+    })
+    .map((asset, index) => {
+      if (asset.kind === 'image') imageNumber += 1
+      if (asset.kind === 'video') videoNumber += 1
+      return {
+        ...asset,
+        displayOrder: Number.isFinite(asset.displayOrder) ? asset.displayOrder : index,
+        label: asset.label || (
+          asset.kind === 'image'
+            ? `图片 ${imageNumber}`
+            : `视频 ${videoNumber}`
+        )
+      }
+    })
+}
+
+function listingWithSelectedMedia(listing = {}, preferredAssetId = '') {
+  const mediaAssets = normalizePublicMediaAssets(listing)
+  if (!mediaAssets.length) {
+    const selectedMediaKind = safeText(listing.videoUrl)
+      ? 'video'
+      : (safeText(listing.imageUrl) ? 'image' : '')
+    return {
+      listing: {
+        ...listing,
+        mediaAssets: []
+      },
+      selectedMediaAssetId: '',
+      selectedMediaKind,
+      canShareVideo: selectedMediaKind === 'video'
+    }
+  }
+  const selected = mediaAssets.find((asset) => asset.assetId === safeText(preferredAssetId)) || mediaAssets[0]
+  const selectedIsVideo = selected.kind === 'video'
+  return {
+    listing: {
+      ...listing,
+      mediaAssets,
+      imageUrl: selectedIsVideo ? '' : selected.imageUrl,
+      videoUrl: selectedIsVideo ? selected.videoUrl : '',
+      coverUrl: selected.coverUrl || (selectedIsVideo ? '' : selected.imageUrl)
+    },
+    selectedMediaAssetId: selected.assetId,
+    selectedMediaKind: selected.kind,
+    canShareVideo: selectedIsVideo
+  }
+}
+
+function isAlbumAuthError(error) {
+  const message = String((error && (error.errMsg || error.message)) || '')
+  return /auth|authorize|permission|deny|denied|scope\.writePhotosAlbum/i.test(message)
+}
+
+function isUserCancelError(error) {
+  const message = String((error && (error.errMsg || error.message)) || '')
+  return /cancel|canceled|cancelled/i.test(message)
+}
+
 function isAuthError(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403)
+}
+
+function currentAuthToken() {
+  return String(apiClient.getAuthToken() || '')
+}
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+
+function navigateWithStackFallback(url) {
+  wx.navigateTo({
+    url,
+    fail: () => {
+      wx.redirectTo({
+        url,
+        fail: () => wx.showToast({ title: '页面打开失败，请重试', icon: 'none' })
+      })
+    }
+  })
+}
+
+function profileSessionMatches(value, sessionKey) {
+  const stored = String(value || '')
+  return stored === String(sessionKey || '') || stored === currentAuthToken()
 }
 
 function decodeOption(value) {
@@ -28,11 +137,6 @@ function decodeOption(value) {
   } catch (error) {
     return value
   }
-}
-
-function needIdFromResult(result) {
-  const data = result || {}
-  return data.needId || data.id || (data.need && (data.need.needId || data.need.id)) || ''
 }
 
 function compactText(value, maxLength) {
@@ -98,93 +202,452 @@ Page({
     isVerified: false,
     sensitiveAuthLabel: '可查看',
     sensitiveVisible: false,
+    sensitivePlaceholder: '完成确认后可查看',
     listing: {},
+    unavailableListing: {},
+    listingLoading: false,
+    listingLoadFailed: false,
+    listingLoadErrorText: '',
+    listingAccessRequired: false,
     logs: [],
+    ownSensitiveLoading: false,
+    ownSensitiveLoadFailed: false,
     showingSubmitting: false,
     showingPhotoPath: '',
     showingCanvasWidth: SHOWING_CANVAS_WIDTH,
     showingCanvasHeight: SHOWING_CANVAS_HEIGHT,
-    reportModalVisible: false,
-    dealModalVisible: false,
-    sensitivePurposeModalVisible: false,
-    reportSubmitting: false,
-    dealSubmitting: false,
+    sensitiveConfirmVisible: false,
     sensitiveSubmitting: false,
-    sensitivePurposeOptions: SENSITIVE_PURPOSE_OPTIONS,
-    sensitivePurpose: SENSITIVE_PURPOSE_OPTIONS[0],
-    sensitivePurposeCustom: '',
     canShareVideo: false,
-    shareStateText: '登录中介账号后，可把公开视频推荐卡转发给租客。',
+    selectedMediaAssetId: '',
+    selectedMediaKind: '',
+    shareVideoBusy: false,
+    saveVideoBusy: false,
+    shareStateText: '原视频可直接播放、转发或保存，不包含具体地址和房东联系方式。',
     shareBrokerName: '',
     needId: '',
     needTemporary: false,
-    entrySource: '',
-    reportForm: {
-      customerName: '',
-      customerPhone: ''
-    },
-    dealForm: {
-      monthlyRent: '',
-      landlordCommission: '',
-      remark: ''
-    },
-    currentReportId: ''
+    currentUserId: '',
+    phoneCallBusy: false,
+    nearbyListings: [],
+    nearbyTotal: 0,
+    nearbyHasMore: false
   },
 
   onLoad(options) {
+    this._pageActive = true
+    this.bindAuthInvalidationListener()
+    this.hideNativeShareMenu()
     const id = options.id;
     const needId = decodeOption(options.needId)
     if (!id) {
       wx.showToast({ title: '请选择房源', icon: 'none' });
       return;
     }
+    this.authTokenSnapshot = currentAuthSessionKey()
+    this.listingId = id
     this.setData({
       needId,
-      needTemporary: /^TMP-NEED-/.test(needId),
-      entrySource: decodeOption(options.source)
+      needTemporary: /^TMP-NEED-/.test(needId)
     })
     this.loadListing(id);
   },
 
+  onShow() {
+    this._pageActive = true
+    this.hideNativeShareMenu()
+    const nextToken = currentAuthSessionKey()
+    if (this.authTokenSnapshot === undefined) {
+      this.authTokenSnapshot = nextToken
+      return
+    }
+    if (this.reloadForAuthSessionChange(nextToken)) return
+    if (this.data.currentUserId) this.flushPhoneFootprints(this.data.currentUserId)
+    // 后台可能已调整分佣比例：会话未变的正常返回静默重拉详情、仅更新分佣展示字段（结算仍以服务端为准），
+    // 不触碰敏感查看态/足迹/其它状态，避免清屏闪烁或重置已解锁的敏感信息。
+    this.refreshCommissionDisplay()
+  },
+
+  // 静默刷新分佣展示：仅在同房源同会话、非加载态时用服务端最新配置更新分佣明细字段，不影响其它页面状态。
+  // 完整异步门禁：捕获独立刷新序号 + 详情加载代次 + 页面存活状态，在卸载、全量重载、换号、乱序迟到时统一作废，
+  // 避免 onUnload 后 setData、迟到响应覆盖新比例、或全量重载清屏后写入只含佣金字段的半成品 listing。
+  refreshCommissionDisplay() {
+    const id = this.listingId
+    if (!id || this._pageActive === false || this.data.listingLoading) return
+    const requestSessionKey = currentAuthSessionKey()
+    const refreshSeq = Number(this._commissionRefreshSeq || 0) + 1
+    this._commissionRefreshSeq = refreshSeq
+    const loadGeneration = this.listingLoadGeneration
+    apiService.getListingDetail(id).then((listing) => {
+      if (this._pageActive === false) return
+      if (this._commissionRefreshSeq !== refreshSeq) return // 有更晚的刷新，丢弃迟到响应
+      if (this.listingLoadGeneration !== loadGeneration) return // 期间发生过全量重载，丢弃半成品写入
+      if (this.data.listingLoading) return
+      if (this.listingId !== id || currentAuthSessionKey() !== requestSessionKey) return
+      if (!this.data.listing || String(this.data.listing.id || '') !== String(id)) return
+      if (!listing || listing.unavailable || !listing.id) return
+      const patch = {}
+      for (const key of ['commissionBreakdown', 'commissionText', 'commission', 'commissionBadge', 'commissionRate']) {
+        if (key in listing) patch['listing.' + key] = listing[key]
+      }
+      if (Object.keys(patch).length > 0) this.setData(patch)
+    }).catch(() => {})
+  },
+
+  reloadForAuthSessionChange(nextSessionKey) {
+    const nextKey = String(nextSessionKey || '')
+    if (nextKey === String(this.authTokenSnapshot || '')) return false
+    // 换号或过期 token 被静默撤销后，立即清除旧账号敏感数据并重新读取公共详情；
+    // 不能等下一次 onShow，否则地址、电话和足迹会残留在当前游客页面。
+    this.authTokenSnapshot = nextKey
+    this.invalidateDetailOperations()
+    if (wx.hideLoading) wx.hideLoading()
+    this.setData({
+      listing: {},
+      logs: [],
+      currentUserId: '',
+      isVerified: false,
+      isOwnListing: false,
+      sensitiveVisible: false,
+      sensitiveConfirmVisible: false,
+      sensitiveSubmitting: false,
+      needId: '',
+      needTemporary: false,
+      showingSubmitting: false,
+      showingPhotoPath: '',
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      selectedMediaAssetId: '',
+      selectedMediaKind: '',
+      phoneCallBusy: false,
+      shareStateText: '正在按当前账号重新读取房源'
+    })
+    if (this.listingId) this.loadListing(this.listingId)
+    return true
+  },
+
+  onUnload() {
+    this._pageActive = false
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
+    this.invalidateDetailOperations()
+    if (wx.hideLoading) wx.hideLoading()
+    // 整份详情（含服务端内嵌 nearby）共用同一代次；卸载后任何迟到响应都不得再写页面。
+    this.listingLoadGeneration = Number(this.listingLoadGeneration || 0) + 1
+  },
+
+  invalidateDetailOperations() {
+    this.invalidateMediaOperations()
+    this._showingOperationSeq = Number(this._showingOperationSeq || 0) + 1
+  },
+
+  invalidateMediaOperations() {
+    this._shareVideoOperationSeq = Number(this._shareVideoOperationSeq || 0) + 1
+  },
+
+  beginDetailOperation(kind) {
+    const mediaBound = kind !== 'showing'
+    const sequenceField = kind === 'showing' ? '_showingOperationSeq' : '_shareVideoOperationSeq'
+    const sequence = Number(this[sequenceField] || 0) + 1
+    const listing = this.data.listing || {}
+    this[sequenceField] = sequence
+    return {
+      sequenceField,
+      sequence,
+      mediaBound,
+      sessionKey: currentAuthSessionKey(),
+      listingGeneration: Number(this.listingLoadGeneration || 0),
+      listingId: safeText(listing.id),
+      mediaAssetId: safeText(this.data.selectedMediaAssetId),
+      needId: safeText(this.data.needId),
+      needTemporary: Boolean(this.data.needTemporary)
+    }
+  },
+
+  isDetailOperationCurrent(operation) {
+    if (!operation || this._pageActive === false) return false
+    const listing = this.data.listing || {}
+    return this[operation.sequenceField] === operation.sequence &&
+      currentAuthSessionKey() === operation.sessionKey &&
+      Number(this.listingLoadGeneration || 0) === operation.listingGeneration &&
+      safeText(listing.id) === operation.listingId &&
+      (!operation.mediaBound || safeText(this.data.selectedMediaAssetId) === operation.mediaAssetId)
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      const fromSessionKey = String(event && event.fromSessionKey || '')
+      if (!fromSessionKey || fromSessionKey !== String(this.authTokenSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      this.reloadForAuthSessionChange(nextSessionKey)
+    })
+  },
+
+  isDetailOperationSequenceCurrent(operation) {
+    if (!operation || this._pageActive === false) return false
+    const listing = this.data.listing || {}
+    return this[operation.sequenceField] === operation.sequence &&
+      Number(this.listingLoadGeneration || 0) === operation.listingGeneration &&
+      safeText(listing.id) === operation.listingId
+  },
+
+  hideNativeShareMenu() {
+    if (!wx.hideShareMenu) return
+    wx.hideShareMenu({
+      menus: ['shareAppMessage', 'shareTimeline']
+    })
+  },
+
   loadListing(id) {
-    Promise.all([
+    this.listingId = id
+    this.invalidateDetailOperations()
+    this._videoPlaybackRefreshCount = 0
+    this._videoPlaybackFailureNotified = false
+    this._imageLoadRefreshCount = 0
+    this._imageLoadRefreshPending = false
+    this._imageLoadFailureNotified = false
+    this._mediaRefreshPromise = null
+    this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
+    if (wx.hideLoading) wx.hideLoading()
+    const requestGeneration = Number(this.listingLoadGeneration || 0) + 1
+    const requestSessionKey = currentAuthSessionKey()
+    const requestHasLogin = Boolean(currentAuthToken())
+    this.listingLoadGeneration = requestGeneration
+    this.profileAuthToken = '' // 实际保存稳定会话键；保留属性名兼容既有页面测试与运行态对象
+    this.sensitiveViewIdempotencyKey = ''
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration && currentAuthSessionKey() === requestSessionKey
+    )
+    const recoverPublicReadAfterAuthFallback = () => {
+      if (this.listingLoadGeneration !== requestGeneration || currentAuthSessionKey() === requestSessionKey) return false
+      const shouldRecover = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+        apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+      if (shouldRecover) this.reloadForAuthSessionChange(currentAuthSessionKey())
+      return shouldRecover
+    }
+    this.setData({
+      listing: {},
+      unavailableListing: {},
+      listingLoading: true,
+      listingLoadFailed: false,
+      listingLoadErrorText: '',
+      listingAccessRequired: false,
+      logs: [],
+      nearbyListings: [],
+      nearbyTotal: 0,
+      nearbyHasMore: false,
+      sensitiveVisible: false,
+      sensitiveConfirmVisible: false,
+      sensitiveSubmitting: false,
+      sensitivePlaceholder: '完成确认后可查看',
+      ownSensitiveLoading: false,
+      ownSensitiveLoadFailed: false,
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      selectedMediaAssetId: '',
+      selectedMediaKind: '',
+      showingSubmitting: false,
+      showingPhotoPath: '',
+      phoneCallBusy: false
+    })
+    return Promise.all([
       apiService.getListingDetail(id),
-      apiService.getListingLogs(id).catch(() => []),
-      apiService.getProfileState().catch((error) => {
-        if (isAuthError(error)) return { user: {} }
-        return Promise.reject(error)
-      })
-    ]).then(([listing, logs, profile]) => {
+      // 游客无权读取足迹；不要为公开公司详情制造一个预期 401 和无意义网络请求。
+      requestHasLogin ? apiService.getListingLogs(id).catch(() => []) : Promise.resolve([]),
+      // profile 只影响“可查看敏感信息”按钮态，属辅助请求：任何失败（鉴权或网络/5xx）都降级为
+      // 未登录空用户，不能因它 fail-fast 拖垮整个 Promise.all，否则公司房源在弱网下会误报
+      // “房源不存在或已下架”（此时 getListingDetail 往往已成功）。
+      requestHasLogin
+        ? apiService.getProfileState()
+          .then((profile) => ({ profile }))
+          .catch(() => ({ profile: { user: {} } }))
+        : Promise.resolve({ profile: { user: {} } })
+    ]).then(([listingResult, logs, profileState]) => {
+      // 同页重载或换号后，较早请求即使更晚返回也不得覆盖新账号状态或触发旧账号队列补发。
+      if (recoverPublicReadAfterAuthFallback()) return
+      if (!isCurrentRequest()) return
+      if (listingResult && listingResult.unavailable) {
+        this.setData({
+          listing: {},
+          unavailableListing: listingResult,
+          listingLoading: false,
+          listingLoadFailed: false,
+          listingAccessRequired: false,
+          logs: [],
+          sensitiveVisible: false,
+          sensitivePlaceholder: '完成确认后可查看',
+          isVerified: false,
+          isOwnListing: false,
+          ownSensitiveLoading: false,
+          ownSensitiveLoadFailed: false,
+          canShareVideo: false,
+          selectedMediaAssetId: '',
+          selectedMediaKind: '',
+          shareBrokerName: '',
+          currentUserId: '',
+          phoneCallBusy: false,
+          shareStateText: '这套房源已更新，请重新找房。'
+        })
+        return
+      }
+      const profile = profileState.profile || {}
       const user = profile && profile.user ? profile.user : {}
       const canTrySensitive = Boolean(
+        currentAuthToken() ||
         user.isAdmin ||
         user.authed === '已实名' ||
         user.authed === '手机号登录' ||
         String(user.role || '').indexOf('中介') !== -1
       )
-      const canShareVideo = Boolean(listing && listing.videoUrl && (user.id || canTrySensitive))
+      const mediaSelection = listingWithSelectedMedia(listingResult || {})
+      const listing = mediaSelection.listing
+      // 游客能力只由服务端公开详情是否给出当前视频决定，不绑定登录身份。
+      const canShareVideo = Boolean(listing && listing.videoUrl)
+      const companyListing = Boolean(listing && listing.companyListing)
+      const ownListing = Boolean(listing && listing.ownListing)
+      const nearby = listing && listing.nearby && typeof listing.nearby === 'object' ? listing.nearby : {}
+      const nearbySourceRows = Array.isArray(nearby.listings) ? nearby.listings : []
+      const nearbyListings = nearbySourceRows.slice(0, 6)
+      const nearbyTotal = Math.max(nearbyListings.length, Number(nearby.total) || 0)
+      const nearbyHasMore = nearbyListings.length > 0 && Boolean(
+        nearby.hasMore || nearbyTotal > nearbyListings.length || nearbySourceRows.length > nearbyListings.length
+      )
+      this.profileAuthToken = requestSessionKey
       this.setData({
         listing,
+        unavailableListing: {},
+        listingLoading: false,
+        listingLoadFailed: false,
+        listingLoadErrorText: '',
+        listingAccessRequired: false,
         logs,
-        sensitiveVisible: false,
+        nearbyListings,
+        nearbyTotal,
+        nearbyHasMore,
+        isOwnListing: ownListing,
+        sensitiveVisible: companyListing,
+        sensitivePlaceholder: ownListing ? '正在读取' : '完成确认后可查看',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: false,
         isVerified: canTrySensitive,
-        sensitiveAuthLabel: canTrySensitive ? '可查看' : '需实名',
+        sensitiveAuthLabel: ownListing ? '自己上传·免留痕直接展示' : (companyListing ? '直接公开' : (canTrySensitive ? '可查看' : '需实名')),
         canShareVideo,
+        selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
+        selectedMediaKind: mediaSelection.selectedMediaKind,
         shareBrokerName: user.name || '',
+        currentUserId: user.id || '',
+        phoneCallBusy: false,
         shareStateText: canShareVideo
-          ? '只转发视频和公开摘要，不包含地址、房东电话、楼栋单元房号。'
-          : (listing && listing.videoUrl ? '请先登录内部中介账号后再转发。' : '这套房源暂无可转发视频。')
+          ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+          : (mediaSelection.selectedMediaKind === 'image' ? '点击图片可查看大图。' : '这套房源暂无可转发视频。')
       });
+      if (user.id) this.flushPhoneFootprints(user.id)
+      // 上传人自查自己上传的房源：直接拉取地址/房东电话填充，后端免留痕且不耗额度。
+      if (ownListing && !companyListing) {
+        this.loadOwnSensitive(listing.id, { requestGeneration, requestSessionKey })
+      }
     }).catch((error) => {
+      if (recoverPublicReadAfterAuthFallback()) return
+      if (!isCurrentRequest()) return
       if (isAuthError(error)) {
-        this.promptLoginGuide('登录后查看合作房源', '公司房源可直接浏览；二房东和业主合作房源需要登录内部中介账号后查看。')
+        wx.showToast({ title: '房源加载失败，请重试', icon: 'none' })
+        this.setData({
+          listing: {},
+          unavailableListing: {},
+          listingLoading: false,
+          listingLoadFailed: true,
+          listingLoadErrorText: '公开房源暂时读取失败，请重新加载。具体地址和房东联系方式仍需登录确认后查看。',
+          listingAccessRequired: false,
+          isVerified: false,
+          sensitiveVisible: false,
+          canShareVideo: false,
+          selectedMediaAssetId: '',
+          selectedMediaKind: ''
+        })
         return
       }
-      wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
+      if (Number(error && error.statusCode) === 404) {
+        wx.showToast({ title: '房源不存在或已下架', icon: 'none' })
+        this.setData({
+          listing: {},
+          listingLoading: false,
+          listingLoadFailed: false,
+          listingAccessRequired: false,
+          unavailableListing: {
+            unavailable: true,
+            reason: 'not-found',
+            reasonText: '这套房源不存在或已下架，请返回重新找房。'
+          },
+          canShareVideo: false,
+          selectedMediaAssetId: '',
+          selectedMediaKind: ''
+        })
+        return
+      }
+      wx.showToast({ title: '房源加载失败，请重试', icon: 'none' })
+      this.setData({
+        listing: {},
+        unavailableListing: {},
+        listingLoading: false,
+        listingLoadFailed: true,
+        listingLoadErrorText: '暂时无法读取这套房源，请检查网络后重试。',
+        listingAccessRequired: false,
+        sensitiveVisible: false,
+        canShareVideo: false,
+        selectedMediaAssetId: '',
+        selectedMediaKind: ''
+      })
     });
   },
 
+  retryListing() {
+    if (this.listingId) this.loadListing(this.listingId)
+  },
+
+  openNearbyListing(event) {
+    const id = String((event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.id) || '')
+    if (!id || !(this.data.nearbyListings || []).some((item) => String(item.id) === id)) return
+    navigateWithStackFallback(`/pages/listing-detail/listing-detail?id=${encodeURIComponent(id)}&source=nearby`)
+  },
+
+  goNearbyListings() {
+    const anchorId = String((this.data.listing && this.data.listing.id) || '')
+    if (!anchorId || !this.data.nearbyHasMore) return
+    navigateWithStackFallback(`/pages/nearby-listings/nearby-listings?id=${encodeURIComponent(anchorId)}`)
+  },
+
+  onNearbyCoverError(event) {
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {}
+    const index = findFailedCoverIndex(this.data.nearbyListings, dataset.id, dataset.cover)
+    if (index >= 0) this.setData({ [`nearbyListings[${index}].coverUrl`]: '' })
+  },
+
+  goLoginFromListing() {
+    wx.navigateTo({ url: '/pages/auth/auth' })
+  },
+
   noop() {},
+
+  goBackFromUnavailable() {
+    const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+    if (pages.length > 1) {
+      wx.navigateBack()
+      return
+    }
+    wx.switchTab({ url: '/pages/index/index' })
+  },
+
+  goFindHouseFromUnavailable() {
+    wx.redirectTo({
+      url: '/pages/match-chat/match-chat',
+      fail: () => wx.switchTab({ url: '/pages/index/index' })
+    })
+  },
 
   promptLoginGuide(title, content) {
     wx.showModal({
@@ -198,192 +661,568 @@ Page({
     })
   },
 
-  shareVideoPath() {
+  selectMediaAsset(event) {
+    const assetId = safeText(event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.assetId)
     const listing = this.data.listing || {}
-    const params = [
-      `id=${encodeURIComponent(listing.id || '')}`,
-      'source=tenant-video-share'
-    ]
-    if (this.data.shareBrokerName) {
-      params.push(`broker=${encodeURIComponent(this.data.shareBrokerName)}`)
-    }
-    return `/pages/shared-video/shared-video?${params.join('&')}`
+    const mediaAssets = normalizePublicMediaAssets(listing)
+    const selected = mediaAssets.find((asset) => asset.assetId === assetId)
+    if (!selected || assetId === safeText(this.data.selectedMediaAssetId)) return
+    // 切换素材时只作废旧媒体下载、分享、保存和刷新；带看等非媒体操作继续按自己的序号完成。
+    this.invalidateMediaOperations()
+    this._mediaSelectionGeneration = Number(this._mediaSelectionGeneration || 0) + 1
+    this._mediaRefreshPromise = null
+    this._videoPlaybackRefreshCount = 0
+    this._videoPlaybackFailureNotified = false
+    this._imageLoadRefreshCount = 0
+    this._imageLoadRefreshPending = false
+    this._imageLoadFailureNotified = false
+    if (wx.hideLoading) wx.hideLoading()
+    const selectedIsVideo = selected.kind === 'video'
+    this.setData({
+      listing: {
+        ...listing,
+        mediaAssets,
+        imageUrl: selectedIsVideo ? '' : selected.imageUrl,
+        videoUrl: selectedIsVideo ? selected.videoUrl : '',
+        coverUrl: selected.coverUrl || (selectedIsVideo ? '' : selected.imageUrl)
+      },
+      selectedMediaAssetId: selected.assetId,
+      selectedMediaKind: selected.kind,
+      canShareVideo: selectedIsVideo,
+      shareVideoBusy: false,
+      saveVideoBusy: false,
+      shareStateText: selectedIsVideo
+        ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+        : '点击图片可查看大图。'
+    })
   },
 
-  shareVideoTitle() {
-    return '房间视频'
+  refreshListingMedia() {
+    const listing = this.data.listing || {}
+    const listingId = safeText(listing.id || this.listingId)
+    if (!listingId) return Promise.reject(new Error('房源不存在或已下架'))
+    if (this._mediaRefreshPromise) return this._mediaRefreshPromise
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    const requestSelectionGeneration = Number(this._mediaSelectionGeneration || 0)
+    const selectedMediaAssetId = safeText(this.data.selectedMediaAssetId)
+    const isCurrentRequest = () => (
+      this._pageActive !== false &&
+      Number(this.listingLoadGeneration || 0) === requestGeneration &&
+      Number(this._mediaSelectionGeneration || 0) === requestSelectionGeneration &&
+      currentAuthSessionKey() === requestSessionKey &&
+      safeText(this.data.listing && this.data.listing.id) === listingId
+    )
+    const request = apiService.getListingDetail(listingId, { anonymous: true }).then((fresh) => {
+      if (!isCurrentRequest()) {
+        const error = new Error('页面状态已变化，忽略旧媒体地址')
+        error.staleMediaRefresh = true
+        throw error
+      }
+      const mediaSelection = listingWithSelectedMedia(fresh || {}, selectedMediaAssetId)
+      if (!fresh || fresh.unavailable || !mediaSelection.selectedMediaKind) {
+        const error = new Error('房源素材不存在或已下架')
+        error.statusCode = 404
+        throw error
+      }
+      const merged = Object.assign({}, this.data.listing || {}, {
+        mediaAssets: mediaSelection.listing.mediaAssets,
+        imageUrl: mediaSelection.listing.imageUrl || '',
+        videoUrl: mediaSelection.listing.videoUrl,
+        coverUrl: mediaSelection.listing.coverUrl || '',
+        hasVideo: Boolean(
+          safeText(mediaSelection.listing.videoUrl) ||
+          mediaSelection.listing.mediaAssets.some((asset) => asset.kind === 'video')
+        )
+      })
+      this.setData({
+        listing: merged,
+        selectedMediaAssetId: mediaSelection.selectedMediaAssetId,
+        selectedMediaKind: mediaSelection.selectedMediaKind,
+        canShareVideo: mediaSelection.canShareVideo,
+        shareStateText: mediaSelection.canShareVideo
+          ? '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+          : '点击图片可查看大图。'
+      })
+      return merged
+    }).finally(() => {
+      if (this._mediaRefreshPromise === request) this._mediaRefreshPromise = null
+    })
+    this._mediaRefreshPromise = request
+    return request
   },
 
-  prepareVideoShare() {
-    if (!this.data.canShareVideo) {
-      wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
+  onVideoPlaybackError() {
+    if (Number(this._videoPlaybackRefreshCount || 0) >= 1) {
+      this.notifyVideoPlaybackFailure()
       return
     }
+    this._videoPlaybackRefreshCount = Number(this._videoPlaybackRefreshCount || 0) + 1
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    this.refreshListingMedia().catch((error) => {
+      if (error && error.staleMediaRefresh) return
+      if (this._pageActive === false || Number(this.listingLoadGeneration || 0) !== requestGeneration || currentAuthSessionKey() !== requestSessionKey) return
+      this.notifyVideoPlaybackFailure()
+    })
+  },
+
+  notifyVideoPlaybackFailure() {
+    if (this._pageActive === false || this._videoPlaybackFailureNotified) return
+    this._videoPlaybackFailureNotified = true
+    wx.showToast({ title: '视频加载失败，请重试', icon: 'none' })
+  },
+
+  previewCurrentImage() {
     const listing = this.data.listing || {}
-    apiService.recordVideoShare(listing.id, {
-      channel: 'wechat',
-      target: 'tenant',
-      sharePath: this.shareVideoPath(),
-      shareTitle: this.shareVideoTitle()
-    }).then((result) => {
-      if (result && result.logs) {
-        this.setData({ logs: result.logs })
+    const imageUrl = safeText(listing.imageUrl)
+    if (this.data.selectedMediaKind !== 'image' || !imageUrl || !wx.previewImage) return
+    wx.previewImage({
+      current: imageUrl,
+      urls: [imageUrl]
+    })
+  },
+
+  onImageLoadError() {
+    if (this.data.selectedMediaKind !== 'image') return
+    if (this._imageLoadRefreshPending) return
+    if (Number(this._imageLoadRefreshCount || 0) >= 1) {
+      this.notifyImageLoadFailure()
+      return
+    }
+    this._imageLoadRefreshCount = Number(this._imageLoadRefreshCount || 0) + 1
+    this._imageLoadRefreshPending = true
+    const requestGeneration = Number(this.listingLoadGeneration || 0)
+    const requestSessionKey = currentAuthSessionKey()
+    this.refreshListingMedia().catch((error) => {
+      if (error && error.staleMediaRefresh) return
+      if (this._pageActive === false || Number(this.listingLoadGeneration || 0) !== requestGeneration || currentAuthSessionKey() !== requestSessionKey) return
+      this.notifyImageLoadFailure()
+    }).finally(() => {
+      this._imageLoadRefreshPending = false
+    })
+  },
+
+  notifyImageLoadFailure() {
+    if (this._pageActive === false || this._imageLoadFailureNotified) return
+    this._imageLoadFailureNotified = true
+    wx.showToast({ title: '图片加载失败，请重试', icon: 'none' })
+  },
+
+  downloadVideoFileOnce(videoUrl) {
+    return new Promise((resolve, reject) => {
+      if (!wx.downloadFile) {
+        reject(new Error('当前微信版本暂不支持下载视频文件'))
+        return
       }
-    }).catch((error) => {
-      wx.showToast({
-        title: error && error.message ? error.message : '转发留痕失败',
-        icon: 'none'
+      wx.downloadFile({
+        url: videoUrl,
+        timeout: 300000,
+        success: (res) => {
+          if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+            const error = new Error(`视频下载失败：${res.statusCode}`)
+            error.statusCode = Number(res.statusCode)
+            reject(error)
+            return
+          }
+          if (!res.tempFilePath) {
+            reject(new Error('未获取到视频临时文件'))
+            return
+          }
+          resolve(res.tempFilePath)
+        },
+        fail: reject
       })
     })
   },
 
-  onShareAppMessage() {
+  downloadShareVideo(videoUrl) {
+    return this.downloadVideoFileOnce(videoUrl).catch((error) => {
+      if (![401, 403, 404].includes(Number(error && error.statusCode))) throw error
+      return this.refreshListingMedia().then((listing) => this.downloadVideoFileOnce(listing.videoUrl))
+    })
+  },
+
+  shareVideoFile(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.shareFileMessage) {
+        reject(new Error('当前微信版本暂不支持直接发送视频文件'))
+        return
+      }
+      wx.shareFileMessage({
+        filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
+  shareVideoMessage(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.shareVideoMessage) {
+        reject(new Error('当前微信版本暂不支持直接发送视频气泡'))
+        return
+      }
+      wx.shareVideoMessage({
+        videoPath: filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
+  saveVideoForManualShare(filePath) {
+    return new Promise((resolve, reject) => {
+      if (!wx.saveVideoToPhotosAlbum) {
+        reject(new Error('当前微信版本暂不支持保存视频到相册'))
+        return
+      }
+      wx.saveVideoToPhotosAlbum({
+        filePath,
+        success: resolve,
+        fail: reject
+      })
+    })
+  },
+
+  recordVideoFileShare(channel, operation) {
+    if (!currentAuthToken()) return Promise.resolve(null)
     const listing = this.data.listing || {}
-    return {
-      title: this.shareVideoTitle(),
-      path: this.shareVideoPath(),
-      imageUrl: listing.shareImageUrl || ''
+    const listingId = operation ? operation.listingId : listing.id
+    if (operation && !this.isDetailOperationCurrent(operation)) return Promise.resolve(null)
+    return apiService.recordVideoShare(listingId, {
+      channel: channel || 'wechat-file',
+      target: 'tenant',
+      sharePath: '',
+      shareTitle: '原视频文件'
+    }, { silentAuthFailure: true }).then((result) => {
+      if ((!operation || this.isDetailOperationCurrent(operation)) && result && result.logs) {
+        this.setData({ logs: result.logs })
+      }
+      return result
+    })
+  },
+
+  recordVideoFileShareBestEffort(channel, operation) {
+    return this.recordVideoFileShare(channel, operation).catch((error) => {
+      if (Number(error && error.statusCode) === 401 && operation && currentAuthSessionKey() !== operation.sessionKey) {
+        this.reloadForAuthSessionChange(currentAuthSessionKey())
+      }
+      return null
+    })
+  },
+
+  async fallbackSaveVideo(filePath, operation) {
+    try {
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
+      await this.saveVideoForManualShare(filePath)
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
+      wx.showModal({
+        title: '视频已保存',
+        content: '当前微信版本暂不支持直接发送文件，请从相册手动发送给租客。',
+        showCancel: false
+      })
+      return true
+    } catch (error) {
+      if (operation && !this.isDetailOperationCurrent(operation)) return false
+      if (isAlbumAuthError(error)) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存视频到相册后，再手动发送给租客。',
+          cancelText: '取消',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
+        return false
+      }
+      throw error
     }
+  },
+
+  async prepareVideoShare() {
+    // 旧单视频详情没有 selectedMediaKind；只要不是明确选中了图片，仍沿用既有转发能力。
+    if (this.data.selectedMediaKind === 'image' || !this.data.canShareVideo) {
+      wx.showToast({ title: this.data.shareStateText || '暂不可转发', icon: 'none' })
+      return
+    }
+    if (this.data.shareVideoBusy || this.data.saveVideoBusy) return
+    const listing = this.data.listing || {}
+    if (!listing.videoUrl) {
+      wx.showToast({ title: '这套房源暂无可转发视频', icon: 'none' })
+      return
+    }
+    const operation = this.beginDetailOperation('share')
+    this.setData({
+      shareVideoBusy: true,
+      shareStateText: '正在准备原视频文件'
+    })
+    wx.showLoading({ title: '准备视频' })
+    try {
+      const filePath = await this.downloadShareVideo(listing.videoUrl)
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      try {
+        await this.shareVideoMessage(filePath)
+        if (!this.isDetailOperationCurrent(operation)) return
+        this.recordVideoFileShareBestEffort('wechat-video', operation)
+        if (this.isDetailOperationSequenceCurrent(operation)) wx.showToast({ title: '视频已发送', icon: 'none' })
+      } catch (videoShareError) {
+        if (!this.isDetailOperationCurrent(operation)) return
+        if (isUserCancelError(videoShareError)) return
+        try {
+          await this.shareVideoFile(filePath)
+          if (!this.isDetailOperationCurrent(operation)) return
+          this.recordVideoFileShareBestEffort('wechat-file', operation)
+          if (this.isDetailOperationSequenceCurrent(operation)) wx.showToast({ title: '视频已发送', icon: 'none' })
+        } catch (fileShareError) {
+          if (!this.isDetailOperationCurrent(operation)) return
+          if (isUserCancelError(fileShareError)) return
+          await this.fallbackSaveVideo(filePath, operation)
+        }
+      }
+    } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      wx.showToast({
+        title: error && (error.message || error.errMsg) ? (error.message || error.errMsg) : '视频转发未完成',
+        icon: 'none'
+      })
+    } finally {
+      if (!this.isDetailOperationSequenceCurrent(operation)) return
+      this.setData({
+        shareVideoBusy: false,
+        shareStateText: '原视频可直接转发或保存，不包含地址、房东电话、楼栋单元房号。'
+      })
+    }
+  },
+
+  async saveListingVideo() {
+    if (this.data.saveVideoBusy || this.data.shareVideoBusy) return
+    const listing = this.data.listing || {}
+    if (this.data.selectedMediaKind === 'image' || !this.data.canShareVideo || !listing.videoUrl) {
+      wx.showToast({ title: '这套房源暂无可保存视频', icon: 'none' })
+      return
+    }
+    const operation = this.beginDetailOperation('save-video')
+    this.setData({ saveVideoBusy: true })
+    wx.showLoading({ title: '保存视频' })
+    try {
+      const filePath = await this.downloadShareVideo(listing.videoUrl)
+      if (!this.isDetailOperationCurrent(operation)) return
+      await this.saveVideoForManualShare(filePath)
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      wx.showToast({ title: '视频已保存到相册', icon: 'none' })
+    } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
+      wx.hideLoading()
+      if (isAlbumAuthError(error)) {
+        wx.showModal({
+          title: '需要相册权限',
+          content: '请允许保存视频到相册后重试。',
+          cancelText: '取消',
+          confirmText: '去设置',
+          success: (res) => {
+            if (res.confirm && wx.openSetting) wx.openSetting({})
+          }
+        })
+        return
+      }
+      wx.showToast({
+        title: error && (error.message || error.errMsg) ? (error.message || error.errMsg) : '视频保存未完成',
+        icon: 'none'
+      })
+    } finally {
+      if (this.isDetailOperationSequenceCurrent(operation)) this.setData({ saveVideoBusy: false })
+    }
+  },
+
+  // 上传人自查：调后端免留痕分支直接取地址/房东电话，不留痕、不耗额度。
+  loadOwnSensitive(listingId, requestContext = {}) {
+    if (!listingId) return
+    const requestGeneration = requestContext.requestGeneration === undefined
+      ? this.listingLoadGeneration
+      : requestContext.requestGeneration
+    const requestSessionKey = requestContext.requestSessionKey === undefined
+      ? currentAuthSessionKey()
+      : requestContext.requestSessionKey
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration && currentAuthSessionKey() === requestSessionKey
+    )
+    this.setData({
+      ownSensitiveLoading: true,
+      ownSensitiveLoadFailed: false,
+      sensitiveVisible: false,
+      sensitivePlaceholder: '正在读取'
+    })
+    return apiService.addSensitiveFootprint(listingId).then((result) => {
+      if (!isCurrentRequest()) return
+      const sensitive = result && result.sensitive ? result.sensitive : {}
+      this.setData({
+        listing: Object.assign({}, this.data.listing, sensitive),
+        sensitiveVisible: true,
+        sensitivePlaceholder: '',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: false
+      })
+    }).catch(() => {
+      if (!isCurrentRequest()) return
+      this.setData({
+        sensitiveVisible: false,
+        sensitivePlaceholder: '读取失败，请重试',
+        ownSensitiveLoading: false,
+        ownSensitiveLoadFailed: true
+      })
+      wx.showToast({ title: '完整信息加载失败，请重试', icon: 'none' })
+    })
+  },
+
+  retryOwnSensitive() {
+    const listing = this.data.listing || {}
+    if (!this.data.ownSensitiveLoading && listing.id) this.loadOwnSensitive(listing.id)
+  },
+
+  flushPhoneFootprints(accountId) {
+    const flushSessionKey = currentAuthSessionKey()
+    if (!accountId || !currentAuthToken() || !profileSessionMatches(this.profileAuthToken, flushSessionKey) || safeText(this.data.currentUserId) !== safeText(accountId)) return Promise.resolve()
+    return phoneFootprintOutbox.flushPhoneCalls(
+      accountId,
+      (listingId, idempotencyKey) => {
+        if (currentAuthSessionKey() !== flushSessionKey || safeText(this.data.currentUserId) !== safeText(accountId)) {
+          const error = new Error('账号已变化，停止本轮拨号足迹补发')
+          error.stopOutboxFlush = true
+          return Promise.reject(error)
+        }
+        return apiService.recordPhoneCallOpened(listingId, idempotencyKey)
+      }
+    )
+  },
+
+  callLandlord() {
+    const listing = this.data.listing || {}
+    const accountId = safeText(this.data.currentUserId)
+    const dialSessionKey = currentAuthSessionKey()
+    if (!accountId || !currentAuthToken() || !profileSessionMatches(this.profileAuthToken, dialSessionKey)) {
+      this.promptLoginGuide('登录后联系房东', '打开系统拨号页需要记录本人操作，请先登录内部中介账号。')
+      return
+    }
+    if (!this.data.sensitiveVisible) {
+      wx.showToast({ title: '请先查看详细地址和联系方式', icon: 'none' })
+      return
+    }
+    const phoneNumber = safeText(listing.companyContactPhoneText || listing.landlordPhone)
+    if (!/^1[3-9]\d{9}$/.test(phoneNumber)) {
+      wx.showToast({ title: '电话待补充，暂不能拨号', icon: 'none' })
+      return
+    }
+    if (this.data.phoneCallBusy) return
+    const dialContext = {
+      accountId,
+      sessionKey: dialSessionKey,
+      listingId: safeText(listing.id),
+      requestGeneration: this.listingLoadGeneration
+    }
+    this.setData({ phoneCallBusy: true })
+    wx.makePhoneCall({
+      phoneNumber,
+      success: () => {
+        try {
+          const idempotencyKey = phoneFootprintOutbox.createPhoneCallIdempotencyKey()
+          phoneFootprintOutbox.enqueuePhoneCall({
+            accountId: dialContext.accountId,
+            listingId: dialContext.listingId,
+            idempotencyKey
+          })
+          const stillCurrent = currentAuthSessionKey() === dialContext.sessionKey &&
+            profileSessionMatches(this.profileAuthToken, dialContext.sessionKey) &&
+            safeText(this.data.currentUserId) === dialContext.accountId &&
+            safeText(this.data.listing && this.data.listing.id) === dialContext.listingId &&
+            this.listingLoadGeneration === dialContext.requestGeneration
+          if (stillCurrent) this.flushPhoneFootprints(dialContext.accountId)
+        } catch (error) {}
+      },
+      fail: () => {},
+      complete: () => {
+        const stillCurrent = this._pageActive !== false &&
+          currentAuthSessionKey() === dialContext.sessionKey &&
+          safeText(this.data.currentUserId) === dialContext.accountId &&
+          safeText(this.data.listing && this.data.listing.id) === dialContext.listingId &&
+          this.listingLoadGeneration === dialContext.requestGeneration
+        if (stillCurrent) this.setData({ phoneCallBusy: false })
+      }
+    })
   },
 
   revealSensitive() {
     if (this.data.sensitiveVisible) {
-      wx.showToast({ title: '已解锁地址和电话', icon: 'none' })
+      wx.showToast({ title: this.data.isOwnListing ? '自己上传，已直接展示（免留痕）' : '已解锁完整信息', icon: 'none' })
       return;
     }
     if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+      this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
       return
     }
-    if (!this.data.needId) {
-      wx.showModal({
-        title: '先绑定需求单',
-        content: '查看地址和电话需要尽量绑定客户需求。可用当前房源创建一条最小需求单后继续。',
-        cancelText: '先不查看',
-        confirmText: '创建需求',
-        success: (res) => {
-          if (!res.confirm) return
-          this.createMinimalNeedForListing().then(() => {
-            this.openSensitivePurposeModal()
-          }).catch(() => {})
-        }
-      })
-      return
-    }
-    this.openSensitivePurposeModal()
+    this.sensitiveViewIdempotencyKey = apiService.createSensitiveViewIdempotencyKey()
+    this.setData({ sensitiveConfirmVisible: true })
   },
 
-  openSensitivePurposeModal() {
-    this.setData({
-      sensitivePurposeModalVisible: true,
-      sensitivePurpose: this.data.sensitivePurpose || SENSITIVE_PURPOSE_OPTIONS[0],
-      sensitivePurposeCustom: ''
-    })
-  },
-
-  closeSensitivePurposeModal() {
+  closeSensitiveConfirm() {
     if (this.data.sensitiveSubmitting) return
-    this.setData({ sensitivePurposeModalVisible: false })
+    this.sensitiveViewIdempotencyKey = ''
+    this.setData({ sensitiveConfirmVisible: false })
   },
 
-  chooseSensitivePurpose(event) {
-    const purpose = event.currentTarget.dataset.purpose || ''
-    if (!purpose) return
-    this.setData({ sensitivePurpose: purpose })
-  },
-
-  updateSensitivePurposeCustom(event) {
-    this.setData({ sensitivePurposeCustom: event.detail.value })
-  },
-
-  createMinimalNeedForListing() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后绑定需求', '创建需求单、报备和查看敏感信息都需要先登录内部中介账号。')
-      return Promise.reject(new Error('请先登录内部中介账号'))
-    }
+  confirmRevealSensitive() {
     const listing = this.data.listing || {}
-    if (!listing.id) return Promise.reject(new Error('请选择房源'))
-    const community = listing.community || listing.shortTitle || listing.title || ''
-    const confirmedNeed = {
-      community,
-      area: listing.area || listing.district || '',
-      layout: listing.layout || '',
-      rentMode: listing.rentMode || listing.type || '',
-      budget: listing.rent || '',
-      maxBudget: listing.rent || ''
-    }
-    const rawText = [
-      community ? `客户对${community}感兴趣` : '客户对当前房源感兴趣',
-      listing.rent ? `预算约${listing.rent}元/月` : '',
-      listing.layout ? `户型${listing.layout}` : '',
-      listing.rentMode || listing.type ? `租住方式${listing.rentMode || listing.type}` : ''
-    ].filter(Boolean).join('，')
-    wx.showLoading({ title: '创建需求单' })
-    return apiService.createRentalNeed({
-      source: 'listing-detail',
-      listingId: listing.id,
-      rawText,
-      text: rawText,
-      confirmedNeed,
-      form: confirmedNeed
-    }).then((result) => {
-      wx.hideLoading()
-      const needId = needIdFromResult(result)
-      this.setData({
-        needId,
-        needTemporary: Boolean(result && result.temporary)
-      })
-      if (result && result.temporary) {
-        wx.showToast({ title: '已用临时需求单继续', icon: 'none' })
-      }
-      return result
-    }).catch((error) => {
-      wx.hideLoading()
-      wx.showModal({
-        title: '需求单创建失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-      throw error
-    })
-  },
-
-  submitSensitivePurpose() {
-    const listing = this.data.listing || {}
-    const purpose = safeText(this.data.sensitivePurposeCustom) || safeText(this.data.sensitivePurpose)
-    if (!purpose) {
-      wx.showToast({ title: '请选择或填写用途', icon: 'none' })
-      return
-    }
-    if (!this.data.needId) {
-      wx.showToast({ title: '请先创建或选择需求单', icon: 'none' })
-      return
-    }
     if (this.data.sensitiveSubmitting || !listing.id) return
+    const requestGeneration = this.listingLoadGeneration
+    const requestSessionKey = currentAuthSessionKey()
+    const listingId = listing.id
+    if (!currentAuthToken() || !profileSessionMatches(this.profileAuthToken, requestSessionKey)) {
+      this.sensitiveViewIdempotencyKey = ''
+      this.setData({ sensitiveConfirmVisible: false, sensitiveSubmitting: false })
+      this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
+      return Promise.resolve()
+    }
+    const idempotencyKey = this.sensitiveViewIdempotencyKey || apiService.createSensitiveViewIdempotencyKey()
+    this.sensitiveViewIdempotencyKey = idempotencyKey
+    const isCurrentRequest = () => (
+      this.listingLoadGeneration === requestGeneration &&
+      currentAuthSessionKey() === requestSessionKey &&
+      this.data.listing && this.data.listing.id === listingId
+    )
     this.setData({ sensitiveSubmitting: true })
-    apiService.addSensitiveFootprint(listing.id, {
-      needId: this.data.needId,
-      purpose,
-      action: '查看地址和电话'
-    }).then((result) => {
+    return apiService.addSensitiveFootprint(listingId, idempotencyKey).then((result) => {
+      if (!isCurrentRequest()) return
       const logs = result && result.logs ? result.logs : result;
       const sensitive = result && result.sensitive ? result.sensitive : {};
       this.setData({
         listing: Object.assign({}, this.data.listing, sensitive),
         sensitiveVisible: true,
-        sensitivePurposeModalVisible: false,
+        sensitiveConfirmVisible: false,
         sensitiveSubmitting: false,
         logs
       });
+      this.sensitiveViewIdempotencyKey = ''
       wx.showToast({
         title: '已记录查看足迹',
         icon: 'none'
       });
     }).catch((error) => {
+      if (!isCurrentRequest()) return
       this.setData({ sensitiveSubmitting: false })
       const message = error && error.message ? error.message : '足迹记录失败'
       if (isAuthError(error)) {
-        this.promptLoginGuide('登录后查看地址电话', '查看房源地址和房东联系方式会留痕，需要先登录内部中介账号。')
+        if (typeof apiClient.isStaleUnauthorized === 'function' && apiClient.isStaleUnauthorized(error)) {
+          // 写请求绝不自动重放；同账号已续签时保留确认态与幂等键，让用户明确再点一次。
+          wx.showToast({ title: '登录状态已更新，请重新确认', icon: 'none' })
+          return
+        }
+        this.sensitiveViewIdempotencyKey = ''
+        this.setData({ sensitiveConfirmVisible: false })
+        this.promptLoginGuide('登录后查看完整信息', '查看详细地址、看房方式和房东联系方式会留痕，需要先登录内部中介账号。')
         return
       }
       if (error && error.data && error.data.quotaExceeded) {
@@ -411,38 +1250,30 @@ Page({
     });
   },
 
-  confirmRevealSensitive() {
-    wx.showModal({
-      title: '确认查看敏感信息',
-      content: '查看后将留下用途、需求单和足迹，并同步给房源上传人和管理员后台。',
-      confirmText: '确认查看',
-      success: (res) => {
-        if (!res.confirm) return;
-        this.submitSensitivePurpose()
-      }
-    });
-  },
-
   recordShowing() {
     if (this.data.showingSubmitting) return
     if (!this.data.isVerified) {
       this.promptLoginGuide('登录后记录带看', '带看水印照片会进入后台审核，需要先登录内部中介账号。')
       return
     }
+    const operation = this.beginDetailOperation('showing')
     wx.showModal({
       title: '拍摄带看水印照片',
-      content: '请现场拍摄带时间和地点水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
+      content: '请现场拍摄带时间和房源位置参考水印的照片。提交后进入后台人工审核，通过后当天普通房源查看额度 +1。',
       confirmText: '开始拍照',
       success: (res) => {
         if (!res.confirm) return
-        this.submitShowingProof()
+        if (!this.isDetailOperationCurrent(operation)) return
+        this.submitShowingProof(operation)
       }
     })
   },
 
-  async submitShowingProof() {
+  async submitShowingProof(existingOperation) {
+    const operation = existingOperation || this.beginDetailOperation('showing')
+    if (!this.isDetailOperationCurrent(operation)) return
     const listing = this.data.listing || {}
-    if (!listing.id) {
+    if (!operation.listingId || safeText(listing.id) !== operation.listingId) {
       wx.showToast({ title: '请选择房源', icon: 'none' })
       return
     }
@@ -452,9 +1283,12 @@ Page({
 
     try {
       const photo = await chooseCameraImage()
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '生成水印照片' })
       const location = await this.getShowingLocationInfo()
+      if (!this.isDetailOperationCurrent(operation)) return
       const watermarked = await this.buildShowingWatermark(photo.tempFilePath, location)
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '上传水印照片' })
       const policy = await apiService.createShowingPhotoUploadPolicy({
         fileName: 'showing-proof.jpg',
@@ -462,16 +1296,22 @@ Page({
         size: photo.size || 0,
         tempFilePath: watermarked.tempFilePath
       })
+      if (!this.isDetailOperationCurrent(operation)) return
       const uploaded = await apiService.uploadShowingPhoto(watermarked.tempFilePath, policy)
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.showLoading({ title: '提交审核' })
-      const result = await apiService.recordShowing(listing.id, {
+      const showingPayload = {
         photoUrl: uploaded.fileUrl,
         photoKey: uploaded.objectKey,
         watermarkText: watermarked.watermarkText,
         locationText: location.locationText,
         latitude: location.latitude,
         longitude: location.longitude
-      })
+      }
+      const relatedNeedId = operation.needTemporary ? '' : operation.needId
+      if (relatedNeedId) showingPayload.needId = relatedNeedId
+      const result = await apiService.recordShowing(operation.listingId, showingPayload)
+      if (!this.isDetailOperationCurrent(operation)) return
       this.setData({ showingPhotoPath: watermarked.tempFilePath })
       wx.hideLoading()
       wx.showToast({
@@ -479,6 +1319,7 @@ Page({
         icon: 'none'
       })
     } catch (error) {
+      if (!this.isDetailOperationCurrent(operation)) return
       wx.hideLoading()
       wx.showModal({
         title: '提交失败',
@@ -486,6 +1327,7 @@ Page({
         showCancel: false
       })
     } finally {
+      if (!this.isDetailOperationCurrent(operation)) return
       this.setData({ showingSubmitting: false })
     }
   },
@@ -497,32 +1339,9 @@ Page({
       listing.community,
       listing.area || listing.district,
       listing.block
-    ].filter(Boolean).join(' · ') || '定位未授权，使用房源信息作为位置参考'
+    ].filter(Boolean).join(' · ') || '使用房源信息作为位置参考'
 
-    return new Promise((resolve) => {
-      if (!wx.getLocation) {
-        resolve({ locationText: fallback, latitude: '', longitude: '' })
-        return
-      }
-      wx.getLocation({
-        type: 'gcj02',
-        success: (res) => {
-          const latitude = Number(res.latitude)
-          const longitude = Number(res.longitude)
-          const text = Number.isFinite(latitude) && Number.isFinite(longitude)
-            ? `现场定位 ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-            : fallback
-          resolve({
-            locationText: text,
-            latitude: Number.isFinite(latitude) ? latitude : '',
-            longitude: Number.isFinite(longitude) ? longitude : ''
-          })
-        },
-        fail: () => {
-          resolve({ locationText: fallback, latitude: '', longitude: '' })
-        }
-      })
-    })
+    return Promise.resolve({ locationText: fallback, latitude: '', longitude: '' })
   },
 
   async buildShowingWatermark(photoPath, location) {
@@ -583,147 +1402,5 @@ Page({
     })
 
     return { tempFilePath, watermarkText }
-  },
-
-  startReportDeal() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后报备签单', '报备客户和提交签单需要先登录内部中介账号。')
-      return
-    }
-    const listing = this.data.listing || {}
-    this.setData({
-      reportModalVisible: true,
-      dealModalVisible: false,
-      currentReportId: '',
-      'dealForm.monthlyRent': listing.rent || '',
-      'dealForm.landlordCommission': '',
-      'dealForm.remark': ''
-    })
-  },
-
-  closeReportModal() {
-    if (this.data.reportSubmitting) return
-    this.setData({ reportModalVisible: false })
-  },
-
-  closeDealModal() {
-    if (this.data.dealSubmitting) return
-    this.setData({ dealModalVisible: false })
-  },
-
-  updateReportField(event) {
-    const field = event.currentTarget.dataset.field
-    if (!field) return
-    this.setData({ [`reportForm.${field}`]: event.detail.value })
-  },
-
-  updateDealField(event) {
-    const field = event.currentTarget.dataset.field
-    if (!field) return
-    this.setData({ [`dealForm.${field}`]: event.detail.value })
-  },
-
-  submitClientReport() {
-    if (!this.data.isVerified) {
-      this.promptLoginGuide('登录后报备客户', '报备客户需要先登录内部中介账号。')
-      return
-    }
-    const listing = this.data.listing || {}
-    const form = this.data.reportForm || {}
-    const customerPhone = safeText(form.customerPhone)
-    if (!/^1[3-9]\d{9}$/.test(customerPhone)) {
-      wx.showToast({ title: '请填写客户手机号', icon: 'none' })
-      return
-    }
-    if (!listing.id || this.data.reportSubmitting) return
-    this.setData({ reportSubmitting: true })
-    const needId = this.data.needId
-    if (!needId) {
-      this.createMinimalNeedForListing().then((result) => {
-        const createdNeedId = needIdFromResult(result) || this.data.needId
-        this.submitClientReportWithNeed(listing, form, customerPhone, createdNeedId)
-      }).catch(() => {
-        this.setData({ reportSubmitting: false })
-      })
-      return
-    }
-    this.submitClientReportWithNeed(listing, form, customerPhone, needId)
-  },
-
-  submitClientReportWithNeed(listing, form, customerPhone, needId) {
-    if (!needId) {
-      this.setData({ reportSubmitting: false })
-      wx.showToast({ title: '请先绑定需求单', icon: 'none' })
-      return
-    }
-    apiService.createClientReport(listing.id, {
-      customerName: safeText(form.customerName),
-      customerPhone,
-      needId
-    }).then((result) => {
-      const report = result && result.report ? result.report : result
-      this.setData({
-        reportSubmitting: false,
-        reportModalVisible: false,
-        dealModalVisible: true,
-        currentReportId: report.id || '',
-        'dealForm.monthlyRent': listing.rent || '',
-        'dealForm.landlordCommission': '',
-        'dealForm.remark': ''
-      })
-      wx.showToast({ title: '报备已创建', icon: 'none' })
-    }).catch((error) => {
-      this.setData({ reportSubmitting: false })
-      wx.showModal({
-        title: '报备失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-    })
-  },
-
-  submitDealFromReport() {
-    const reportId = this.data.currentReportId
-    const form = this.data.dealForm || {}
-    const monthlyRent = Number(form.monthlyRent)
-    const landlordCommission = Number(form.landlordCommission)
-    if (!reportId) {
-      wx.showToast({ title: '请先完成报备', icon: 'none' })
-      return
-    }
-    if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) {
-      wx.showToast({ title: '请填写成交月租', icon: 'none' })
-      return
-    }
-    if (!Number.isFinite(landlordCommission) || landlordCommission <= 0) {
-      wx.showToast({ title: '请填写房东实付佣金', icon: 'none' })
-      return
-    }
-    if (this.data.dealSubmitting) return
-    this.setData({ dealSubmitting: true })
-    apiService.createDealFromReport(reportId, {
-      monthlyRent,
-      landlordCommission,
-      needId: this.data.needId,
-      remark: safeText(form.remark)
-    }).then((result) => {
-      this.setData({
-        dealSubmitting: false,
-        dealModalVisible: false,
-        currentReportId: ''
-      })
-      wx.showModal({
-        title: '签单已提交',
-        content: (result && result.message) || '待管理员确认后生成正式分佣记录。',
-        showCancel: false
-      })
-    }).catch((error) => {
-      this.setData({ dealSubmitting: false })
-      wx.showModal({
-        title: '签单失败',
-        content: error && error.message ? error.message : '请稍后重试',
-        showCancel: false
-      })
-    })
   }
 })

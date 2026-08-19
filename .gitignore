@@ -1,8 +1,13 @@
 server/.env
 server/certs/
 server/data/
+server/backups/
+*.ygbak
 server/server.log
 server/server.err.log
+server/version.json
+server/releases.jsonl
+server/metrics-snapshots.jsonl
 node_modules/
 dist/
 .codegraph/

@@ -9,44 +9,29 @@
       <button wx:if="{{!isCompanyMode}}" class="owner-button" bindtap="upload">上传</button>
     </view>
 
-    <view wx:if="{{isCompanyMode}}" class="company-filter-panel">
-      <view class="filter-section">
-        <view class="filter-label">区域</view>
-        <view class="filter-tabs">
-          <view class="filter-chip {{companyFilters.district === '拱墅区' ? 'active' : ''}}" data-district="拱墅区" bindtap="selectCompanyDistrict">拱墅区</view>
-          <view class="filter-chip {{companyFilters.district === '上城区' ? 'active' : ''}}" data-district="上城区" bindtap="selectCompanyDistrict">上城区</view>
-          <view class="filter-chip {{!companyFilters.district ? 'active' : ''}}" data-district="" bindtap="selectCompanyDistrict">不限</view>
-        </view>
-      </view>
-      <view class="filter-section">
-        <view class="filter-label">板块</view>
-        <view class="filter-tabs block-tabs">
-          <view class="filter-chip {{!companyFilters.block ? 'active' : ''}}" data-block="" bindtap="selectCompanyBlock">不限</view>
-          <view wx:for="{{companyBlockOptions}}" wx:key="*this" class="filter-chip {{companyFilters.block === item ? 'active' : ''}}" data-block="{{item}}" bindtap="selectCompanyBlock">{{item}}</view>
-        </view>
-      </view>
-      <view class="filter-section">
-        <view class="filter-label">小区</view>
-        <view class="community-combobox">
-          <input class="filter-input" value="{{companyFilters.community}}" data-field="community" bindfocus="focusCompanyCommunity" bindinput="updateCompanyFilter" placeholder="输入小区名称" />
-          <view wx:if="{{showCompanyCommunityOptions && visibleCompanyCommunities.length}}" class="community-options">
-            <view wx:for="{{visibleCompanyCommunities}}" wx:key="*this" class="community-option" data-community="{{item}}" bindtap="selectCompanyCommunity">{{item}}</view>
-          </view>
-        </view>
-      </view>
-      <view class="filter-section">
-        <view class="filter-label">户型</view>
-        <view class="filter-tabs">
-          <view wx:for="{{layoutOptions}}" wx:key="*this" class="filter-chip {{(!companyFilters.layout && item === '不限') || companyFilters.layout === item ? 'active' : ''}}" data-layout="{{item}}" bindtap="selectCompanyLayout">{{item}}</view>
-        </view>
-      </view>
-      <view class="price-filter-row">
-        <input class="filter-input price-input" value="{{companyFilters.rentMin}}" data-field="rentMin" bindinput="updateCompanyFilter" type="number" placeholder="最低租金" />
-        <view class="price-divider"></view>
-        <input class="filter-input price-input" value="{{companyFilters.rentMax}}" data-field="rentMax" bindinput="updateCompanyFilter" type="number" placeholder="最高租金" />
-        <button class="filter-reset-button" bindtap="resetCompanyFilters">重置</button>
-      </view>
-    </view>
+    <listing-filter
+      wx:if="{{isCompanyMode}}"
+      filters="{{companyFilters}}"
+      region-options="{{regionOptions}}"
+      community-options="{{companyCommunityOptions}}"
+      layout-options="{{layoutOptions}}"
+      loading="{{companyLoading}}"
+      bind:filterchange="handleCompanyFilterChange"
+      bind:filterapply="handleCompanyFilterApply"
+      bind:filterreset="resetCompanyFilters"
+    ></listing-filter>
+
+    <listing-filter
+      wx:if="{{!isCompanyMode}}"
+      filters="{{ownerFilters}}"
+      region-options="{{regionOptions}}"
+      community-options="{{ownerCommunityOptions}}"
+      layout-options="{{layoutOptions}}"
+      loading="{{ownerLoading}}"
+      bind:filterchange="handleOwnerFilterChange"
+      bind:filterapply="handleOwnerFilterApply"
+      bind:filterreset="resetOwnerFilters"
+    ></listing-filter>
 
     <view class="stat-grid">
       <view wx:for="{{stats}}" wx:key="label" class="stat-card">
@@ -59,33 +44,82 @@
       <view class="section-title-main">{{listTitle}}</view>
     </view>
     <view class="listing-list">
-      <view wx:if="{{!listings.length}}" class="empty-card soft-card">
+      <view wx:if="{{loadFailed}}" class="empty-card soft-card">
+        <view class="empty-title">{{isCompanyMode ? '公司房源加载失败' : '我的房源加载失败'}}</view>
+        <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+        <button class="brand-button" bindtap="retryListings">重新加载</button>
+      </view>
+      <view wx:if="{{!listings.length && (companyLoading || ownerLoading)}}" class="empty-card soft-card">
+        <view class="empty-title">正在加载房源</view>
+      </view>
+      <view wx:if="{{!listings.length && !companyLoading && !ownerLoading && !loadFailed}}" class="empty-card soft-card">
         <view class="empty-title">{{emptyTitle}}</view>
         <view class="empty-desc">{{emptyDesc}}</view>
       </view>
-      <view wx:for="{{listings}}" wx:key="id" class="owner-listing soft-card" bindtap="openListing" data-id="{{item.id}}">
-        <view class="listing-info">
-          <view class="listing-title">{{item.title}}</view>
-          <view wx:if="{{isCompanyMode}}" class="listing-location">{{item.displayLocationText}}</view>
-          <view wx:else class="listing-location">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber}}</view>
-          <view wx:if="{{isCompanyMode}}" class="listing-meta">{{item.displayRentText}} · {{item.sourceLabel || '公司房源'}}</view>
-          <view wx:else class="listing-meta">¥{{item.rent}}/月 · {{item.commissionText || '管理员确认签单后按 20% 结算'}}</view>
-          <view wx:if="{{item.features}}" class="listing-feature-row">
-            <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
-            <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+      <block wx:if="{{isCompanyMode}}">
+        <view wx:for="{{listings}}" wx:key="id" class="company-listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
+          <view class="company-listing-media">
+            <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
+            <view wx:else class="company-media-window"></view>
+            <view wx:if="{{item.hasVideo}}" class="company-video-badge">视频</view>
           </view>
-          <view wx:if="{{!isCompanyMode}}" class="listing-views">{{item.views}}</view>
-          <view wx:if="{{!isCompanyMode}}" class="verify-line {{item.verifyStatus !== '正常' ? 'warn' : ''}}">{{item.verifyStatus}} · {{item.verifyTip}}</view>
+          <view class="company-listing-body">
+            <view class="company-title-row">
+              <text wx:if="{{item.rentMode === '整租'}}" class="company-rent-mode-badge">整</text>
+              <text class="company-listing-title">{{item.title}}</text>
+            </view>
+            <view class="company-listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber || item.block}}</view>
+            <view class="company-listing-sub">{{item.layout}} · {{item.sourceLabel || '公司房源'}} · {{item.status}}</view>
+            <view wx:if="{{item.features}}" class="listing-feature-row">
+              <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+              <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+            </view>
+            <view class="company-listing-bottom">
+              <view class="company-price">{{item.displayRentText}}</view>
+              <view class="company-commission">{{item.tag || item.sourceLabel || '公司房源'}}</view>
+            </view>
+          </view>
         </view>
-        <view wx:if="{{!isCompanyMode}}" class="listing-actions">
-          <button class="edit-button" catchtap="editListing" data-id="{{item.id}}">编辑</button>
-          <button class="verify-button" catchtap="verifyListing" data-id="{{item.id}}">电话确认</button>
-          <view class="arrow">›</view>
+      </block>
+      <block wx:else>
+        <view wx:for="{{listings}}" wx:key="id" class="owner-listing-shell soft-card">
+          <view class="company-listing-card owner-listing-card" bindtap="openListing" data-id="{{item.id}}">
+            <view class="company-listing-media">
+              <image wx:if="{{item.coverUrl}}" class="company-media-image" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
+              <view wx:else class="company-media-window"></view>
+              <view wx:if="{{item.hasVideo}}" class="company-video-badge">视频</view>
+            </view>
+            <view class="company-listing-body">
+              <view class="company-title-row">
+                <text wx:if="{{item.rentMode === '整租'}}" class="company-rent-mode-badge">整</text>
+                <text class="company-listing-title">{{item.title}}</text>
+              </view>
+              <view class="company-listing-meta">{{item.locationSummary || item.community}} · {{item.roomAddress || item.roomNumber || item.block || item.address}}</view>
+              <view class="company-listing-sub">{{item.layout}} · {{item.rentMode || item.type || '整租'}} · {{item.status}}</view>
+              <view wx:if="{{item.features}}" class="listing-feature-row">
+                <text wx:for="{{item.features}}" wx:key="*this" class="listing-feature-tag">{{item}}</text>
+                <text wx:if="{{item.maintenanceText}}" class="listing-maintenance-tag">{{item.maintenanceText}}</text>
+              </view>
+              <view class="company-listing-bottom">
+                <view class="company-price">{{item.displayRentText}}</view>
+                <view class="company-commission">{{item.tag || item.sourceLabel || '我的房源'}}</view>
+              </view>
+            </view>
+          </view>
+          <view class="owner-management">
+            <view class="owner-contact-row">
+              <text class="owner-contact-label">房东电话</text>
+              <text class="owner-contact-phone">{{item.landlordPhone || '未登记'}}</text>
+              <text wx:if="{{item.landlordPhone}}" class="owner-contact-note">自己上传，直接展示</text>
+            </view>
+            <view class="verify-line {{item.verifyStatus && item.verifyStatus !== '正常' ? 'warn' : ''}}">{{item.views}} · {{item.verifyStatus}}{{item.verifyTip ? ' · ' : ''}}{{item.verifyTip}}</view>
+            <view class="owner-card-actions">
+              <button class="edit-button" catchtap="editListing" data-id="{{item.id}}">编辑房源</button>
+              <button class="verify-button" catchtap="verifyListing" data-id="{{item.id}}" data-phone="{{item.landlordPhone}}">电话联系</button>
+            </view>
+          </view>
         </view>
-        <view wx:else class="listing-actions company-actions">
-          <view class="arrow">›</view>
-        </view>
-      </view>
+      </block>
     </view>
   </view>
 </scroll-view>

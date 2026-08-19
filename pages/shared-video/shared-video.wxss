@@ -12,9 +12,9 @@ page {
   height: 430rpx;
   overflow: hidden;
   color: #ffffff;
-  background: #153f36;
+  background: #182E2A;
   border-radius: 36rpx;
-  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.2);
+  box-shadow: 0 18rpx 42rpx rgba(46, 81, 74, 0.2);
 }
 
 .share-video,
@@ -28,7 +28,7 @@ page {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #153f36, #2f6f60);
+  background: linear-gradient(135deg, #182E2A, #2E514A);
 }
 
 .play {
@@ -37,9 +37,9 @@ page {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #153f36;
+  color: #182E2A;
   font-size: 44rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 50%;
 }
 

@@ -2,6 +2,38 @@
 <navigation-bar title="我的" back="{{false}}" color="#2E6B4E" background="#FBF5EA"></navigation-bar>
 <scroll-view class="page-scroll" scroll-y type="list">
   <view class="page-shell profile-page">
+    <view wx:if="{{profileLoading && !profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">正在加载账号资料</view>
+        <view class="user-role">房源、足迹和分佣记录会以本次服务端结果为准。</view>
+      </view>
+    </view>
+
+    <view wx:elif="{{profileAccessRequired}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">登录后进入我的</view>
+        <view class="user-role">内部工作台只对已开通的中介账号开放。</view>
+      </view>
+      <button class="brand-button" bindtap="goLogin">去登录</button>
+    </view>
+
+    <view wx:elif="{{profileLoadFailed && !profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">账号资料加载失败</view>
+        <view class="user-role">暂时无法读取工作台，请检查网络后重试。</view>
+      </view>
+      <button class="brand-button" bindtap="retryProfile">重新加载</button>
+    </view>
+
+    <view wx:if="{{profileLoadFailed && profileReady}}" class="user-card">
+      <view class="user-info">
+        <view class="user-name">工作台刷新失败</view>
+        <view class="user-role">当前保留上次可信结果，请检查网络后重试。</view>
+      </view>
+      <button class="brand-button" bindtap="retryProfile">重新加载</button>
+    </view>
+
+    <block wx:if="{{profileReady}}">
     <view class="user-card">
       <view class="avatar-wrap">
         <image class="avatar-logo" src="/assets/logo.png" mode="aspectFit"></image>
@@ -11,7 +43,11 @@
         <view class="user-role">{{user.role}}</view>
         <view class="auth-tag">{{user.authed}}</view>
       </view>
-      <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+      <view class="account-actions">
+        <button class="login-button" bindtap="handleTap" data-name="登录注册" data-url="/pages/auth/auth">切换账号</button>
+        <button wx:if="{{user.id}}" class="password-button" bindtap="handleTap" data-name="修改密码" data-url="/pages/change-password/change-password">修改密码</button>
+        <button wx:if="{{user.id}}" class="logout-button" bindtap="logout" loading="{{logoutSubmitting}}" disabled="{{logoutSubmitting}}">{{logoutSubmitting ? '正在退出' : '退出登录'}}</button>
+      </view>
     </view>
 
     <view class="source-stats">
@@ -31,24 +67,11 @@
           <view class="workbench-title">{{item.title}}</view>
           <view class="workbench-value">{{item.value}}</view>
         </view>
-        <view class="workbench-desc">{{item.desc}}</view>
       </button>
     </view>
 
     <view class="section-title">
-      <view class="section-title-main">报备签单</view>
-    </view>
-
-    <view class="deal-grid">
-      <button wx:for="{{dealWorkbench}}" wx:key="title" class="deal-card" bindtap="handleTap" data-name="{{item.title}}" data-url="{{item.url}}">
-        <view class="deal-title">{{item.title}}</view>
-        <view class="deal-desc">{{item.desc}}</view>
-        <view class="deal-status">{{item.status}}</view>
-      </button>
-    </view>
-
-    <view class="section-title">
-      <view class="section-title-main">防跳单与分佣提醒</view>
+      <view class="section-title-main">今日工作台</view>
       <button class="section-title-action" bindtap="handleTap" data-name="查看全部提醒">全部</button>
     </view>
 
@@ -60,6 +83,21 @@
           <view class="reminder-value">{{item.value}}</view>
         </view>
       </view>
+    </view>
+    </block>
+
+    <view class="public-help-section">
+      <view class="section-title">
+        <view class="section-title-main">使用帮助</view>
+        <view class="section-title-note">无需登录</view>
+      </view>
+      <button class="faq-entry-card" bindtap="handleTap" data-name="常见问题" data-url="/pages/faq/faq">
+        <view>
+          <view class="faq-entry-title">常见问题</view>
+          <view class="faq-entry-desc">登录、佣金、收藏、足迹与暂停功能说明</view>
+        </view>
+        <view class="faq-entry-arrow">›</view>
+      </button>
     </view>
   </view>
 </scroll-view>

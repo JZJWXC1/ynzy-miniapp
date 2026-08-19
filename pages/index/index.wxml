@@ -8,12 +8,27 @@
           <image class="ai-logo" src="/assets/logo.png" mode="aspectFit"></image>
         </view>
         <view class="ai-head-text">
-          <view class="ai-title">寓你找房助手</view>
-          <view class="ai-subtitle">先识别需求，确认字段后再匹配房源</view>
+          <view class="ai-title">Yooni小助手</view>
+          <view class="ai-subtitle">一句话告诉我需要找什么房子</view>
         </view>
       </view>
       <view class="assistant-input-row">
+        <!-- 语音/键盘切换：键盘模式显示麦克风(点→语音)；语音模式显示键盘(点→文字)。仿微信聊天输入。 -->
+        <view class="voice-switch {{voicePhase ? 'busy' : ''}}" bindtap="toggleVoiceMode" aria-role="button" aria-label="{{voiceMode ? '切换到键盘输入' : '切换到语音输入'}}">
+          <view wx:if="{{!voiceMode}}" class="mic-icon">
+            <view class="mic-head"></view>
+            <view class="mic-neck"></view>
+            <view class="mic-base"></view>
+          </view>
+          <view wx:else class="kbd-icon">
+            <view class="kbd-row"><view class="kbd-key"></view><view class="kbd-key"></view><view class="kbd-key"></view></view>
+            <view class="kbd-row"><view class="kbd-key"></view><view class="kbd-key"></view><view class="kbd-key"></view></view>
+            <view class="kbd-row"><view class="kbd-key kbd-space"></view></view>
+          </view>
+        </view>
+        <!-- 键盘模式：文本输入 -->
         <input
+          wx:if="{{!voiceMode}}"
           class="assistant-input"
           value="{{assistantText}}"
           bindinput="handleAssistantInput"
@@ -21,22 +36,41 @@
           confirm-type="search"
           placeholder="输入预算、区域、户型、特点"
         />
-        <view class="mic-button {{isVoiceListening ? 'active' : ''}}" bindtap="toggleVoiceInput" aria-role="button" aria-label="语音输入">
-          <view class="mic-icon">
-            <view class="mic-head"></view>
-            <view class="mic-neck"></view>
-            <view class="mic-base"></view>
-          </view>
-          <view wx:if="{{isVoiceListening}}" class="voice-wave">
-            <view class="wave-bar bar-1"></view>
-            <view class="wave-bar bar-2"></view>
-            <view class="wave-bar bar-3"></view>
-            <view class="wave-bar bar-4"></view>
-          </view>
+        <!-- 语音模式：按住说话（按住录音、上滑取消、松开发送） -->
+        <view
+          wx:else
+          class="hold-to-talk {{voicePhase === 'recording' ? (voiceCancelActive ? 'cancel' : 'talking') : ''}}"
+          bindtouchstart="onVoiceTouchStart"
+          catchtouchmove="onVoiceTouchMove"
+          bindtouchend="onVoiceTouchEnd"
+          bindtouchcancel="onVoiceTouchCancel"
+          aria-role="button"
+        >
+          <text class="hold-text">{{voicePhase === 'recording' ? '松开 结束' : '按住 说话'}}</text>
         </view>
         <view class="find-button" bindtap="runTextMatch" aria-role="button">
           <text class="find-text">找房</text>
         </view>
+      </view>
+    </view>
+
+    <!-- 语音录音浮层（仿微信：按住说话时全屏，上滑进入取消态） -->
+    <view wx:if="{{voicePhase}}" class="voice-rec-mask" catchtouchmove="noop">
+      <view class="voice-rec-panel {{voiceCancelActive ? 'cancel' : ''}}">
+        <view class="voice-rec-caption">{{voiceText ? voiceText : (voicePhase === 'transcribing' ? '识别中…' : '正在听，请说…')}}</view>
+        <view class="voice-rec-bubble {{voiceCancelActive ? 'cancel' : ''}}">
+          <block wx:if="{{!voiceCancelActive}}">
+            <view class="rec-wave">
+              <view class="rw b1"></view>
+              <view class="rw b2"></view>
+              <view class="rw b3"></view>
+              <view class="rw b4"></view>
+              <view class="rw b5"></view>
+            </view>
+          </block>
+          <view wx:else class="rec-cancel-x"><view class="x1"></view><view class="x2"></view></view>
+        </view>
+        <view class="voice-rec-hint {{voiceCancelActive ? 'cancel' : ''}}">{{voiceCancelActive ? '松开手指，取消发送' : '手指上滑，取消发送'}}</view>
       </view>
     </view>
 
@@ -68,9 +102,8 @@
       <view class="company-sheet-head">
         <view>
           <view class="company-kicker">寓你住一起房源表</view>
-          <view class="company-title">飞书实时房源表截图</view>
         </view>
-        <view class="company-count">{{companySheetSnapshot.rowCount || 0}} 行内容</view>
+        <view class="company-count">{{sheetPreview.listingCount || 0}} 套房源</view>
       </view>
       <view class="sheet-snapshot-frame" bindtap="previewCompanySheetSnapshot">
         <scroll-view wx:if="{{sheetPreview && sheetPreview.rows.length}}" class="sheet-snapshot-scroll" scroll-x enhanced show-scrollbar="{{false}}">
@@ -105,7 +138,7 @@
         </scroll-view>
         <view wx:else class="sheet-snapshot-empty">
           <view class="sheet-snapshot-empty-title">{{sheetSnapshotStatus}}</view>
-          <view class="sheet-snapshot-empty-desc">同步飞书后会自动截取有内容的单元格区域。</view>
+          <view class="sheet-snapshot-empty-desc">同步后会自动截取有内容的单元格区域。</view>
         </view>
       </view>
       <view wx:if="{{sheetPreview && sheetPreview.rows.length}}" class="sheet-preview-note">
@@ -113,11 +146,36 @@
         <text wx:if="{{sheetPreview.hiddenCount}}">还有 {{sheetPreview.hiddenCount}} 行，点开看完整截图</text>
         <text wx:else>点开查看完整截图</text>
       </view>
+      <view wx:if="{{sheetSnapshotImagePaths.length > 1}}" class="sheet-page-nav">
+        <button
+          class="sheet-page-button"
+          bindtap="changeCompanySheetPage"
+          data-step="-1"
+          disabled="{{sheetSnapshotCurrentPage <= 0}}"
+        >上一页</button>
+        <view class="sheet-page-indicator">第 {{sheetSnapshotCurrentPage + 1}} / {{sheetSnapshotPageCount}} 页</view>
+        <button
+          class="sheet-page-button"
+          bindtap="changeCompanySheetPage"
+          data-step="1"
+          disabled="{{sheetSnapshotCurrentPage >= sheetSnapshotPageCount - 1}}"
+        >下一页</button>
+      </view>
       <view class="sheet-action-row">
         <button class="sheet-action-button" bindtap="previewCompanySheetSnapshot">查看大图</button>
         <button class="sheet-action-button" bindtap="shareCompanySheetSnapshot">转发图片</button>
-        <button class="sheet-action-button primary" bindtap="saveCompanySheetSnapshot">下载图片</button>
+        <button
+          class="sheet-action-button primary"
+          bindtap="saveCompanySheetSnapshot"
+          disabled="{{sheetSnapshotDownloading}}"
+          loading="{{sheetSnapshotDownloading}}"
+        >
+          <text wx:if="{{sheetSnapshotDownloading}}">下载中</text>
+          <text wx:elif="{{sheetSnapshotPageCount > 1}}">下载全部</text>
+          <text wx:else>下载图片</text>
+        </button>
       </view>
+      <view wx:if="{{sheetSnapshotDownloadProgress}}" class="sheet-download-progress">{{sheetSnapshotDownloadProgress}}</view>
       <button
         class="sheet-listing-button"
         bindtap="openPage"
@@ -132,14 +190,24 @@
       <view class="section-title-action tap-target" bindtap="openCategory" data-name="全部">查看全部</view>
     </view>
     <view class="listing-list">
-      <view wx:if="{{!listings.length}}" class="empty-card soft-card">
+      <view wx:if="{{listingsLoadFailed}}" class="empty-card soft-card">
+        <view class="empty-title">推荐房源加载失败</view>
+        <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+        <button class="brand-button" bindtap="retryHomeListings">重新加载</button>
+      </view>
+      <view wx:if="{{!listings.length && listingsLoading}}" class="empty-card soft-card">
+        <view class="empty-title">正在加载推荐房源</view>
+      </view>
+      <view wx:if="{{!listings.length && !listingsLoading && !listingsLoadFailed}}" class="empty-card soft-card">
         <view class="empty-title">暂无推荐房源</view>
         <view class="empty-desc">员工上传真实房源后，这里会自动显示可配房源。</view>
       </view>
       <view wx:for="{{listings}}" wx:key="id" class="listing-card soft-card" bindtap="openListing" data-id="{{item.id}}">
         <view class="listing-photo">
-          <view class="video-badge">视频</view>
-          <view class="photo-window"></view>
+          <view class="listing-favorite"><favorite-toggle listing-id="{{item.id}}" compact></favorite-toggle></view>
+          <image wx:if="{{item.coverUrl}}" class="listing-cover" src="{{item.coverUrl}}" mode="aspectFill" lazy-load data-id="{{item.id}}" data-cover="{{item.coverUrl}}" binderror="onCoverError"></image>
+          <view wx:if="{{item.hasVideo}}" class="video-badge">视频</view>
+          <view wx:if="{{!item.coverUrl}}" class="photo-window"></view>
         </view>
         <view class="listing-content">
           <view class="listing-title-row">

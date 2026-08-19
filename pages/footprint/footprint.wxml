@@ -35,6 +35,19 @@
       <button class="section-title-action" bindtap="handleTap" data-name="按房源查看">按房源查看</button>
     </view>
 
+    <view wx:if="{{loadFailed}}" class="task-card soft-card">
+      <view class="task-text">足迹记录加载失败，已保留上次结果。</view>
+      <button class="brand-button" style="margin-top: 20rpx;" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!records.length && loading}}" class="task-card soft-card">
+      <view class="task-text">正在加载足迹记录</view>
+    </view>
+
+    <view wx:if="{{!records.length && !loading && !loadFailed}}" class="task-card soft-card">
+      <view class="task-text">暂无敏感信息查看足迹</view>
+    </view>
+
     <view class="record-list">
       <view wx:for="{{records}}" wx:key="title" class="record-card soft-card">
         <view class="record-cover">

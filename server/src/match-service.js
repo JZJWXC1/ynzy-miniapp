@@ -1,5 +1,7 @@
 const domain = require('./domain')
+const config = require('./config')
 const { normalizeAsrText } = require('./asr-normalizer')
+const { isKnownCommunity, normalizeCommunityKey } = require('./community-library')
 const {
   DEFAULT_RADIUS_KM,
   SERVICE_AREAS,
@@ -101,13 +103,55 @@ const CN_DIGITS = {
 const FEATURE_RULES = [
   { name: '带阳台', aliases: ['带阳台', '阳台'], missing: '没有阳台', reason: '有阳台' },
   { name: '燃气', aliases: ['燃气', '天然气', '煤气'], missing: '没有燃气', reason: '有燃气' },
-  { name: '独卫', aliases: ['独卫', '独立卫生间', '独立卫浴', '独立卫'], missing: '没有独卫', reason: '有独卫' },
+  { name: '独卫', aliases: ['独卫', '独立卫生间', '独立卫浴', '独立卫', '独立厨卫', '独厨独卫'], missing: '没有独卫', reason: '有独卫' },
   { name: '电梯', aliases: ['电梯'], missing: '没有电梯', reason: '有电梯' },
-  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁'], missing: '离地铁较远', reason: '近地铁' },
+  // 近地铁：aliases 供「需求侧」解析（用户说「号线/地铁」＝要地铁）；房源侧只做整词精确命中（见 tokenHitsRule），
+  // 裸「地铁/号线」只有当标签 token 恰好整词等于时才算，故「地铁明珠苑/一号线公寓」不会误判；真号线标签(2号线口)另经 NEAR_METRO_TAG_RE。
+  { name: '近地铁', aliases: ['近地铁', '地铁口', '地铁站', '地铁旁', '地铁边', '靠地铁', '临地铁', '挨地铁', '地铁', '号线'], missing: '离地铁较远', reason: '近地铁' },
   { name: '朝南', aliases: ['朝南', '南向'], missing: '不是朝南', reason: '朝南' },
+  { name: 'Loft', aliases: ['Loft', 'loft', '挑高复式', '复式挑高'], missing: '不是 Loft', reason: 'Loft 户型' },
+  { name: '落地窗', aliases: ['落地窗', '大落地窗'], missing: '没有落地窗', reason: '有落地窗' },
+  // NEED-1：与房源侧 LISTING_FEATURE_OPTIONS 对齐（别名同房源侧自动打标签口径），让中介说得出、系统点得动
+  { name: '干湿分离', aliases: ['干湿分离', '干湿分区'], missing: '不是干湿分离', reason: '干湿分离' },
+  { name: '采光好', aliases: ['采光好', '采光佳', '采光很好', '光线好', '南北通透', '通透'], missing: '采光一般', reason: '采光好' },
+  { name: '可短租', aliases: ['可短租', '短租'], missing: '不支持短租', reason: '可短租' },
+  { name: '可月付', aliases: ['可月付', '月付', '押一付一'], missing: '不支持月付', reason: '可月付' },
+  { name: '首次出租', aliases: ['首次出租', '首租', '第一次出租'], missing: '非首次出租', reason: '首次出租' },
+  { name: '民水民电', aliases: ['民水民电', '民水', '民电'], missing: '非民水民电', reason: '民水民电' },
+  { name: '带露台（阁楼）', aliases: ['带露台（阁楼）', '带露台', '带阁楼', '露台', '阁楼', '带花园', '有花园', '花园房', '带院子', '有院子'], missing: '没有露台/阁楼', reason: '带露台（阁楼）' },
   { name: '可养宠', aliases: ['可养宠', '养宠', '养猫', '养狗', '宠物'], missing: '不能养宠', reason: '可养宠' },
   { name: DEPOSIT_FREE_FEATURE, aliases: ['免押金', '无押金', '零押金', '押金0', '押金为0'], missing: '不免押金', reason: '免押金' }
 ]
+
+// 特征别名全集 + 需求前缀，用于把「必须带花园/一定要带院子」这类特征需求短语挡在「小区名」抽取之外。
+// 只剥离纯需求词（必须/一定/要/想…），不剥「带/有」——它们是「带花园/有花园」别名的组成部分。
+const FEATURE_ALIAS_SET = new Set(FEATURE_RULES.reduce((acc, rule) => acc.concat(rule.aliases, rule.name), []))
+const DEMAND_PREFIX_RE = /^(想要有|想要|需要|必须要|必须|一定要|一定|得要|得|最好|优先|尽量|偏好|看重|希望|想找|想住|要有|要)/
+
+function isFeatureDemandPhrase(value) {
+  let text = String(value || '').trim()
+  let prev
+  do { prev = text; text = text.replace(DEMAND_PREFIX_RE, '') } while (text && text !== prev)
+  return Boolean(text) && FEATURE_ALIAS_SET.has(text)
+}
+
+// 在「小区名抽取」之前，先把「必须带花园/一定要有院子/要阁楼」这类『需求前缀+特征别名』片段从文本里擦掉。
+// 否则花园/院子/阁楼等以社区后缀（园/苑/院/阁）收尾的特征别名会被 parseExplicitCommunity 的后缀正则误当小区名
+// （尤其无逗号长句被 整租/两室 截断后，守卫看不到完整特征短语），导致真有该特征的房源被当地点过滤而漏推。
+// 要求必带需求前缀，才不会误伤「地铁明珠苑」这种正常小区名（其 地铁 前没有需求词）。
+// 前缀与特征别名之间允许可选量词（个/套/间…）：覆盖「找个带花园/找套带花园/想找个带院子」等中文最自然问法，
+// 否则量词打断相邻性会让「个带花园」以社区后缀『园』被误当小区名 → 真房漏推。
+const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g
+const DEMAND_PREFIX_ALT = '必须要?|一定要?|想要有?|需要有?|得要?|最好|优先|尽量|偏好|看重|想找|想住|帮我?找|找|希望|想|要有|要|来'
+const DEMAND_QUANTIFIER = '(?:来?个|来?套|间|栋|处)?'
+const FEATURE_DEMAND_FRAGMENT_RE = new RegExp(
+  '(?:' + DEMAND_PREFIX_ALT + ')' + DEMAND_QUANTIFIER + '(?:' +
+  [...FEATURE_ALIAS_SET].filter(Boolean).sort((a, b) => b.length - a.length).map((a) => a.replace(ESCAPE_RE, '\\$&')).join('|') +
+  ')', 'g'
+)
+function eraseFeatureDemands(text) {
+  return String(text || '').replace(FEATURE_DEMAND_FRAGMENT_RE, ' ')
+}
 
 function unique(values) {
   const seen = new Set()
@@ -292,6 +336,41 @@ function asrVocabularyFromCandidates(candidates = [], extraTerms = []) {
   ])
 }
 
+function configuredBlockNames() {
+  const location = (config && config.location) || {}
+  const districtBlocks = location.districtBlocks || {}
+  return unique(Object.keys(location.blockCenters || {})
+    .concat(Object.keys(location.blockDistrictMap || {}))
+    .concat(Object.values(districtBlocks).flat()))
+}
+
+function structuredScopeNames(candidates = []) {
+  return unique((candidates || []).flatMap((listing) => [
+    listing.district,
+    listing.area,
+    listing.community,
+    listing.block
+  ]).concat(
+    Object.keys(((config && config.location) || {}).districtBlocks || {}),
+    configuredBlockNames()
+  ))
+}
+
+function knownScopeNames(db = {}, candidates = []) {
+  return unique(structuredScopeNames(candidates).concat(placeNames(db, candidates)))
+}
+
+function exactKnownScopeName(value, candidates = [], options = {}) {
+  const target = normalizeCommunity(cleanAnchorName(value))
+  if (!target) return ''
+  return structuredScopeNames(candidates).find((name) => normalizeCommunity(name) === target) || ''
+}
+
+function hasAmbiguousPlaceName(value, candidates = [], options = {}) {
+  const resolution = resolvePlace(options.db || {}, value, candidates)
+  return resolution && resolution.status === 'ambiguous'
+}
+
 function parseBudget(source) {
   const text = compactText(source)
   const budget = {
@@ -397,7 +476,7 @@ function shouldUseNearbyRadius(anchorName) {
   return false
 }
 
-function parseRadiusSearch(source) {
+function parseRadiusSearch(source, candidates = [], options = {}) {
   const text = compactText(source)
   if (!text) return null
   const explicitRadius = parseRadiusValue(text)
@@ -432,6 +511,9 @@ function parseRadiusSearch(source) {
   if (nearbyAnchor) {
     if (/想住|住在|住到/.test(nearbyAnchor[1])) return null
     const anchorName = cleanAnchorName(nearbyAnchor[1])
+    if (anchorName && exactKnownScopeName(anchorName, candidates, options) && !hasAmbiguousPlaceName(anchorName, candidates, options)) {
+      return null
+    }
     if (anchorName && shouldUseNearbyRadius(anchorName)) {
       return {
         searchMode: 'radius_around_place',
@@ -445,24 +527,45 @@ function parseRadiusSearch(source) {
   return null
 }
 
-function parseArea(source) {
+function areaWordsFromCandidates(candidates = []) {
+  return unique(AREA_WORDS.concat(
+    (candidates || []).flatMap((listing) => [listing && listing.district, listing && listing.area]),
+    Object.keys(((config && config.location) || {}).districtBlocks || {})
+  )).sort((left, right) => String(right).length - String(left).length)
+}
+
+function parseArea(source, candidates = []) {
   const text = compactText(source)
-  const matched = AREA_WORDS.find((word) => text.indexOf(word) !== -1)
-  return normalizeArea(matched || '')
+  const words = areaWordsFromCandidates(candidates)
+  const matched = words.find((word) => text.indexOf(word) !== -1)
+  if (matched) return normalizeArea(matched)
+
+  // 新增行政区不应再等代码发版。员工源/位置字典一旦出现“XX区”，用户省略末尾“区”
+  // 时仍按同一条候选词识别；返回值保留候选房源中的完整行政区名称。
+  const aliasMatch = words
+    .filter((word) => /区$/.test(word) && word.length >= 3)
+    .map((word) => ({ canonical: word, alias: word.slice(0, -1) }))
+    .sort((left, right) => right.alias.length - left.alias.length)
+    .find((item) => text.indexOf(item.alias) !== -1)
+  return aliasMatch ? normalizeArea(aliasMatch.canonical) : ''
 }
 
 function cleanExplicitCommunity(value) {
   const candidate = normalizeCommunity(value)
-    .replace(/^(想住|住在|住到|想看|看看|看下|找|有没有|有无)/, '')
+    .replace(/^(想住|住在|住到|想看|看看|看下|帮我?找|找|有没有|有无)/, '')
+    .replace(/^(来?个|来?套|间|栋|处)/, '') // 剥掉残留量词（「个带花园」→「带花园」），交给下方 isFeatureDemandPhrase 拦截
     .replace(/(有|有没有|附近|周边|旁边|一室|两室|三室|四室|单间|整租|合租|预算|\d{3,5}).*$/, '')
   if (!candidate || candidate.length < 3 || candidate.length > 24) return ''
   if (['小区', '公寓', '家园', '花园'].indexOf(candidate) !== -1) return ''
   if (AREA_WORDS.map(normalizeArea).indexOf(normalizeArea(candidate)) !== -1) return ''
+  // 「必须带花园/一定要带院子」等特征需求短语不是小区名，剥离需求前缀后若命中特征别名则拒判为小区，避免真有该特征的房源漏推。
+  if (isFeatureDemandPhrase(candidate)) return ''
   return candidate
 }
 
 function parseExplicitCommunity(source) {
-  const text = normalizeCommunity(source)
+  // 先擦除「必须带花园」等特征需求片段，再抽小区名，避免特征别名的社区后缀（园/苑/院/阁）被误当小区名（导致真房漏推）。
+  const text = eraseFeatureDemands(normalizeCommunity(source))
   if (!text) return ''
   const suffix = '(?:小区|公寓|家园|花园|新村|苑|府|园|城|湾|庭|轩|里|坊|庄|村|郡|阁|寓|邸)'
   const patterns = [
@@ -480,9 +583,13 @@ function parseExplicitCommunity(source) {
 function parseCommunity(source, candidates, options = {}) {
   const text = normalizeCommunity(source)
   if (!text) return ''
+  const areaKeys = new Set(areaWordsFromCandidates(candidates).map((item) => normalizeCommunity(item)))
   const communities = unique((candidates || []).map((listing) => listing.community)
+    .concat((candidates || []).map((listing) => listing.block))
     .concat(options.communityNames || []))
+    .concat(knownScopeNames(options.db || {}, candidates))
     .filter((item) => normalizeCommunity(item).length >= 2)
+    .filter((item) => !areaKeys.has(normalizeCommunity(item)))
     .sort((left, right) => normalizeCommunity(right).length - normalizeCommunity(left).length)
 
   const matched = communities.find((community) => {
@@ -567,7 +674,7 @@ function parseNeed(payload = {}, candidates = [], options = {}) {
         anchorRole: form.anchorRole || 'anchor',
         radiusKm: numberFrom(form.radiusKm) || DEFAULT_RADIUS_KM
       }
-    : parseRadiusSearch(source)
+    : parseRadiusSearch(source, candidates, { db: options.db })
   const budget = parseBudget([form.budget, form.budgetText, source].filter(Boolean).join('，'))
   const formMinBudget = numberFrom(form.minBudget)
   const formMaxBudget = numberFrom(form.maxBudget)
@@ -576,8 +683,8 @@ function parseNeed(payload = {}, candidates = [], options = {}) {
     budget.maxBudget = formMaxBudget
     budget.budgetText = budget.minBudget ? `${budget.minBudget}-${budget.maxBudget}` : `${budget.maxBudget}`
   }
-  const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames }))
-  const area = normalizeArea(form.area || parseArea(source))
+  const community = radiusSearch ? '' : (form.community || parseCommunity(source, candidates, { communityNames, db: options.db }))
+  const area = normalizeArea(form.area || parseArea(source, candidates))
   const layout = form.layout || parseLayout(source)
   const rentMode = form.rentMode || parseRentMode(source)
   const featureResult = parseFeatures([source, parseFeatureInput(form.features).join('，')].filter(Boolean).join('，'))
@@ -687,6 +794,41 @@ function listingSearchText(listing = {}) {
   ].map((item) => String(item || '')).join(' ')
 }
 
+// 房源侧特征判定 —— 硬特征满足(exact)只来自「可信标签字段」features/rawFeatures 的【整词精确】命中（守精确优先北极星）：
+// - 逐 token（标签本是数组）：token 整词等于某别名/特征名 → 真标签；否则不算。不做任何子串命中——
+//   否则「阳台山/电梯华都/免押金时代」(别名+任意专名后缀) 与「无电梯/非首次出租/不可短租」(否定形) 都会子串冒充硬特征。
+// - 描述性 title/meta（多为专名/营销名）不支撑 exact；description 里的真实特征已由 domain.inferListingFeatures
+//   走【非锚定+否定判定】烘焙进 features（整词）、自由标签走【整词锚定】，二者结果都以整词进入本判定。宁可漏标不可错标。
+// - 唯一例外：近地铁的真号线标签(2号线口/紧邻2号线)用强语境正则识别，排除「X号线+专名后缀(公寓/苑/家园…)」如 一号线公寓。
+const NAME_SUFFIX_ALT = '公寓|公馆|花园|家园|嘉园|雅苑|华府|华庭|山庄|大厦|名邸|新村|小区|苑|园|城|府|庄|座|幢|邸|里|巷|弄|路|桥|馆|居|庭|轩|湾|郡|墅|寓|阁'
+const NEAR_METRO_TAG_RE = new RegExp('(?:近|紧邻|临|靠|挨)?(?:地铁)?[\\d一二三四五六七八九十两]号线(?!' + NAME_SUFFIX_ALT + ')')
+
+function listingFeatureTokens(listing = {}) {
+  return parseFeatureInput(listing.features)
+    .concat(parseFeatureInput(listing.rawFeatures))
+    .map((token) => String(token || '').trim())
+    .filter(Boolean)
+}
+
+function tokenHitsRule(token, rule) {
+  // 房源侧只认『整词精确等于别名/特征名』的可信标签 token（features/rawFeatures 逐 token）。
+  // 刻意不做任何子串命中：否则「阳台山/电梯华都/免押金时代」(别名+任意后缀专名) 与「无电梯/非首次出租/不可短租」(否定形)
+  // 都会被子串命中冒充硬特征 → 对硬条件撒谎。真实描述里的特征已由 domain.inferListingFeatures 烘焙进 features（整词），仍命中。
+  if (token === rule.name || rule.aliases.indexOf(token) !== -1) return true
+  // 安全正向前缀归一：剥掉正向标记(有/带/自带/配/支持/接受/可)后若余部整词等于别名则算真标签——
+  // 覆盖「有阳台/有电梯/有燃气/带电梯/支持月付」等房东正向写法；剥后必须整词等于别名，故「阳台山/电梯华都」(专名)
+  // 与「无电梯/没有阳台/非首次出租」(否定，前缀不在正向集里) 仍不命中。
+  const core = token.replace(/^(有|带|自带|配|支持|接受|可)/, '')
+  if (core !== token && (core === rule.name || rule.aliases.indexOf(core) !== -1)) return true
+  // 唯一例外：近地铁的真号线标签「2号线口/紧邻2号线」，用强语境正则识别（排除「X号线+专名后缀」如 一号线公寓）。
+  if (rule.name === '近地铁' && NEAR_METRO_TAG_RE.test(token)) return true
+  return false
+}
+
+function ruleHitsListing(rule, listing) {
+  return listingFeatureTokens(listing).some((token) => tokenHitsRule(token, rule))
+}
+
 function getFeatureRule(feature) {
   return FEATURE_RULES.find((rule) => rule.name === feature) || {
     name: feature,
@@ -697,14 +839,11 @@ function getFeatureRule(feature) {
 }
 
 function listingFeatureSet(listing = {}) {
-  const text = listingSearchText(listing)
   const featureNames = parseFeatureInput(listing.features)
     .concat(parseFeatureInput(listing.rawFeatures))
     .filter((item) => item !== NO_FEATURE)
   FEATURE_RULES.forEach((rule) => {
-    if (rule.aliases.some((alias) => text.indexOf(alias) !== -1)) {
-      featureNames.push(rule.name)
-    }
+    if (ruleHitsListing(rule, listing)) featureNames.push(rule.name)
   })
   return new Set(unique(featureNames.concat([listing.type, listing.rentMode]).filter(Boolean)))
 }
@@ -712,8 +851,7 @@ function listingFeatureSet(listing = {}) {
 function featureMatched(listing, feature) {
   const set = listingFeatureSet(listing)
   if (set.has(feature)) return true
-  const text = listingSearchText(listing)
-  return getFeatureRule(feature).aliases.some((alias) => text.indexOf(alias) !== -1)
+  return ruleHitsListing(getFeatureRule(feature), listing)
 }
 
 function rentOfListing(listing = {}) {
@@ -739,8 +877,19 @@ function areaMatches(listing, area) {
 function communityMatches(listing, community) {
   if (!community) return true
   const target = normalizeCommunity(community)
-  const current = normalizeCommunity(listing.community)
-  return Boolean(target && current && (current.indexOf(target) !== -1 || target.indexOf(current) !== -1))
+  const listingCommunity = normalizeCommunity(listing.community)
+  if (isKnownCommunity(community)) {
+    return normalizeCommunityKey(listing.community) === normalizeCommunityKey(community)
+  }
+  if (target && listingCommunity && (listingCommunity.indexOf(target) !== -1 || target.indexOf(listingCommunity) !== -1)) {
+    return true
+  }
+  const strictScopeValues = [
+    listing.block,
+    listing.area,
+    listing.district
+  ].map(normalizeCommunity).filter(Boolean)
+  return Boolean(target && strictScopeValues.some((value) => value === target))
 }
 
 function isNeighborArea(listing, area) {
@@ -915,9 +1064,12 @@ function sanitizeListing(item, group) {
     rent,
     price: rent ? `¥${rent}/月` : (listing.price || ''),
     meta: [listing.area || listing.district, listing.block, listing.layout].filter(Boolean).join(' · '),
-    sub: '管理员确认签单后，成交总比例按房东实付佣金的 20% 计算，上传人按房源类型到手',
+    sub: '当前报备与签单暂停；详情佣金比例由服务器按房源规则计算',
     features: unique(parseFeatureInput(listing.features).concat(parseFeatureInput(listing.rawFeatures))).slice(0, 8),
     maintenanceText: listing.maintenanceText || '',
+    sourceLabel: listing.sourceLabel || '',
+    ownerType: listing.ownerType || '',
+    companyListing: Boolean(listing.companyListing),
     matchGroup: group,
     matchGroupText: group === 'exact' ? '符合要求' : '接近要求',
     matchReason,
@@ -930,11 +1082,35 @@ function sanitizeListing(item, group) {
     displayRelevance: `${relevanceScore}%`,
     qualityScore: listing.qualityScore || 0,
     freshnessScore: listing.freshnessScore || 0,
-    coordinateQuality: listing.coordinateQuality || '',
+    coordinateQuality: normalizedCoordinateQuality(listing.coordinateQuality),
     distanceKm: listing.distanceKm || '',
     distanceText: listing.distanceText || '',
     anchorName: listing.anchorName || ''
   }
+}
+
+const COORDINATE_QUALITY_VALUES = new Set([
+  'missing',
+  'unverified',
+  'unsafe_source',
+  'community_verified',
+  'admin_verified'
+])
+
+function normalizedCoordinateQuality(value) {
+  const text = String(value || '').trim()
+  return COORDINATE_QUALITY_VALUES.has(text) ? text : 'missing'
+}
+
+function coordinateQualityFromPublicCoordinate(coordinate = {}) {
+  const latitude = Number(coordinate.latitude)
+  const longitude = Number(coordinate.longitude)
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return 'missing'
+  const level = String(coordinate.level || coordinate.coordinateLevel || '').trim()
+  if (level !== 'verified') return 'unverified'
+  return String(coordinate.source || '') === 'admin-verified-coordinate'
+    ? 'admin_verified'
+    : 'community_verified'
 }
 
 function rawListingsById(db = {}) {
@@ -947,34 +1123,28 @@ function rawListingsById(db = {}) {
 
 function candidateListings(db = {}) {
   const rawMap = rawListingsById(db)
-  return domain.filterListings(db, {}).map((listing) => {
+  return domain.filterListings(db, { publicGuest: true }).map((listing) => {
     const raw = rawMap.get(listing.id) || {}
     const profile = raw.recommendationProfile || null
-    const profileLocation = profile && profile.publicLocation ? profile.publicLocation : {}
     if (profile && profile.ready !== true) return null
+    const publicCoordinate = domain.publicListingMapCoordinate(raw) || {}
     return {
       ...listing,
-      recommendationProfile: profile || undefined,
-      rawFeatures: unique(parseFeatureInput(raw.features).concat(parseFeatureInput(raw.tags))),
-      status: raw.status || listing.status || '',
-      rent: numberFrom((profile && profile.rent) || raw.rent || listing.rent || listing.price),
-      layout: (profile && profile.layout) || raw.layout || listing.layout || '',
-      rentMode: (profile && profile.rentMode) || raw.rentMode || raw.type || listing.rentMode || listing.type || '',
-      type: (profile && profile.rentMode) || raw.type || raw.rentMode || listing.type || listing.rentMode || '',
-      room: (profile && profile.room) || raw.room || listing.room || '',
-      hall: (profile && profile.hall) || raw.hall || listing.hall || '',
-      bath: (profile && profile.bath) || raw.bath || listing.bath || '',
-      area: profileLocation.area || raw.area || raw.district || listing.area || listing.district || '',
-      district: profileLocation.district || raw.district || listing.district || listing.area || '',
-      block: profileLocation.block || raw.block || listing.block || '',
-      community: profileLocation.community || raw.community || listing.community || '',
-      mapLatitude: raw.mapLatitude || raw.latitude || listing.mapLatitude || listing.latitude || '',
-      mapLongitude: raw.mapLongitude || raw.longitude || listing.mapLongitude || listing.longitude || '',
-      coordinateSource: raw.coordinateSource || listing.coordinateSource || '',
-      coordinateVerified: raw.coordinateVerified === true || listing.coordinateVerified === true,
+      // 候选文本一律来自领域层公共投影；原始 tags、户型和位置不能在这里重新注入。
+      // 半径计算也只能使用领域层公共坐标投影；合作房源逐套坐标即使不直接下发，
+      // 仍会通过多锚点 distanceKm 形成三角定位 oracle。
+      rawFeatures: unique(parseFeatureInput(listing.features)),
+      status: listing.status || '',
+      rent: numberFrom(listing.rent || listing.price),
+      mapLatitude: publicCoordinate.latitude || '',
+      mapLongitude: publicCoordinate.longitude || '',
+      coordinateSource: publicCoordinate.source || '',
+      coordinateVerified: publicCoordinate.coordinateVerified === true,
+      coordinateLevel: publicCoordinate.level || publicCoordinate.coordinateLevel || '',
+      publicMapCoordinateProjection: domain.isCompanyListing(raw) ? '' : 'domain-v1',
       qualityScore: Number(profile && profile.qualityScore) || 0,
       freshnessScore: Number(profile && profile.freshnessScore) || 0,
-      coordinateQuality: (profile && profile.coordinateQuality) || ''
+      coordinateQuality: coordinateQualityFromPublicCoordinate(publicCoordinate)
     }
   }).filter(Boolean)
 }
@@ -1004,12 +1174,17 @@ function radiusEvaluationNeed(need = {}) {
   }
 }
 
-function addDistanceToListing(listing, place, distanceValue) {
+function addDistanceToListing(listing, place, distanceValue, coordinate = {}) {
   const distanceText = formatDistance(distanceValue)
+  // 板块中心兜底的房源（MODEL-2）用的是板块中心近似坐标，距离据此算得；显式标「板块中心近似」，
+  // 避免中介把它误读成精确点位到锚点的精确距离（守精确优先·诚实告知近似）。
+  const approximate = coordinate && coordinate.level === 'block-center'
+  const suffix = approximate ? '（板块中心近似）' : ''
   return {
     ...listing,
     distanceKm: Number(distanceValue.toFixed(3)),
-    distanceText: distanceText ? `距${place.name}约${distanceText}` : '',
+    distanceText: distanceText ? `距${place.name}约${distanceText}${suffix}` : '',
+    coordinateLevel: (coordinate && coordinate.level) || listing.coordinateLevel || '',
     anchorName: place.name
   }
 }
@@ -1119,7 +1294,7 @@ function groupCommunityAdjacentListings(candidates, need, options = {}) {
     if (!coordinate) return null
     const value = distanceKm(resolution, coordinate)
     if (!Number.isFinite(value) || value > COMMUNITY_NEARBY_RADIUS_KM) return null
-    return addDistanceToListing(listing, resolution, value)
+    return addDistanceToListing(listing, resolution, value, coordinate)
   }).filter(Boolean)
 
   const needForEvaluation = communityAdjacentEvaluationNeed(need)
@@ -1174,7 +1349,7 @@ function groupRadiusListings(candidates, need, options = {}) {
     if (!coordinate) return null
     const value = distanceKm(resolution, coordinate)
     if (!Number.isFinite(value) || value > radiusKm) return null
-    return addDistanceToListing(listing, resolution, value)
+    return addDistanceToListing(listing, resolution, value, coordinate)
   }).filter(Boolean)
 
   const needForEvaluation = radiusEvaluationNeed(need)
@@ -1341,13 +1516,16 @@ function safeListingsForPrompt(listings) {
     rent: listing.rent,
     features: listing.features,
     maintenanceText: listing.maintenanceText,
+    sourceLabel: listing.sourceLabel,
+    ownerType: listing.ownerType,
+    companyListing: Boolean(listing.companyListing),
     matchGroupText: listing.matchGroupText,
     matchReason: listing.matchReason,
     differenceText: listing.differenceText,
     relevancePercent: listing.relevancePercent,
     qualityScore: listing.qualityScore,
     freshnessScore: listing.freshnessScore,
-    coordinateQuality: listing.coordinateQuality,
+    coordinateQuality: normalizedCoordinateQuality(listing.coordinateQuality),
     distanceKm: listing.distanceKm,
     distanceText: listing.distanceText,
     anchorName: listing.anchorName

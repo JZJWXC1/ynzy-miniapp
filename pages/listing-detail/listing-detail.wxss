@@ -8,6 +8,49 @@ page {
   padding-bottom: 64rpx;
 }
 
+.unavailable-card {
+  padding: 42rpx 34rpx;
+}
+
+.unavailable-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44rpx;
+  padding: 0 16rpx;
+  color: #ffffff;
+  font-size: 22rpx;
+  font-weight: 900;
+  background: #B9655A;
+  border-radius: 14rpx;
+}
+
+.unavailable-title {
+  margin-top: 22rpx;
+  color: #182E2A;
+  font-size: 34rpx;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.unavailable-desc {
+  margin-top: 14rpx;
+  color: #6A7671;
+  font-size: 25rpx;
+  line-height: 1.5;
+}
+
+.unavailable-actions {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 28rpx;
+}
+
+.unavailable-actions .ghost-button,
+.unavailable-actions .primary-button {
+  flex: 1 1 0;
+  margin-top: 0;
+}
+
 .video-card {
   height: 380rpx;
   display: flex;
@@ -15,15 +58,91 @@ page {
   align-items: center;
   justify-content: center;
   color: #ffffff;
-  background: linear-gradient(135deg, #153f36, #2f6f60);
+  background: linear-gradient(135deg, #182E2A, #2E514A);
   border-radius: 42rpx;
-  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.2);
+  box-shadow: 0 18rpx 42rpx rgba(46, 81, 74, 0.2);
   overflow: hidden;
 }
 
 .listing-video {
   width: 100%;
   height: 100%;
+}
+
+.listing-media-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #E7F0EB;
+}
+
+.media-switcher {
+  width: 100%;
+  margin-top: 16rpx;
+  white-space: nowrap;
+}
+
+.media-switcher-row {
+  display: inline-flex;
+  gap: 12rpx;
+  min-width: 100%;
+  padding: 2rpx 2rpx 6rpx;
+  box-sizing: border-box;
+}
+
+.media-switch-button {
+  width: auto !important;
+  min-width: 132rpx;
+  height: 64rpx;
+  margin: 0;
+  padding: 0 24rpx;
+  color: #49615B;
+  font-size: 24rpx;
+  font-weight: 800;
+  line-height: 64rpx;
+  background: #EDF3EF;
+  border: 1rpx solid #D8E5DE;
+  border-radius: 20rpx;
+}
+
+.media-switch-button.active {
+  color: #ffffff;
+  background: #2E514A;
+  border-color: #2E514A;
+}
+
+.media-switch-button::after {
+  border: 0;
+}
+
+.video-empty-card {
+  min-height: 300rpx;
+  height: auto;
+  padding: 36rpx;
+  color: #2E514A;
+  background: linear-gradient(145deg, #F7FBF8, #E7F0EB);
+  border: 1rpx solid #D8E5DE;
+  box-sizing: border-box;
+  box-shadow: 0 14rpx 34rpx rgba(46, 81, 74, 0.1);
+}
+
+.video-empty-icon {
+  width: 78rpx;
+  height: 78rpx;
+  color: #49615B;
+  font-size: 32rpx;
+  font-weight: 900;
+  line-height: 78rpx;
+  text-align: center;
+  background: #DDE8E2;
+  border-radius: 50%;
+}
+
+.video-empty-card .video-sub {
+  max-width: 520rpx;
+  color: #6A7671;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .video-share-card {
@@ -35,18 +154,24 @@ page {
   margin-top: 18rpx;
   padding: 18rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 28rpx;
-  box-shadow: 0 14rpx 34rpx rgba(47, 111, 96, 0.12);
+  box-shadow: 0 14rpx 34rpx rgba(46, 81, 74, 0.12);
 }
 
 .video-share-copy {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+}
+
+.video-share-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 12rpx;
 }
 
 .video-share-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -54,30 +179,65 @@ page {
 
 .video-share-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
   line-height: 1.35;
 }
 
 .video-share-button {
-  flex: 0 0 188rpx;
+  width: 150rpx;
   height: 72rpx;
   margin: 0;
-  color: #153f36;
+  padding: 0 12rpx;
+  color: #182E2A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 72rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 22rpx;
 }
 
+.video-share-button.secondary {
+  color: #2E514A;
+  background: #EDF3EF;
+}
+
 .video-share-button[disabled] {
-  color: #78918a;
-  background: #e9f5f0;
+  color: #6A7671;
+  background: #EDF3EF;
 }
 
 .video-share-button::after {
   border: 0;
+}
+
+/* 真实根因：微信 WebView 下原生 wx-button 的默认 width 约 184px（min-width 本就为 0），单类
+   .video-share-button 的 width:150rpx 被它压过，两按钮各 184px、撑爆 362px 卡片、文案区挤成 0。
+   必须用卡片内强选择器 + !important 覆盖 width（不是 min-width），两按钮各 150rpx（约 156px 操作区），
+   文案区 min-width:0 收缩留足空间。此规则在 375/390/414 及更窄屏均生效。不改全局 button。 */
+.video-share-actions {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.video-share-actions .video-share-button {
+  width: 150rpx !important;
+  min-width: 0 !important;
+  flex: 0 0 auto;
+}
+
+/* 极窄屏（≤360px）纵向兜底：文案独占一行，操作区占满整行、两按钮平分并可收缩。 */
+@media (max-width: 360px) {
+  .video-share-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .video-share-actions {
+    width: 100%;
+  }
+  .video-share-actions .video-share-button {
+    width: auto !important;
+    flex: 1 1 0;
+  }
 }
 
 .video-placeholder {
@@ -95,9 +255,9 @@ page {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #153f36;
+  color: #182E2A;
   font-size: 48rpx;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 50%;
 }
 
@@ -129,7 +289,7 @@ page {
 
 .listing-title,
 .sensitive-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -138,26 +298,20 @@ page {
 .listing-area,
 .sensitive-desc {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 24rpx;
 }
 
-.commission,
 .verify-tag {
   flex: 0 1 340rpx;
   padding: 10rpx 14rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 23rpx;
   font-weight: 900;
   line-height: 1.35;
   text-align: center;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 18rpx;
-}
-
-.commission.no-commission {
-  color: #ffffff;
-  background: #2f6f60;
 }
 
 .source-badges {
@@ -176,13 +330,13 @@ page {
   color: #ffffff;
   font-size: 20rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 14rpx;
 }
 
 .no-commission-badge {
-  color: #153f36;
-  background: #f6bd36;
+  color: #182E2A;
+  background: #C9A45D;
 }
 
 .facts {
@@ -196,13 +350,13 @@ page {
   flex: 1 1 190rpx;
   min-width: 0;
   padding: 18rpx;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 22rpx;
 }
 
 .fact text:first-child {
   display: block;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
 }
@@ -210,7 +364,7 @@ page {
 .fact text:last-child {
   display: block;
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
 }
 
@@ -226,8 +380,8 @@ page {
   min-width: 0;
   min-height: 94rpx;
   padding: 16rpx;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 20rpx;
 }
 
@@ -237,60 +391,194 @@ page {
 
 .location-item text:first-child {
   display: block;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
 }
 
 .location-item text:last-child {
   display: block;
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 1.35;
   word-break: break-all;
 }
 
+/* 原 repeat(3) 网格在地址 4 项（3+1）或 7 项（3+3+1）时留下末行孤项空档。改 flex-wrap：以三列为基准，
+   末行不足项自动拉伸填满整行，孤项变整行、读感自然，且与地址项数量无关。 */
+.location-compact-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 18rpx;
+}
+
+.location-compact-item {
+  flex: 1 1 calc((100% - 20rpx) / 3);
+  min-width: 0;
+  padding: 13rpx 14rpx;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
+  border-radius: 16rpx;
+}
+
+.location-compact-item.community {
+  grid-column: span 1;
+}
+
+.location-compact-item text:first-child {
+  display: block;
+  color: #6A7671;
+  font-size: 19rpx;
+}
+
+.location-compact-item text:last-child {
+  display: block;
+  margin-top: 5rpx;
+  color: #182E2A;
+  font-size: 23rpx;
+  font-weight: 900;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.listing-remark,
+.commission-detail {
+  margin-top: 18rpx;
+  padding: 20rpx;
+  background: #F7FBF8;
+  border: 1rpx solid #D8E5DE;
+  border-radius: 20rpx;
+}
+
+.listing-remark-label {
+  color: #6A7671;
+  font-size: 21rpx;
+  font-weight: 800;
+}
+
+.listing-remark-value {
+  margin-top: 8rpx;
+  color: #182E2A;
+  font-size: 25rpx;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.commission-detail-head,
+.commission-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.commission-detail-head {
+  padding-bottom: 14rpx;
+  border-bottom: 1rpx solid #D8E5DE;
+}
+
+.commission-detail-head text:first-child {
+  color: #182E2A;
+  font-size: 27rpx;
+  font-weight: 900;
+}
+
+.commission-detail-head text:last-child {
+  color: #6A7671;
+  font-size: 20rpx;
+}
+
+.commission-detail-row {
+  padding-top: 14rpx;
+  color: #49615B;
+  font-size: 23rpx;
+}
+
+.commission-detail-row text:last-child {
+  color: #182E2A;
+  font-size: 25rpx;
+  font-weight: 900;
+}
+
+.commission-detail-row.total text {
+  color: #7A572D;
+  font-weight: 900;
+}
+
+.phone-call-button {
+  min-height: 82rpx;
+  margin-top: 20rpx;
+  color: #ffffff;
+  font-size: 28rpx;
+  font-weight: 900;
+  line-height: 82rpx;
+  background: #2E514A;
+  border-radius: 22rpx;
+}
+
+.phone-call-button[disabled] {
+  color: #6A7671;
+  background: #DDE8E2;
+}
+
+.phone-call-button::after {
+  border: 0;
+}
+
 .hidden-row {
   padding: 22rpx 0;
-  border-bottom: 1rpx solid #dce9e3;
+  border-bottom: 1rpx solid #DED8CC;
 }
 
 .hidden-label {
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
 }
 
 .hidden-value {
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
   line-height: 1.4;
 }
 
+.company-phone-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6rpx;
+}
+
+.company-phone-item {
+  display: block;
+  letter-spacing: 1rpx;
+}
+
 .need-bind-row {
   margin-top: 18rpx;
   padding: 18rpx;
-  background: #fff8e6;
-  border: 1rpx solid #f5df9c;
+  background: #F6E9CE;
+  border: 1rpx solid #DDC994;
   border-radius: 20rpx;
 }
 
 .need-bind-row.bound {
-  background: #e9f5f0;
-  border-color: #dce9e3;
+  background: #EDF3EF;
+  border-color: #DED8CC;
 }
 
 .need-bind-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
 }
 
 .need-bind-desc {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
   line-height: 1.35;
   word-break: break-all;
@@ -304,7 +592,7 @@ page {
   color: #ffffff;
   font-size: 28rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 26rpx;
 }
 
@@ -312,10 +600,10 @@ page {
   width: 100%;
   height: 72rpx;
   margin-top: 14rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 25rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 22rpx;
 }
 
@@ -346,28 +634,28 @@ page {
 }
 
 .log-user {
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
   font-weight: 900;
 }
 
 .log-action,
 .log-time {
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
 }
 
 .deal-button {
-  background: #f2765d;
+  background: #B9655A;
 }
 
 .showing-proof-preview {
   width: 100%;
   height: 260rpx;
   margin-top: 14rpx;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 20rpx;
-  background: #f7fbf8;
+  background: #F6F2EA;
 }
 
 .showing-watermark-canvas {
@@ -386,9 +674,9 @@ page {
   gap: 18rpx;
   margin-top: 16rpx;
   padding: 14rpx 16rpx 14rpx 24rpx;
-  color: #2f6f60;
-  background: #e9f5f0;
-  border: 1rpx solid #dce9e3;
+  color: #2E514A;
+  background: #EDF3EF;
+  border: 1rpx solid #DED8CC;
   border-radius: 26rpx;
 }
 
@@ -405,7 +693,7 @@ page {
 }
 
 .showing-action-title {
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 25rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -413,7 +701,7 @@ page {
 
 .showing-action-sub {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 20rpx;
   line-height: 1.25;
 }
@@ -425,11 +713,11 @@ page {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #153f36;
+  color: #182E2A;
   font-size: 18rpx;
   font-weight: 900;
   line-height: 1.15;
-  background: #fff35a;
+  background: #D8BD67;
   border-radius: 20rpx;
 }
 
@@ -446,7 +734,7 @@ page {
   align-items: center;
   justify-content: center;
   padding: calc(28rpx + env(safe-area-inset-top)) 28rpx calc(28rpx + env(safe-area-inset-bottom));
-  background: rgba(21, 63, 54, 0.42);
+  background: rgba(24, 46, 42, 0.42);
   box-sizing: border-box;
 }
 
@@ -456,20 +744,20 @@ page {
   padding: 30rpx;
   background: #ffffff;
   border-radius: 24rpx;
-  box-shadow: 0 16rpx 48rpx rgba(21, 63, 54, 0.22);
+  box-shadow: 0 16rpx 48rpx rgba(24, 46, 42, 0.22);
   box-sizing: border-box;
   overflow: auto;
 }
 
 .v1-modal-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
 }
 
 .modal-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.4;
 }
@@ -483,19 +771,29 @@ page {
 
 .purpose-option {
   flex: 1 1 190rpx;
-  height: 68rpx;
+  min-height: 68rpx;
   margin: 0;
-  color: #2f6f60;
+  padding: 8rpx 14rpx;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 900;
-  line-height: 68rpx;
-  background: #e9f5f0;
+  line-height: 1.25;
+  background: #EDF3EF;
   border-radius: 18rpx;
+  box-sizing: border-box;
+  white-space: normal;
+}
+
+.purpose-option text {
+  display: flex;
+  min-height: 52rpx;
+  align-items: center;
+  justify-content: center;
 }
 
 .purpose-option.active {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .purpose-option::after {
@@ -504,7 +802,7 @@ page {
 
 .need-modal-note {
   margin-top: 16rpx;
-  color: #8a5b00;
+  color: #7A572D;
   font-size: 22rpx;
   font-weight: 800;
   line-height: 1.4;
@@ -516,7 +814,7 @@ page {
 
 .v1-field text {
   display: block;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   font-weight: 800;
 }
@@ -527,10 +825,10 @@ page {
   min-height: 78rpx;
   margin-top: 10rpx;
   padding: 0 18rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
   box-sizing: border-box;
 }
@@ -543,7 +841,7 @@ page {
 
 .v1-modal-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16rpx;
   margin-top: 24rpx;
 }
@@ -551,6 +849,156 @@ page {
 .v1-modal-actions .ghost-button,
 .v1-modal-actions .primary-button {
   height: 80rpx;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 0;
+  padding: 0 12rpx;
+  font-size: 26rpx;
+  line-height: 1.2;
   border-radius: 20rpx;
+  box-sizing: border-box;
+  white-space: normal;
+}
+
+.nearby-section {
+  margin-top: 24rpx;
+  padding: 28rpx;
+}
+
+.nearby-section-head,
+.nearby-card-head,
+.nearby-facts,
+.nearby-features {
+  display: flex;
+  align-items: center;
+}
+
+.nearby-section-head,
+.nearby-card-head {
+  justify-content: space-between;
+  gap: 20rpx;
+}
+
+.nearby-section-title {
+  color: #153f36;
+  font-size: 32rpx;
+  font-weight: 700;
+}
+
+.nearby-section-sub {
+  margin-top: 8rpx;
+  color: #78918a;
+  font-size: 22rpx;
+}
+
+.nearby-all-button {
+  flex: none;
+  min-height: 88rpx;
+  margin: 0;
+  padding: 0 20rpx;
+  border: 0;
+  border-radius: 44rpx;
+  background: #e9f4ef;
+  color: #2f6f60;
+  font-size: 23rpx;
+  line-height: 88rpx;
+}
+
+.nearby-all-button::after {
+  border: 0;
+}
+
+.nearby-card {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 22rpx;
+  padding-top: 22rpx;
+  border-top: 1rpx solid rgba(47, 111, 96, 0.1);
+}
+
+.nearby-cover {
+  flex: none;
+  width: 176rpx;
+  height: 148rpx;
+  border-radius: 18rpx;
+  background: #e8efeb;
+}
+
+.nearby-media-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  box-sizing: border-box;
+  color: #6a7671;
+  border: 1rpx solid rgba(46, 81, 74, 0.14);
+  background: linear-gradient(145deg, #edf5f1 0%, #fff4da 100%);
+}
+
+.nearby-media-pending {
+  color: #2e514a;
+}
+
+.nearby-media-empty-mark {
+  width: 42rpx;
+  height: 42rpx;
+  color: #2e514a;
+  font-size: 22rpx;
+  font-weight: 900;
+  line-height: 42rpx;
+  text-align: center;
+  background: rgba(201, 164, 93, 0.34);
+  border-radius: 50%;
+}
+
+.nearby-media-empty-label {
+  font-size: 20rpx;
+  font-weight: 750;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.nearby-card-body,
+.nearby-card-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.nearby-card-title {
+  overflow: hidden;
+  color: #1d3f37;
+  font-size: 27rpx;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nearby-distance {
+  margin-top: 7rpx;
+  color: #d58420;
+  font-size: 22rpx;
+}
+
+.nearby-facts,
+.nearby-features {
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 14rpx;
+}
+
+.nearby-facts text,
+.nearby-feature {
+  padding: 6rpx 12rpx;
+  border-radius: 999rpx;
+  background: #f2f7f4;
+  color: #56736b;
+  font-size: 21rpx;
+}
+
+.nearby-facts text:last-child {
+  color: #b56d18;
+  background: #fff5e5;
 }

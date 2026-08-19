@@ -3,9 +3,9 @@
   <view class="page-shell commission-page">
     <view class="hero-card">
       <view>
-        <view class="hero-kicker">合作成交</view>
-        <view class="hero-title">管理员确认签单后，上传人按房源类型结算。</view>
-        <view class="hero-desc">二房东房源到手 15%，业主房源到手 20%，状态和金额以确认记录为准。</view>
+        <view class="hero-kicker">历史分佣</view>
+        <view class="hero-title">当前报备与签单暂停，这里只读展示既有分佣快照。</view>
+        <view class="hero-desc">历史记录以确认时冻结的比例和金额为准，后续配置调整不影响既有记录。</view>
       </view>
       <view class="hero-mark">佣</view>
     </view>
@@ -20,6 +20,21 @@
     <view class="section-title">
       <view class="section-title-main">最近分佣</view>
       <view class="section-title-action">{{records.length}} 单</view>
+    </view>
+
+    <view wx:if="{{loadFailed}}" class="commission-card soft-card">
+      <view class="commission-title">分佣记录加载失败</view>
+      <view class="commission-meta">已保留上次结果，请检查网络后重试。</view>
+      <button class="brand-button" style="margin-top: 20rpx;" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!records.length && loading}}" class="commission-card soft-card">
+      <view class="commission-title">正在加载分佣记录</view>
+    </view>
+
+    <view wx:if="{{!records.length && !loading && !loadFailed}}" class="commission-card soft-card">
+      <view class="commission-title">暂无分佣记录</view>
+      <view class="commission-meta">当前没有历史分佣快照；暂停期间不会新增报备或签单。</view>
     </view>
 
     <view class="commission-list">

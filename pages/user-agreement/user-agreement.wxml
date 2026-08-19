@@ -1,0 +1,71 @@
+<navigation-bar title="用户服务协议" back="{{true}}" color="#153f36" background="#f7fbf8"></navigation-bar>
+<scroll-view class="page-scroll" scroll-y type="list">
+  <view class="page-shell legal-page">
+    <view class="legal-hero">
+      <view class="legal-kicker">YOONI 找房</view>
+      <view class="legal-title">用户服务协议</view>
+      <view class="legal-meta">版本及生效日期：2026年7月20日</view>
+    </view>
+
+    <view class="legal-card legal-summary">
+      <view class="legal-strong">运营主体：杭州初寓网络科技有限公司</view>
+      <view>请您在注册或登录前完整阅读本协议及《隐私政策》。只有在您主动勾选同意后，我们才会接收您提交的登录或注册信息。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">一、协议范围与接受</view>
+      <view class="legal-text">本协议适用于“寓你住一起（Yooni找房）”微信小程序提供的房源浏览、找房助手、账号注册登录、房源上传与维护等服务。您主动勾选并继续使用账号服务，即表示您已阅读、理解并同意本协议；如您不同意，可不勾选并继续使用无需登录的公开浏览功能。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">二、账号注册、审核与登录</view>
+      <view class="legal-text">1. 注册时，您需按页面要求手工填写姓名、手机号并设置登录密码，申请经管理员审核开通后方可登录。登录时使用已开通账号的手机号和密码核验账号凭据。平台不据此声明已完成运营商手机号验证、短信验证或法定实名认证。</view>
+      <view class="legal-text">2. 您应保证提交信息真实、准确、合法、有效，并妥善保管登录密码，不得转让、出借账号或帮助他人绕过权限控制。</view>
+      <view class="legal-text">3. 因账号停用、删除、密码修改或安全风险需要，我们可依法限制或终止相关会话。账号权限、敏感信息查看额度和业务结果以服务器校验为准。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">三、房源信息与第三方个人信息</view>
+      <view class="legal-text">1. 您上传或维护房源时，应确保房源描述、图片、视频、地址、租金及状态真实、合法，不得侵害他人合法权益。</view>
+      <view class="legal-text">2. 若您提交房东手机号或其他第三方个人信息，您须确认已取得信息主体的合法授权，或具备其他合法处理依据，并已向其说明处理目的、使用范围与可能的展示方式。不得冒用、买卖或超出授权范围使用第三方信息。</view>
+      <view class="legal-text">3. 平台在完成房源查重、审核、房态核验、联系、受控展示和带看协作所需范围内处理该等信息。上传人和管理员可按职责查看；符合平台资格的其他登录用户在受控查看后也可能看到完整房东手机号。不同身份和房源类型分别适用登录、资格、确认、额度与服务器留痕规则。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">四、使用规范</view>
+      <view class="legal-text">您不得利用本服务发布违法、虚假、歧视、骚扰或侵权内容，不得抓取、批量导出、倒卖房源或个人信息，不得攻击系统、伪造身份、干扰审核、绕过访问控制，亦不得将获知的联系方式用于找房协作以外的营销或骚扰。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">五、账号安全与服务调整</view>
+      <view class="legal-text">我们将采取与业务风险相适应的安全措施保护账号及信息。为维护系统安全、纠正错误、配合法律要求或优化服务，我们可能更新功能、暂停异常账号或调整服务内容；涉及您权益的重要变化会通过页面提示等适当方式告知。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">六、知识产权</view>
+      <view class="legal-text">小程序的软件、界面、品牌标识及运营者制作内容的合法权益归运营者或相应权利人所有。您保留对合法上传内容的权利，并授权我们在提供、审核、展示和维护本服务所必需的范围内使用该内容。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">七、责任边界</view>
+      <view class="legal-text">平台会尽合理努力维护房源信息和服务稳定，但房源状态、交易条件及第三方行为可能发生变化。您应在作出交易决定前自行核验，并依法与交易相对方明确权利义务。因不可抗力、网络服务中断或非平台可控因素造成的影响，依法按实际责任承担。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">八、隐私保护</view>
+      <view class="legal-text">我们处理个人信息的类型、方式、目的、保存期限、共享边界及您的权利，详见《隐私政策》。本协议与隐私政策不一致时，涉及个人信息处理的事项以更有利于保护您个人信息权益且符合适用法律的规则为准。</view>
+    </view>
+
+    <view class="legal-card">
+      <view class="legal-heading">九、协议更新、终止与争议解决</view>
+      <view class="legal-text">重要条款变更时，我们将通过显著提示请您重新阅读；如处理目的、方式或范围发生实质变化，将依法重新取得您的同意。您可停止使用账号服务并联系我们处理账号。因本协议产生的争议，双方应先友好协商；协商不成的，依法向有管辖权的人民法院提起诉讼。</view>
+    </view>
+
+    <view class="legal-card legal-contact">
+      <view class="legal-heading">十、联系我们</view>
+      <view class="legal-text">运营主体：杭州初寓网络科技有限公司</view>
+      <view class="legal-text">对外业务邮箱：1176803465@qq.com</view>
+      <view class="legal-text">我们会在核验您的身份与请求后，依法处理并反馈结果。</view>
+    </view>
+  </view>
+</scroll-view>

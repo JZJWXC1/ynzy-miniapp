@@ -3,7 +3,7 @@
   <view class="page-shell upload-page">
     <view class="upload-hero">
       <view class="upload-title">{{mode === 'edit' ? '修改已上传房源' : (form.companyListing ? '上传公司房源' : '上传合作房源')}}</view>
-      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、标签和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，由管理员维护。' : (form.ownerType === '业主房源' ? '合作房源 / 业主房源，提交后进入管理员审核，通过后才会在小程序上架。' : '合作房源 / 二房东房源，按位置、户型、租金、标签和视频快速录入。'))}}</view>
+      <view class="upload-desc">{{mode === 'edit' ? '更新位置、户型、租金、标签和视频信息，保存后同步到小程序房源库。' : (form.companyListing ? '公司房源仅管理员可上传，由管理员维护。' : (isStaff ? '员工上传的业主与二房东房源提交后直接通过。' : (form.ownerType === '业主房源' ? '合作房源 / 业主房源，提交后进入管理员审核，通过后才会在小程序上架。' : '合作房源 / 二房东房源，按位置、户型、租金、标签和视频快速录入。')))}}</view>
     </view>
 
     <view class="form-card soft-card">
@@ -25,7 +25,7 @@
           <view class="source-row">
             <view wx:for="{{ownerTypeOptions}}" wx:key="value" class="source-chip {{item.value === form.ownerType ? 'active' : ''}}" bindtap="selectOwnerType" data-value="{{item.value}}">
               <view class="source-title">{{item.title}}</view>
-              <view class="source-desc">{{item.desc}}</view>
+              <view class="source-desc">{{isStaff ? '员工上传后直接通过' : item.desc}}</view>
             </view>
           </view>
         </view>
@@ -48,6 +48,11 @@
           </view>
         </view>
 
+        <view class="field">
+          <view class="label">板块（可选）</view>
+          <input value="{{form.block}}" data-field="block" bindinput="updateField" placeholder="如 东新园 / 闸弄口" />
+        </view>
+
         <view class="field community-field">
           <view class="label">小区名称</view>
           <input value="{{form.community}}" bindfocus="showCommunityPanel" bindinput="updateCommunity" placeholder="输入小区名，自动匹配拱墅小区库" />
@@ -65,7 +70,7 @@
             <input value="{{form.building}}" data-field="building" bindinput="updateField" placeholder="如 3" />
           </view>
           <view>
-            <view class="label">几单元</view>
+            <view class="label">几单元（可选）</view>
             <input value="{{form.unit}}" data-field="unit" bindinput="updateField" placeholder="如 1" />
           </view>
           <view>
@@ -102,9 +107,30 @@
         <view class="hint">至少选择一个特点；没有明显特点请选择“无”。</view>
       </view>
 
+      <view class="form-section">
+        <view class="section-label">看房方式</view>
+        <view class="chip-row">
+          <view wx:for="{{viewingMethodOptions}}" wx:key="*this" class="option-chip {{item === form.viewingMethod ? 'active' : ''}}" bindtap="selectLayoutOption" data-field="viewingMethod" data-value="{{item}}">{{item}}</view>
+        </view>
+        <view wx:if="{{form.viewingMethod === '钥匙'}}" class="field">
+          <view class="label">钥匙在哪</view>
+          <input value="{{form.viewingKeyLocation}}" data-field="viewingKeyLocation" bindinput="updateField" placeholder="如 前台领取 / 3栋门卫处" />
+        </view>
+        <view wx:if="{{form.viewingMethod === '密码'}}" class="field">
+          <view class="label">看房密码</view>
+          <input value="{{form.viewingPassword}}" data-field="viewingPassword" bindinput="updateField" placeholder="如 1234#" />
+        </view>
+        <view class="field">
+          <view class="label">房东手机号（{{form.companyListing ? '选填' : '必填'}}）</view>
+          <input value="{{form.contact}}" data-field="contact" type="number" maxlength="11" bindinput="updateField" placeholder="11 位房东手机号" />
+        </view>
+        <view class="hint" wx:if="{{form.companyListing}}">公司房源可不填房东手机号，详情继续展示服务器配置的三个统一联系电话；若填写仍须为合法 11 位手机号。</view>
+        <view class="hint" wx:else>业主、二房东房源在所有看房方式下都必须填写房东手机号；选钥匙还需填写钥匙在哪，选密码还需填写看房密码。</view>
+      </view>
+
       <view class="field">
-        <view class="label">房东联系方式</view>
-        <input value="{{form.contact}}" data-field="contact" bindinput="updateField" placeholder="手机号或微信" />
+        <view class="label">房源备注（选填，最多 200 字）</view>
+        <textarea class="remark-input" value="{{form.remark}}" data-field="remark" maxlength="200" bindinput="updateField" placeholder="可填写水电、采光等补充说明，请勿填写电话或微信号" />
       </view>
 
       <view class="field">
@@ -113,8 +139,15 @@
       </view>
 
       <view class="field">
+        <view class="label">房东佣金占月租比例（%）</view>
+        <input value="{{form.landlordCommissionPercent}}" data-field="landlordCommissionPercent" bindinput="updateField" type="number" placeholder="0-100 的整数，默认 50" />
+        <view class="hint">例如填写 50，表示房东总佣金为成交月租的 50%。具体拆分由服务端计算。</view>
+      </view>
+
+      <view class="field">
         <view class="label">分佣规则</view>
-        <view class="preview-line">签单后按平台规则计算</view>
+        <view class="preview-line">{{commissionRuleText}}</view>
+        <button wx:if="{{!form.companyListing && commissionConfigFailed}}" class="brand-button" style="margin-top: 20rpx;" bindtap="retryCommissionConfig">重新加载分佣规则</button>
       </view>
 
       <view class="video-upload" bindtap="chooseVideo">
@@ -124,7 +157,7 @@
           <view class="video-desc">{{videoPath ? '保存时会先上传到阿里 OSS，再写入房源库。' : (existingVideoUrl ? '点击可重新选择视频；不选择则继续使用原视频。' : (form.companyListing ? '公司房源可不上传视频；上传后可用于转发。' : '合作房源必须上传视频，仅允许视频，不支持图片上传。'))}}</view>
         </view>
       </view>
-      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitListing">{{mode === 'edit' ? '保存房源修改' : (form.companyListing ? '提交公司房源' : (form.ownerType === '业主房源' ? '提交审核' : '提交合作房源'))}}</button>
+      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting || (!form.companyListing && !commissionConfigReady)}}" bindtap="submitListing">{{!form.companyListing && commissionConfigLoading ? '正在同步分佣规则' : (!form.companyListing && commissionConfigFailed ? '请先同步分佣规则' : (mode === 'edit' ? '保存房源修改' : (form.companyListing ? '提交公司房源' : (isStaff ? '发布合作房源' : (form.ownerType === '业主房源' ? '提交审核' : '提交合作房源')))))}}</button>
     </view>
   </view>
 </scroll-view>

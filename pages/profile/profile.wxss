@@ -18,7 +18,7 @@ page {
   background: linear-gradient(135deg, #ffffff 0%, var(--brand-cream) 56%, rgba(143, 208, 232, 0.36) 100%);
   border: 1rpx solid var(--brand-line);
   border-radius: 28rpx;
-  box-shadow: 0 16rpx 38rpx rgba(46, 107, 78, 0.1);
+  box-shadow: 0 16rpx 38rpx rgba(46, 81, 74, 0.1);
 }
 
 .user-card > view:nth-child(2) {
@@ -61,7 +61,7 @@ page {
   min-height: 44rpx;
   margin-top: 12rpx;
   padding: 0 14rpx;
-  color: #A16F00;
+  color: #7A572D;
   font-size: 21rpx;
   font-weight: 900;
   background: rgba(248, 208, 107, 0.36);
@@ -76,6 +76,87 @@ page {
   font-weight: 900;
   background: var(--brand-green);
   border-radius: 20rpx;
+}
+
+.account-actions {
+  flex: 0 0 148rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.account-actions .login-button,
+.password-button,
+.logout-button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.public-help-section {
+  margin-top: 28rpx;
+}
+
+.section-title-note {
+  color: var(--brand-muted);
+  font-size: 22rpx;
+  font-weight: 700;
+}
+
+.faq-entry-card {
+  width: 100%;
+  min-height: 112rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  margin: 0;
+  padding: 24rpx 28rpx;
+  text-align: left;
+  background: var(--brand-card);
+  border: 1rpx solid var(--brand-line);
+  border-radius: 24rpx;
+  box-shadow: 0 12rpx 28rpx rgba(46, 81, 74, 0.07);
+}
+
+.faq-entry-title {
+  color: var(--brand-green-dark);
+  font-size: 28rpx;
+  font-weight: 900;
+}
+
+.faq-entry-desc {
+  margin-top: 8rpx;
+  color: var(--brand-muted);
+  font-size: 22rpx;
+  line-height: 1.45;
+}
+
+.faq-entry-arrow {
+  flex: 0 0 auto;
+  color: var(--brand-green);
+  font-size: 44rpx;
+  font-weight: 700;
+}
+
+.password-button {
+  height: 64rpx;
+  color: var(--brand-green-dark);
+  font-size: 23rpx;
+  font-weight: 900;
+  background: rgba(46, 81, 74, 0.08);
+  border: 1rpx solid rgba(46, 81, 74, 0.2);
+  border-radius: 18rpx;
+}
+
+.logout-button {
+  height: 64rpx;
+  color: #A94F45;
+  font-size: 23rpx;
+  font-weight: 900;
+  background: rgba(192, 57, 43, 0.08);
+  border: 1rpx solid rgba(192, 57, 43, 0.22);
+  border-radius: 18rpx;
 }
 
 .source-stats {
@@ -93,7 +174,7 @@ page {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 22rpx;
-  box-shadow: 0 12rpx 26rpx rgba(46, 107, 78, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(46, 81, 74, 0.06);
 }
 
 .source-value {
@@ -114,7 +195,7 @@ page {
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 24rpx;
-  box-shadow: 0 14rpx 30rpx rgba(46, 107, 78, 0.07);
+  box-shadow: 0 14rpx 30rpx rgba(46, 81, 74, 0.07);
 }
 
 .recharge-head {
@@ -140,7 +221,7 @@ page {
   flex: 0 0 auto;
   min-height: 48rpx;
   padding: 0 18rpx;
-  color: #A16F00;
+  color: #7A572D;
   font-size: 22rpx;
   font-weight: 900;
   line-height: 48rpx;
@@ -163,7 +244,7 @@ page {
   font-size: 36rpx;
   font-weight: 900;
   line-height: 72rpx;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(46, 81, 74, 0.1);
   border-radius: 20rpx;
 }
 
@@ -244,13 +325,13 @@ page {
 .workbench-card {
   flex: 1 1 300rpx;
   min-width: 0;
-  min-height: 166rpx;
+  min-height: 92rpx;
   padding: 24rpx;
   text-align: left;
   background: var(--brand-card);
   border: 1rpx solid var(--brand-line);
   border-radius: 24rpx;
-  box-shadow: 0 12rpx 26rpx rgba(46, 107, 78, 0.06);
+  box-shadow: 0 12rpx 26rpx rgba(46, 81, 74, 0.06);
 }
 
 .workbench-head {
@@ -272,13 +353,6 @@ page {
   color: var(--brand-orange);
   font-size: 25rpx;
   font-weight: 900;
-}
-
-.workbench-desc {
-  margin-top: 16rpx;
-  color: var(--brand-muted);
-  font-size: 22rpx;
-  line-height: 1.45;
 }
 
 .deal-grid {
@@ -318,7 +392,7 @@ page {
   color: var(--brand-green);
   font-size: 21rpx;
   font-weight: 900;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(46, 81, 74, 0.1);
   border-radius: 14rpx;
 }
 

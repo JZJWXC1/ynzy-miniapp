@@ -1,0 +1,69 @@
+<view class="listing-filter-panel">
+  <view class="filter-section">
+    <view class="filter-label">区域</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.district ? 'active' : ''}}" data-district="" bindtap="selectDistrict">不限</view>
+        <view wx:for="{{regionOptions}}" wx:key="name" class="filter-chip {{draftFilters.district === item.name ? 'active' : ''}}" data-district="{{item.name}}" bindtap="selectDistrict">{{item.name}}</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="filter-section">
+    <view class="filter-label">板块</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.block ? 'active' : ''}}" data-block="" bindtap="selectBlock">不限</view>
+        <view wx:for="{{blockOptions}}" wx:key="*this" class="filter-chip {{draftFilters.block === item ? 'active' : ''}}" data-block="{{item}}" bindtap="selectBlock">{{item}}</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="filter-section">
+    <view class="filter-label">小区</view>
+    <view class="community-combobox">
+      <input class="filter-input" value="{{draftFilters.community}}" data-field="community" bindfocus="focusCommunity" bindinput="updateInput" placeholder="输入或选择小区" />
+      <view wx:if="{{showCommunityOptions && visibleCommunityOptions.length}}" class="community-options">
+        <view wx:for="{{visibleCommunityOptions}}" wx:key="*this" class="community-option" data-community="{{item}}" bindtap="selectCommunity">{{item}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="filter-section">
+    <view class="filter-label">户型</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view wx:for="{{layoutOptions}}" wx:key="*this" class="filter-chip {{(!draftFilters.layout && item === '不限') || draftFilters.layout === item ? 'active' : ''}}" data-layout="{{item}}" bindtap="selectLayout">{{item}}</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="filter-section">
+    <view class="filter-label">租赁方式</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.rentMode ? 'active' : ''}}" data-rentmode="" bindtap="selectRentMode">不限</view>
+        <view class="filter-chip {{draftFilters.rentMode === '整租' ? 'active' : ''}}" data-rentmode="整租" bindtap="selectRentMode">整租</view>
+        <view class="filter-chip {{draftFilters.rentMode === '合租' ? 'active' : ''}}" data-rentmode="合租" bindtap="selectRentMode">合租</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="filter-section">
+    <view class="filter-label">房源特点</view>
+    <scroll-view class="filter-scroll-row" scroll-x enhanced show-scrollbar="{{false}}">
+      <view class="filter-row nowrap">
+        <view class="filter-chip {{!draftFilters.features ? 'active' : ''}}" data-feature="" bindtap="selectFeature">不限</view>
+        <view wx:for="{{featureOptions}}" wx:key="*this" class="filter-chip {{draftFilters.features === item ? 'active' : ''}}" data-feature="{{item}}" bindtap="selectFeature">{{item}}</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="price-filter-row">
+    <input class="filter-input price-input" value="{{draftFilters.rentMin}}" data-field="rentMin" bindinput="updateInput" type="number" placeholder="最低租金" />
+    <view class="price-divider"></view>
+    <input class="filter-input price-input" value="{{draftFilters.rentMax}}" data-field="rentMax" bindinput="updateInput" type="number" placeholder="最高租金" />
+    <button class="filter-action primary" loading="{{loading}}" bindtap="applyFilters">筛选</button>
+    <button class="filter-action ghost" bindtap="resetFilters">重置</button>
+  </view>
+</view>

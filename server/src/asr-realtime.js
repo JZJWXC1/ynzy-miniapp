@@ -10,6 +10,9 @@ const DEFAULT_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
 const CLIENT_PATH = '/mini/asr/realtime'
 const PCM_SAMPLE_RATE = 16000
 const MAX_QUEUED_EVENTS = 128
+// 单帧上限：16kHz PCM 录音帧仅约 4KB（base64 约 5.3KB），256KB 已是 ~50 倍余量。ws 默认
+// maxPayload 为 100MiB，未收紧时未认证客户端可用超大单帧放大内存；显式收紧到 256KB。
+const MAX_FRAME_BYTES = 256 * 1024
 
 function unique(values) {
   const seen = new Set()
@@ -130,13 +133,22 @@ function captionFromEvent(event = {}) {
 
 function safeSend(ws, payload) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false
-  ws.send(typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload))
-  return true
+  // send 在 readyState 检查后、底层 socket 断裂时仍可能同步抛错；兜住避免逃逸成 uncaughtException。
+  try {
+    ws.send(typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload))
+    return true
+  } catch (error) {
+    return false
+  }
 }
 
 function sendUpstream(upstream, payload, queue) {
   if (upstream && upstream.readyState === WebSocket.OPEN) {
-    upstream.send(JSON.stringify(payload))
+    try {
+      upstream.send(JSON.stringify(payload))
+    } catch (error) {
+      if (queue.length < MAX_QUEUED_EVENTS) queue.push(payload)
+    }
     return
   }
   if (queue.length < MAX_QUEUED_EVENTS) queue.push(payload)
@@ -144,7 +156,11 @@ function sendUpstream(upstream, payload, queue) {
 
 function flushQueue(upstream, queue) {
   while (queue.length && upstream && upstream.readyState === WebSocket.OPEN) {
-    upstream.send(JSON.stringify(queue.shift()))
+    try {
+      upstream.send(JSON.stringify(queue.shift()))
+    } catch (error) {
+      break
+    }
   }
 }
 
@@ -205,7 +221,12 @@ function handleRealtimeConnection(clientWs, req, options = {}) {
   })
 
   upstream.on('open', () => {
-    upstream.send(JSON.stringify(buildSessionUpdate(db)))
+    // 'open' 回调里的同步 send 若抛错会逃逸成 uncaughtException（触发全局 process.exit）；兜住。
+    try {
+      upstream.send(JSON.stringify(buildSessionUpdate(db)))
+    } catch (error) {
+      return
+    }
     flushQueue(upstream, queue)
     safeSend(clientWs, {
       type: 'connected',
@@ -255,13 +276,53 @@ function handleRealtimeConnection(clientWs, req, options = {}) {
       upstream.close()
     }
   })
+
+  // ws 收到畸形/协议非法帧（错误 mask、非法 opcode、RSV 位置位等）会在该连接上 emit('error')。
+  // 无 error 监听时 EventEmitter 会抛出 → uncaughtException → 撞上全局 process.exit(1)，任意未认证
+  // 客户端一条畸形帧即可远程打死整进程。这里兜住：仅断开本连接与其上游，绝不冒泡成进程级异常。
+  clientWs.on('error', () => {
+    if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+      upstream.close()
+    }
+    try {
+      clientWs.close()
+    } catch (error) {
+      // 连接已损坏，close 再抛也无妨。
+    }
+  })
 }
 
 function attachRealtimeAsr(server, options = {}) {
-  const wss = new WebSocketServer({ noServer: true })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
   server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host}`)
-    if (decodeURIComponent(url.pathname) !== CLIENT_PATH) return
+    // upgrade 事件是同步监听器，不经过 async router 的兜底：畸形百分号转义（如 /%zz）会让
+    // decodeURIComponent 抛 URIError、畸形 Host 头会让 new URL 抛 TypeError，逃逸出去即
+    // uncaughtException——现在全局兜底是 process.exit，任意客户端一条畸形 upgrade 即可打死
+    // 进程。故与 router 的 URL 解析同样独立 try：解析失败直接销毁连接，不升级、不崩进程。
+    let pathname
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`)
+      pathname = decodeURIComponent(url.pathname)
+    } catch (error) {
+      socket.destroy()
+      return
+    }
+    if (pathname !== CLIENT_PATH) return
+    // 鉴权/限流：实时 ASR 每条连接都用服务端密钥开一路付费 DashScope 上游，未认证客户端可白嫖
+    // 付费语音识别并放大成本/资源 DoS。交由 options.authorizeUpgrade 裁决（登录放行、游客按 IP
+    // 限流）。该回调在同步 upgrade 监听器内，任何异常都必须兜住、只销毁连接、绝不冒泡崩进程。
+    if (typeof options.authorizeUpgrade === 'function') {
+      let allowed = false
+      try {
+        allowed = options.authorizeUpgrade(req) === true
+      } catch (error) {
+        allowed = false
+      }
+      if (!allowed) {
+        socket.destroy()
+        return
+      }
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleRealtimeConnection(ws, req, options)
     })

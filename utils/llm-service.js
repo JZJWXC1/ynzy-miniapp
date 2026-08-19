@@ -2,6 +2,7 @@ const apiClient = require('./api-client')
 const { getRuntimeConfig, shouldUseMock } = require('./api-config')
 const dataCenter = require('./mock-data')
 const listingDisplay = require('./listing-display')
+const { anonymousPublicRequestData } = require('./public-request-safety')
 const {
   NO_FEATURE,
   LISTING_FEATURE_OPTIONS,
@@ -9,7 +10,9 @@ const {
 } = require('./listing-features')
 
 const MAX_RECOMMEND_COUNT = 5
+const LLM_MATCH_TIMEOUT_MS = 60000
 const AREA_WORDS = ['钱江新城', '上城区', '拱墅区', '西湖区', '滨江区', '萧山区', '余杭区', '临平区', '钱塘区', '上城', '拱墅', '西湖', '滨江', '萧山', '余杭', '临平', '钱塘', '西兴', '长河', '浦沿', '东新园', '建设路']
+const COMMUNITY_WORDS = ['东新园']
 const CONFIRMATION_FIELD_CONFIG = [
   { key: 'budget', label: '预算', emptyText: '待补充' },
   { key: 'location', label: '区域/小区', emptyText: '待补充' },
@@ -43,6 +46,35 @@ const FEATURE_ALIASES = {
 
 function pickWord(text, words) {
   return words.find((word) => text.indexOf(word) !== -1) || ''
+}
+
+function uniqueLocationWords(values) {
+  return Array.from(new Set((values || [])
+    .map((value) => String(value || '').trim())
+    .filter((value) => value.length >= 2 && value.length <= 40)))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right, 'zh-CN'))
+}
+
+function publicLocationCandidates(candidates) {
+  if (Array.isArray(candidates)) return candidates
+  try {
+    const listings = dataCenter.getListings({ publicGuest: true })
+    return Array.isArray(listings) ? listings : []
+  } catch (error) {
+    return []
+  }
+}
+
+function localLocationDictionary(candidates) {
+  const listings = publicLocationCandidates(candidates)
+  const areaWords = uniqueLocationWords(AREA_WORDS.concat(
+    listings.flatMap((listing) => [listing && listing.district, listing && listing.area])
+  ))
+  const areaKeys = new Set(areaWords)
+  const communityWords = uniqueLocationWords(COMMUNITY_WORDS.concat(
+    listings.flatMap((listing) => [listing && listing.block, listing && listing.community])
+  )).filter((word) => !areaKeys.has(word))
+  return { areaWords, communityWords }
 }
 
 function cnDigit(value) {
@@ -118,20 +150,21 @@ function parseBudget(source) {
   return value >= 1000 ? { minBudget: '', maxBudget: value, budget: String(value) } : { minBudget: '', maxBudget: '', budget: '' }
 }
 
-function parseNeedText(text) {
+function parseNeedText(text, candidates) {
   const source = scrubDemandSource(text).replace(/\s+/g, '')
   const budget = parseBudget(source)
   const layoutMatch = source.match(/单间|[一二两三四五六七八九\d](?:室|房)/)
   const features = LISTING_FEATURE_OPTIONS
     .filter((feature) => feature !== NO_FEATURE)
     .filter((feature) => (FEATURE_ALIASES[feature] || [feature]).some((word) => source.indexOf(word) !== -1))
+  const locationDictionary = localLocationDictionary(candidates)
 
   return {
     budget: budget.budget,
     minBudget: budget.minBudget,
     maxBudget: budget.maxBudget,
-    area: pickWord(source, AREA_WORDS),
-    community: source.indexOf('东新园') !== -1 ? '东新园' : '',
+    area: pickWord(source, locationDictionary.areaWords),
+    community: pickWord(source, locationDictionary.communityWords),
     rentMode: source.indexOf('合租') !== -1 || source.indexOf('单间') !== -1
       ? '合租'
       : (source.indexOf('整租') !== -1 ? '整租' : ''),
@@ -307,7 +340,12 @@ function buildReply(need, listings, followUpQuestion) {
 function buildLocalMatch(payload) {
   const need = needFromPayload(payload)
   const followUpQuestion = followUpForNeed(need)
-  const rawResult = followUpQuestion ? { listings: [] } : dataCenter.matchListings(need)
+  // 游客与登录用户都可匹配三类前台有效房源；Mock 只从可信会话派生公共投影，
+  // 绝不接受页面透传的身份、维护人或权限字段。
+  const localMatchNeed = Object.assign({}, need, {
+    publicGuest: true
+  })
+  const rawResult = followUpQuestion ? { listings: [] } : dataCenter.matchListings(localMatchNeed)
   const listings = normalizeListings(rawResult.listings || [], 'exact')
   return {
     need,
@@ -339,6 +377,54 @@ function buildLocalRecognition(payload) {
     listings: [],
     reply: buildRecognitionReply(followUpQuestion)
   }
+}
+
+function buildLocalAssistant(payload) {
+  const requestPayload = Object.assign({}, payload || {})
+  const localMatch = buildLocalMatch(requestPayload)
+  return {
+    ...localMatch,
+    threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
+    nextQuestion: localMatch.followUpQuestion || '',
+    intent: 'rental_match',
+    mode: 'local-graph-assistant-v1'
+  }
+}
+
+function mockPreExecutionUnauthorizedError() {
+  const error = new Error('请先登录内部中介账号')
+  error.statusCode = 401
+  error.data = { authFailurePhase: 'pre_execution' }
+  return error
+}
+
+function assertPublicMockAuthorization() {
+  const token = String(typeof apiClient.getAuthToken === 'function' ? (apiClient.getAuthToken() || '') : '').trim()
+  if (typeof dataCenter.resolveAuthSession !== 'function') {
+    if (token) throw mockPreExecutionUnauthorizedError()
+    return null
+  }
+  const viewer = dataCenter.resolveAuthSession(token)
+  if (token && (!viewer || !viewer.id)) throw mockPreExecutionUnauthorizedError()
+  return viewer
+}
+
+function runPublicMock(requestData, buildResult) {
+  // 必须先验证 token，再执行匹配或识别。失效 token 的首次调用只抛执行前 401，
+  // api-client 匿名重试时会把脱敏后的 requestData 重新传进来并重新计算结果。
+  assertPublicMockAuthorization()
+  return buildResult(Object.assign({}, requestData || {}))
+}
+
+function authFallbackRequestOptions(requestContext) {
+  const context = requestContext && typeof requestContext === 'object' ? requestContext : {}
+  return typeof context.authFallbackRequestId === 'string'
+    ? { authFallbackRequestId: context.authFallbackRequestId }
+    : {}
+}
+
+function isUnauthorizedError(error) {
+  return Boolean(error && Number(error.statusCode) === 401)
 }
 
 function networkWarning(error) {
@@ -447,16 +533,22 @@ function normalizeRecognitionResult(serverResult, requestPayload) {
   }
 }
 
-function recognizeRentalNeed(payload) {
+function recognizeRentalNeed(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {}, { stage: 'recognize' })
-  const localResult = buildLocalRecognition(requestPayload)
   return apiClient.call({
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
-    mock: () => localResult
+    timeout: LLM_MATCH_TIMEOUT_MS,
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalRecognition)
   }).then((serverResult) => normalizeRecognitionResult(serverResult, requestPayload)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalRecognition(requestPayload)
       return {
         ...localResult,
         warning: networkWarning(error),
@@ -467,16 +559,22 @@ function recognizeRentalNeed(payload) {
   })
 }
 
-function matchRentalNeed(payload) {
+function matchRentalNeed(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {}, { stage: 'match', confirmed: true })
-  const localResult = buildLocalMatch(requestPayload)
   return apiClient.call({
     path: '/mini/llm/match',
     method: 'POST',
     data: requestPayload,
-    mock: () => localResult
+    timeout: LLM_MATCH_TIMEOUT_MS,
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalMatch)
   }).then((serverResult) => normalizeServerResult(serverResult, requestPayload)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalMatch(requestPayload)
       return {
         ...localResult,
         warning: networkWarning(error),
@@ -500,23 +598,22 @@ function normalizeAssistantResult(serverResult, requestPayload, localResult) {
   }
 }
 
-function chatAssistant(payload) {
+function chatAssistant(payload, requestContext) {
   const requestPayload = Object.assign({}, payload || {})
-  const localMatch = buildLocalMatch(requestPayload)
-  const localResult = {
-    ...localMatch,
-    threadId: requestPayload.threadId || `LOCAL-AST-${Date.now()}`,
-    nextQuestion: localMatch.followUpQuestion || '',
-    intent: 'rental_match',
-    mode: 'local-graph-assistant-v1'
-  }
   return apiClient.call({
     path: '/mini/assistant/chat',
     method: 'POST',
     data: requestPayload,
-    mock: () => localResult
-  }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, localResult)).catch((error) => {
+    timeout: LLM_MATCH_TIMEOUT_MS,
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    ...authFallbackRequestOptions(requestContext),
+    mock: (requestData) => runPublicMock(requestData, buildLocalAssistant)
+  }).then((serverResult) => normalizeAssistantResult(serverResult, requestPayload, null)).catch((error) => {
+    if (isUnauthorizedError(error)) throw error
     if (shouldUseLocalFallbackAfterError()) {
+      const localResult = buildLocalAssistant(requestPayload)
       return {
         ...normalizeAssistantResult(localResult, requestPayload, localResult),
         warning: networkWarning(error),
@@ -536,11 +633,14 @@ function submitAssistantFeedback(payload) {
     path: '/mini/assistant/feedback',
     method: 'POST',
     data: requestPayload,
-    mock: () => ({
+    publicReadAuthFallback: true,
+    retryAnonymousOnAuthFailure: true,
+    buildAnonymousRetryData: anonymousPublicRequestData,
+    mock: (requestData) => runPublicMock(requestData, (currentPayload) => ({
       id: `LOCAL-AF-${Date.now()}`,
       status: 'open',
-      feedbackType: requestPayload.feedbackType || 'other'
-    })
+      feedbackType: currentPayload.feedbackType || 'other'
+    }))
   })
 }
 
@@ -548,6 +648,7 @@ module.exports = {
   parseNeedText,
   buildLocalRecognition,
   buildLocalMatch,
+  LLM_MATCH_TIMEOUT_MS,
   recognizeRentalNeed,
   matchRentalNeed,
   chatAssistant,

@@ -1,0 +1,123 @@
+page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--brand-cream);
+}
+
+.faq-page {
+  padding-bottom: 96rpx;
+}
+
+.faq-hero {
+  padding: 34rpx 32rpx;
+  color: #ffffff;
+  background: linear-gradient(145deg, #255d49 0%, #3f8065 72%, #77a98e 100%);
+  border-radius: 30rpx;
+  box-shadow: 0 18rpx 42rpx rgba(37, 93, 73, 0.2);
+}
+
+.faq-kicker {
+  font-size: 21rpx;
+  font-weight: 800;
+  letter-spacing: 4rpx;
+  opacity: 0.78;
+}
+
+.faq-title {
+  margin-top: 14rpx;
+  font-size: 38rpx;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.faq-subtitle {
+  margin-top: 18rpx;
+  font-size: 23rpx;
+  line-height: 1.65;
+  opacity: 0.88;
+}
+
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+  margin-top: 26rpx;
+}
+
+.faq-item {
+  overflow: hidden;
+  background: var(--brand-card);
+  border: 1rpx solid var(--brand-line);
+  border-radius: 24rpx;
+  box-shadow: 0 10rpx 26rpx rgba(46, 81, 74, 0.06);
+}
+
+.faq-question {
+  width: 100%;
+  min-height: 104rpx;
+  display: flex;
+  align-items: center;
+  gap: 18rpx;
+  margin: 0;
+  padding: 20rpx 24rpx;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+/* 微信 WebView 原生 wx-button 默认宽度压过 .faq-question 单类的 width:100%，把问题按钮限成约
+   184px、正文挤成约 97px。用卡片内强选择器 + !important 强制全宽并重置最小宽度。不改全局 button。 */
+.faq-item .faq-question {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.faq-number {
+  flex: 0 0 48rpx;
+  height: 48rpx;
+  color: #ffffff;
+  font-size: 21rpx;
+  font-weight: 900;
+  line-height: 48rpx;
+  text-align: center;
+  background: var(--brand-green);
+  border-radius: 15rpx;
+}
+
+.faq-question-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--brand-green-dark);
+  font-size: 27rpx;
+  font-weight: 900;
+  line-height: 1.45;
+}
+
+.faq-toggle {
+  flex: 0 0 42rpx;
+  color: var(--brand-green);
+  font-size: 38rpx;
+  font-weight: 500;
+  line-height: 42rpx;
+  text-align: center;
+}
+
+.faq-answer {
+  padding: 4rpx 28rpx 28rpx 90rpx;
+  color: #536b63;
+  font-size: 24rpx;
+  line-height: 1.75;
+}
+
+.faq-footer {
+  margin-top: 30rpx;
+  padding: 24rpx;
+  color: var(--brand-muted);
+  font-size: 22rpx;
+  line-height: 1.6;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 20rpx;
+}

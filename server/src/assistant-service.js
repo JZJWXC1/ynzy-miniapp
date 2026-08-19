@@ -1,9 +1,45 @@
 const { runAssistantGraph } = require('./assistant/graph')
 const threadStore = require('./assistant/state-store')
 const assistantFeedback = require('./assistant-feedback')
+const matchService = require('./match-service')
+const needFunnel = require('./need-funnel')
+const {
+  safeNeed,
+  safeListings,
+  safePlaceResolution,
+  scrubSensitiveText
+} = require('./assistant/safety')
+
+function ownedPersistentNeedId(db, userId, needId) {
+  const normalizedUserId = String(userId || '').trim()
+  const normalizedNeedId = String(needId || '').trim()
+  if (!normalizedUserId || !normalizedNeedId) return ''
+  const needs = Array.isArray(db.rentalNeeds)
+    ? db.rentalNeeds
+    : (Array.isArray(db.clientNeeds) ? db.clientNeeds : [])
+  const need = needs.find((item) => (
+    item &&
+    item.id === normalizedNeedId &&
+    String(item.brokerId || '').trim() === normalizedUserId
+  ))
+  return need ? normalizedNeedId : ''
+}
+
+function responseWithFeedbackMessageId(response, feedbackMessageId) {
+  const next = { ...response }
+  delete next.feedbackMessageId
+  if (feedbackMessageId) next.feedbackMessageId = feedbackMessageId
+  return next
+}
+
+function createFeedbackTrace(targetDb, userId, payload, response, context) {
+  const traceLog = assistantFeedback.createAssistantTraceLog(targetDb, userId, payload, response, context)
+  needFunnel.recordRecommendation(targetDb, userId, payload.needId, traceLog)
+  return traceLog
+}
 
 async function chat(db, payload = {}, context = {}) {
-  const threadId = threadStore.resolveThreadId(payload.threadId)
+  const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
   const previous = threadStore.getThread(threadId) || {}
   const result = await runAssistantGraph(db, payload, {
     ...context,
@@ -17,12 +53,79 @@ async function chat(db, payload = {}, context = {}) {
     lastIntent: result.response.intent,
     lastTraceSummary: result.traceSummary || null
   })
-  assistantFeedback.createAssistantTraceLog(db, context.userId, payload, result.response, {
+
+  const writeTraceLog = (targetDb) => createFeedbackTrace(targetDb, context.userId, payload, result.response, {
     threadId,
-    traceSummary: result.traceSummary
+    traceSummary: result.traceSummary,
+    feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
+  })
+  // 慢速 LLM 调用已在只读快照上跑完，留痕交由调用方在同步写事务里落到最新 db，
+  // 避免 await 期间的并发写入被旧快照整库回写覆盖（见 db.js 写窗口竞态）。
+  // 未提供 persistTrace 时（测试等直调场景）保持原语义：直接写进传入的 db。
+  const traceLog = typeof context.persistTrace === 'function'
+    ? context.persistTrace(writeTraceLog)
+    : writeTraceLog(db)
+
+  return responseWithFeedbackMessageId(result.response, traceLog && traceLog.feedbackNeedId && traceLog.id)
+}
+
+function fallbackChat(db, payload = {}, context = {}, options = {}) {
+  const threadId = context.threadId || threadStore.resolveThreadId(payload.threadId)
+  const local = matchService.buildLocalMatch(db, payload)
+  const response = {
+    threadId,
+    reply: scrubSensitiveText(local.reply || ''),
+    nextQuestion: scrubSensitiveText(local.followUpQuestion || ''),
+    intent: 'rental_match',
+    need: safeNeed(local.need || {}),
+    placeResolution: safePlaceResolution(local.placeResolution),
+    listings: safeListings(local.listings || []),
+    exactListings: safeListings(local.exactListings || []),
+    nearbyListings: safeListings(local.nearbyListings || []),
+    needParserMode: 'local-fallback',
+    needParserWarnings: [],
+    replyMode: 'local-fallback',
+    llmWarning: scrubSensitiveText(options.reason || ''),
+    mode: 'local-graph-assistant-v1',
+    degraded: true,
+    degradedNotice: '智能解读稍后重试',
+    degradedReason: options.code || 'assistant_chat_fallback'
+  }
+
+  threadStore.saveThread(threadId, {
+    need: response.need,
+    lastIntent: response.intent,
+    lastTraceSummary: null
   })
 
-  return result.response
+  const writeTraceLog = (targetDb) => createFeedbackTrace(targetDb, context.userId, payload, response, {
+    threadId,
+    traceSummary: null,
+    feedbackNeedId: ownedPersistentNeedId(targetDb, context.userId, payload.needId)
+  })
+  const traceLog = typeof context.persistTrace === 'function'
+    ? context.persistTrace(writeTraceLog)
+    : writeTraceLog(db)
+
+  return responseWithFeedbackMessageId(response, traceLog && traceLog.feedbackNeedId && traceLog.id)
+}
+
+function recordFeedbackResult(db, payload = {}, response = {}, context = {}) {
+  const feedbackNeedId = ownedPersistentNeedId(db, context.userId, payload.needId)
+  if (!feedbackNeedId) return responseWithFeedbackMessageId(response, '')
+  const threadId = String(response.threadId || payload.threadId || '').trim() || threadStore.resolveThreadId('')
+  const traceLog = createFeedbackTrace(db, context.userId, payload, {
+    ...response,
+    threadId
+  }, {
+    threadId,
+    traceSummary: context.traceSummary || null,
+    feedbackNeedId
+  })
+  return responseWithFeedbackMessageId({
+    ...response,
+    threadId: traceLog.threadId || threadId
+  }, traceLog.id)
 }
 
 function feedback(db, payload = {}, context = {}) {
@@ -66,6 +169,8 @@ function traceRows(db, options = {}) {
 
 module.exports = {
   chat,
+  fallbackChat,
+  recordFeedbackResult,
   feedback,
   feedbackRows,
   reviewFeedback,

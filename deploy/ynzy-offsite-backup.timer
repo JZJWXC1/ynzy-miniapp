@@ -1,0 +1,11 @@
+[Unit]
+Description=每 6 小时运行一次异地加密备份
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=ynzy-offsite-backup.service
+
+[Install]
+WantedBy=timers.target

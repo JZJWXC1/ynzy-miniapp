@@ -13,10 +13,10 @@ page {
   gap: 18rpx;
   align-items: center;
   padding: 26rpx;
-  background: linear-gradient(135deg, #aee5f2 0%, #ffffff 52%, #fff3cf 100%);
-  border: 1rpx solid rgba(47, 111, 96, 0.14);
+  background: linear-gradient(135deg, #DCEBE9 0%, #ffffff 52%, #F1E4C8 100%);
+  border: 1rpx solid rgba(46, 81, 74, 0.14);
   border-radius: 34rpx;
-  box-shadow: 0 16rpx 38rpx rgba(31, 81, 68, 0.08);
+  box-shadow: 0 16rpx 38rpx rgba(36, 62, 56, 0.08);
 }
 
 .assistant-hero > view:nth-child(2) {
@@ -40,7 +40,7 @@ page {
 }
 
 .hero-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
   line-height: 1.25;
@@ -48,7 +48,7 @@ page {
 
 .hero-desc {
   margin-top: 8rpx;
-  color: #6f837c;
+  color: #66736E;
   font-size: 23rpx;
   line-height: 1.45;
 }
@@ -56,12 +56,12 @@ page {
 .hero-mark {
   width: 64rpx;
   height: 64rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
   line-height: 64rpx;
   text-align: center;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 22rpx;
 }
 
@@ -84,21 +84,21 @@ page {
 .message-bubble {
   max-width: 88%;
   padding: 20rpx 22rpx;
-  color: #17342e;
+  color: #1E332F;
   font-size: 25rpx;
   line-height: 1.55;
-  background: #f7fbf8;
+  background: #F6F2EA;
   border-radius: 24rpx;
 }
 
 .message-row.assistant .message-bubble {
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-top-left-radius: 8rpx;
 }
 
 .message-row.user .message-bubble {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
   border-top-right-radius: 8rpx;
 }
 
@@ -108,7 +108,7 @@ page {
 }
 
 .input-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 28rpx;
   font-weight: 900;
 }
@@ -118,11 +118,11 @@ page {
   min-height: 172rpx;
   margin-top: 16rpx;
   padding: 20rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 25rpx;
   line-height: 1.5;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 22rpx;
 }
 
@@ -131,11 +131,11 @@ page {
   min-height: 104rpx;
   margin-top: 14rpx;
   padding: 18rpx 20rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   line-height: 1.45;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 20rpx;
 }
 
@@ -149,22 +149,22 @@ page {
 .voice-button {
   flex: 0 0 176rpx;
   height: 64rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 24rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 18rpx;
 }
 
 .voice-button.active {
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
 }
 
 .voice-tip {
   flex: 1 1 auto;
   min-width: 0;
-  color: #6f837c;
+  color: #66736E;
   font-size: 22rpx;
   line-height: 1.35;
 }
@@ -178,10 +178,10 @@ page {
 .demo-chip {
   height: 58rpx;
   padding: 0 20rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 23rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 18rpx;
 }
 
@@ -197,7 +197,7 @@ page {
   min-width: 0;
   padding: 18rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 24rpx;
 }
 
@@ -206,7 +206,7 @@ page {
 }
 
 .field-label {
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
   font-weight: 800;
 }
@@ -215,7 +215,7 @@ page {
   width: 100%;
   height: 54rpx;
   margin-top: 8rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 26rpx;
   font-weight: 900;
 }
@@ -239,22 +239,22 @@ page {
   align-items: center;
   justify-content: center;
   padding: 0 20rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 23rpx;
   font-weight: 900;
-  background: #f7fbf8;
-  border: 1rpx solid #dce9e3;
+  background: #F6F2EA;
+  border: 1rpx solid #DED8CC;
   border-radius: 18rpx;
 }
 
 .feature-chip.active {
-  color: #153f36;
-  background: #f6bd36;
-  border-color: #f6bd36;
+  color: #182E2A;
+  background: #C9A45D;
+  border-color: #C9A45D;
 }
 
 .guide-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 27rpx;
   font-weight: 900;
 }
@@ -271,10 +271,10 @@ page {
   display: flex;
   align-items: center;
   padding: 0 16rpx;
-  color: #8a5b00;
+  color: #7A572D;
   font-size: 22rpx;
   font-weight: 900;
-  background: #fff3cf;
+  background: #F1E4C8;
   border-radius: 16rpx;
 }
 
@@ -285,7 +285,7 @@ page {
   color: #ffffff;
   font-size: 29rpx;
   font-weight: 900;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 26rpx;
 }
 
@@ -296,7 +296,7 @@ page {
 
 .confirm-desc {
   margin-top: 10rpx;
-  color: #6f837c;
+  color: #66736E;
   font-size: 23rpx;
   font-weight: 800;
   line-height: 1.45;
@@ -310,7 +310,7 @@ page {
   font-size: 26rpx;
   font-weight: 900;
   line-height: 72rpx;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 22rpx;
 }
 
@@ -333,12 +333,12 @@ page {
   min-width: 0;
   padding: 20rpx;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 24rpx;
 }
 
 .need-value {
-  color: #153f36;
+  color: #182E2A;
   font-size: 27rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -346,7 +346,7 @@ page {
 
 .need-label {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 21rpx;
 }
 
@@ -373,7 +373,7 @@ page {
 }
 
 .match-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 29rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -382,7 +382,7 @@ page {
 .match-meta,
 .match-sub {
   margin-top: 8rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.4;
 }
@@ -399,10 +399,10 @@ page {
   display: flex;
   align-items: center;
   padding: 0 12rpx;
-  color: #153f36;
+  color: #182E2A;
   font-size: 20rpx;
   font-weight: 900;
-  background: #eef8f3;
+  background: #EEF3EF;
   border-radius: 14rpx;
 }
 
@@ -415,9 +415,9 @@ page {
   align-items: center;
   justify-content: center;
   padding: 8rpx 14rpx;
-  color: #153f36;
+  color: #182E2A;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 16rpx;
 }
 
@@ -445,21 +445,21 @@ page {
   display: flex;
   align-items: center;
   padding: 0 14rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 20rpx;
   font-weight: 900;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 14rpx;
 }
 
 .maintain-tag {
-  color: #8a5b00;
-  background: #fff3cf;
+  color: #7A572D;
+  background: #F1E4C8;
 }
 
 .reason-row text {
-  color: #4f675f;
-  background: #f7fbf8;
+  color: #62706B;
+  background: #F6F2EA;
 }
 
 .match-bottom {
@@ -468,7 +468,7 @@ page {
 }
 
 .match-price {
-  color: #f2765d;
+  color: #B9655A;
   font-size: 32rpx;
   font-weight: 900;
 }
@@ -476,10 +476,10 @@ page {
 .match-tag {
   min-height: 48rpx;
   padding: 0 16rpx;
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 22rpx;
   font-weight: 900;
   line-height: 48rpx;
-  background: #e9f5f0;
+  background: #EDF3EF;
   border-radius: 16rpx;
 }

@@ -1,6 +1,7 @@
 {
   "usingComponents": {
-    "navigation-bar": "/components/navigation-bar/navigation-bar"
+    "navigation-bar": "/components/navigation-bar/navigation-bar",
+    "favorite-toggle": "/components/favorite-toggle/favorite-toggle"
   },
   "navigationBarTitleText": "地图找房"
 }

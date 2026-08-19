@@ -1,0 +1,11 @@
+[Unit]
+Description=Ynzy Miniapp 恢复演练 + 新鲜度巡检 (P0-1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ynzy-miniapp/server
+# 与备份服务同一环境文件（需要 BACKUP_ENCRYPTION_KEY 解密、BACKUP_STAGE_DIR/BACKUP_MAX_AGE_HOURS）。
+EnvironmentFile=/etc/default/ynzy-backup
+ExecStart=/usr/bin/env node scripts/restore-drill.js

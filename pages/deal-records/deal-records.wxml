@@ -5,7 +5,7 @@
       <view>
         <view class="hero-kicker">成交跟进</view>
         <view class="hero-title">每一笔签单都从报备记录发起。</view>
-        <view class="hero-desc">管理员确认后按成交总比例 20% 计算，金额按分保存。</view>
+        <view class="hero-desc">管理员确认后按签单时冻结的分佣配置结算（上传人+平台分出，带看成交中介净留其余），金额按分保存。</view>
       </view>
       <view class="hero-mark">签</view>
     </view>
@@ -22,7 +22,17 @@
       <button class="section-title-action" bindtap="goReports">看报备</button>
     </view>
 
-    <view wx:if="{{!deals.length && !loading}}" class="empty-card soft-card">
+    <view wx:if="{{loadFailed}}" class="empty-card soft-card">
+      <view class="empty-title">签单记录加载失败</view>
+      <view class="empty-desc">已保留上次结果，请检查网络后重试。</view>
+      <button class="primary-button" bindtap="retryRecords">重新加载</button>
+    </view>
+
+    <view wx:if="{{!deals.length && loading}}" class="empty-card soft-card">
+      <view class="empty-title">正在加载签单记录</view>
+    </view>
+
+    <view wx:if="{{!deals.length && !loading && !loadFailed}}" class="empty-card soft-card">
       <view class="empty-title">暂无签单</view>
       <view class="empty-desc">从我的报备里发起签单后，这里会显示确认状态。</view>
       <button class="primary-button" bindtap="goReports">去报备记录</button>

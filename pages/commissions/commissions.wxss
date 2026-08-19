@@ -14,9 +14,9 @@ page {
   gap: 24rpx;
   padding: 32rpx;
   color: #ffffff;
-  background: #2f6f60;
+  background: #2E514A;
   border-radius: 40rpx;
-  box-shadow: 0 18rpx 42rpx rgba(47, 111, 96, 0.18);
+  box-shadow: 0 18rpx 42rpx rgba(46, 81, 74, 0.18);
 }
 
 .hero-kicker {
@@ -46,10 +46,10 @@ page {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  color: #153f36;
+  color: #182E2A;
   font-size: 42rpx;
   font-weight: 900;
-  background: #f6bd36;
+  background: #C9A45D;
   border-radius: 30rpx;
 }
 
@@ -66,19 +66,19 @@ page {
   padding: 22rpx 8rpx;
   text-align: center;
   background: #ffffff;
-  border: 1rpx solid #dce9e3;
+  border: 1rpx solid #DED8CC;
   border-radius: 26rpx;
 }
 
 .stat-value {
-  color: #153f36;
+  color: #182E2A;
   font-size: 34rpx;
   font-weight: 900;
 }
 
 .stat-label {
   margin-top: 6rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 22rpx;
 }
 
@@ -101,7 +101,7 @@ page {
 }
 
 .commission-title {
-  color: #153f36;
+  color: #182E2A;
   font-size: 30rpx;
   font-weight: 900;
   line-height: 1.35;
@@ -110,25 +110,25 @@ page {
 .commission-rate {
   flex: 0 1 360rpx;
   padding: 8rpx 14rpx;
-  color: #a16f00;
+  color: #836033;
   font-size: 23rpx;
   font-weight: 900;
   line-height: 1.35;
   text-align: center;
-  background: #fff3cf;
+  background: #F1E4C8;
   border-radius: 16rpx;
 }
 
 .commission-meta,
 .commission-time {
   margin-top: 12rpx;
-  color: #78918a;
+  color: #6A7671;
   font-size: 23rpx;
   line-height: 1.45;
 }
 
 .commission-status {
-  color: #2f6f60;
+  color: #2E514A;
   font-size: 24rpx;
   font-weight: 900;
 }

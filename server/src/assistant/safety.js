@@ -14,6 +14,7 @@ const SENSITIVE_KEYS = new Set([
   'unitNumber',
   'roomNumber',
   'roomNo',
+  'roomAddress',
   'houseNo',
   'doorNo',
   'contact',
@@ -21,6 +22,22 @@ const SENSITIVE_KEYS = new Set([
   'mobile',
   'customerPhone',
   'landlordPhone',
+  'companyContactPhones',
+  'companyContactPhoneText',
+  'viewingMethod',
+  'viewingMethodText',
+  'viewingPassword',
+  'showingPassword',
+  'viewingKeyLocation',
+  'keyLocation',
+  'remark',
+  'note',
+  'memo',
+  'uploader',
+  'uploaderId',
+  'uploaderPhone',
+  'maintainer',
+  'maintainerId',
   'wechat',
   'wechatId',
   'wx',
@@ -70,6 +87,9 @@ const SAFE_LISTING_KEYS = [
   'meta',
   'features',
   'maintenanceText',
+  'sourceLabel',
+  'ownerType',
+  'companyListing',
   'matchGroup',
   'matchGroupText',
   'matchReason',
@@ -95,7 +115,8 @@ function scrubSensitiveText(value) {
     .replace(/\b0\d{2,3}[-\s]?\d{7,8}\b/g, '[电话已隐藏]')
     .replace(/\b400[-\s]?\d{3}[-\s]?\d{4}\b/g, '[电话已隐藏]')
     .replace(/\bwxid_[A-Za-z0-9_-]{5,}\b/ig, '[微信号已隐藏]')
-    .replace(/(?:微信号?|微信|VX|V信|weixin|wechat)[:：\s]*[A-Za-z][A-Za-z0-9_-]{4,19}/ig, '[微信号已隐藏]')
+    .replace(/(^|[^A-Za-z0-9_-])(?:vx|wx|wei\s*xin|we\s*chat|weixin|wechat)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/ig, '$1[微信号已隐藏]')
+    .replace(/(?:联\s*系\s*微\s*信|微\s*信(?:\s*号)?|微\s*号|v\s*信)\s*[:：号]?\s*[A-Za-z][A-Za-z0-9_-]{3,31}/ig, '[微信号已隐藏]')
     .replace(/(?:\d{1,3}|[一二三四五六七八九十]{1,3})(?:栋|幢|号楼|座)(?:\d{1,3}|[一二三四五六七八九十]{1,3})?(?:单元)?[A-Za-z0-9一二三四五六七八九十-]{0,8}(?:室|房|房号)?/g, '[房号已隐藏]')
     .replace(/(?:房号|门牌|房间|室号)[:：\s]*[A-Za-z0-9-]{2,12}/g, '[房号已隐藏]')
     .replace(/(^|[^\d])\d{1,3}[-－]\d{1,3}[-－]\d{2,4}(?!\d)/g, '$1[房号已隐藏]')
@@ -180,10 +201,19 @@ function safeNeed(source = {}) {
   return need
 }
 
+// 标识符字段必须原样透传，绝不能过 scrubSensitiveText：listing.id 形如 L1783427664217530，
+// 其数字子串会命中手机号正则 1[3-9]\d{9} 被脱敏成 L[手机号已隐藏]17530，导致前端拿到坏 id ——
+// 聊天/助手推荐卡「看详情」404、「地图查看」的 listingIds 匹配不到 → 空。id 非敏感信息，不脱敏。
+const RAW_LISTING_KEYS = new Set(['id'])
+
 function safeListing(listing = {}) {
   return SAFE_LISTING_KEYS.reduce((result, key) => {
     if (!Object.prototype.hasOwnProperty.call(listing, key)) return result
     const value = listing[key]
+    if (RAW_LISTING_KEYS.has(key)) {
+      result[key] = value
+      return result
+    }
     if (Array.isArray(value)) {
       result[key] = safeTextArray(value)
       return result

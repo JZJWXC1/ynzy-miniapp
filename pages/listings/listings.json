@@ -1,5 +1,7 @@
 {
   "usingComponents": {
-    "navigation-bar": "/components/navigation-bar/navigation-bar"
+    "navigation-bar": "/components/navigation-bar/navigation-bar",
+    "listing-filter": "/components/listing-filter/listing-filter",
+    "favorite-toggle": "/components/favorite-toggle/favorite-toggle"
   }
 }

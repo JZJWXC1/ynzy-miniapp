@@ -1,0 +1,940 @@
+'use strict'
+
+const assert = require('assert')
+const fs = require('fs')
+const http = require('http')
+const path = require('path')
+const { EventEmitter } = require('events')
+const {
+  createPublicListingMediaService,
+  resolveManagedVideoObjectKey,
+  isSecureSameOrigin
+} = require('../src/public-listing-media')
+
+const SECRET_OBJECT_KEY = 'house-videos/legacy/杭州某小区9栋8单元701室-19900008888.mp4'
+const VIDEO_BODY = Buffer.from('synthetic-public-video-body')
+const COVER_BODY = Buffer.from('synthetic-cover')
+const IMAGE_BODY = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('synthetic-public-image-body')])
+const GIF_BODY = Buffer.concat([Buffer.from('GIF89a', 'ascii'), Buffer.from('synthetic-public-gif-body')])
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port))
+  })
+}
+
+function close(server) {
+  return new Promise((resolve) => server.close(resolve))
+}
+
+function request(port, pathname, options = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: pathname,
+      method: options.method || 'GET',
+      headers: options.headers || {}
+    }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => resolve({
+        statusCode: res.statusCode,
+        headers: res.headers,
+        body: Buffer.concat(chunks)
+      }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function rangeSlice(body, header) {
+  const matched = String(header || '').match(/^bytes=(\d+)-(\d*)$/)
+  if (!matched) return null
+  const start = Number(matched[1])
+  const end = matched[2] ? Number(matched[2]) : body.length - 1
+  if (start > end || start >= body.length) return null
+  return { start, end: Math.min(end, body.length - 1) }
+}
+
+function fakeClientRequest(method = 'GET', headers = {}) {
+  const req = new EventEmitter()
+  req.method = method
+  req.headers = headers
+  return req
+}
+
+function fakeClientResponse() {
+  const res = new EventEmitter()
+  res.headersSent = false
+  res.writableEnded = false
+  res.destroyed = false
+  res.bytesWritten = 0
+  res.writeHead = () => { res.headersSent = true }
+  res.write = (chunk) => {
+    res.bytesWritten += Buffer.byteLength(chunk)
+    return true
+  }
+  res.end = () => { res.writableEnded = true }
+  res.destroy = () => {
+    if (res.destroyed) return
+    res.destroyed = true
+    // Node 的真实 ServerResponse.destroy() 不会在当前调用栈同步触发 close。
+    // 若实现先 settle 并移除 close 监听，再等待 close 清理上游，就会留下后台连接。
+    setImmediate(() => res.emit('close'))
+  }
+  return res
+}
+
+const PENDING = Symbol('pending')
+
+function nextTurnOutcome(promise) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setImmediate(() => resolve(PENDING)))
+  ])
+}
+
+function directMediaService(options = {}) {
+  return createPublicListingMediaService({
+    secret: 'synthetic-concurrency-secret',
+    baseUrl: 'https://api.example.test/',
+    uploadDir: 'house-videos',
+    maxBytes: 1024,
+    timeoutMs: 2000,
+    allowHttpUpstreamForTests: true,
+    allowedOrigins: ['http://127.0.0.1:18080'],
+    signVideoUrl: () => 'http://127.0.0.1:18080/video',
+    signCoverUrl: () => 'http://127.0.0.1:18080/cover',
+    ...options
+  })
+}
+
+function startDirectServe(service, listing, capabilityUrl, options = {}) {
+  const parsed = new URL(capabilityUrl)
+  const kind = options.kind || (parsed.pathname.endsWith('/cover')
+    ? 'cover'
+    : (parsed.pathname.endsWith('/image') ? 'image' : 'video'))
+  const req = fakeClientRequest(options.method || 'GET', options.headers || {})
+  const res = fakeClientResponse()
+  const promise = service.serve(req, res, {
+    listing,
+    listingId: listing.id,
+    kind,
+    token: parsed.searchParams.get('token') || '',
+    assetId: parsed.searchParams.get('assetId') || '',
+    clientKey: options.clientKey || ''
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error })
+  )
+  return { req, res, promise }
+}
+
+async function cleanupDirectAttempts(attempts) {
+  attempts.forEach((attempt) => attempt.req.emit('aborted'))
+  await Promise.all(attempts.map((attempt) => attempt.promise))
+}
+
+async function assertPerClientConcurrencyFairness(listing) {
+  const pendingUpstreams = []
+  const service = directMediaService({
+    maxConcurrent: 3,
+    maxConcurrentPerClient: 2,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => pendingUpstreams.push({ upstreamReq, url, requestOptions, callback })
+      return upstreamReq
+    }
+  })
+  const urls = service.urlsForListing(listing)
+  const attempts = []
+  try {
+    const first = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-a', method: 'GET' })
+    const second = startDirectServe(service, listing, urls.coverUrl, { clientKey: 'client-a', method: 'HEAD', kind: 'cover' })
+    attempts.push(first, second)
+    assert.strictEqual(await nextTurnOutcome(first.promise), PENDING, '首个 GET 应占用媒体槽位')
+    assert.strictEqual(await nextTurnOutcome(second.promise), PENDING, '同 IP 的 HEAD/封面也必须占用同一并发桶')
+
+    const sameClientOverflow = startDirectServe(service, listing, urls.videoUrl, {
+      clientKey: 'client-a',
+      method: 'GET',
+      headers: { range: 'bytes=0-1' }
+    })
+    attempts.push(sameClientOverflow)
+    const sameClientOutcome = await nextTurnOutcome(sameClientOverflow.promise)
+    assert.notStrictEqual(sameClientOutcome, PENDING, '同 IP 超过子上限必须立即拒绝，不能继续占全局槽')
+    assert.strictEqual(sameClientOutcome.error && sameClientOutcome.error.statusCode, 429, '同 IP 并发超限必须返回 429')
+
+    const otherClient = startDirectServe(service, listing, urls.coverUrl, { clientKey: 'client-b', kind: 'cover' })
+    attempts.push(otherClient)
+    assert.strictEqual(await nextTurnOutcome(otherClient.promise), PENDING, 'A 达到子上限后，B 仍须能使用剩余全局槽')
+
+    const globalOverflow = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-c' })
+    attempts.push(globalOverflow)
+    const globalOutcome = await nextTurnOutcome(globalOverflow.promise)
+    assert.strictEqual(globalOutcome.error && globalOutcome.error.statusCode, 503, '全局并发满时必须返回 503')
+
+    first.req.emit('aborted')
+    const firstOutcome = await first.promise
+    assert.strictEqual(firstOutcome.error && firstOutcome.error.statusCode, 499, '客户端断开必须释放全局与单 IP 槽')
+    const afterRelease = startDirectServe(service, listing, urls.videoUrl, { clientKey: 'client-c' })
+    attempts.push(afterRelease)
+    assert.strictEqual(await nextTurnOutcome(afterRelease.promise), PENDING, '任一连接释放后其他 IP 必须立即可进入')
+  } finally {
+    await cleanupDirectAttempts(attempts)
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '连接全部结束后不得残留客户端并发桶')
+}
+
+async function assertCoverHeadUsesMetadataGetOnly(listing) {
+  const signMethods = []
+  const upstreamCalls = []
+  let upstreamReq = null
+  let upstreamRes = null
+  let dataListenerCount = 0
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    signCoverUrl: (objectKey, method) => {
+      signMethods.push(method)
+      return 'http://127.0.0.1:18080/cover'
+    },
+    requestImpl: (url, requestOptions, callback) => {
+      upstreamReq = new EventEmitter()
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        upstreamCalls.push({ method: requestOptions.method })
+        upstreamRes = new EventEmitter()
+        upstreamRes.statusCode = 200
+        upstreamRes.headers = {
+          'content-type': 'image/jpeg',
+          'content-length': String(COVER_BODY.length)
+        }
+        upstreamRes.destroyed = false
+        upstreamRes.destroy = () => { upstreamRes.destroyed = true }
+        upstreamRes.resume = () => {}
+        const originalOn = upstreamRes.on.bind(upstreamRes)
+        upstreamRes.on = (eventName, listener) => {
+          if (eventName === 'data') dataListenerCount += 1
+          return originalOn(eventName, listener)
+        }
+        callback(upstreamRes)
+      }
+      return upstreamReq
+    }
+  })
+  const capability = service.urlsForListing(listing).coverUrl
+  const attempt = startDirectServe(service, listing, capability, {
+    clientKey: 'cover-head-metadata-only',
+    method: 'HEAD',
+    kind: 'cover'
+  })
+  const outcome = await nextTurnOutcome(attempt.promise)
+  assert.notStrictEqual(outcome, PENDING, '封面 HEAD 收到合法上游响应头后必须立即结束，不能等待或消费正文')
+  assert.strictEqual(outcome.ok, true, '封面 HEAD 必须成功完成')
+  assert.deepStrictEqual(signMethods, ['GET'], '封面 HEAD 必须使用 GET 生成 OSS 截帧签名')
+  assert.deepStrictEqual(upstreamCalls, [{ method: 'GET' }], '封面 HEAD 必须只发一次上游 GET')
+  assert.strictEqual(upstreamReq && upstreamReq.destroyed, true, '取得封面响应头后必须立即销毁上游请求')
+  assert.strictEqual(upstreamRes && upstreamRes.destroyed, true, '取得封面响应头后必须立即销毁上游响应')
+  assert.strictEqual(dataListenerCount, 0, '封面 HEAD 不得注册正文 data 监听器')
+  assert.strictEqual(attempt.res.bytesWritten, 0, '封面 HEAD 不得向客户端写入图片正文')
+  assert.strictEqual(attempt.res.writableEnded, true, '封面 HEAD 必须正常结束客户端响应')
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '封面 HEAD 完成后不得残留并发槽')
+}
+
+async function assertSynchronousFailureReleasesSlot(listing, stage) {
+  let callCount = 0
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: () => {
+      callCount += 1
+      const call = callCount
+      if (stage === 'requestImpl' && call === 1) throw new Error('synthetic requestImpl failure')
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => {
+        if (stage === 'setTimeout' && call === 1) throw new Error('synthetic setTimeout failure')
+        return upstreamReq
+      }
+      upstreamReq.end = () => {
+        if (stage === 'end' && call === 1) throw new Error('synthetic end failure')
+      }
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const first = startDirectServe(service, listing, url, { clientKey: `failure-${stage}` })
+  const firstOutcome = await first.promise
+  assert.ok(firstOutcome.error, `${stage} 同步异常必须返回失败`)
+  const second = startDirectServe(service, listing, url, { clientKey: `failure-${stage}` })
+  try {
+    assert.strictEqual(await nextTurnOutcome(second.promise), PENDING, `${stage} 同步异常后必须释放槽位`)
+  } finally {
+    await cleanupDirectAttempts([first, second])
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `${stage} 后不得残留并发计数`)
+}
+
+async function assertInvalidUpstreamDestroyed(listing) {
+  let invalidResponse = null
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        invalidResponse = new EventEmitter()
+        invalidResponse.statusCode = 302
+        invalidResponse.headers = { location: 'http://127.0.0.1:18080/redirect' }
+        invalidResponse.destroyed = false
+        invalidResponse.resume = () => {}
+        invalidResponse.destroy = () => { invalidResponse.destroyed = true }
+        callback(invalidResponse)
+      }
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const attempt = startDirectServe(service, listing, url, { clientKey: 'invalid-upstream' })
+  const outcome = await attempt.promise
+  assert.strictEqual(outcome.error && outcome.error.statusCode, 502, '非法上游响应必须失败')
+  assert.strictEqual(invalidResponse && invalidResponse.destroyed, true, '非法上游响应必须主动销毁，不能释放计数后继续后台吞流量')
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, '非法上游响应后不得残留并发计数')
+}
+
+function syntheticValidUpstreamResponse(contentLength = 4) {
+  const response = new EventEmitter()
+  response.statusCode = 200
+  response.headers = { 'content-type': 'video/mp4', 'content-length': String(contentLength) }
+  response.destroyed = false
+  response.paused = false
+  response.destroy = () => { response.destroyed = true }
+  response.resume = () => { response.paused = false }
+  response.pause = () => { response.paused = true }
+  return response
+}
+
+async function assertAsynchronousReleasePath(listing, stage) {
+  const controls = []
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      const control = { upstreamReq, callback, timeout: null, upstreamRes: null }
+      upstreamReq.destroyed = false
+      upstreamReq.destroy = () => { upstreamReq.destroyed = true }
+      upstreamReq.setTimeout = (milliseconds, handler) => {
+        control.timeout = handler
+        return upstreamReq
+      }
+      upstreamReq.end = () => {
+        if (stage === 'upstream-aborted' || stage === 'upstream-error') {
+          control.upstreamRes = syntheticValidUpstreamResponse()
+          callback(control.upstreamRes)
+        }
+      }
+      controls.push(control)
+      return upstreamReq
+    }
+  })
+  const url = service.urlsForListing(listing).videoUrl
+  const first = startDirectServe(service, listing, url, { clientKey: `async-${stage}` })
+  assert.strictEqual(await nextTurnOutcome(first.promise), PENDING, `${stage} 触发前应占用唯一媒体槽位`)
+  const control = controls[0]
+  if (stage === 'timeout') control.timeout()
+  else if (stage === 'request-error') control.upstreamReq.emit('error', new Error('synthetic async request error'))
+  else if (stage === 'response-close') first.res.emit('close')
+  else if (stage === 'upstream-aborted') control.upstreamRes.emit('aborted')
+  else if (stage === 'upstream-error') control.upstreamRes.emit('error', new Error('synthetic async response error'))
+  const outcome = await first.promise
+  assert.ok(outcome.error, `${stage} 必须以失败结束`)
+  if (stage === 'timeout') assert.strictEqual(outcome.error.statusCode, 504, '真实 timeout 回调必须返回 504')
+  if (stage === 'request-error') assert.strictEqual(outcome.error.statusCode, 502, '上游请求异步 error 必须返回 502')
+  if (stage === 'response-close') assert.strictEqual(outcome.error.statusCode, 499, '客户端响应关闭必须返回 499')
+  assert.strictEqual(control.upstreamReq.destroyed, true, `${stage} 必须销毁上游请求`)
+  if (control.upstreamRes) assert.strictEqual(control.upstreamRes.destroyed, true, `${stage} 必须销毁上游响应`)
+
+  const afterRelease = startDirectServe(service, listing, url, { clientKey: `async-${stage}` })
+  try {
+    assert.strictEqual(await nextTurnOutcome(afterRelease.promise), PENDING, `${stage} 后下一请求必须立即获得已释放槽位`)
+  } finally {
+    afterRelease.req.emit('aborted')
+    await afterRelease.promise
+  }
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `${stage} 后不得残留并发计数`)
+}
+
+async function assertSuccessfulCompletionReleasesSlot(listing, method) {
+  const service = directMediaService({
+    maxConcurrent: 1,
+    maxConcurrentPerClient: 1,
+    requestImpl: (url, requestOptions, callback) => {
+      const upstreamReq = new EventEmitter()
+      upstreamReq.destroy = () => {}
+      upstreamReq.setTimeout = () => upstreamReq
+      upstreamReq.end = () => {
+        const upstreamRes = syntheticValidUpstreamResponse(4)
+        callback(upstreamRes)
+        if (method === 'GET') {
+          upstreamRes.emit('data', Buffer.from('test'))
+          upstreamRes.emit('end')
+        }
+      }
+      return upstreamReq
+    }
+  })
+  const attempt = startDirectServe(service, listing, service.urlsForListing(listing).videoUrl, {
+    clientKey: `success-${method}`,
+    method
+  })
+  const outcome = await attempt.promise
+  assert.strictEqual(outcome.ok, true, `正常 ${method} 必须成功完成`)
+  assert.deepStrictEqual(service.concurrencyState(), { activeRequests: 0, activeClients: 0 }, `正常 ${method} 完成后不得残留并发计数`)
+}
+
+async function run() {
+  assert.strictEqual(
+    isSecureSameOrigin('https://api.example.test/mini', 'https://api.example.test/download'),
+    true,
+    '微信 request/downloadFile 域名必须允许合法 HTTPS 同源配置'
+  )
+  ;[
+    ['http://api.example.test', 'http://api.example.test'],
+    ['https://api.example.test', 'http://api.example.test'],
+    ['https://api.example.test', 'https://download.example.test'],
+    ['https://user@api.example.test', 'https://api.example.test'],
+    ['not-a-url', 'not-a-url']
+  ].forEach(([requestDomain, downloadDomain]) => {
+    assert.strictEqual(
+      isSecureSameOrigin(requestDomain, downloadDomain),
+      false,
+      `微信媒体域名门禁必须拒绝不安全或不同源配置：${requestDomain} / ${downloadDomain}`
+    )
+  })
+
+  const upstreamRequests = []
+  const upstream = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    upstreamRequests.push({ method: req.method, kind: url.searchParams.get('kind') || '' })
+    if (url.pathname === '/redirect') {
+      res.writeHead(302, { Location: `http://127.0.0.1:${upstream.address().port}/${encodeURIComponent(SECRET_OBJECT_KEY)}` })
+      res.end()
+      return
+    }
+    const kind = url.searchParams.get('kind')
+    const body = kind === 'cover'
+      ? COVER_BODY
+      : (kind === 'image' ? IMAGE_BODY : (kind === 'gif' ? GIF_BODY : VIDEO_BODY))
+    const range = rangeSlice(body, req.headers.range)
+    if (req.headers.range && !range) {
+      res.writeHead(416, { 'Content-Range': `bytes */${body.length}` })
+      res.end()
+      return
+    }
+    const selected = range ? body.subarray(range.start, range.end + 1) : body
+    const headers = {
+      'Content-Type': (kind === 'cover' || kind === 'image')
+        ? 'image/jpeg'
+        : (kind === 'gif' ? 'image/gif' : (kind === 'octet' ? 'application/octet-stream' : 'video/mp4')),
+      'Content-Length': String(selected.length),
+      'Accept-Ranges': 'bytes',
+      'Set-Cookie': 'must-not-leak=1',
+      'X-Upstream-Object-Key': 'house-videos/legacy/9-8-701-19900008888.mp4'
+    }
+    if (range) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${body.length}`
+    res.writeHead(range ? 206 : 200, headers)
+    if (req.method !== 'HEAD') res.end(selected)
+    else res.end()
+  })
+  const upstreamPort = await listen(upstream)
+  let now = Date.UTC(2026, 6, 14, 2, 0, 0)
+  const coverSignMethods = []
+  const service = createPublicListingMediaService({
+    secret: 'synthetic-public-media-secret',
+    baseUrl: 'https://api.example.test/',
+    uploadDir: 'house-videos',
+    maxBytes: 1024,
+    timeoutMs: 2000,
+    now: () => now,
+    allowHttpUpstreamForTests: true,
+    allowedOrigins: [`http://127.0.0.1:${upstreamPort}`],
+    signVideoUrl: (objectKey) => `http://127.0.0.1:${upstreamPort}/object?kind=${
+      String(objectKey).endsWith('.jpg')
+        ? 'image'
+        : (String(objectKey).endsWith('.gif') ? 'gif' : (String(objectKey).endsWith('.mov') ? 'octet' : 'video'))
+    }`,
+    signCoverUrl: (objectKey, method) => {
+      coverSignMethods.push(method)
+      return `http://127.0.0.1:${upstreamPort}/object?kind=cover`
+    }
+  })
+  const listing = {
+    id: 'L-MEDIA-1',
+    videoKey: SECRET_OBJECT_KEY,
+    lifecycleStatus: 'active',
+    status: '在租'
+  }
+  await assertCoverHeadUsesMetadataGetOnly(listing)
+  const urls = service.urlsForListing(listing)
+  const ownerCapabilityOptions = {
+    scope: 'owner',
+    audience: 'SYNTHETIC-OWNER-001',
+    stateKey: 'pending-review\n2026-07-14T02:00:00.000Z'
+  }
+  const ownerUrls = service.urlsForListing(listing, ownerCapabilityOptions)
+  const ownerVideoCapability = new URL(ownerUrls.videoUrl)
+  assert.strictEqual(ownerVideoCapability.searchParams.get('scope'), 'owner', '本人待审媒体能力必须显式绑定 owner scope')
+  assert.ok(!JSON.stringify(ownerUrls).includes(ownerCapabilityOptions.audience), 'owner 媒体 URL 不得明文泄露账号标识')
+  assert.ok(!JSON.stringify(ownerUrls).includes(ownerCapabilityOptions.stateKey), 'owner 媒体 URL 不得明文泄露房源状态键')
+  const serializedUrls = JSON.stringify(urls)
+  assert.ok(/^https:\/\/api\.example\.test\/mini\/listings\/L-MEDIA-1\/media\/video\?token=/.test(urls.videoUrl), '视频必须使用 API 域不透明能力 URL')
+  assert.ok(/^https:\/\/api\.example\.test\/mini\/listings\/L-MEDIA-1\/media\/cover\?token=/.test(urls.coverUrl), '封面必须使用 API 域不透明能力 URL')
+  assert.ok(!serializedUrls.includes('house-videos'), '能力 URL 不得包含对象目录')
+  assert.ok(!serializedUrls.includes('701'), '能力 URL 不得包含历史房号文件名')
+  assert.ok(!serializedUrls.includes('19900008888'), '能力 URL 不得包含历史手机号文件名')
+  assert.ok(!/OSSAccessKeyId|Signature/.test(serializedUrls), '客户端不得直接拿 OSS 签名参数')
+
+  const multiListing = {
+    ...listing,
+    id: 'L-MEDIA-MULTI',
+    mediaAssets: [
+      {
+        assetId: 'MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4',
+        contentSha256: 'a'.repeat(64),
+        sourceFingerprint: '1'.repeat(64),
+        targetDriveFingerprint: '2'.repeat(64),
+        displayOrder: 0,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      },
+      {
+        assetId: 'MAT-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.mp4',
+        contentSha256: 'b'.repeat(64),
+        sourceFingerprint: '3'.repeat(64),
+        targetDriveFingerprint: '4'.repeat(64),
+        displayOrder: 1,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      }
+    ]
+  }
+  const multiUrls = service.urlsForListing(multiListing)
+  assert.strictEqual(multiUrls.mediaAssets.length, 2, '全部已验证私有视频必须生成安全公开能力')
+  assert.strictEqual(multiUrls.videoUrl, multiUrls.mediaAssets[0].videoUrl, '顶层兼容视频必须指向第一项')
+  assert.deepStrictEqual(
+    Object.keys(multiUrls.mediaAssets[0]).sort(),
+    ['assetId', 'coverUrl', 'displayOrder', 'kind', 'label', 'videoUrl'].sort(),
+    '公开素材只允许安全骨架和能力 URL'
+  )
+  const serializedMultiUrls = JSON.stringify(multiUrls)
+  ;['objectKey', 'contentSha256', 'sourceFingerprint', 'targetDriveFingerprint', 'house-videos', 'a'.repeat(64)].forEach((secret) => {
+    assert.ok(!serializedMultiUrls.includes(secret), `公开多视频不得泄露 ${secret}`)
+  })
+  const secondMultiUrl = new URL(multiUrls.mediaAssets[1].videoUrl)
+  assert.strictEqual(secondMultiUrl.searchParams.get('assetId'), multiListing.mediaAssets[1].assetId, '能力地址必须绑定不透明 assetId')
+  const oldFirstUrl = multiUrls.mediaAssets[0].videoUrl
+
+  const mixedListing = {
+    ...listing,
+    id: 'L-MEDIA-MIXED',
+    mediaAssets: [
+      {
+        assetId: 'MAT-imageeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        kind: 'image',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-imageeeeeeeeeeeeeeeeeeeeeeeeeeee.jpg',
+        contentSha256: 'd'.repeat(64),
+        sourceFingerprint: '7'.repeat(64),
+        targetDriveFingerprint: '8'.repeat(64),
+        displayOrder: 0,
+        mimeType: 'image/jpeg',
+        size: IMAGE_BODY.length,
+        verified: true
+      },
+      {
+        ...multiListing.mediaAssets[0],
+        displayOrder: 1
+      }
+    ]
+  }
+  const mixedUrls = service.urlsForListing(mixedListing)
+  assert.deepStrictEqual(mixedUrls.mediaAssets.map((asset) => asset.kind), ['image', 'video'])
+  assert.deepStrictEqual(
+    Object.keys(mixedUrls.mediaAssets[0]).sort(),
+    ['assetId', 'coverUrl', 'displayOrder', 'imageUrl', 'kind', 'label'].sort(),
+    '公开图片只允许安全骨架和不透明图片能力 URL'
+  )
+  assert.ok(/^https:\/\/api\.example\.test\/mini\/listings\/L-MEDIA-MIXED\/media\/image\?token=/.test(mixedUrls.mediaAssets[0].imageUrl))
+  assert.strictEqual(mixedUrls.coverUrl, mixedUrls.mediaAssets[0].imageUrl, '列表封面应优先沿用排在首位的房源照片')
+  assert.strictEqual(mixedUrls.videoUrl, mixedUrls.mediaAssets[1].videoUrl, '顶层兼容视频仍必须指向首个真实视频')
+  assert.ok(!JSON.stringify(mixedUrls).includes(mixedListing.mediaAssets[0].objectKey), '图片公开 DTO 不得泄露 OSS 对象键')
+  const mixedImageCapability = new URL(mixedUrls.mediaAssets[0].imageUrl)
+  const gifListing = {
+    ...mixedListing,
+    id: 'L-MEDIA-GIF',
+    mediaAssets: [{
+      ...mixedListing.mediaAssets[0],
+      assetId: 'MAT-gifggggggggggggggggggggggggggg',
+      objectKey: 'house-videos/feishu-note-v1/a/MAT-gifggggggggggggggggggggggggggg.gif',
+      contentSha256: 'f'.repeat(64),
+      mimeType: 'image/gif',
+      size: GIF_BODY.length
+    }]
+  }
+  const gifUrls = service.urlsForListing(gifListing)
+  assert.strictEqual(gifUrls.mediaAssets[0].kind, 'image', '同步白名单中的 GIF 必须生成受控图片能力')
+  const gifImageCapability = new URL(gifUrls.mediaAssets[0].imageUrl)
+
+  const reorderedOtherAssetsListing = {
+    ...multiListing,
+    id: 'L-MEDIA-REORDER-OTHERS',
+    mediaAssets: [
+      ...multiListing.mediaAssets.map((item) => ({ ...item })),
+      {
+        assetId: 'MAT-cccccccccccccccccccccccccccccccc',
+        kind: 'video',
+        objectKey: 'house-videos/feishu-note-v1/a/MAT-cccccccccccccccccccccccccccccccc.mp4',
+        contentSha256: 'c'.repeat(64),
+        sourceFingerprint: '5'.repeat(64),
+        targetDriveFingerprint: '6'.repeat(64),
+        displayOrder: 2,
+        mimeType: 'video/mp4',
+        size: VIDEO_BODY.length,
+        verified: true
+      }
+    ]
+  }
+  const preReorderFirstUrl = service.urlsForListing(reorderedOtherAssetsListing).mediaAssets[0].videoUrl
+  reorderedOtherAssetsListing.mediaAssets[1].displayOrder = 2
+  reorderedOtherAssetsListing.mediaAssets[2].displayOrder = 1
+  const reorderedOtherAttempt = startDirectServe(service, reorderedOtherAssetsListing, preReorderFirstUrl)
+  const reorderedOtherResult = await reorderedOtherAttempt.promise
+  assert.strictEqual(
+    reorderedOtherResult.error && reorderedOtherResult.error.statusCode,
+    404,
+    '同套房其他素材重排后，未改动素材的旧能力也必须失效'
+  )
+
+  const validSecondAttempt = startDirectServe(service, multiListing, multiUrls.mediaAssets[1].videoUrl)
+  validSecondAttempt.req.emit('aborted')
+  const validSecondResult = await validSecondAttempt.promise
+  assert.notStrictEqual(validSecondResult.error && validSecondResult.error.statusCode, 404, '正确 assetId 与素材状态必须先通过能力校验')
+
+  const tamperedAssetUrl = new URL(multiUrls.mediaAssets[1].videoUrl)
+  tamperedAssetUrl.searchParams.set('assetId', multiListing.mediaAssets[0].assetId)
+  const tamperedAssetAttempt = startDirectServe(service, multiListing, tamperedAssetUrl.toString())
+  const tamperedAssetResult = await tamperedAssetAttempt.promise
+  assert.strictEqual(tamperedAssetResult.error && tamperedAssetResult.error.statusCode, 404, '调包 assetId 必须返回 404')
+
+  const oldSecondUrl = multiUrls.mediaAssets[1].videoUrl
+  const validationService = directMediaService({
+    requestImpl: () => {
+      throw new Error('能力被错误放行后触发的合成上游请求')
+    }
+  })
+  const validationListing = {
+    ...multiListing,
+    id: 'L-MEDIA-VALIDATION',
+    mediaAssets: multiListing.mediaAssets.map((item) => ({ ...item }))
+  }
+  const validationUrl = validationService.urlsForListing(validationListing).mediaAssets[1].videoUrl
+  validationListing.mediaAssets[1].sourceFingerprint = 'invalid-source-fingerprint'
+  assert.strictEqual(
+    validationService.urlsForListing(validationListing).mediaAssets.length,
+    0,
+    '来源验证摘要损坏时媒体代理必须与领域层一样整组 fail-closed'
+  )
+  const invalidSourceAttempt = startDirectServe(validationService, validationListing, validationUrl)
+  const invalidSourceResult = await invalidSourceAttempt.promise
+  assert.strictEqual(
+    invalidSourceResult.error && invalidSourceResult.error.statusCode,
+    404,
+    '来源验证摘要损坏后旧能力必须立即失效，不能继续访问上游'
+  )
+  validationListing.mediaAssets[1].sourceFingerprint = '9'.repeat(64)
+  const validSourceChangeAttempt = startDirectServe(validationService, validationListing, validationUrl)
+  const validSourceChangeResult = await validSourceChangeAttempt.promise
+  assert.strictEqual(
+    validSourceChangeResult.error && validSourceChangeResult.error.statusCode,
+    404,
+    '来源验证摘要发生合法版本变化后旧能力也必须失效'
+  )
+
+  multiListing.mediaAssets[1] = {
+    ...multiListing.mediaAssets[1],
+    contentSha256: 'c'.repeat(64)
+  }
+  const changedStateAttempt = startDirectServe(service, multiListing, oldSecondUrl)
+  const changedStateResult = await changedStateAttempt.promise
+  assert.strictEqual(changedStateResult.error && changedStateResult.error.statusCode, 404, '素材摘要变化后旧 token 必须返回 404')
+  const siblingChangedAttempt = startDirectServe(service, multiListing, oldFirstUrl)
+  const siblingChangedResult = await siblingChangedAttempt.promise
+  assert.strictEqual(
+    siblingChangedResult.error && siblingChangedResult.error.statusCode,
+    404,
+    '同套房其他素材替换后，未改动素材的旧能力也必须失效'
+  )
+  multiListing.mediaAssets.splice(1, 1)
+  const removedAssetAttempt = startDirectServe(service, multiListing, oldSecondUrl)
+  const removedAssetResult = await removedAssetAttempt.promise
+  assert.strictEqual(removedAssetResult.error && removedAssetResult.error.statusCode, 404, '素材删除后旧 token 必须返回 404')
+  const siblingRemovedAttempt = startDirectServe(service, multiListing, oldFirstUrl)
+  const siblingRemovedResult = await siblingRemovedAttempt.promise
+  assert.strictEqual(
+    siblingRemovedResult.error && siblingRemovedResult.error.statusCode,
+    404,
+    '同套房其他素材删除后，未改动素材的旧能力也必须失效'
+  )
+
+  const legacyTransitionListing = { ...listing, id: 'L-MEDIA-TRANSITION' }
+  const preMigrationUrl = service.urlsForListing(legacyTransitionListing).videoUrl
+  legacyTransitionListing.mediaAssets = [multiListing.mediaAssets[0]]
+  const preMigrationAttempt = startDirectServe(service, legacyTransitionListing, preMigrationUrl)
+  const preMigrationResult = await preMigrationAttempt.promise
+  assert.strictEqual(preMigrationResult.error && preMigrationResult.error.statusCode, 404, '切换到多视频清单后旧单视频 token 必须立即失效')
+
+  await assertPerClientConcurrencyFairness(listing)
+  for (const stage of ['requestImpl', 'setTimeout', 'end']) {
+    await assertSynchronousFailureReleasesSlot(listing, stage)
+  }
+  await assertInvalidUpstreamDestroyed(listing)
+  for (const stage of ['timeout', 'request-error', 'response-close', 'upstream-aborted', 'upstream-error']) {
+    await assertAsynchronousReleasePath(listing, stage)
+  }
+  await assertSuccessfulCompletionReleasesSlot(listing, 'GET')
+  await assertSuccessfulCompletionReleasesSlot(listing, 'HEAD')
+
+  const videoCapability = new URL(urls.videoUrl)
+  const coverCapability = new URL(urls.coverUrl)
+  const capabilityExpiresAt = Number(String(videoCapability.searchParams.get('token') || '').split('.')[0])
+  assert.ok(
+    capabilityExpiresAt - Math.floor(now / 1000) >= 6 * 60 * 60,
+    '公开视频能力地址默认至少覆盖六小时播放窗口，并由播放器失败时再刷新'
+  )
+  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8')
+  assert.ok(
+    !indexSource.includes('ttlSeconds: config.oss.readUrlExpireSeconds'),
+    '公开能力地址有效期不得继续误绑上游 OSS 单次签名的 900 秒配置'
+  )
+  assert.ok(indexSource.includes('isSecureSameOrigin(miniProgram.requestDomain, miniProgram.downloadDomain)'), '发布门禁必须使用 HTTPS 同源校验')
+  assert.ok(!indexSource.includes('function sameConfiguredOrigin('), '不得保留仅比较 origin、会放行 HTTP 的旧门禁')
+  assert.ok(indexSource.includes('if (res.headersSent || res.destroyed)'), '流式响应发头后异常不得二次 writeHead')
+  assert.ok(indexSource.includes('clientKey: requestClientKey(req)'), '媒体并发客户端键必须由服务端可信网络键注入')
+  assert.ok(indexSource.includes("assetId: searchParams.get('assetId') || ''"), 'HTTP 媒体路由必须把 assetId 交给服务端能力校验')
+  assert.ok(indexSource.includes('(video|cover|image)'), 'HTTP 媒体路由必须显式开放受控图片能力且不扩大到任意文件')
+  let currentOwnerAudience = ownerCapabilityOptions.audience
+  let currentOwnerStateKey = ownerCapabilityOptions.stateKey
+  const mediaServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    const matched = url.pathname.match(/^\/mini\/listings\/([^/]+)\/media\/(video|cover|image)$/)
+    try {
+      if (!matched) throw Object.assign(new Error('not found'), { statusCode: 404 })
+      const requestedListingId = decodeURIComponent(matched[1])
+      const selectedListing = requestedListingId === mixedListing.id
+        ? mixedListing
+        : (requestedListingId === gifListing.id ? gifListing : listing)
+      await service.serve(req, res, {
+        listing: selectedListing,
+        listingId: decodeURIComponent(matched[1]),
+        kind: matched[2],
+        token: url.searchParams.get('token') || '',
+        assetId: url.searchParams.get('assetId') || '',
+        scope: url.searchParams.get('scope') === 'owner' ? 'owner' : 'public',
+        audience: url.searchParams.get('scope') === 'owner' ? currentOwnerAudience : '',
+        stateKey: url.searchParams.get('scope') === 'owner' ? currentOwnerStateKey : ''
+      })
+    } catch (error) {
+      if (res.headersSent) {
+        res.destroy()
+        return
+      }
+      res.writeHead(error.statusCode || 502, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end(error.message)
+    }
+  })
+  const mediaPort = await listen(mediaServer)
+
+  try {
+    const videoPath = `${videoCapability.pathname}${videoCapability.search}`
+    const full = await request(mediaPort, videoPath)
+    assert.strictEqual(full.statusCode, 200, '匿名 GET 必须流式返回公开视频')
+    assert.deepStrictEqual(full.body, VIDEO_BODY, '代理必须原样流式返回视频字节')
+    assert.strictEqual(full.headers['content-type'], 'video/mp4')
+    assert.strictEqual(full.headers['accept-ranges'], 'bytes', '视频代理必须支持拖动播放所需的 Range')
+    assert.ok(!full.headers.location, '代理不得用重定向暴露上游对象 URL')
+    assert.ok(!full.headers['set-cookie'], '代理不得透传上游 Cookie')
+    assert.ok(!full.headers['x-upstream-object-key'], '代理不得透传上游对象键响应头')
+    assert.ok(!JSON.stringify(full.headers).includes(SECRET_OBJECT_KEY), '代理响应头不得包含对象键')
+
+    const videoRequestCountBeforeHead = upstreamRequests.length
+    const head = await request(mediaPort, videoPath, { method: 'HEAD' })
+    assert.strictEqual(head.statusCode, 200, '匿名 HEAD 必须返回媒体元数据')
+    assert.strictEqual(head.body.length, 0, 'HEAD 不得返回视频体')
+    assert.strictEqual(Number(head.headers['content-length']), VIDEO_BODY.length)
+    assert.deepStrictEqual(
+      upstreamRequests.slice(videoRequestCountBeforeHead),
+      [{ method: 'HEAD', kind: 'video' }],
+      '普通视频 HEAD 必须继续使用上游 HEAD，不能扩大兼容转换范围'
+    )
+
+    const partial = await request(mediaPort, videoPath, { headers: { Range: 'bytes=2-7' } })
+    assert.strictEqual(partial.statusCode, 206, '单段 Range 必须返回 206')
+    assert.strictEqual(partial.headers['content-range'], `bytes 2-7/${VIDEO_BODY.length}`)
+    assert.deepStrictEqual(partial.body, VIDEO_BODY.subarray(2, 8))
+
+    const multiRange = await request(mediaPort, videoPath, { headers: { Range: 'bytes=0-1,3-4' } })
+    assert.strictEqual(multiRange.statusCode, 416, '多段或畸形 Range 必须在访问上游前拒绝')
+
+    const coverPath = `${coverCapability.pathname}${coverCapability.search}`
+    const cover = await request(mediaPort, coverPath)
+    assert.strictEqual(cover.statusCode, 200, '匿名封面能力 URL 必须可读取')
+    assert.strictEqual(cover.headers['content-type'], 'image/jpeg')
+    assert.deepStrictEqual(cover.body, COVER_BODY)
+    const coverRequestCountBeforeHead = upstreamRequests.length
+    const coverSignCountBeforeHead = coverSignMethods.length
+    const coverHead = await request(mediaPort, coverPath, { method: 'HEAD' })
+    assert.strictEqual(coverHead.statusCode, 200, '匿名封面 HEAD 必须返回图片元数据')
+    assert.strictEqual(coverHead.body.length, 0, '匿名封面 HEAD 不得向客户端返回图片正文')
+    assert.strictEqual(Number(coverHead.headers['content-length']), COVER_BODY.length, '匿名封面 HEAD 必须保留真实图片长度')
+    assert.deepStrictEqual(
+      upstreamRequests.slice(coverRequestCountBeforeHead),
+      [{ method: 'GET', kind: 'cover' }],
+      '客户端封面 HEAD 必须转换为一次上游 GET，兼容 OSS 视频截帧处理链'
+    )
+    assert.deepStrictEqual(
+      coverSignMethods.slice(coverSignCountBeforeHead),
+      ['GET'],
+      '封面 HEAD 的 OSS 签名方法必须与上游 GET 一致'
+    )
+
+    const imagePath = `${mixedImageCapability.pathname}${mixedImageCapability.search}`
+    const image = await request(mediaPort, imagePath)
+    assert.strictEqual(image.statusCode, 200, '匿名图片能力 URL 必须可读取')
+    assert.strictEqual(image.headers['content-type'], 'image/jpeg')
+    assert.strictEqual(image.headers['content-disposition'], 'inline; filename="listing-image.jpg"')
+    assert.deepStrictEqual(image.body, IMAGE_BODY)
+    const imageRequestCountBeforeHead = upstreamRequests.length
+    const imageHead = await request(mediaPort, imagePath, { method: 'HEAD' })
+    assert.strictEqual(imageHead.statusCode, 200, '匿名图片 HEAD 必须返回媒体元数据')
+    assert.strictEqual(imageHead.body.length, 0, '匿名图片 HEAD 不得返回图片正文')
+    assert.deepStrictEqual(
+      upstreamRequests.slice(imageRequestCountBeforeHead),
+      [{ method: 'HEAD', kind: 'image' }],
+      '普通图片 HEAD 必须继续使用上游 HEAD，不能扩大兼容转换范围'
+    )
+    const imageAsVideo = await request(mediaPort, imagePath.replace('/media/image', '/media/video'))
+    assert.strictEqual(imageAsVideo.statusCode, 404, '图片能力不得篡改路径后伪装成视频能力')
+    const gifPath = `${gifImageCapability.pathname}${gifImageCapability.search}`
+    const gif = await request(mediaPort, gifPath)
+    assert.strictEqual(gif.statusCode, 200, '同步白名单中的 GIF 必须可通过受控图片代理读取')
+    assert.strictEqual(gif.headers['content-type'], 'image/gif')
+    assert.strictEqual(gif.headers['content-disposition'], 'inline; filename="listing-image.gif"')
+    assert.deepStrictEqual(gif.body, GIF_BODY)
+
+    const ownerVideoPath = `${ownerVideoCapability.pathname}${ownerVideoCapability.search}`
+    const ownerBearerRead = await request(mediaPort, ownerVideoPath)
+    assert.strictEqual(ownerBearerRead.statusCode, 200, '微信 video/image 无法附 Authorization，已签 owner bearer URL 必须可匿名读取')
+    assert.deepStrictEqual(ownerBearerRead.body, VIDEO_BODY)
+    const ownerWithoutScope = await request(mediaPort, ownerVideoPath.replace('&scope=owner', ''))
+    assert.strictEqual(ownerWithoutScope.statusCode, 404, 'owner token 不得降级为公共 token 重放')
+    currentOwnerAudience = 'SYNTHETIC-OTHER-002'
+    const wrongOwner = await request(mediaPort, ownerVideoPath)
+    assert.strictEqual(wrongOwner.statusCode, 404, 'owner token 必须绑定签发账号，不能跨账号验证')
+    currentOwnerAudience = ownerCapabilityOptions.audience
+    currentOwnerStateKey = 'approved\n2026-07-14T02:01:00.000Z'
+    const staleOwnerState = await request(mediaPort, ownerVideoPath)
+    assert.strictEqual(staleOwnerState.statusCode, 404, '房源审核或维护状态变化后旧 owner token 必须立即失效')
+    currentOwnerStateKey = ownerCapabilityOptions.stateKey
+
+    const movListing = { ...listing, id: 'L-MEDIA-MOV', videoKey: 'house-videos/legacy/random-object.mov' }
+    const movCapability = new URL(service.urlsForListing(movListing).videoUrl)
+    const movServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url, 'http://127.0.0.1')
+      try {
+        await service.serve(req, res, {
+          listing: movListing,
+          listingId: movListing.id,
+          kind: 'video',
+          token: url.searchParams.get('token') || ''
+        })
+      } catch (error) {
+        if (!res.headersSent) res.writeHead(error.statusCode || 502)
+        res.end()
+      }
+    })
+    const movPort = await listen(movServer)
+    try {
+      const mov = await request(movPort, `${movCapability.pathname}${movCapability.search}`)
+      assert.strictEqual(mov.statusCode, 200, 'octet-stream 存量 MOV 必须仍可匿名读取')
+      assert.strictEqual(mov.headers['content-type'], 'video/quicktime', 'MOV 必须按白名单扩展名归一 MIME')
+      assert.strictEqual(mov.headers['content-disposition'], 'inline; filename="listing-video.mov"', '下载文件扩展名必须与真实白名单对象类型一致')
+    } finally {
+      await close(movServer)
+    }
+
+    const tampered = await request(mediaPort, videoPath.replace('L-MEDIA-1', 'L-MEDIA-2'))
+    assert.strictEqual(tampered.statusCode, 404, '能力令牌不得跨房源重放')
+    const wrongKind = await request(mediaPort, videoPath.replace('/video?', '/cover?'))
+    assert.strictEqual(wrongKind.statusCode, 404, '能力令牌不得跨媒体类型重放')
+    now += 7 * 60 * 60 * 1000
+    const expired = await request(mediaPort, videoPath)
+    assert.strictEqual(expired.statusCode, 404, '过期能力令牌必须拒绝')
+  } finally {
+    await close(mediaServer)
+    await close(upstream)
+  }
+
+  const allowedOrigin = `https://bucket.oss-cn-example.aliyuncs.com`
+  assert.strictEqual(resolveManagedVideoObjectKey({ videoKey: SECRET_OBJECT_KEY }, {
+    uploadDir: 'house-videos',
+    allowedOrigins: [allowedOrigin]
+  }), SECRET_OBJECT_KEY, '受控目录内的持久 videoKey 可作为服务端媒体源')
+  assert.strictEqual(resolveManagedVideoObjectKey({
+    videoUrl: `${allowedOrigin}/${encodeURI(SECRET_OBJECT_KEY)}`
+  }, {
+    uploadDir: 'house-videos',
+    allowedOrigins: [allowedOrigin]
+  }), SECRET_OBJECT_KEY, '同源历史 OSS URL 可安全还原受控对象键')
+  assert.strictEqual(resolveManagedVideoObjectKey({
+    videoKey: 'legacy-invalid-key.mp4',
+    videoUrl: `${allowedOrigin}/${encodeURI(SECRET_OBJECT_KEY)}`
+  }, {
+    uploadDir: 'house-videos',
+    allowedOrigins: [allowedOrigin]
+  }), SECRET_OBJECT_KEY, '非法旧 videoKey 不得阻止从同源合法 videoUrl 恢复受控对象键')
+  ;[
+    'https://evil.example/house-videos/legacy/video.mp4',
+    'https://bucket.oss-cn-example.aliyuncs.com.evil.example/house-videos/video.mp4',
+    'https://user@bucket.oss-cn-example.aliyuncs.com/house-videos/video.mp4',
+    'https://bucket.oss-cn-example.aliyuncs.com/other/video.mp4'
+  ].forEach((videoUrl) => {
+    assert.strictEqual(resolveManagedVideoObjectKey({ videoUrl }, {
+      uploadDir: 'house-videos',
+      allowedOrigins: [allowedOrigin]
+    }), '', `非受控历史 URL 必须 fail-closed：${videoUrl}`)
+  })
+
+  console.log('listing-media-proxy-v1-test passed')
+}
+
+run().catch((error) => {
+  console.error(error.stack || error.message)
+  process.exit(1)
+})

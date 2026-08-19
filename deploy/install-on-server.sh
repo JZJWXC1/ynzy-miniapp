@@ -102,12 +102,88 @@ install_nginx_config() {
   fi
 }
 
+# 注意：不要在此自动部署 zf-api 的 nginx 配置。
+# 生产 zf-api.ynzyqbot.cn 由手工维护的 /etc/nginx/conf.d/ynzy-api-domains.conf 承载
+# （含实时 ASR 的 WebSocket 转发，2026-07-05 已合并上线并验证，见 docs/交接报告-20260704.md 4.2）。
+# 曾经的 install_zf_api_nginx_config 会另写 /etc/nginx/conf.d/zf-api-miniapp.conf，既与上面文件的
+# server_name zf-api.ynzyqbot.cn 冲突，又引用了不存在的证书路径 /etc/letsencrypt/live/zf-api.ynzyqbot.cn/，
+# 导致 nginx -t 失败、整个部署中断。deploy/nginx-zf-api-miniapp.conf 仅作参考模板，切勿自动部署。
+
+# 异地加密备份（P0-1）：密钥/异地目标/通知命令只从 /etc/default/ynzy-backup 读取，绝不入库。
+# 首次安装生成空模板（chmod 600）；已存在则不覆盖（保留运维已填的真实值）。
+BACKUP_ENV_FILE="/etc/default/ynzy-backup"
+ensure_backup_env() {
+  if [ -f "$BACKUP_ENV_FILE" ]; then
+    echo "已存在 $BACKUP_ENV_FILE，保留现有内容（不覆盖）。"
+    return
+  fi
+  cat > "$BACKUP_ENV_FILE" <<'EOF'
+# 寓你 db.json 异地加密备份环境（本文件含密钥/异地目标，chmod 600，绝不入库/外发）
+# 详见 server/README.md「异地加密备份（P0-1）」。填好后 systemctl start ynzy-offsite-backup.service 验证。
+
+# 加密口令：强随机串，务必再异地保管一份——丢失即无法解密任何备份。缺失时备份脚本拒绝运行。
+BACKUP_ENCRYPTION_KEY=
+
+# 异地上传命令（生产必填，缺失即判失败）。脚本以环境变量 $BACKUP_FILE 传入备份文件完整路径。
+# 值含空格，务必用单引号包裹：systemd 会剥引号，cron 里 . 源引本文件也不会误当命令执行。
+# 推荐飞书云盘：BACKUP_REMOTE_CMD='node scripts/upload-backup-to-feishu.js'
+# 或 rsync：   BACKUP_REMOTE_CMD='rsync -az -e "ssh -i /root/.ssh/backup_offsite" "$BACKUP_FILE" backup@异地主机:/data/ynzy-db-backups/'
+BACKUP_REMOTE_CMD=
+
+# 飞书云盘异地备份凭据（仅当 BACKUP_REMOTE_CMD 用 upload-backup-to-feishu.js 时需要）。
+# 飞书云盘只放 .ygbak 加密备份，严禁放 BACKUP_ENCRYPTION_KEY/.env/明文 db.json。详见 server/README.md。
+FEISHU_BACKUP_APP_ID=
+FEISHU_BACKUP_APP_SECRET=
+FEISHU_BACKUP_FOLDER_TOKEN=
+FEISHU_BACKUP_UPLOAD_NAME_PREFIX=
+
+# 可选：外部通知命令（企微/飞书 webhook），触发告警时以 $ALERT_KIND/$ALERT_MESSAGE 传入。
+BACKUP_ALERT_CMD=
+
+# 可选调优：本地暂存目录/保留天数/新鲜度阈值(小时)
+BACKUP_STAGE_DIR=/opt/ynzy-miniapp/server/backups
+BACKUP_RETENTION_DAYS=30
+BACKUP_MAX_AGE_HOURS=24
+EOF
+  chmod 600 "$BACKUP_ENV_FILE"
+  echo "已生成 $BACKUP_ENV_FILE 模板（chmod 600）。上线前必须填 BACKUP_ENCRYPTION_KEY 与 BACKUP_REMOTE_CMD。"
+}
+
 cp "$APP_DIR/deploy/ynzy-miniapp.service" /etc/systemd/system/ynzy-miniapp.service
 cp "$APP_DIR/deploy/ynzy-db-backup.service" /etc/systemd/system/ynzy-db-backup.service
 cp "$APP_DIR/deploy/ynzy-db-backup.timer" /etc/systemd/system/ynzy-db-backup.timer
+# 异地加密备份 + 恢复演练（P0-1）
+cp "$APP_DIR/deploy/ynzy-offsite-backup.service" /etc/systemd/system/ynzy-offsite-backup.service
+cp "$APP_DIR/deploy/ynzy-offsite-backup.timer" /etc/systemd/system/ynzy-offsite-backup.timer
+cp "$APP_DIR/deploy/ynzy-restore-drill.service" /etc/systemd/system/ynzy-restore-drill.service
+cp "$APP_DIR/deploy/ynzy-restore-drill.timer" /etc/systemd/system/ynzy-restore-drill.timer
+# 从飞书拉回最新 .ygbak 每周演练（完整闭环，P0-1）
+cp "$APP_DIR/deploy/ynzy-feishu-drill.service" /etc/systemd/system/ynzy-feishu-drill.service
+cp "$APP_DIR/deploy/ynzy-feishu-drill.timer" /etc/systemd/system/ynzy-feishu-drill.timer
+cp "$APP_DIR/deploy/ynzy-health-check.service" /etc/systemd/system/ynzy-health-check.service
+cp "$APP_DIR/deploy/ynzy-health-check.timer" /etc/systemd/system/ynzy-health-check.timer
+# 经营指标每日快照（增长层装准星，只读 db 出聚合快照追加 JSONL，无 PII）
+cp "$APP_DIR/deploy/ynzy-metric-snapshot.service" /etc/systemd/system/ynzy-metric-snapshot.service
+cp "$APP_DIR/deploy/ynzy-metric-snapshot.timer" /etc/systemd/system/ynzy-metric-snapshot.timer
+# 飞书房源同步使用独立 oneshot worker；应用进程不再持有内存定时器。
+cp "$APP_DIR/deploy/ynzy-feishu-sync.service" /etc/systemd/system/ynzy-feishu-sync.service
+cp "$APP_DIR/deploy/ynzy-feishu-sync.timer" /etc/systemd/system/ynzy-feishu-sync.timer
+ensure_backup_env
 systemctl daemon-reload
+# 自动同步必须在首次预演、正式同步和人工对账全部通过后再显式开启。升级机器若
+# 曾残留启用状态，也先在这里停用，避免旧 .env 的 true 在部署窗口直接触发写入。
+systemctl disable --now ynzy-feishu-sync.timer
 systemctl enable "$SERVICE_NAME"
 systemctl enable --now ynzy-db-backup.timer
+# 异地备份/演练定时器（在 /etc/default/ynzy-backup 填好密钥+异地目标前会 fail-loud，属预期）
+systemctl enable --now ynzy-offsite-backup.timer
+systemctl enable --now ynzy-restore-drill.timer
+systemctl enable --now ynzy-feishu-drill.timer
+# 健康巡检定时器（每 15 分钟：db 可解析/磁盘/备份新鲜度/服务，失败非零退出经 journald 告警）
+systemctl enable --now ynzy-health-check.timer
+# 经营指标每日快照定时器（每天 02:30：只读 db 追加聚合快照到 metrics-snapshots.jsonl）
+systemctl enable --now ynzy-metric-snapshot.timer
+# unit 已安装但保持停用；首次验收后按生产运维手册显式 enable --now。
 systemctl restart "$SERVICE_NAME"
 
 install_nginx_config
@@ -119,3 +195,5 @@ systemctl restart nginx
 curl -fsS http://127.0.0.1:3101/healthz
 
 echo "Server install finished."
+echo "提醒：异地加密备份需在 $BACKUP_ENV_FILE 填 BACKUP_ENCRYPTION_KEY 与 BACKUP_REMOTE_CMD（异地目标），"
+echo "     否则 ynzy-offsite-backup 会 fail-loud。填好后：systemctl start ynzy-offsite-backup.service && journalctl -u ynzy-offsite-backup -n 20"

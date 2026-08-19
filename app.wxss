@@ -1,14 +1,17 @@
 /**app.wxss**/
 page {
-  --brand-green: #2E6B4E;
-  --brand-green-dark: #174331;
-  --brand-cream: #FBF5EA;
-  --brand-orange: #F7A64A;
-  --brand-blue: #8FD0E8;
-  --brand-yellow: #F8D06B;
-  --brand-line: #DDE7DA;
-  --brand-muted: #6E8174;
-  --brand-card: #FFFFFF;
+  --brand-green: #284C44;
+  --brand-green-dark: #142824;
+  --brand-green-soft: #EAF1EC;
+  --brand-cream: #F4F0E8;
+  --brand-orange: #A97945;
+  --brand-blue: #9AB7B8;
+  --brand-blue-soft: #EAF2F1;
+  --brand-yellow: #B89455;
+  --brand-yellow-soft: #E9D9B8;
+  --brand-line: #D9D2C6;
+  --brand-muted: #65716D;
+  --brand-card: #FFFDF8;
   min-height: 100vh;
   color: var(--brand-green-dark);
   background: var(--brand-cream);
@@ -56,7 +59,7 @@ button::after {
   min-height: 100%;
   padding: 24rpx 28rpx 44rpx;
   background:
-    linear-gradient(180deg, #fffaf1 0%, var(--brand-cream) 360rpx, var(--brand-cream) 100%);
+    linear-gradient(180deg, #F9F6EF 0%, var(--brand-cream) 340rpx, #EFEAE0 100%);
 }
 
 .section-title {
@@ -81,9 +84,9 @@ button::after {
 
 .soft-card {
   background: var(--brand-card);
-  border: 1rpx solid var(--brand-line);
+  border: 1rpx solid rgba(217, 210, 198, 0.92);
   border-radius: 24rpx;
-  box-shadow: 0 16rpx 36rpx rgba(46, 107, 78, 0.08);
+  box-shadow: 0 12rpx 28rpx rgba(20, 40, 36, 0.055);
 }
 
 .brand-button {
@@ -95,13 +98,15 @@ button::after {
   color: #ffffff;
   font-size: 26rpx;
   font-weight: 900;
-  background: var(--brand-green);
+  background: linear-gradient(135deg, #315B51 0%, var(--brand-green-dark) 100%);
   border-radius: 22rpx;
+  box-shadow: 0 10rpx 22rpx rgba(20, 40, 36, 0.14);
 }
 
 .sun-button {
   color: var(--brand-green-dark);
-  background: var(--brand-yellow);
+  background: var(--brand-yellow-soft);
+  box-shadow: none;
 }
 
 .muted-text {
@@ -126,16 +131,16 @@ button::after {
   font-size: 20rpx;
   font-weight: 900;
   line-height: 42rpx;
-  background: rgba(46, 107, 78, 0.1);
+  background: rgba(46, 81, 74, 0.09);
   border-radius: 14rpx;
 }
 
 .listing-maintenance-tag {
-  color: #8A5B00;
-  background: rgba(248, 208, 107, 0.3);
+  color: #6A5636;
+  background: rgba(184, 148, 85, 0.18);
 }
 
 .listing-relevance-tag {
   color: var(--brand-green-dark);
-  background: var(--brand-yellow);
+  background: var(--brand-yellow-soft);
 }

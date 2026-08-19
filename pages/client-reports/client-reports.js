@@ -28,6 +28,7 @@ Page({
     reports: [],
     stats: [],
     loading: false,
+    loadFailed: false,
     dealModalVisible: false,
     dealSubmitting: false,
     currentReport: {},
@@ -43,13 +44,17 @@ Page({
   },
 
   refresh() {
-    this.setData({ loading: true })
+    this._recordsRequestSeq = (this._recordsRequestSeq || 0) + 1
+    const requestSeq = this._recordsRequestSeq
+    this.setData({ loading: true, loadFailed: false })
     apiService.getClientReports().then((reports) => {
+      if (requestSeq !== this._recordsRequestSeq) return
       const displayReports = (reports || []).map(normalizeReport)
       const waitingDealCount = displayReports.filter((item) => item.canCreateDeal).length
       const submittedDealCount = displayReports.length - waitingDealCount
       this.setData({
         loading: false,
+        loadFailed: false,
         reports: displayReports,
         stats: [
           { label: '报备总数', value: String(displayReports.length) },
@@ -58,9 +63,14 @@ Page({
         ]
       })
     }).catch(() => {
-      this.setData({ loading: false })
+      if (requestSeq !== this._recordsRequestSeq) return
+      this.setData({ loading: false, loadFailed: true })
       wx.showToast({ title: '报备记录加载失败', icon: 'none' })
     })
+  },
+
+  retryRecords() {
+    this.refresh()
   },
 
   noop() {},

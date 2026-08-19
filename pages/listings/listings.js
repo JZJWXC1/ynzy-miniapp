@@ -1,21 +1,31 @@
 const apiService = require('../../utils/api-service')
+const apiClient = require('../../utils/api-client')
+const { findFailedCoverIndex } = require('../../utils/listing-cover-state')
+const { LISTING_FEATURE_OPTIONS, NO_FEATURE } = require('../../utils/listing-features')
+const { consumePendingFilterEnvelope } = require('../../utils/pending-filter-storage')
+const {
+  DEFAULT_LAYOUT_OPTIONS,
+  normalizeListingFilterOptions
+} = require('../../utils/listing-filter-options')
 
 const pendingListingFiltersKey = 'ynzy_pending_listing_filters'
-const categories = ['全部', '整租', '合租', '业主房源', '公寓']
-const rentModeFilters = ['不限', '整租', '合租']
-const regionOptions = [
-  { name: '拱墅区', blocks: ['万达', '北部软件园', '城北万象城', '石桥', '华丰', '永佳', '半山', '东新园', '杭氧', '新天地'] },
-  { name: '上城区', blocks: ['闸弄口', '新塘', '元宝塘', '东站'] }
-]
+// 顶部只保留房源来源分类（整租/合租已下移到筛选面板的「租赁方式」）。
+const categories = ['全部', '公司房源', '业主房源', '二房东房源']
+
+function currentAuthSessionKey() {
+  return String(typeof apiClient.getAuthSessionKey === 'function' ? apiClient.getAuthSessionKey() : apiClient.getAuthToken())
+}
+const featureOptions = LISTING_FEATURE_OPTIONS.filter((item) => item !== NO_FEATURE)
 const emptyFilters = {
   needId: '',
-  area: '',
+  district: '',
   block: '',
   community: '',
   layout: '',
   rentMode: '',
   rentMin: '',
-  rentMax: ''
+  rentMax: '',
+  features: ''
 }
 
 function cleanFilterValue(value) {
@@ -27,9 +37,16 @@ function normalizeRentModeFilter(value) {
   return value === '整租' || value === '合租' ? value : ''
 }
 
-function blocksForArea(area) {
-  const matched = regionOptions.find((item) => item.name === area)
-  return matched ? matched.blocks : []
+function uniqueCommunities(listings) {
+  const seen = new Set()
+  return (listings || [])
+    .map((item) => String(item.community || item.title || '').trim())
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
 }
 
 function normalizeListingState(input = {}) {
@@ -40,13 +57,14 @@ function normalizeListingState(input = {}) {
   return {
     category,
     filters: {
-      area: cleanFilterValue(sourceFilters.area),
+      district: cleanFilterValue(sourceFilters.district || sourceFilters.area),
       block: cleanFilterValue(sourceFilters.block),
       community: cleanFilterValue(sourceFilters.community),
       layout: cleanFilterValue(sourceFilters.layout),
       rentMode: normalizeRentModeFilter(sourceFilters.rentMode),
       rentMin: cleanFilterValue(sourceFilters.rentMin),
       rentMax: cleanFilterValue(sourceFilters.rentMax),
+      features: cleanFilterValue(sourceFilters.features || sourceFilters.feature),
       needId: cleanFilterValue(sourceFilters.needId || sourceFilters.rentalNeedId || sourceFilters.clientNeedId)
     }
   }
@@ -56,13 +74,14 @@ function normalizeOptions(options = {}) {
   return normalizeListingState({
     category: options.category ? decodeURIComponent(options.category) : '全部',
     filters: {
-      area: options.area ? decodeURIComponent(options.area) : '',
+      district: options.district ? decodeURIComponent(options.district) : (options.area ? decodeURIComponent(options.area) : ''),
       block: options.block ? decodeURIComponent(options.block) : '',
       community: options.community ? decodeURIComponent(options.community) : '',
       layout: options.layout ? decodeURIComponent(options.layout) : '',
       rentMode: options.rentMode ? decodeURIComponent(options.rentMode) : '',
       rentMin: options.rentMin || '',
       rentMax: options.rentMax || '',
+      features: options.features ? decodeURIComponent(options.features) : '',
       needId: options.needId ? decodeURIComponent(options.needId) : ''
     }
   })
@@ -71,73 +90,104 @@ function normalizeOptions(options = {}) {
 Page({
   data: {
     categories,
-    rentModeFilters,
-    regionOptions,
-    blockOptions: [],
+    regionOptions: [],
+    layoutOptions: DEFAULT_LAYOUT_OPTIONS.slice(),
+    featureOptions,
+    communityOptions: [],
     category: '全部',
     filters: {
       needId: '',
-      area: '',
+      district: '',
       block: '',
       community: '',
       layout: '',
       rentMode: '',
       rentMin: '',
-      rentMax: ''
+      rentMax: '',
+      features: ''
     },
     listings: [],
     loading: false,
+    loadFailed: false,
     emptyText: '暂无符合条件的房源'
   },
 
   onLoad(options) {
+    this._pageActive = true
+    this.bindAuthInvalidationListener()
     this.setListingState(normalizeOptions(options))
   },
 
   onShow() {
+    this._pageActive = true
+    const sessionState = this.syncAuthSession()
+    this.loadListingFilterOptions()
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {
       this.getTabBar().setData({ selected: 1 })
     }
-    if (this.applyPendingListingFilters()) return
+    if (this.applyPendingListingFilters(sessionState.key)) return
     this.loadListings()
+  },
+
+  syncAuthSession() {
+    const nextSessionKey = currentAuthSessionKey()
+    const changed = this.authSessionSnapshot !== undefined && this.authSessionSnapshot !== nextSessionKey
+    this.authSessionSnapshot = nextSessionKey
+    if (changed) {
+      this.activeListingRequestId = `session-reset-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+      const filters = { ...emptyFilters }
+      this.setData({
+        listings: [],
+        communityOptions: [],
+        category: '全部',
+        filters,
+        loading: false,
+        loadFailed: false
+      })
+    }
+    return { key: nextSessionKey, changed }
+  },
+
+  bindAuthInvalidationListener() {
+    if (this._unsubscribeAuthInvalidation || typeof apiClient.subscribeAuthInvalidation !== 'function') return
+    this._unsubscribeAuthInvalidation = apiClient.subscribeAuthInvalidation((event) => {
+      if (this._pageActive === false) return
+      if (String(event && event.fromSessionKey || '') !== String(this.authSessionSnapshot || '')) return
+      const nextSessionKey = currentAuthSessionKey()
+      if (event && event.toSessionKey && String(event.toSessionKey) !== nextSessionKey) return
+      const sessionState = this.syncAuthSession()
+      if (sessionState.changed) this.loadListings()
+    })
   },
 
   setListingState(nextState, callback) {
     const filters = Object.assign({}, emptyFilters, nextState.filters)
-    const blockOptions = blocksForArea(filters.area)
-    if (filters.block && blockOptions.indexOf(filters.block) === -1) filters.block = ''
     this.setData({
       category: nextState.category,
-      filters,
-      blockOptions
+      filters
     }, callback)
   },
 
-  applyPendingListingFilters() {
+  applyPendingListingFilters(sessionKey = currentAuthSessionKey()) {
     let pendingFilters = null
     try {
-      pendingFilters = wx.getStorageSync(pendingListingFiltersKey)
+      const storedPending = wx.getStorageSync(pendingListingFiltersKey)
+      if (storedPending) {
+        try { wx.removeStorageSync(pendingListingFiltersKey) } catch (error) {}
+      }
+      pendingFilters = consumePendingFilterEnvelope(
+        storedPending,
+        sessionKey
+      )
     } catch (error) {
       pendingFilters = null
     }
     if (!pendingFilters || typeof pendingFilters !== 'object') return false
 
     this.setListingState(normalizeListingState(pendingFilters), () => {
-      try {
-        wx.removeStorageSync(pendingListingFiltersKey)
-      } catch (error) {
-        // 存储清理失败不阻断房源筛选展示。
-      }
       this.loadListings()
     })
     return true
-  },
-
-  updateFilter(event) {
-    const field = event.currentTarget.dataset.field
-    this.setData({
-      [`filters.${field}`]: event.detail.value
-    })
   },
 
   switchCategory(event) {
@@ -145,65 +195,124 @@ Page({
     this.setData({ category }, () => this.loadListings())
   },
 
-  switchRentMode(event) {
-    const mode = event.currentTarget.dataset.mode || ''
-    this.setData({
-      'filters.rentMode': mode === '不限' ? '' : mode
-    }, () => this.loadListings())
+  onUnload() {
+    this._pageActive = false
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    if (typeof this._unsubscribeAuthInvalidation === 'function') {
+      this._unsubscribeAuthInvalidation()
+      this._unsubscribeAuthInvalidation = null
+    }
+    this.activeListingRequestId = `unloaded-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+    if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
   },
 
-  selectArea(event) {
-    const area = event.currentTarget.dataset.area || ''
-    this.setData({
-      'filters.area': area,
-      'filters.block': '',
-      blockOptions: blocksForArea(area)
-    }, () => this.loadListings())
+  handleListingFilterChange(event) {
+    const filters = Object.assign({}, this.data.filters, event.detail.filters || {})
+    this.setData({ filters }, () => {
+      if (event.detail.immediate) {
+        this.loadListings()
+        return
+      }
+      this.scheduleFilterRefresh()
+    })
   },
 
-  selectBlock(event) {
-    const block = event.currentTarget.dataset.block || ''
-    this.setData({
-      'filters.block': block
-    }, () => this.loadListings())
+  handleListingFilterApply(event) {
+    const filters = Object.assign({}, this.data.filters, event.detail.filters || {})
+    this.setData({ filters }, () => this.loadListings())
   },
 
-  applyFilters() {
-    this.loadListings()
+  scheduleFilterRefresh() {
+    if (this.filterRefreshTimer) clearTimeout(this.filterRefreshTimer)
+    this.filterRefreshTimer = setTimeout(() => {
+      this.filterRefreshTimer = null
+      this.loadListings()
+    }, 320)
   },
 
   resetFilters() {
     this.setData({
       filters: {
         needId: this.data.filters.needId || '',
-        area: '',
+        district: '',
         block: '',
         community: '',
         layout: '',
         rentMode: '',
         rentMin: '',
-        rentMax: ''
-      },
-      blockOptions: []
+        rentMax: '',
+        features: ''
+      }
     }, () => this.loadListings())
   },
 
   loadListings() {
-    if (this.data.loading) return
-    this.setData({ loading: true })
-    apiService.getListings({
+    const requestSessionKey = this.syncAuthSession().key
+    const requestId = `listing-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+    this.activeListingRequestId = requestId
+    this.setData({ loading: true, loadFailed: false })
+    const query = {
       category: this.data.category === '全部' ? '' : this.data.category,
       ...this.data.filters
-    }).then((listings) => {
+    }
+    const communityQuery = {
+      category: query.category,
+      district: query.district || '',
+      block: query.block || '',
+      rentMode: query.rentMode || ''
+    }
+    Promise.all([
+      apiService.getListings(query),
+      apiService.getListings(communityQuery)
+    ]).then(([listings, communityRows]) => {
+      if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadListings()
+        return
+      }
       this.setData({
         listings,
-        emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}房源`
+        communityOptions: uniqueCommunities(communityRows),
+        loadFailed: false,
+        emptyText: this.data.category === '全部' ? '暂无符合条件的房源' : `暂无${this.data.category}`
       })
     }).catch(() => {
+      if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) {
+        const shouldRecoverPublicRead = typeof apiClient.isPublicReadAuthFallbackContinuation === 'function' &&
+          apiClient.isPublicReadAuthFallbackContinuation(requestSessionKey)
+        this.syncAuthSession()
+        if (shouldRecoverPublicRead) this.loadListings()
+        return
+      }
+      this.setData({ loadFailed: true })
       wx.showToast({ title: '房源加载失败', icon: 'none' })
     }).finally(() => {
+      if (this.activeListingRequestId !== requestId) return
+      if (currentAuthSessionKey() !== requestSessionKey) return
       this.setData({ loading: false })
     })
+  },
+
+  retryListings() {
+    this.loadListings()
+  },
+
+  loadListingFilterOptions() {
+    if (typeof apiService.getListingFilterOptions !== 'function') return Promise.resolve()
+    this._filterOptionsRequestSeq = Number(this._filterOptionsRequestSeq || 0) + 1
+    const requestSeq = this._filterOptionsRequestSeq
+    return apiService.getListingFilterOptions().then((payload) => {
+      if (this._pageActive === false || requestSeq !== this._filterOptionsRequestSeq) return
+      const options = normalizeListingFilterOptions(payload)
+      this.setData({
+        regionOptions: options.regionOptions,
+        layoutOptions: options.layoutOptions
+      })
+    }).catch(() => {})
   },
 
   openListing(event) {
@@ -214,5 +323,13 @@ Page({
     wx.navigateTo({
       url: `/pages/listing-detail/listing-detail?id=${id}${query}`
     })
+  },
+
+  // 视频首帧封面加载失败时清掉该项 coverUrl，退回占位图，避免裂图。
+  onCoverError(event) {
+    const dataset = (event.currentTarget && event.currentTarget.dataset) || {}
+    const index = findFailedCoverIndex(this.data.listings, dataset.id, dataset.cover)
+    if (index < 0) return
+    this.setData({ [`listings[${index}].coverUrl`]: '' })
   }
 })
